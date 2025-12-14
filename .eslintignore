@@ -1,0 +1,23 @@
+# 忽略有問題的舊文件
+**/route-old.ts
+**/route-memory.ts
+**/page_broken.tsx
+**/*_broken.*
+**/*-old.*
+
+# 忽略工具腳本 (使用CommonJS)
+*.js
+!next.config.js
+!postcss.config.js
+!tailwind.config.js
+
+# 忽略構建輸出
+.next/
+node_modules/
+
+# 忽略生成的文件
+*.d.ts
+
+# 忽略資料庫和上傳文件
+prisma/dev.db
+uploads/

@@ -1,0 +1,236 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { prisma } from '@/lib/database';
+
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const { username } = body;
+
+    if (!username) {
+      return NextResponse.json({ error: '缺少用戶名' }, { status: 400 });
+    }
+
+    // 查找用戶
+    const user = await prisma.user.findUnique({
+      where: { username },
+      include: { employee: true }
+    });
+
+    if (!user || !user.employee) {
+      return NextResponse.json({ error: '找不到員工資料' }, { status: 404 });
+    }
+
+    // 獲取今日日期
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+
+    // 查找今日打卡記錄
+    const todayAttendance = await prisma.attendanceRecord.findFirst({
+      where: {
+        employeeId: user.employee.id,
+        workDate: {
+          gte: todayStart,
+          lt: todayEnd
+        }
+      }
+    });
+
+    // 查詢今日排班
+    const todayStr = now.toISOString().split('T')[0];
+    const todaySchedule = await prisma.schedule.findFirst({
+      where: {
+        employeeId: user.employee.id,
+        workDate: todayStr
+      }
+    });
+
+    // 查詢當月異常記錄（遲到、早退、缺上班、缺下班）
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    
+    // 取得當月所有考勤記錄
+    const monthlyAttendance = await prisma.attendanceRecord.findMany({
+      where: {
+        employeeId: user.employee.id,
+        workDate: {
+          gte: monthStart,
+          lte: monthEnd
+        }
+      },
+      orderBy: { workDate: 'desc' }
+    });
+
+    // 取得當月所有排班
+    const monthStartStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+    const monthEndStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(monthEnd.getDate()).padStart(2, '0')}`;
+    
+    const monthlySchedules = await prisma.schedule.findMany({
+      where: {
+        employeeId: user.employee.id,
+        workDate: {
+          gte: monthStartStr,
+          lte: monthEndStr
+        }
+      }
+    });
+
+    // 將排班轉為 Map 方便查詢
+    const scheduleMap = new Map<string, { shiftType: string; startTime: string; endTime: string }>();
+    for (const s of monthlySchedules) {
+      scheduleMap.set(s.workDate, {
+        shiftType: s.shiftType,
+        startTime: s.startTime,
+        endTime: s.endTime
+      });
+    }
+
+    // 分析異常記錄
+    const anomalyRecords: {
+      date: string;
+      shiftCode: string;
+      shiftTime: string;
+      scheduledClockIn: string;
+      actualClockIn: string;
+      scheduledClockOut: string;
+      actualClockOut: string;
+      status: string;
+    }[] = [];
+
+    for (const attendance of monthlyAttendance) {
+      const dateStr = attendance.workDate.toISOString().split('T')[0];
+      const schedule = scheduleMap.get(dateStr);
+      
+      if (!schedule) continue; // 無排班則跳過
+
+      // 排班時間
+      const scheduledClockIn = schedule.startTime;
+      const scheduledClockOut = schedule.endTime;
+      const shiftTime = `${scheduledClockIn}-${scheduledClockOut}`;
+
+      // 實際打卡時間
+      const actualClockIn = attendance.clockInTime 
+        ? new Date(attendance.clockInTime).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false })
+        : '--';
+      const actualClockOut = attendance.clockOutTime 
+        ? new Date(attendance.clockOutTime).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false })
+        : '--';
+
+      // 判斷異常狀態
+      const anomalies: string[] = [];
+      
+      // 缺上班打卡
+      if (!attendance.clockInTime) {
+        anomalies.push('缺上班');
+      } else {
+        // 遲到檢測
+        const [schInHour, schInMin] = scheduledClockIn.split(':').map(Number);
+        const clockIn = new Date(attendance.clockInTime);
+        const scheduledTime = new Date(clockIn);
+        scheduledTime.setHours(schInHour, schInMin, 0, 0);
+        if (clockIn > scheduledTime) {
+          const diffMinutes = Math.round((clockIn.getTime() - scheduledTime.getTime()) / 60000);
+          if (diffMinutes > 0) {
+            anomalies.push(`遲到${diffMinutes}分鐘`);
+          }
+        }
+      }
+
+      // 缺下班打卡
+      if (!attendance.clockOutTime) {
+        // 只有今天以前的記錄才算缺下班
+        if (new Date(dateStr) < todayStart) {
+          anomalies.push('缺下班');
+        }
+      } else {
+        // 早退檢測
+        const [schOutHour, schOutMin] = scheduledClockOut.split(':').map(Number);
+        const clockOut = new Date(attendance.clockOutTime);
+        const scheduledOutTime = new Date(clockOut);
+        scheduledOutTime.setHours(schOutHour, schOutMin, 0, 0);
+        if (clockOut < scheduledOutTime) {
+          const diffMinutes = Math.round((scheduledOutTime.getTime() - clockOut.getTime()) / 60000);
+          if (diffMinutes > 0) {
+            anomalies.push(`早退${diffMinutes}分鐘`);
+          }
+        }
+      }
+
+      // 只記錄有異常的記錄
+      if (anomalies.length > 0) {
+        anomalyRecords.push({
+          date: dateStr.replace(/-/g, '/'),
+          shiftCode: schedule.shiftType,
+          shiftTime,
+          scheduledClockIn,
+          actualClockIn,
+          scheduledClockOut,
+          actualClockOut,
+          status: anomalies.join('、')
+        });
+      }
+    }
+
+    const employeeInfo = {
+      id: user.employee.id,
+      employeeId: user.employee.employeeId,
+      name: user.employee.name,
+      department: user.employee.department,
+      position: user.employee.position
+    };
+
+    if (!todayAttendance) {
+      // 今日尚未打卡
+      return NextResponse.json({
+        employee: employeeInfo,
+        hasClockIn: false,
+        hasClockOut: false,
+        clockInTime: null,
+        clockOutTime: null,
+        workHours: 0,
+        attendance: null,
+        // 新增：今日排班
+        todaySchedule: todaySchedule ? {
+          date: todayStr.replace(/-/g, '/'),
+          shiftCode: todaySchedule.shiftType,
+          shiftTime: `${todaySchedule.startTime} - ${todaySchedule.endTime}`
+        } : null,
+        // 新增：當月異常記錄
+        anomalyRecords
+      });
+    }
+
+    // 計算工作時間
+    let workHours = 0;
+    if (todayAttendance.clockInTime && todayAttendance.clockOutTime) {
+      const clockIn = new Date(todayAttendance.clockInTime);
+      const clockOut = new Date(todayAttendance.clockOutTime);
+      workHours = (clockOut.getTime() - clockIn.getTime()) / (1000 * 60 * 60);
+    }
+
+    return NextResponse.json({
+      employee: employeeInfo,
+      hasClockIn: !!todayAttendance.clockInTime,
+      hasClockOut: !!todayAttendance.clockOutTime,
+      clockInTime: todayAttendance.clockInTime,
+      clockOutTime: todayAttendance.clockOutTime,
+      workHours: parseFloat(workHours.toFixed(2)),
+      regularHours: todayAttendance.regularHours || 0,
+      overtimeHours: todayAttendance.overtimeHours || 0,
+      attendance: todayAttendance,
+      // 新增：今日排班
+      todaySchedule: todaySchedule ? {
+        date: todayStr.replace(/-/g, '/'),
+        shiftCode: todaySchedule.shiftType,
+        shiftTime: `${todaySchedule.startTime} - ${todaySchedule.endTime}`
+      } : null,
+      // 新增：當月異常記錄
+      anomalyRecords
+    });
+
+  } catch (error) {
+    console.error('檢查打卡記錄錯誤:', error);
+    return NextResponse.json({ error: '系統錯誤' }, { status: 500 });
+  }
+}
+

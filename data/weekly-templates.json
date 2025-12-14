@@ -1,0 +1,149 @@
+[
+  {
+    "id": 1,
+    "name": "標準工作週",
+    "description": "週一到週五A班，週末休息",
+    "monday": {
+      "shiftType": "A",
+      "startTime": "07:30",
+      "endTime": "16:30",
+      "breakTime": 60
+    },
+    "tuesday": {
+      "shiftType": "A",
+      "startTime": "07:30",
+      "endTime": "16:30",
+      "breakTime": 60
+    },
+    "wednesday": {
+      "shiftType": "A",
+      "startTime": "07:30",
+      "endTime": "16:30",
+      "breakTime": 60
+    },
+    "thursday": {
+      "shiftType": "A",
+      "startTime": "07:30",
+      "endTime": "16:30",
+      "breakTime": 60
+    },
+    "friday": {
+      "shiftType": "A",
+      "startTime": "07:30",
+      "endTime": "16:30",
+      "breakTime": 60
+    },
+    "saturday": {
+      "shiftType": "RD",
+      "startTime": "",
+      "endTime": "",
+      "breakTime": 0
+    },
+    "sunday": {
+      "shiftType": "RD",
+      "startTime": "",
+      "endTime": "",
+      "breakTime": 0
+    },
+    "createdAt": "2025-01-01T00:00:00.000Z",
+    "updatedAt": "2025-01-01T00:00:00.000Z"
+  },
+  {
+    "id": 2,
+    "name": "輪班制度",
+    "description": "B班輪班制度",
+    "monday": {
+      "shiftType": "B",
+      "startTime": "08:00",
+      "endTime": "17:00",
+      "breakTime": 60
+    },
+    "tuesday": {
+      "shiftType": "B",
+      "startTime": "08:00",
+      "endTime": "17:00",
+      "breakTime": 60
+    },
+    "wednesday": {
+      "shiftType": "B",
+      "startTime": "08:00",
+      "endTime": "17:00",
+      "breakTime": 60
+    },
+    "thursday": {
+      "shiftType": "B",
+      "startTime": "08:00",
+      "endTime": "17:00",
+      "breakTime": 60
+    },
+    "friday": {
+      "shiftType": "B",
+      "startTime": "08:00",
+      "endTime": "17:00",
+      "breakTime": 60
+    },
+    "saturday": {
+      "shiftType": "RD",
+      "startTime": "",
+      "endTime": "",
+      "breakTime": 0
+    },
+    "sunday": {
+      "shiftType": "RD",
+      "startTime": "",
+      "endTime": "",
+      "breakTime": 0
+    },
+    "createdAt": "2025-01-01T00:00:00.000Z",
+    "updatedAt": "2025-01-01T00:00:00.000Z"
+  },
+  {
+    "id": 3,
+    "name": "112",
+    "description": "1",
+    "monday": {
+      "shiftType": "A",
+      "startTime": "07:30",
+      "endTime": "16:30",
+      "breakTime": 60
+    },
+    "tuesday": {
+      "shiftType": "A",
+      "startTime": "07:30",
+      "endTime": "16:30",
+      "breakTime": 60
+    },
+    "wednesday": {
+      "shiftType": "A",
+      "startTime": "07:30",
+      "endTime": "16:30",
+      "breakTime": 60
+    },
+    "thursday": {
+      "shiftType": "A",
+      "startTime": "07:30",
+      "endTime": "16:30",
+      "breakTime": 60
+    },
+    "friday": {
+      "shiftType": "A",
+      "startTime": "07:30",
+      "endTime": "16:30",
+      "breakTime": 60
+    },
+    "saturday": {
+      "shiftType": "RD",
+      "startTime": "",
+      "endTime": "",
+      "breakTime": 0
+    },
+    "sunday": {
+      "shiftType": "rd",
+      "startTime": "",
+      "endTime": "",
+      "breakTime": 0
+    },
+    "createdAt": "2025-07-31T07:07:43.067Z",
+    "updatedAt": "2025-07-31T07:07:43.067Z"
+  }
+]

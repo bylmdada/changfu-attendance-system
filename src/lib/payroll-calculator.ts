@@ -1,0 +1,339 @@
+/**
+ * 薪資計算工具 - 整合勞基法加班費計算
+ */
+
+import { 
+  OvertimeType, 
+  calculateOvertime, 
+  calculateHourlyWage,
+  OvertimeCalculationResult 
+} from './overtime-calculator';
+
+// 薪資計算結果接口
+export interface PayrollCalculationResult {
+  // 基本資訊
+  employeeId: number;
+  payYear: number;
+  payMonth: number;
+  
+  // 工時統計
+  regularHours: number;
+  totalOvertimeHours: number;
+  overtimeBreakdown: OvertimeBreakdown;
+  
+  // 薪資組成
+  basePay: number;
+  hourlyWage: number;
+  totalOvertimePay: number;
+  grossPay: number;
+  
+  // 扣除項目
+  deductions: PayrollDeductions;
+  totalDeductions: number;
+  
+  // 最終薪資
+  netPay: number;
+  
+  // 詳細資訊
+  overtimeDetails: OvertimeCalculationResult[];
+  calculationNotes: string[];
+}
+
+// 加班時數分類
+export interface OvertimeBreakdown {
+  weekdayHours: number;      // 平日加班時數
+  restDayHours: number;      // 休息日加班時數
+  holidayHours: number;      // 國定假日加班時數
+  mandatoryRestHours: number; // 例假日加班時數
+}
+
+// 薪資扣除項目
+export interface PayrollDeductions {
+  laborInsurance: number;        // 勞工保險
+  healthInsurance: number;       // 健康保險
+  supplementaryInsurance: number; // 補充保費
+  incomeTax: number;            // 所得稅
+  other: number;                // 其他扣除
+}
+
+// 員工基本資訊（用於薪資計算）
+export interface EmployeePayrollInfo {
+  id: number;
+  employeeId: string;
+  name: string;
+  baseSalary: number;
+  hourlyRate?: number; // 可選，將從baseSalary計算
+  department: string;
+  position: string;
+  dependents?: number; // 眷屬人數（用於健保計算）
+  insuredBase?: number; // 投保薪資（用於勞健保計算）
+}
+
+// 考勤記錄（用於薪資計算）
+export interface AttendanceForPayroll {
+  workDate: Date;
+  regularHours: number;
+  overtimeHours: number;
+  overtimeType: OvertimeType;
+  isHoliday: boolean;
+  isRestDay: boolean;
+  isMandatoryRest: boolean;
+}
+
+/**
+ * 計算員工月薪資
+ * 
+ * @param employee 員工資訊
+ * @param attendanceRecords 考勤記錄
+ * @param year 薪資年份
+ * @param month 薪資月份
+ * @returns 薪資計算結果
+ */
+export function calculateMonthlyPayroll(
+  employee: EmployeePayrollInfo,
+  attendanceRecords: AttendanceForPayroll[],
+  year: number,
+  month: number
+): PayrollCalculationResult {
+  // 計算平日每小時工資額
+  const hourlyWage = employee.hourlyRate || calculateHourlyWage(employee.baseSalary);
+  
+  // 統計工時
+  let regularHours = 0;
+  const overtimeBreakdown: OvertimeBreakdown = {
+    weekdayHours: 0,
+    restDayHours: 0,
+    holidayHours: 0,
+    mandatoryRestHours: 0
+  };
+
+  // 分類加班時數
+  attendanceRecords.forEach(record => {
+    regularHours += record.regularHours;
+    
+    if (record.overtimeHours > 0) {
+      switch (record.overtimeType) {
+        case OvertimeType.WEEKDAY:
+          overtimeBreakdown.weekdayHours += record.overtimeHours;
+          break;
+        case OvertimeType.REST_DAY:
+          overtimeBreakdown.restDayHours += record.overtimeHours;
+          break;
+        case OvertimeType.HOLIDAY:
+          overtimeBreakdown.holidayHours += record.overtimeHours;
+          break;
+        case OvertimeType.MANDATORY_REST:
+          overtimeBreakdown.mandatoryRestHours += record.overtimeHours;
+          break;
+      }
+    }
+  });
+
+  // 計算各類加班費
+  const overtimeDetails: OvertimeCalculationResult[] = [];
+  let totalOvertimePay = 0;
+
+  if (overtimeBreakdown.weekdayHours > 0) {
+    const result = calculateOvertime(OvertimeType.WEEKDAY, overtimeBreakdown.weekdayHours, employee.baseSalary);
+    overtimeDetails.push(result);
+    totalOvertimePay += result.overtimePay;
+  }
+
+  if (overtimeBreakdown.restDayHours > 0) {
+    const result = calculateOvertime(OvertimeType.REST_DAY, overtimeBreakdown.restDayHours, employee.baseSalary);
+    overtimeDetails.push(result);
+    totalOvertimePay += result.overtimePay;
+  }
+
+  if (overtimeBreakdown.holidayHours > 0) {
+    const result = calculateOvertime(OvertimeType.HOLIDAY, overtimeBreakdown.holidayHours, employee.baseSalary);
+    overtimeDetails.push(result);
+    totalOvertimePay += result.overtimePay;
+  }
+
+  if (overtimeBreakdown.mandatoryRestHours > 0) {
+    const result = calculateOvertime(OvertimeType.MANDATORY_REST, overtimeBreakdown.mandatoryRestHours, employee.baseSalary);
+    overtimeDetails.push(result);
+    totalOvertimePay += result.overtimePay;
+  }
+
+  // 計算總工時
+  const totalOvertimeHours = Object.values(overtimeBreakdown).reduce((sum, hours) => sum + hours, 0);
+
+  // 計算基本薪資和總薪資
+  const basePay = employee.baseSalary;
+  const grossPay = basePay + totalOvertimePay;
+
+  // 計算扣除項目
+  const deductions = calculateDeductions(employee, grossPay);
+  const totalDeductions = Object.values(deductions).reduce((sum, amount) => sum + amount, 0);
+
+  // 計算實領薪資
+  const netPay = grossPay - totalDeductions;
+
+  // 生成計算備註
+  const calculationNotes = generateCalculationNotes(employee, overtimeBreakdown, overtimeDetails);
+
+  return {
+    employeeId: employee.id,
+    payYear: year,
+    payMonth: month,
+    regularHours,
+    totalOvertimeHours,
+    overtimeBreakdown,
+    basePay,
+    hourlyWage,
+    totalOvertimePay,
+    grossPay,
+    deductions,
+    totalDeductions,
+    netPay,
+    overtimeDetails,
+    calculationNotes
+  };
+}
+
+/**
+ * 計算薪資扣除項目
+ * 
+ * @param employee 員工資訊
+ * @param grossPay 總薪資
+ * @returns 扣除項目詳細
+ */
+function calculateDeductions(employee: EmployeePayrollInfo, grossPay: number): PayrollDeductions {
+  // 使用投保薪資或實際薪資計算勞健保
+  const insuredSalary = employee.insuredBase || grossPay;
+  
+  // 勞保費計算（員工負擔20%）
+  const laborInsuranceRate = 0.115; // 11.5%總費率
+  const employeeLaborRate = 0.2; // 員工負擔20%
+  const laborInsurance = Math.round(insuredSalary * laborInsuranceRate * employeeLaborRate);
+
+  // 健保費計算（員工負擔30%，眷屬加計）
+  const healthInsuranceRate = 0.0517; // 5.17%
+  const employeeHealthRate = 0.3; // 員工負擔30%
+  const dependents = employee.dependents || 0;
+  const healthInsuranceUnit = Math.round(insuredSalary * healthInsuranceRate);
+  const healthInsurance = Math.round(healthInsuranceUnit * employeeHealthRate * (1 + dependents));
+
+  // 補充保費計算（2.11%，薪資超過投保金額上限時）
+  let supplementaryInsurance = 0;
+  const supplementaryThreshold = 84000; // 2024年補充保費門檻
+  if (grossPay > supplementaryThreshold) {
+    supplementaryInsurance = Math.round((grossPay - supplementaryThreshold) * 0.0211);
+  }
+
+  // 所得稅計算（簡化版本）
+  const incomeTax = calculateSimpleIncomeTax(grossPay);
+
+  return {
+    laborInsurance,
+    healthInsurance,
+    supplementaryInsurance,
+    incomeTax,
+    other: 0
+  };
+}
+
+/**
+ * 簡化所得稅計算
+ * 
+ * @param grossPay 總薪資
+ * @returns 所得稅金額
+ */
+function calculateSimpleIncomeTax(grossPay: number): number {
+  // 簡化計算：使用5%稅率計算預扣所得稅
+  // 實際計算應考慮扣除額、免稅額等
+  const taxableIncome = Math.max(0, grossPay - 4000); // 簡化扣除額
+  return Math.round(taxableIncome * 0.05);
+}
+
+/**
+ * 生成薪資計算備註
+ * 
+ * @param employee 員工資訊
+ * @param overtimeBreakdown 加班時數分類
+ * @param overtimeDetails 加班費詳細計算
+ * @returns 計算備註陣列
+ */
+function generateCalculationNotes(
+  employee: EmployeePayrollInfo,
+  overtimeBreakdown: OvertimeBreakdown,
+  overtimeDetails: OvertimeCalculationResult[]
+): string[] {
+  const notes: string[] = [];
+
+  // 基本資訊備註
+  notes.push(`平日每小時工資額：NT$ ${calculateHourlyWage(employee.baseSalary).toLocaleString()}`);
+  notes.push(`計算基準：月薪 NT$ ${employee.baseSalary.toLocaleString()} ÷ 240 小時`);
+
+  // 加班時數備註
+  if (overtimeBreakdown.weekdayHours > 0) {
+    notes.push(`平日加班：${overtimeBreakdown.weekdayHours} 小時`);
+  }
+  if (overtimeBreakdown.restDayHours > 0) {
+    notes.push(`休息日加班：${overtimeBreakdown.restDayHours} 小時`);
+  }
+  if (overtimeBreakdown.holidayHours > 0) {
+    notes.push(`國定假日加班：${overtimeBreakdown.holidayHours} 小時`);
+  }
+  if (overtimeBreakdown.mandatoryRestHours > 0) {
+    notes.push(`例假日加班：${overtimeBreakdown.mandatoryRestHours} 小時（需補假）`);
+  }
+
+  // 加班費計算詳細備註
+  overtimeDetails.forEach(detail => {
+    detail.details.forEach(item => {
+      notes.push(`${item.description}：${item.hours} 小時 × NT$ ${item.rate.toLocaleString()} = NT$ ${item.amount.toLocaleString()}`);
+    });
+  });
+
+  // 法規依據備註
+  notes.push('');
+  notes.push('計算依據：');
+  notes.push('• 勞動基準法第24條（延長工作時間工資）');
+  notes.push('• 勞動基準法第39條（假日工資）');
+  notes.push('• 勞動基準法第40條（例假）');
+
+  return notes;
+}
+
+/**
+ * 驗證薪資計算結果
+ * 
+ * @param result 薪資計算結果
+ * @returns 驗證結果
+ */
+export function validatePayrollCalculation(result: PayrollCalculationResult): {
+  isValid: boolean;
+  warnings: string[];
+  errors: string[];
+} {
+  const warnings: string[] = [];
+  const errors: string[] = [];
+
+  // 檢查基本數據合理性
+  if (result.netPay < 0) {
+    errors.push('實領薪資不得為負數');
+  }
+
+  if (result.totalOvertimeHours > 120) { // 假設月加班時數上限
+    warnings.push(`月加班時數 ${result.totalOvertimeHours} 小時可能超過法定上限`);
+  }
+
+  // 檢查例假日加班
+  if (result.overtimeBreakdown.mandatoryRestHours > 0) {
+    warnings.push('發現例假日加班記錄，請確認是否符合法定例外情況');
+  }
+
+  // 檢查扣除項目合理性
+  if (result.totalDeductions > result.grossPay * 0.3) {
+    warnings.push('扣除項目金額較高，請檢查計算是否正確');
+  }
+
+  return {
+    isValid: errors.length === 0,
+    warnings,
+    errors
+  };
+}
