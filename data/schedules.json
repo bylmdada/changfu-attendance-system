@@ -1,0 +1,2846 @@
+[
+  {
+    "id": 1,
+    "employeeId": 1,
+    "workDate": "2025-06-30",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 2,
+    "employeeId": 1,
+    "workDate": "2025-07-01",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 3,
+    "employeeId": 1,
+    "workDate": "2025-07-02",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 4,
+    "employeeId": 1,
+    "workDate": "2025-07-03",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 5,
+    "employeeId": 1,
+    "workDate": "2025-07-06",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 6,
+    "employeeId": 1,
+    "workDate": "2025-07-07",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 7,
+    "employeeId": 1,
+    "workDate": "2025-07-08",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 8,
+    "employeeId": 1,
+    "workDate": "2025-07-09",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 9,
+    "employeeId": 1,
+    "workDate": "2025-07-10",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 10,
+    "employeeId": 1,
+    "workDate": "2025-07-13",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 11,
+    "employeeId": 1,
+    "workDate": "2025-07-14",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 12,
+    "employeeId": 1,
+    "workDate": "2025-07-15",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 13,
+    "employeeId": 1,
+    "workDate": "2025-07-16",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 14,
+    "employeeId": 1,
+    "workDate": "2025-07-17",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 15,
+    "employeeId": 1,
+    "workDate": "2025-07-20",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 16,
+    "employeeId": 1,
+    "workDate": "2025-07-21",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 17,
+    "employeeId": 1,
+    "workDate": "2025-07-22",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 18,
+    "employeeId": 1,
+    "workDate": "2025-07-23",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 19,
+    "employeeId": 1,
+    "workDate": "2025-07-24",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 20,
+    "employeeId": 1,
+    "workDate": "2025-07-27",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 21,
+    "employeeId": 1,
+    "workDate": "2025-07-28",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 22,
+    "employeeId": 1,
+    "workDate": "2025-07-29",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 23,
+    "employeeId": 1,
+    "workDate": "2025-07-30",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 24,
+    "employeeId": 2,
+    "workDate": "2025-06-30",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 25,
+    "employeeId": 2,
+    "workDate": "2025-07-01",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 26,
+    "employeeId": 2,
+    "workDate": "2025-07-02",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 27,
+    "employeeId": 2,
+    "workDate": "2025-07-03",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 28,
+    "employeeId": 2,
+    "workDate": "2025-07-06",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 29,
+    "employeeId": 2,
+    "workDate": "2025-07-07",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 30,
+    "employeeId": 2,
+    "workDate": "2025-07-08",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 31,
+    "employeeId": 2,
+    "workDate": "2025-07-09",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 32,
+    "employeeId": 2,
+    "workDate": "2025-07-10",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 33,
+    "employeeId": 2,
+    "workDate": "2025-07-13",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 34,
+    "employeeId": 2,
+    "workDate": "2025-07-14",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 35,
+    "employeeId": 2,
+    "workDate": "2025-07-15",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 36,
+    "employeeId": 2,
+    "workDate": "2025-07-16",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 37,
+    "employeeId": 2,
+    "workDate": "2025-07-17",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 38,
+    "employeeId": 2,
+    "workDate": "2025-07-20",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 39,
+    "employeeId": 2,
+    "workDate": "2025-07-21",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 40,
+    "employeeId": 2,
+    "workDate": "2025-07-22",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 41,
+    "employeeId": 2,
+    "workDate": "2025-07-23",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 42,
+    "employeeId": 2,
+    "workDate": "2025-07-24",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 43,
+    "employeeId": 2,
+    "workDate": "2025-07-27",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 44,
+    "employeeId": 2,
+    "workDate": "2025-07-28",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 45,
+    "employeeId": 2,
+    "workDate": "2025-07-29",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 46,
+    "employeeId": 2,
+    "workDate": "2025-07-30",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 47,
+    "employeeId": 3,
+    "workDate": "2025-06-30",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 48,
+    "employeeId": 3,
+    "workDate": "2025-07-01",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 49,
+    "employeeId": 3,
+    "workDate": "2025-07-02",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 50,
+    "employeeId": 3,
+    "workDate": "2025-07-03",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 51,
+    "employeeId": 3,
+    "workDate": "2025-07-06",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 52,
+    "employeeId": 3,
+    "workDate": "2025-07-07",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 53,
+    "employeeId": 3,
+    "workDate": "2025-07-08",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 54,
+    "employeeId": 3,
+    "workDate": "2025-07-09",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 55,
+    "employeeId": 3,
+    "workDate": "2025-07-10",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 56,
+    "employeeId": 3,
+    "workDate": "2025-07-13",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 57,
+    "employeeId": 3,
+    "workDate": "2025-07-14",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 58,
+    "employeeId": 3,
+    "workDate": "2025-07-15",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 59,
+    "employeeId": 3,
+    "workDate": "2025-07-16",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 60,
+    "employeeId": 3,
+    "workDate": "2025-07-17",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 61,
+    "employeeId": 3,
+    "workDate": "2025-07-20",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 62,
+    "employeeId": 3,
+    "workDate": "2025-07-21",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 63,
+    "employeeId": 3,
+    "workDate": "2025-07-22",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 64,
+    "employeeId": 3,
+    "workDate": "2025-07-23",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 65,
+    "employeeId": 3,
+    "workDate": "2025-07-24",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 66,
+    "employeeId": 3,
+    "workDate": "2025-07-27",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 67,
+    "employeeId": 3,
+    "workDate": "2025-07-28",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 68,
+    "employeeId": 3,
+    "workDate": "2025-07-29",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 69,
+    "employeeId": 3,
+    "workDate": "2025-07-30",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:20.961Z",
+    "updatedAt": "2025-07-31T09:24:20.961Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 70,
+    "employeeId": 1,
+    "workDate": "2025-07-31",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "李明峰",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 2397,
+    "employeeId": 1,
+    "workDate": "2025-08-01",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-08-01T10:00:00.000Z",
+    "updatedAt": "2025-08-01T10:00:00.000Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "李明峰",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 2398,
+    "employeeId": 1,
+    "workDate": "2025-08-02",
+    "shiftType": "RD",
+    "startTime": "",
+    "endTime": "",
+    "breakTime": 0,
+    "createdAt": "2025-08-01T10:00:00.000Z",
+    "updatedAt": "2025-08-01T10:00:00.000Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "李明峰",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 71,
+    "employeeId": 1,
+    "workDate": "2025-08-03",
+    "shiftType": "RD",
+    "startTime": "",
+    "endTime": "",
+    "breakTime": 0,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 72,
+    "employeeId": 1,
+    "workDate": "2025-08-04",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 73,
+    "employeeId": 1,
+    "workDate": "2025-08-05",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 74,
+    "employeeId": 1,
+    "workDate": "2025-08-06",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 75,
+    "employeeId": 1,
+    "workDate": "2025-08-07",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 76,
+    "employeeId": 1,
+    "workDate": "2025-08-10",
+    "shiftType": "RD",
+    "startTime": "",
+    "endTime": "",
+    "breakTime": 0,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 77,
+    "employeeId": 1,
+    "workDate": "2025-08-11",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 78,
+    "employeeId": 1,
+    "workDate": "2025-08-12",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 79,
+    "employeeId": 1,
+    "workDate": "2025-08-13",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 80,
+    "employeeId": 1,
+    "workDate": "2025-08-14",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 81,
+    "employeeId": 1,
+    "workDate": "2025-08-17",
+    "shiftType": "RD",
+    "startTime": "",
+    "endTime": "",
+    "breakTime": 0,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 82,
+    "employeeId": 1,
+    "workDate": "2025-08-18",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 83,
+    "employeeId": 1,
+    "workDate": "2025-08-19",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 84,
+    "employeeId": 1,
+    "workDate": "2025-08-20",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 85,
+    "employeeId": 1,
+    "workDate": "2025-08-21",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 86,
+    "employeeId": 1,
+    "workDate": "2025-08-24",
+    "shiftType": "RD",
+    "startTime": "",
+    "endTime": "",
+    "breakTime": 0,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 87,
+    "employeeId": 1,
+    "workDate": "2025-08-25",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 88,
+    "employeeId": 1,
+    "workDate": "2025-08-26",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 89,
+    "employeeId": 1,
+    "workDate": "2025-08-27",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 90,
+    "employeeId": 1,
+    "workDate": "2025-08-28",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 1,
+      "employeeId": "EMP001",
+      "name": "張三",
+      "department": "技術部",
+      "position": "工程師"
+    }
+  },
+  {
+    "id": 91,
+    "employeeId": 2,
+    "workDate": "2025-07-31",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 92,
+    "employeeId": 2,
+    "workDate": "2025-08-03",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 93,
+    "employeeId": 2,
+    "workDate": "2025-08-04",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 94,
+    "employeeId": 2,
+    "workDate": "2025-08-05",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 95,
+    "employeeId": 2,
+    "workDate": "2025-08-06",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 96,
+    "employeeId": 2,
+    "workDate": "2025-08-07",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 97,
+    "employeeId": 2,
+    "workDate": "2025-08-10",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 98,
+    "employeeId": 2,
+    "workDate": "2025-08-11",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 99,
+    "employeeId": 2,
+    "workDate": "2025-08-12",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 100,
+    "employeeId": 2,
+    "workDate": "2025-08-13",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 101,
+    "employeeId": 2,
+    "workDate": "2025-08-14",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 102,
+    "employeeId": 2,
+    "workDate": "2025-08-17",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 103,
+    "employeeId": 2,
+    "workDate": "2025-08-18",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 104,
+    "employeeId": 2,
+    "workDate": "2025-08-19",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 105,
+    "employeeId": 2,
+    "workDate": "2025-08-20",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 106,
+    "employeeId": 2,
+    "workDate": "2025-08-21",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 107,
+    "employeeId": 2,
+    "workDate": "2025-08-24",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 108,
+    "employeeId": 2,
+    "workDate": "2025-08-25",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 109,
+    "employeeId": 2,
+    "workDate": "2025-08-26",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 110,
+    "employeeId": 2,
+    "workDate": "2025-08-27",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 111,
+    "employeeId": 2,
+    "workDate": "2025-08-28",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 2,
+      "employeeId": "EMP002",
+      "name": "李四",
+      "department": "業務部",
+      "position": "業務員"
+    }
+  },
+  {
+    "id": 112,
+    "employeeId": 3,
+    "workDate": "2025-07-31",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T09:24:56.745Z",
+    "updatedAt": "2025-07-31T09:24:56.745Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 133,
+    "employeeId": 3,
+    "workDate": "2025-07-31",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T13:29:25.445Z",
+    "updatedAt": "2025-07-31T13:29:25.445Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 134,
+    "employeeId": 3,
+    "workDate": "2025-08-03",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T13:29:25.445Z",
+    "updatedAt": "2025-07-31T13:29:25.445Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 135,
+    "employeeId": 3,
+    "workDate": "2025-08-04",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T13:29:25.445Z",
+    "updatedAt": "2025-07-31T13:29:25.445Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 136,
+    "employeeId": 3,
+    "workDate": "2025-08-05",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T13:29:25.445Z",
+    "updatedAt": "2025-07-31T13:29:25.445Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 137,
+    "employeeId": 3,
+    "workDate": "2025-08-06",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T13:29:25.445Z",
+    "updatedAt": "2025-07-31T13:29:25.445Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 138,
+    "employeeId": 3,
+    "workDate": "2025-08-07",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T13:29:25.445Z",
+    "updatedAt": "2025-07-31T13:29:25.445Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 139,
+    "employeeId": 3,
+    "workDate": "2025-08-10",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T13:29:25.445Z",
+    "updatedAt": "2025-07-31T13:29:25.445Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 140,
+    "employeeId": 3,
+    "workDate": "2025-08-11",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T13:29:25.445Z",
+    "updatedAt": "2025-07-31T13:29:25.445Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 141,
+    "employeeId": 3,
+    "workDate": "2025-08-12",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T13:29:25.445Z",
+    "updatedAt": "2025-07-31T13:29:25.445Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 142,
+    "employeeId": 3,
+    "workDate": "2025-08-13",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T13:29:25.445Z",
+    "updatedAt": "2025-07-31T13:29:25.445Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 143,
+    "employeeId": 3,
+    "workDate": "2025-08-14",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T13:29:25.445Z",
+    "updatedAt": "2025-07-31T13:29:25.445Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 144,
+    "employeeId": 3,
+    "workDate": "2025-08-17",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T13:29:25.445Z",
+    "updatedAt": "2025-07-31T13:29:25.445Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 145,
+    "employeeId": 3,
+    "workDate": "2025-08-18",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T13:29:25.445Z",
+    "updatedAt": "2025-07-31T13:29:25.445Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 146,
+    "employeeId": 3,
+    "workDate": "2025-08-19",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T13:29:25.445Z",
+    "updatedAt": "2025-07-31T13:29:25.445Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 147,
+    "employeeId": 3,
+    "workDate": "2025-08-20",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T13:29:25.445Z",
+    "updatedAt": "2025-07-31T13:29:25.445Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 148,
+    "employeeId": 3,
+    "workDate": "2025-08-21",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T13:29:25.445Z",
+    "updatedAt": "2025-07-31T13:29:25.445Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 149,
+    "employeeId": 3,
+    "workDate": "2025-08-24",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T13:29:25.445Z",
+    "updatedAt": "2025-07-31T13:29:25.445Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 150,
+    "employeeId": 3,
+    "workDate": "2025-08-25",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T13:29:25.445Z",
+    "updatedAt": "2025-07-31T13:29:25.445Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 151,
+    "employeeId": 3,
+    "workDate": "2025-08-26",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T13:29:25.445Z",
+    "updatedAt": "2025-07-31T13:29:25.445Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 152,
+    "employeeId": 3,
+    "workDate": "2025-08-27",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T13:29:25.445Z",
+    "updatedAt": "2025-07-31T13:29:25.445Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 153,
+    "employeeId": 3,
+    "workDate": "2025-08-28",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-07-31T13:29:25.445Z",
+    "updatedAt": "2025-07-31T13:29:25.445Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2399,
+    "employeeId": 3,
+    "workDate": "2025-08-31",
+    "shiftType": "B",
+    "startTime": "08:00",
+    "endTime": "17:00",
+    "breakTime": 60,
+    "createdAt": "2025-08-04T18:53:07.155Z",
+    "updatedAt": "2025-08-04T18:53:07.155Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2421,
+    "employeeId": 3,
+    "workDate": "2025-08-31",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-08-04T18:56:06.706Z",
+    "updatedAt": "2025-08-04T18:56:06.706Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2422,
+    "employeeId": 3,
+    "workDate": "2025-09-01",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-08-04T18:56:06.706Z",
+    "updatedAt": "2025-08-04T18:56:06.706Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2423,
+    "employeeId": 3,
+    "workDate": "2025-09-02",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-08-04T18:56:06.706Z",
+    "updatedAt": "2025-08-04T18:56:06.706Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2424,
+    "employeeId": 3,
+    "workDate": "2025-09-03",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-08-04T18:56:06.706Z",
+    "updatedAt": "2025-08-04T18:56:06.706Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2425,
+    "employeeId": 3,
+    "workDate": "2025-09-04",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-08-04T18:56:06.706Z",
+    "updatedAt": "2025-08-04T18:56:06.706Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2426,
+    "employeeId": 3,
+    "workDate": "2025-09-07",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-08-04T18:56:06.706Z",
+    "updatedAt": "2025-08-04T18:56:06.706Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2427,
+    "employeeId": 3,
+    "workDate": "2025-09-08",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-08-04T18:56:06.706Z",
+    "updatedAt": "2025-08-04T18:56:06.706Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2428,
+    "employeeId": 3,
+    "workDate": "2025-09-09",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-08-04T18:56:06.706Z",
+    "updatedAt": "2025-08-04T18:56:06.706Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2429,
+    "employeeId": 3,
+    "workDate": "2025-09-10",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-08-04T18:56:06.706Z",
+    "updatedAt": "2025-08-04T18:56:06.706Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2430,
+    "employeeId": 3,
+    "workDate": "2025-09-11",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-08-04T18:56:06.706Z",
+    "updatedAt": "2025-08-04T18:56:06.706Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2431,
+    "employeeId": 3,
+    "workDate": "2025-09-14",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-08-04T18:56:06.707Z",
+    "updatedAt": "2025-08-04T18:56:06.707Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2432,
+    "employeeId": 3,
+    "workDate": "2025-09-15",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-08-04T18:56:06.707Z",
+    "updatedAt": "2025-08-04T18:56:06.707Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2433,
+    "employeeId": 3,
+    "workDate": "2025-09-16",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-08-04T18:56:06.707Z",
+    "updatedAt": "2025-08-04T18:56:06.707Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2434,
+    "employeeId": 3,
+    "workDate": "2025-09-17",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-08-04T18:56:06.707Z",
+    "updatedAt": "2025-08-04T18:56:06.707Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2435,
+    "employeeId": 3,
+    "workDate": "2025-09-18",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-08-04T18:56:06.707Z",
+    "updatedAt": "2025-08-04T18:56:06.707Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2436,
+    "employeeId": 3,
+    "workDate": "2025-09-21",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-08-04T18:56:06.707Z",
+    "updatedAt": "2025-08-04T18:56:06.707Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2437,
+    "employeeId": 3,
+    "workDate": "2025-09-22",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-08-04T18:56:06.707Z",
+    "updatedAt": "2025-08-04T18:56:06.707Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2438,
+    "employeeId": 3,
+    "workDate": "2025-09-23",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-08-04T18:56:06.707Z",
+    "updatedAt": "2025-08-04T18:56:06.707Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2439,
+    "employeeId": 3,
+    "workDate": "2025-09-24",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-08-04T18:56:06.707Z",
+    "updatedAt": "2025-08-04T18:56:06.707Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2440,
+    "employeeId": 3,
+    "workDate": "2025-09-25",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-08-04T18:56:06.707Z",
+    "updatedAt": "2025-08-04T18:56:06.707Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2441,
+    "employeeId": 3,
+    "workDate": "2025-09-28",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-08-04T18:56:06.707Z",
+    "updatedAt": "2025-08-04T18:56:06.707Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2442,
+    "employeeId": 3,
+    "workDate": "2025-09-29",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-08-04T18:56:06.707Z",
+    "updatedAt": "2025-08-04T18:56:06.707Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  }
+]

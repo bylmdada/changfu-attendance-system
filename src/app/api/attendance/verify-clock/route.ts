@@ -1,0 +1,350 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { prisma } from '@/lib/database';
+import { verifyPassword } from '@/lib/auth';
+import { checkClockRateLimit, recordFailedClockAttempt, clearFailedAttempts, getClientIP } from '@/lib/rate-limit';
+
+// 導入GPS設定
+async function getGPSSettings() {
+  try {
+    const response = await fetch(`${process.env.NEXTAUTH_URL || 'http://localhost:3000'}/api/system-settings/gps-attendance`);
+    if (response.ok) {
+      const data = await response.json();
+      return data.settings;
+    }
+  } catch (error) {
+    console.error('獲取GPS設定失敗:', error);
+  }
+  
+  // 預設設定
+  return {
+    enabled: true,
+    requiredAccuracy: 50,
+    allowOfflineMode: false,
+    requireAddressInfo: true
+  };
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const { username, password, location } = body;
+    // 支援兩種參數名：type (前端快速打卡) 和 clockType (原有系統)
+    const clockType = body.type || body.clockType;
+
+    // 🔒 速率限制檢查
+    const rateLimitResult = await checkClockRateLimit(request, username);
+    if (!rateLimitResult.allowed) {
+      console.log('⚠️ 速率限制拒絕:', username, rateLimitResult.reason);
+      return NextResponse.json(
+        { error: rateLimitResult.reason },
+        { 
+          status: 429,
+          headers: { 'Retry-After': String(rateLimitResult.retryAfter || 60) }
+        }
+      );
+    }
+
+    // ⏰ 打卡時間限制檢查（從資料庫讀取設定）
+    const clockRestriction = await prisma.systemSettings.findUnique({
+      where: { key: 'clock_time_restriction' }
+    });
+    
+    const restrictionSettings = clockRestriction 
+      ? JSON.parse(clockRestriction.value)
+      : { enabled: true, restrictedStartHour: 23, restrictedEndHour: 5, message: '夜間時段暫停打卡服務' };
+    
+    if (restrictionSettings.enabled) {
+      const checkTime = new Date();
+      const currentHour = checkTime.getHours();
+      const startHour = restrictionSettings.restrictedStartHour;
+      const endHour = restrictionSettings.restrictedEndHour;
+      
+      // 判斷是否在限制時段內（處理跨日情況）
+      let isRestrictedTime = false;
+      if (startHour > endHour) {
+        // 跨日情況：如 23:00 - 05:00
+        isRestrictedTime = currentHour >= startHour || currentHour < endHour;
+      } else {
+        // 同日情況：如 02:00 - 06:00
+        isRestrictedTime = currentHour >= startHour && currentHour < endHour;
+      }
+      
+      if (isRestrictedTime) {
+        console.log('⛔ 時段限制拒絕打卡:', username, '時間:', checkTime.toLocaleTimeString('zh-TW'));
+        return NextResponse.json({
+          error: `${restrictionSettings.message}（${String(startHour).padStart(2, '0')}:00-${String(endHour).padStart(2, '0')}:00）`,
+          restrictedUntil: `${String(endHour).padStart(2, '0')}:00`
+        }, { status: 403 });
+      }
+    }
+
+    if (!username || !password || !clockType) {
+      return NextResponse.json({ error: '缺少必要參數' }, { status: 400 });
+    }
+
+    if (!['in', 'out'].includes(clockType)) {
+      return NextResponse.json({ error: '無效的打卡類型' }, { status: 400 });
+    }
+
+    const clientIP = getClientIP(request);
+    console.log('🔐 開始打卡驗證，用戶:', username, '類型:', clockType, 'IP:', clientIP);
+
+    // 獲取GPS設定
+    const gpsSettings = await getGPSSettings();
+
+    // GPS驗證
+    if (gpsSettings.enabled) {
+      if (!location && !gpsSettings.allowOfflineMode) {
+        return NextResponse.json({ 
+          error: 'GPS定位失敗，請確保GPS功能已開啟且允許定位權限' 
+        }, { status: 400 });
+      }
+
+      if (location) {
+        // 檢查GPS精確度
+        if (location.accuracy > gpsSettings.requiredAccuracy) {
+          return NextResponse.json({ 
+            error: `GPS精確度不足（${location.accuracy}m > ${gpsSettings.requiredAccuracy}m），請移動到GPS訊號較好的位置` 
+          }, { status: 400 });
+        }
+
+        // 檢查是否需要地址資訊 - 快速打卡時可以跳過地址檢查
+        if (gpsSettings.requireAddressInfo && !location.address && body.clockType) {
+          // 只有非快速打卡時才要求地址資訊
+          return NextResponse.json({ 
+            error: '無法取得位置地址資訊，請稍後再試' 
+          }, { status: 400 });
+        }
+      }
+    }
+
+    // 查找用戶
+    const user = await prisma.user.findUnique({
+      where: { username },
+      include: { employee: true }
+    });
+
+    if (!user) {
+      console.log('❌ 用戶不存在:', username);
+      recordFailedClockAttempt(username);
+      return NextResponse.json({ error: '帳號或密碼錯誤' }, { status: 401 });
+    }
+
+    // 驗證密碼
+    const isPasswordValid = await verifyPassword(password, user.passwordHash);
+    if (!isPasswordValid) {
+      console.log('❌ 密碼驗證失敗:', username);
+      recordFailedClockAttempt(username);
+      return NextResponse.json({ error: '帳號或密碼錯誤' }, { status: 401 });
+    }
+
+    if (!user.employee) {
+      console.log('❌ 找不到員工資料:', username);
+      return NextResponse.json({ error: '找不到員工資料' }, { status: 404 });
+    }
+
+    console.log('✅ 用戶驗證成功:', username, '員工ID:', user.employee.id);
+    clearFailedAttempts(username);
+
+    // 獲取今日日期和當前時間
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+    const currentTime = now.toISOString();
+
+    if (clockType === 'in') {
+      // 上班打卡
+      // 檢查是否已經打過上班卡
+      const existingAttendance = await prisma.attendanceRecord.findFirst({
+        where: {
+          employeeId: user.employee.id,
+          workDate: {
+            gte: todayStart,
+            lt: todayEnd
+          },
+          clockInTime: { not: null }
+        }
+      });
+
+      if (existingAttendance) {
+        return NextResponse.json({ error: '今日已打過上班卡' }, { status: 400 });
+      }
+
+      // GPS 位置數據 - 已恢復功能
+      const locationData = location ? {
+        clockInLatitude: location.latitude,
+        clockInLongitude: location.longitude,
+        clockInAccuracy: location.accuracy,
+        clockInAddress: location.address || null
+      } : {};
+
+      // 創建或更新考勤記錄
+      const attendance = await prisma.attendanceRecord.upsert({
+        where: {
+          employeeId_workDate: {
+            employeeId: user.employee.id,
+            workDate: todayStart
+          }
+        },
+        update: {
+          clockInTime: currentTime,
+          status: 'PRESENT',
+          ...locationData
+        },
+        create: {
+          employeeId: user.employee.id,
+          workDate: todayStart,
+          clockInTime: currentTime,
+          status: 'PRESENT',
+          ...locationData
+        }
+      });
+
+      console.log('✅ 上班打卡成功:', attendance);
+
+      return NextResponse.json({ 
+        message: `${user.employee.name} 上班打卡成功`,
+        clockInTime: currentTime,
+        employee: user.employee.name,
+        attendance: attendance
+      });
+
+    } else if (clockType === 'out') {
+      // 下班打卡 - 移除「必須先打上班卡」的限制
+      // 查找今日考勤記錄（無論是否有上班打卡）
+      const existingAttendance = await prisma.attendanceRecord.findFirst({
+        where: {
+          employeeId: user.employee.id,
+          workDate: {
+            gte: todayStart,
+            lt: todayEnd
+          }
+        }
+      });
+
+      // 查詢今日班表以判斷是否超時下班
+      const todayStr = now.toISOString().slice(0, 10); // 格式：YYYY-MM-DD
+      const todaySchedule = await prisma.schedule.findFirst({
+        where: {
+          employeeId: user.employee.id,
+          workDate: todayStr
+        }
+      });
+
+      // 判斷是否超過班表下班時間
+      let isLateClockOut = false;
+      if (todaySchedule && todaySchedule.endTime) {
+        const [scheduleEndHour, scheduleEndMin] = todaySchedule.endTime.split(':').map(Number);
+        const clockOutHour = now.getHours();
+        const clockOutMin = now.getMinutes();
+        
+        // 打卡時間超過班表結束時間 = 超時下班
+        if (clockOutHour > scheduleEndHour || 
+            (clockOutHour === scheduleEndHour && clockOutMin > scheduleEndMin)) {
+          isLateClockOut = true;
+        }
+      }
+
+      // 取得前端傳來的超時原因（如果有）
+      const lateClockOutReason = body.lateClockOutReason || null;
+
+      let attendance;
+
+      if (existingAttendance) {
+        // 檢查是否已經打過下班卡
+        if (existingAttendance.clockOutTime) {
+          return NextResponse.json({ error: '今日已打過下班卡' }, { status: 400 });
+        }
+
+        // 計算工作時間（如果有上班打卡時間）
+        let regularHours = 0;
+        const overtimeHours = 0; // 加班時數由申請流程計算，打卡不自動計算
+        let workHours = 0;
+        
+        if (existingAttendance.clockInTime) {
+          const clockInTime = new Date(existingAttendance.clockInTime);
+          const clockOutTime = new Date(currentTime);
+          workHours = (clockOutTime.getTime() - clockInTime.getTime()) / (1000 * 60 * 60);
+          
+          // 全部計為正常工時，加班須透過申請流程
+          regularHours = workHours;
+        }
+
+        // GPS 位置數據 - 已恢復功能
+        const locationData = location ? {
+          clockOutLatitude: location.latitude,
+          clockOutLongitude: location.longitude,
+          clockOutAccuracy: location.accuracy,
+          clockOutAddress: location.address || null
+        } : {};
+
+        // 更新現有記錄
+        attendance = await prisma.attendanceRecord.update({
+          where: { id: existingAttendance.id },
+          data: {
+            clockOutTime: currentTime,
+            regularHours: parseFloat(regularHours.toFixed(2)),
+            overtimeHours: parseFloat(overtimeHours.toFixed(2)),
+            lateClockOutReason: lateClockOutReason,
+            ...locationData
+          }
+        });
+
+        console.log('✅ 下班打卡成功（更新記錄）:', attendance, '超時下班:', isLateClockOut);
+
+        return NextResponse.json({ 
+          message: `${user.employee.name} 下班打卡成功`,
+          clockOutTime: currentTime,
+          workHours: parseFloat(workHours.toFixed(2)),
+          regularHours: parseFloat(regularHours.toFixed(2)),
+          overtimeHours: parseFloat(overtimeHours.toFixed(2)),
+          employee: user.employee.name,
+          attendance: attendance,
+          isLateClockOut: isLateClockOut,
+          scheduleEndTime: todaySchedule?.endTime || null
+        });
+
+      } else {
+        // 如果沒有記錄，創建只有下班打卡的新記錄
+        // GPS 位置數據 - 已恢復功能
+        const locationData = location ? {
+          clockOutLatitude: location.latitude,
+          clockOutLongitude: location.longitude,
+          clockOutAccuracy: location.accuracy,
+          clockOutAddress: location.address || null
+        } : {};
+
+        attendance = await prisma.attendanceRecord.create({
+          data: {
+            employeeId: user.employee.id,
+            workDate: todayStart,
+            clockOutTime: currentTime,
+            status: 'PRESENT',
+            regularHours: 0,
+            overtimeHours: 0,
+            lateClockOutReason: lateClockOutReason,
+            ...locationData
+          }
+        });
+
+        console.log('✅ 下班打卡成功（新建記錄）:', attendance, '超時下班:', isLateClockOut);
+
+        return NextResponse.json({ 
+          message: `${user.employee.name} 下班打卡成功`,
+          clockOutTime: currentTime,
+          workHours: 0,
+          regularHours: 0,
+          overtimeHours: 0,
+          employee: user.employee.name,
+          attendance: attendance,
+          isLateClockOut: isLateClockOut,
+          scheduleEndTime: todaySchedule?.endTime || null
+        });
+      }
+    }
+
+  } catch (error) {
+    console.error('💥 打卡驗證錯誤:', error);
+    return NextResponse.json({ error: '系統錯誤，請稍後再試' }, { status: 500 });
+  }
+}

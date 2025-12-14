@@ -1,0 +1,130 @@
+# Docker Compose for 長福會考勤系統 - 生產版本
+version: '3.8'
+
+services:
+  # 主應用服務
+  attendance-app:
+    build:
+      context: .
+      dockerfile: Dockerfile.optimized
+      target: runner
+    container_name: changfu-attendance
+    restart: unless-stopped
+    
+    ports:
+      - "3001:3001"
+    
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=file:./data/database.db
+      - JWT_SECRET_FILE=/run/secrets/jwt_secret
+      - TZ=Asia/Taipei
+      - NEXT_TELEMETRY_DISABLED=1
+    
+    volumes:
+      # 資料庫持久化
+      - attendance_data:/app/data
+      # 上傳檔案持久化
+      - attendance_uploads:/app/uploads
+      # SSL 證書（如果使用）
+      - ./certs:/app/certs:ro
+    
+    secrets:
+      - jwt_secret
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    
+    depends_on:
+      - nginx
+    
+    networks:
+      - attendance_network
+
+  # Nginx 反向代理
+  nginx:
+    image: nginx:alpine
+    container_name: changfu-nginx
+    restart: unless-stopped
+    
+    ports:
+      - "80:80"
+      - "443:443"
+    
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./certs:/etc/nginx/certs:ro
+      - nginx_logs:/var/log/nginx
+    
+    depends_on:
+      - attendance-app
+    
+    networks:
+      - attendance_network
+
+  # 資料庫備份服務
+  db-backup:
+    image: alpine:latest
+    container_name: changfu-backup
+    restart: "no"
+    
+    volumes:
+      - attendance_data:/data:ro
+      - backup_storage:/backup
+    
+    command: >
+      sh -c "
+        while true; do
+          timestamp=$$(date +%Y%m%d_%H%M%S)
+          cp /data/database.db /backup/database_backup_$$timestamp.db
+          find /backup -name 'database_backup_*.db' -mtime +7 -delete
+          sleep 86400
+        done
+      "
+    
+    networks:
+      - attendance_network
+
+# 網路配置
+networks:
+  attendance_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+# 數據卷配置
+volumes:
+  attendance_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./data/production
+  
+  attendance_uploads:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./uploads/production
+  
+  backup_storage:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./backups
+  
+  nginx_logs:
+    driver: local
+
+# 機密配置
+secrets:
+  jwt_secret:
+    file: ./secrets/jwt_secret.txt
