@@ -38,7 +38,8 @@ export default function AttendanceFreezePage() {
     freezeDate: '',
     targetMonth: '',
     targetYear: '',
-    description: ''
+    description: '',
+    autoCalculatePayroll: false
   });
 
   const initializeData = async () => {
@@ -103,19 +104,23 @@ export default function AttendanceFreezePage() {
           freezeDate: new Date(formData.freezeDate).toISOString(),
           targetMonth: parseInt(formData.targetMonth),
           targetYear: parseInt(formData.targetYear),
-          description: formData.description
+          description: formData.description,
+          autoCalculatePayroll: formData.autoCalculatePayroll
         }
       });
 
       const data = await response.json();
 
       if (response.ok) {
-        setSuccess('凍結設定已成功創建');
+        // 顯示凍結成功訊息和薪資狀態提示
+        const message = data.message || '凍結設定已成功創建';
+        setSuccess(message);
         setFormData({
           freezeDate: '',
           targetMonth: '',
           targetYear: '',
-          description: ''
+          description: '',
+          autoCalculatePayroll: false
         });
         await fetchFreezes();
       } else {
@@ -246,12 +251,31 @@ export default function AttendanceFreezePage() {
               />
             </div>
 
+            {/* 自動計算薪資選項 */}
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+              <label className="flex items-start gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={formData.autoCalculatePayroll}
+                  onChange={(e) => setFormData({ ...formData, autoCalculatePayroll: e.target.checked })}
+                  className="mt-1 h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                />
+                <div>
+                  <span className="font-medium text-blue-900">凍結後自動計算薪資</span>
+                  <p className="text-sm text-blue-700 mt-1">
+                    勾選後，系統將自動為尚未產生薪資的員工計算當月薪資。
+                    若不勾選，需手動前往薪資管理頁面執行。
+                  </p>
+                </div>
+              </label>
+            </div>
+
             <button
               type="submit"
               disabled={submitting}
               className="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
             >
-              {submitting ? '創建中...' : '創建凍結設定'}
+              {submitting ? '處理中...' : formData.autoCalculatePayroll ? '凍結並計算薪資' : '創建凍結設定'}
             </button>
           </form>
         </div>

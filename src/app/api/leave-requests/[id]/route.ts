@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { verifyToken } from '@/lib/auth';
+import { notifyLeaveApproval } from '@/lib/email';
 
 // 窄化型別，避免直接耦合
 interface PrismaWithSchedule {
@@ -91,6 +92,23 @@ export async function PATCH(
             data: { shiftType: 'FDL', startTime: '', endTime: '' }
           });
         }
+      }
+
+      // 發送審核結果通知
+      try {
+        await notifyLeaveApproval({
+          employeeId: existing.employeeId,
+          employeeName: existing.employee.name,
+          employeeEmail: existing.employee.email || undefined,
+          approved: status === 'APPROVED',
+          leaveType: existing.leaveType,
+          startDate: existing.startDate.toISOString().split('T')[0],
+          endDate: existing.endDate.toISOString().split('T')[0],
+          reason: body.rejectionReason,
+        });
+      } catch (notifyError) {
+        console.error('發送通知失敗:', notifyError);
+        // 不阻止審核完成
       }
 
       return NextResponse.json({

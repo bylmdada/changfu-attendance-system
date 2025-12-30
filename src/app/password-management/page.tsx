@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Key, Eye, EyeOff, Shield, Users, Lock } from 'lucide-react';
+import { Key, Eye, EyeOff, Shield, Users, Lock, X } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 
@@ -96,6 +96,7 @@ export default function PasswordManagement() {
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   
   // 部門列表
@@ -842,7 +843,15 @@ export default function PasswordManagement() {
         {showResetModal && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
             <div className="bg-white rounded-lg shadow-lg max-w-md w-full p-6">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">重置用戶密碼</h3>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-gray-900">重置用戶密碼</h3>
+                <button
+                  onClick={() => setShowResetModal(false)}
+                  className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                >
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
               
               <form onSubmit={handleResetPassword} className="space-y-4">
                 <div>
@@ -934,7 +943,18 @@ export default function PasswordManagement() {
         {showBatchResetModal && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
             <div className="bg-white rounded-lg shadow-lg max-w-md w-full p-6">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">批量重置密碼 ({selectedIds.size} 人)</h3>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-gray-900">批量重置密碼 ({selectedIds.size} 人)</h3>
+                <button
+                  onClick={() => {
+                    setShowBatchResetModal(false);
+                    setBatchResetPassword('');
+                  }}
+                  className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                >
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
               
               <div className="space-y-4">
                 <div>

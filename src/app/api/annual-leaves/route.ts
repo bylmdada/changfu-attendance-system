@@ -115,18 +115,23 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '員工ID、年份和服務年資為必填' }, { status: 400 });
     }
 
-    // 計算年假天數（根據服務年資）
+    // 計算年假天數（依據勞動基準法第38條）
     let totalDays = 0;
-    if (yearsOfService < 1) {
-      totalDays = 0;
+    if (yearsOfService < 0.5) {
+      totalDays = 0;         // 未滿6個月
+    } else if (yearsOfService < 1) {
+      totalDays = 3;         // 6個月以上未滿1年
+    } else if (yearsOfService < 2) {
+      totalDays = 7;         // 1年以上未滿2年
     } else if (yearsOfService < 3) {
-      totalDays = 7;
+      totalDays = 10;        // 2年以上未滿3年
     } else if (yearsOfService < 5) {
-      totalDays = 10;
+      totalDays = 14;        // 3年以上未滿5年
     } else if (yearsOfService < 10) {
-      totalDays = 14;
+      totalDays = 15;        // 5年以上未滿10年
     } else {
-      totalDays = Math.min(30, 14 + Math.floor((yearsOfService - 10) / 2));
+      // 10年以上：15天 + 每滿1年加1天，最高30天
+      totalDays = Math.min(30, 15 + Math.floor(yearsOfService - 10) + 1);
     }
 
     // 計算到期日（隔年12月31日）

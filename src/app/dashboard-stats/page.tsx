@@ -4,8 +4,9 @@ import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { 
   BarChart3, Users, Clock, Calendar, TrendingUp, 
-  AlertCircle, CheckCircle, XCircle, ArrowLeft, RefreshCw
+  AlertCircle, CheckCircle, XCircle, RefreshCw
 } from 'lucide-react';
+import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 
 interface DashboardStats {
   period: { year: number; month: number; workDays: number };
@@ -110,31 +111,23 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* 頂部導航 */}
-      <header className="bg-white shadow-sm border-b">
-        <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
-          <div className="flex items-center space-x-4">
-            <button
-              onClick={() => router.push('/dashboard')}
-              className="p-2 hover:bg-gray-100 rounded-lg"
-            >
-              <ArrowLeft className="w-5 h-5" />
-            </button>
-            <div>
-              <h1 className="text-xl font-bold text-gray-900 flex items-center gap-2">
-                <BarChart3 className="w-6 h-6 text-blue-600" />
-                管理儀表板
-              </h1>
-              <p className="text-sm text-gray-500">出勤率、加班統計、假期使用總覽</p>
-            </div>
+    <AuthenticatedLayout>
+      <div className="max-w-7xl mx-auto px-4 py-6">
+        {/* 頁面標題和控制 */}
+        <div className="mb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
+              <BarChart3 className="w-7 h-7 text-blue-600" />
+              管理儀表板
+            </h1>
+            <p className="text-sm text-gray-600 mt-1">出勤率、加班統計、假期使用總覽</p>
           </div>
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3">
             <input
               type="month"
               value={selectedMonth}
               onChange={(e) => setSelectedMonth(e.target.value)}
-              className="px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+              className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900"
             />
             <button
               onClick={fetchStats}
@@ -145,10 +138,7 @@ export default function DashboardPage() {
             </button>
           </div>
         </div>
-      </header>
 
-      {/* 主內容 */}
-      <main className="max-w-7xl mx-auto px-4 py-6">
         {error && (
           <div className="mb-6 p-4 bg-red-50 text-red-700 rounded-lg border border-red-200">
             {error}
@@ -319,7 +309,7 @@ export default function DashboardPage() {
             </div>
           </>
         )}
-      </main>
-    </div>
+      </div>
+    </AuthenticatedLayout>
   );
 }

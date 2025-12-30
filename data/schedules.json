@@ -2842,5 +2842,401 @@
       "department": "人事部",
       "position": "人事專員"
     }
+  },
+  {
+    "id": 2443,
+    "employeeId": 3,
+    "workDate": "2025-12-31",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-12-29T15:34:57.308Z",
+    "updatedAt": "2025-12-29T15:34:57.308Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2444,
+    "employeeId": 3,
+    "workDate": "2026-01-01",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-12-29T15:34:57.308Z",
+    "updatedAt": "2025-12-29T15:34:57.308Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2445,
+    "employeeId": 3,
+    "workDate": "2026-01-04",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-12-29T15:34:57.308Z",
+    "updatedAt": "2025-12-29T15:34:57.308Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2446,
+    "employeeId": 3,
+    "workDate": "2026-01-05",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-12-29T15:34:57.308Z",
+    "updatedAt": "2025-12-29T15:34:57.308Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2447,
+    "employeeId": 3,
+    "workDate": "2026-01-06",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-12-29T15:34:57.308Z",
+    "updatedAt": "2025-12-29T15:34:57.308Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2448,
+    "employeeId": 3,
+    "workDate": "2026-01-07",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-12-29T15:34:57.308Z",
+    "updatedAt": "2025-12-29T15:34:57.308Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2449,
+    "employeeId": 3,
+    "workDate": "2026-01-08",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-12-29T15:34:57.308Z",
+    "updatedAt": "2025-12-29T15:34:57.308Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2450,
+    "employeeId": 3,
+    "workDate": "2026-01-11",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-12-29T15:34:57.308Z",
+    "updatedAt": "2025-12-29T15:34:57.308Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2451,
+    "employeeId": 3,
+    "workDate": "2026-01-12",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-12-29T15:34:57.308Z",
+    "updatedAt": "2025-12-29T15:34:57.308Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2452,
+    "employeeId": 3,
+    "workDate": "2026-01-13",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-12-29T15:34:57.309Z",
+    "updatedAt": "2025-12-29T15:34:57.309Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2453,
+    "employeeId": 3,
+    "workDate": "2026-01-14",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-12-29T15:34:57.309Z",
+    "updatedAt": "2025-12-29T15:34:57.309Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2454,
+    "employeeId": 3,
+    "workDate": "2026-01-15",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-12-29T15:34:57.309Z",
+    "updatedAt": "2025-12-29T15:34:57.309Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2455,
+    "employeeId": 3,
+    "workDate": "2026-01-18",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-12-29T15:34:57.309Z",
+    "updatedAt": "2025-12-29T15:34:57.309Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2456,
+    "employeeId": 3,
+    "workDate": "2026-01-19",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-12-29T15:34:57.309Z",
+    "updatedAt": "2025-12-29T15:34:57.309Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2457,
+    "employeeId": 3,
+    "workDate": "2026-01-20",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-12-29T15:34:57.309Z",
+    "updatedAt": "2025-12-29T15:34:57.309Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2458,
+    "employeeId": 3,
+    "workDate": "2026-01-21",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-12-29T15:34:57.309Z",
+    "updatedAt": "2025-12-29T15:34:57.309Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2459,
+    "employeeId": 3,
+    "workDate": "2026-01-22",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-12-29T15:34:57.309Z",
+    "updatedAt": "2025-12-29T15:34:57.309Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2460,
+    "employeeId": 3,
+    "workDate": "2026-01-25",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-12-29T15:34:57.309Z",
+    "updatedAt": "2025-12-29T15:34:57.309Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2461,
+    "employeeId": 3,
+    "workDate": "2026-01-26",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-12-29T15:34:57.309Z",
+    "updatedAt": "2025-12-29T15:34:57.309Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2462,
+    "employeeId": 3,
+    "workDate": "2026-01-27",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-12-29T15:34:57.309Z",
+    "updatedAt": "2025-12-29T15:34:57.309Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2463,
+    "employeeId": 3,
+    "workDate": "2026-01-28",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-12-29T15:34:57.309Z",
+    "updatedAt": "2025-12-29T15:34:57.309Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
+  },
+  {
+    "id": 2464,
+    "employeeId": 3,
+    "workDate": "2026-01-29",
+    "shiftType": "A",
+    "startTime": "07:30",
+    "endTime": "16:30",
+    "breakTime": 60,
+    "createdAt": "2025-12-29T15:34:57.309Z",
+    "updatedAt": "2025-12-29T15:34:57.309Z",
+    "employee": {
+      "id": 3,
+      "employeeId": "EMP003",
+      "name": "王五",
+      "department": "人事部",
+      "position": "人事專員"
+    }
   }
 ]

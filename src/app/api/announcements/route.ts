@@ -7,6 +7,8 @@ import { join } from 'path';
 import { Prisma } from '@prisma/client';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { sendNotification } from '@/lib/realtime-notifications';
+import { createApprovalForRequest } from '@/lib/approval-helper';
 
 // Minimal interfaces to avoid explicit any while Prisma client types are pending
 interface AttachmentLite { id: number; fileName: string; originalName: string; fileSize: number; mimeType: string }
@@ -16,10 +18,12 @@ interface AnnouncementLite {
   title: string;
   content: string;
   priority: 'HIGH' | 'NORMAL' | 'LOW';
+  category: 'PERSONNEL' | 'POLICY' | 'EVENT' | 'SYSTEM' | 'BENEFITS' | 'URGENT' | 'GENERAL';
   publisherId: number;
   isPublished: boolean;
   publishedAt: string | null;
   expiryDate: string | null;
+  scheduledPublishAt: string | null;
   createdAt: string;
   updatedAt: string;
   publisher?: PublisherLite;
@@ -67,6 +71,7 @@ export async function GET(request: NextRequest) {
 
     const { searchParams } = new URL(request.url);
     const priority = searchParams.get('priority'); // HIGH | NORMAL | LOW | null
+    const category = searchParams.get('category'); // PERSONNEL | POLICY | EVENT | SYSTEM | BENEFITS | URGENT | GENERAL | null
     const published = searchParams.get('published'); // 'true' | 'false' | null
 
     // 基本 where 條件
@@ -74,6 +79,10 @@ export async function GET(request: NextRequest) {
 
     if (priority && ['HIGH', 'NORMAL', 'LOW'].includes(priority)) {
       where.priority = priority;
+    }
+
+    if (category && ['PERSONNEL', 'POLICY', 'EVENT', 'SYSTEM', 'BENEFITS', 'URGENT', 'GENERAL'].includes(category)) {
+      where.category = category;
     }
 
     // 員工只能看到已發布且未過期的公告
@@ -131,21 +140,25 @@ export async function POST(request: NextRequest) {
     if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
-    if (user.role !== 'ADMIN' && user.role !== 'HR') {
-      return NextResponse.json({ error: '權限不足' }, { status: 403 });
-    }
+    
+    // 判斷是否可直接發布（ADMIN/HR 可直接發布，其他人需審核）
+    const canDirectPublish = user.role === 'ADMIN' || user.role === 'HR';
 
     // 解析表單（前端以 FormData 傳送）
     const form = await request.formData();
     const title = String(form.get('title') || '').trim();
     const content = String(form.get('content') || '').trim();
     const priorityRaw = String(form.get('priority') || 'NORMAL').toUpperCase();
+    const categoryRaw = String(form.get('category') || 'GENERAL').toUpperCase();
     const isPublished = String(form.get('isPublished') || 'false') === 'true';
     const expiryDateStr = form.get('expiryDate') ? String(form.get('expiryDate')) : '';
     
     // 新增：部門相關字段解析
     const isGlobalAnnouncement = String(form.get('isGlobalAnnouncement') || 'true') === 'true';
     const targetDepartmentsStr = form.get('targetDepartments') ? String(form.get('targetDepartments')) : null;
+    
+    // 新增：定時發布
+    const scheduledPublishAtStr = form.get('scheduledPublishAt') ? String(form.get('scheduledPublishAt')) : null;
 
     if (!title || !content) {
       return NextResponse.json({ success: false, error: '標題和內容為必填項目' }, { status: 400 });
@@ -157,9 +170,13 @@ export async function POST(request: NextRequest) {
     }
 
     const priority = ['HIGH', 'NORMAL', 'LOW'].includes(priorityRaw) ? priorityRaw as 'HIGH' | 'NORMAL' | 'LOW' : 'NORMAL';
+    const category = ['PERSONNEL', 'POLICY', 'EVENT', 'SYSTEM', 'BENEFITS', 'URGENT', 'GENERAL'].includes(categoryRaw) 
+      ? categoryRaw as 'PERSONNEL' | 'POLICY' | 'EVENT' | 'SYSTEM' | 'BENEFITS' | 'URGENT' | 'GENERAL' 
+      : 'GENERAL';
 
     const now = new Date();
     const expiryDate = expiryDateStr ? new Date(expiryDateStr) : null;
+    const scheduledPublishAt = scheduledPublishAtStr ? new Date(scheduledPublishAtStr) : null;
 
     // If Prisma client isn't generated with Announcement yet, short-circuit in demo mode
     const anyPrisma = prisma as unknown as { announcement?: { create?: (args: unknown) => Promise<unknown> } };
@@ -171,16 +188,23 @@ export async function POST(request: NextRequest) {
     const announcementModel = Prisma.dmmf.datamodel.models.find(m => m.name === 'Announcement');
     const fieldSet = new Set((announcementModel?.fields ?? []).map(f => f.name));
 
+    // 非 ADMIN/HR 用戶的公告強制設為未發布（需審核）
+    const finalIsPublished = canDirectPublish ? (scheduledPublishAt ? false : isPublished) : false;
+    
     const baseData = {
       title,
       content,
       priority,
-      isPublished,
-      publishedAt: isPublished ? now : null,
+      category,
+      isPublished: finalIsPublished,
+      publishedAt: finalIsPublished ? now : null,
       expiryDate,
+      scheduledPublishAt: canDirectPublish ? scheduledPublishAt : null, // 員工不支持定時發布
       // 新增：部門相關字段
       isGlobalAnnouncement,
-      targetDepartments: isGlobalAnnouncement ? null : targetDepartmentsStr
+      targetDepartments: isGlobalAnnouncement ? null : targetDepartmentsStr,
+      // 新增：審核狀態
+      status: canDirectPublish ? 'APPROVED' : 'PENDING_APPROVAL'
     } as const;
 
     let createData:
@@ -203,6 +227,46 @@ export async function POST(request: NextRequest) {
       data: createData,
     });
 
+    // 如果不是立即發布或需要審核（非 ADMIN/HR），建立審核實例
+    if (!canDirectPublish || (!finalIsPublished && canDirectPublish)) {
+      // 取得發布者資訊
+      const publisher = await prisma.employee.findUnique({
+        where: { id: user.employeeId },
+        select: { id: true, name: true, department: true }
+      });
+      
+      await createApprovalForRequest({
+        requestType: 'ANNOUNCEMENT',
+        requestId: created.id,
+        applicantId: user.employeeId,
+        applicantName: publisher?.name || user.username,
+        department: publisher?.department || null
+      });
+    }
+
+    // 如果是緊急通知或高優先級且直接發布（ADMIN/HR），發送即時通知
+    if (finalIsPublished && canDirectPublish && (category === 'URGENT' || priority === 'HIGH')) {
+      try {
+        await sendNotification({
+          type: 'ANNOUNCEMENT',
+          priority: category === 'URGENT' ? 'URGENT' : 'HIGH',
+          channels: ['WEB', 'IN_APP'],
+          title: category === 'URGENT' ? '🚨 緊急通知' : '📢 重要公告',
+          message: title,
+          data: { 
+            announcementId: created.id,
+            category,
+            priority
+          },
+          createdBy: user.username
+        });
+        console.log(`📢 已發送公告通知: ${title}`);
+      } catch (notifError) {
+        console.error('發送公告通知失敗:', notifError);
+        // 不影響公告創建成功的回應
+      }
+    }
+
     // 儲存附件（若有）
     const uploadDir = join(process.cwd(), 'uploads', 'announcements');
     if (!existsSync(uploadDir)) {
@@ -211,6 +275,31 @@ export async function POST(request: NextRequest) {
 
     const attachments = form.getAll('attachments');
     const createdAttachments: AttachmentLite[] = [];
+
+    // 驗證附件大小和類型
+    const uploadFiles: File[] = [];
+    for (const item of attachments) {
+      if (typeof item === 'string') continue;
+      const file = item as File;
+      if (file && file.name) {
+        uploadFiles.push(file);
+      }
+    }
+
+    if (uploadFiles.length > 0) {
+      const { validateFiles, FILE_SIZE_LIMITS, ALLOWED_MIME_TYPES, ALLOWED_EXTENSIONS } = await import('@/lib/upload-validation');
+      const validation = validateFiles(uploadFiles, {
+        maxSize: FILE_SIZE_LIMITS.ATTACHMENT,
+        maxTotalSize: FILE_SIZE_LIMITS.TOTAL_UPLOAD,
+        allowedMimeTypes: ALLOWED_MIME_TYPES.ALL,
+        allowedExtensions: ALLOWED_EXTENSIONS.ALL
+      });
+      
+      if (!validation.valid) {
+        return NextResponse.json({ success: false, error: validation.error }, { status: 400 });
+      }
+    }
+
 
     for (const item of attachments) {
       if (typeof item === 'string') continue; // 跳過非檔案
@@ -248,7 +337,10 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      message: '公告新增成功',
+      message: canDirectPublish 
+        ? (finalIsPublished ? '公告已發布' : '公告已儲存，將於指定時間發布')
+        : '公告已提交，待審核通過後發布',
+      needsApproval: !canDirectPublish,
       announcement: {
         ...created,
         attachments: createdAttachments

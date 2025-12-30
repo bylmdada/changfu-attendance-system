@@ -1,13 +1,16 @@
 'use client';
 
+import React from 'react';
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { 
-  ArrowLeft, Plus, ShoppingCart, Check, X, Trash2, Clock, 
-  CheckCircle, XCircle, Eye, Search, Download 
+  Plus, ShoppingCart, Check, X, Trash2, Clock, 
+  CheckCircle, XCircle, Eye, Search, Download, ChevronDown, ChevronUp 
 } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import ApprovalProgress, { ApprovalReviewRecord } from '@/components/ApprovalProgress';
+
 
 interface Employee {
   id: number;
@@ -23,6 +26,7 @@ interface PurchaseRequest {
   employeeId: number;
   department: string;
   title: string;
+  category: string;
   items: string;
   totalAmount: number;
   reason: string;
@@ -77,12 +81,75 @@ const UNIT_OPTIONS = [
   'kg', 'g', 'L', 'ml', 'm', 'cm'
 ];
 
+// 類別選項（針對長照機構）
+const CATEGORY_OPTIONS = [
+  { value: 'MEDICAL', label: '醫療耗材', icon: '🏥' },
+  { value: 'CARE_SUPPLIES', label: '照護用品', icon: '💊' },
+  { value: 'OFFICE', label: '辦公文具', icon: '📎' },
+  { value: 'IT_EQUIPMENT', label: '資訊設備', icon: '💻' },
+  { value: 'FURNITURE', label: '家具設備', icon: '🛋️' },
+  { value: 'CLEANING', label: '清潔用品', icon: '🧹' },
+  { value: 'FOOD', label: '食品飲料', icon: '🍱' },
+  { value: 'KITCHEN', label: '廚房用品', icon: '🍳' },
+  { value: 'MAINTENANCE', label: '維修保養', icon: '🔧' },
+  { value: 'UNIFORM', label: '制服服裝', icon: '👔' },
+  { value: 'ACTIVITY', label: '活動用品', icon: '🎉' },
+  { value: 'OTHER', label: '其他', icon: '📦' }
+];
+
+const CATEGORY_LABELS: Record<string, string> = {
+  MEDICAL: '醫療耗材',
+  CARE_SUPPLIES: '照護用品',
+  OFFICE: '辦公文具',
+  IT_EQUIPMENT: '資訊設備',
+  FURNITURE: '家具設備',
+  CLEANING: '清潔用品',
+  FOOD: '食品飲料',
+  KITCHEN: '廚房用品',
+  MAINTENANCE: '維修保養',
+  UNIFORM: '制服服裝',
+  ACTIVITY: '活動用品',
+  OTHER: '其他'
+};
+
+const CATEGORY_COLORS: Record<string, string> = {
+  MEDICAL: 'bg-red-100 text-red-700 border-red-300',
+  CARE_SUPPLIES: 'bg-pink-100 text-pink-700 border-pink-300',
+  OFFICE: 'bg-blue-100 text-blue-700 border-blue-300',
+  IT_EQUIPMENT: 'bg-indigo-100 text-indigo-700 border-indigo-300',
+  FURNITURE: 'bg-amber-100 text-amber-700 border-amber-300',
+  CLEANING: 'bg-cyan-100 text-cyan-700 border-cyan-300',
+  FOOD: 'bg-orange-100 text-orange-700 border-orange-300',
+  KITCHEN: 'bg-yellow-100 text-yellow-700 border-yellow-300',
+  MAINTENANCE: 'bg-gray-100 text-gray-700 border-gray-300',
+  UNIFORM: 'bg-purple-100 text-purple-700 border-purple-300',
+  ACTIVITY: 'bg-green-100 text-green-700 border-green-300',
+  OTHER: 'bg-slate-100 text-slate-700 border-slate-300'
+};
+
+const CATEGORY_ICONS: Record<string, string> = {
+  MEDICAL: '🏥',
+  CARE_SUPPLIES: '💊',
+  OFFICE: '📎',
+  IT_EQUIPMENT: '💻',
+  FURNITURE: '🛋️',
+  CLEANING: '🧹',
+  FOOD: '🍱',
+  KITCHEN: '🍳',
+  MAINTENANCE: '🔧',
+  UNIFORM: '👔',
+  ACTIVITY: '🎉',
+  OTHER: '📦'
+};
+
 export default function PurchaseRequestsPage() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [requests, setRequests] = useState<PurchaseRequest[]>([]);
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
+  const [departmentFilter, setDepartmentFilter] = useState<string>('ALL');
+  const [categoryFilter, setCategoryFilter] = useState<string>('ALL');
   const [showNewForm, setShowNewForm] = useState(false);
   const [showDetailModal, setShowDetailModal] = useState(false);
   const [selectedRequest, setSelectedRequest] = useState<PurchaseRequest | null>(null);
@@ -91,6 +158,7 @@ export default function PurchaseRequestsPage() {
   // 新增表單
   const [newRequest, setNewRequest] = useState({
     title: '',
+    category: 'OTHER',
     items: [{ name: '', quantity: 1, unit: '個', price: 0, note: '' }],
     reason: '',
     priority: 'NORMAL' as 'LOW' | 'NORMAL' | 'HIGH' | 'URGENT'
@@ -107,6 +175,15 @@ export default function PurchaseRequestsPage() {
   // 排序狀態
   const [sortConfig, setSortConfig] = useState<{ field: 'date' | 'status' | 'amount' | 'priority'; direction: 'asc' | 'desc' }>({ field: 'date', direction: 'desc' });
 
+  // 展開審核進度
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [approvalData, setApprovalData] = useState<{
+    currentLevel: number;
+    maxLevel: number;
+    status: string;
+    reviews: ApprovalReviewRecord[];
+  } | null>(null);
+
   // Toast 顯示函數
   const showToast = (type: 'success' | 'error', message: string) => {
     setToast({ type, message });
@@ -122,7 +199,12 @@ export default function PurchaseRequestsPage() {
   };
 
   // 排序後的記錄
-  const sortedRequests = [...requests].sort((a, b) => {
+  const sortedRequests = [...requests]
+    // 部門篩選
+    .filter(r => departmentFilter === 'ALL' || r.department === departmentFilter)
+    // 類別篩選
+    .filter(r => categoryFilter === 'ALL' || r.category === categoryFilter)
+    .sort((a, b) => {
     const direction = sortConfig.direction === 'asc' ? 1 : -1;
     switch (sortConfig.field) {
       case 'date':
@@ -139,12 +221,16 @@ export default function PurchaseRequestsPage() {
     }
   });
 
+  // 取得所有部門列表
+  const departments = [...new Set(requests.map(r => r.department))].filter(Boolean).sort();
+
   // 匹出 CSV
   const exportToCSV = () => {
-    const headers = ['單號', '主旨', '申請人', '部門', '金額', '優先級', '狀態', '建立日期'];
+    const headers = ['單號', '主旨', '類別', '申請人', '部門', '金額', '優先級', '狀態', '建立日期'];
     const rows = sortedRequests.map(r => [
       r.requestNumber,
       r.title,
+      CATEGORY_LABELS[r.category] || '其他',
       r.employee.name,
       r.department,
       r.totalAmount,
@@ -222,6 +308,7 @@ export default function PurchaseRequestsPage() {
         method: 'POST',
         body: {
           title: newRequest.title,
+          category: newRequest.category,
           items: JSON.stringify(validItems),
           totalAmount,
           reason: newRequest.reason,
@@ -234,6 +321,7 @@ export default function PurchaseRequestsPage() {
         setShowNewForm(false);
         setNewRequest({
           title: '',
+          category: 'OTHER',
           items: [{ name: '', quantity: 1, unit: '個', price: 0, note: '' }],
           reason: '',
           priority: 'NORMAL'
@@ -348,6 +436,36 @@ export default function PurchaseRequestsPage() {
     }
   };
 
+  // 展開/收合審核進度並取得真實資料
+  const handleToggleApproval = async (requestId: number) => {
+    if (expandedId === requestId) {
+      setExpandedId(null);
+      setApprovalData(null);
+      return;
+    }
+    
+    setExpandedId(requestId);
+    setApprovalData(null);
+    
+    try {
+      const response = await fetch(`/api/approval-reviews?requestType=PURCHASE&requestId=${requestId}`, {
+        credentials: 'include'
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        setApprovalData({
+          currentLevel: data.currentLevel,
+          maxLevel: data.maxLevel,
+          status: data.status,
+          reviews: data.reviews
+        });
+      }
+    } catch (error) {
+      console.error('取得審核歷程失敗:', error);
+    }
+  };
+
   const formatDate = (dateStr: string) => {
     return new Date(dateStr).toLocaleDateString('zh-TW', {
       year: 'numeric',
@@ -385,52 +503,159 @@ export default function PurchaseRequestsPage() {
             <div className="flex items-center">
               <ShoppingCart className="w-8 h-8 text-blue-600 mr-3" />
               <div>
-                <h1 className="text-2xl font-bold text-gray-900">請購單管理</h1>
+                <h1 className="text-2xl font-bold text-gray-900">請購管理</h1>
                 <p className="text-gray-600 text-sm">申請採買項目，等待管理審核</p>
               </div>
             </div>
-            <button
-              onClick={() => setShowNewForm(true)}
-              className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-            >
-              <Plus className="w-5 h-5 mr-2" />
-              新增請購單
-            </button>
-            <button
-              onClick={exportToCSV}
-              className="flex items-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
-            >
-              <Download className="w-5 h-5 mr-2" />
-              匯出 CSV
-            </button>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setShowNewForm(true)}
+                className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+              >
+                <Plus className="w-5 h-5 mr-2" />
+                新增請購
+              </button>
+              <button
+                onClick={exportToCSV}
+                className="flex items-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
+              >
+                <Download className="w-5 h-5 mr-2" />
+                匯出 CSV
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* 統計卡片 */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+          <div className="bg-white p-4 rounded-lg shadow border-l-4 border-blue-500">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-gray-600">總請購金額</p>
+                <p className="text-2xl font-bold text-blue-600">
+                  ${requests.reduce((sum, r) => sum + r.totalAmount, 0).toLocaleString()}
+                </p>
+              </div>
+              <ShoppingCart className="w-10 h-10 text-blue-200" />
+            </div>
+          </div>
+          
+          <div className="bg-white p-4 rounded-lg shadow border-l-4 border-yellow-500">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-gray-600">待審核金額</p>
+                <p className="text-2xl font-bold text-yellow-600">
+                  ${requests.filter(r => r.status === 'PENDING').reduce((sum, r) => sum + r.totalAmount, 0).toLocaleString()}
+                </p>
+              </div>
+              <Clock className="w-10 h-10 text-yellow-200" />
+            </div>
+            <p className="text-xs text-gray-500 mt-1">
+              {requests.filter(r => r.status === 'PENDING').length} 筆待審核
+            </p>
+          </div>
+          
+          <div className="bg-white p-4 rounded-lg shadow border-l-4 border-green-500">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-gray-600">已核准金額</p>
+                <p className="text-2xl font-bold text-green-600">
+                  ${requests.filter(r => r.status === 'APPROVED').reduce((sum, r) => sum + r.totalAmount, 0).toLocaleString()}
+                </p>
+              </div>
+              <CheckCircle className="w-10 h-10 text-green-200" />
+            </div>
+            <p className="text-xs text-gray-500 mt-1">
+              {requests.filter(r => r.status === 'APPROVED').length} 筆已核准
+            </p>
+          </div>
+          
+          <div className="bg-white p-4 rounded-lg shadow border-l-4 border-purple-500">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-gray-600">最多請購類別</p>
+                {(() => {
+                  const categoryCounts = requests.reduce((acc, r) => {
+                    acc[r.category] = (acc[r.category] || 0) + 1;
+                    return acc;
+                  }, {} as Record<string, number>);
+                  const topCategory = Object.entries(categoryCounts).sort((a, b) => b[1] - a[1])[0];
+                  return topCategory ? (
+                    <p className="text-lg font-bold text-purple-600">
+                      {CATEGORY_ICONS[topCategory[0]] || '📦'} {CATEGORY_LABELS[topCategory[0]] || '其他'}
+                    </p>
+                  ) : (
+                    <p className="text-lg font-bold text-purple-600">-</p>
+                  );
+                })()}
+              </div>
+              <div className="text-2xl">📊</div>
+            </div>
+            <p className="text-xs text-gray-500 mt-1">
+              共 {Object.keys(requests.reduce((acc, r) => { acc[r.category] = true; return acc; }, {} as Record<string, boolean>)).length} 種類別
+            </p>
           </div>
         </div>
 
         {/* 狀態篩選 */}
         <div className="bg-white rounded-lg shadow mb-6 p-4">
-          <div className="flex space-x-2">
-            {[
-              { key: 'ALL', label: '全部', icon: Search },
-              { key: 'PENDING', label: '待審核', icon: Clock },
-              { key: 'APPROVED', label: '已核准', icon: CheckCircle },
-              { key: 'REJECTED', label: '已駁回', icon: XCircle }
-            ].map(({ key, label, icon: Icon }) => (
-              <button
-                key={key}
-                onClick={() => setStatusFilter(key)}
-                className={`flex items-center px-4 py-2 rounded-lg transition-colors ${
-                  statusFilter === key
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                }`}
+          <div className="flex flex-wrap items-center gap-4">
+            <div className="flex space-x-2">
+              {[
+                { key: 'ALL', label: '全部', icon: Search },
+                { key: 'PENDING', label: '待審核', icon: Clock },
+                { key: 'APPROVED', label: '已核准', icon: CheckCircle },
+                { key: 'REJECTED', label: '已駁回', icon: XCircle }
+              ].map(({ key, label, icon: Icon }) => (
+                <button
+                  key={key}
+                  onClick={() => setStatusFilter(key)}
+                  className={`flex items-center px-4 py-2 rounded-lg transition-colors ${
+                    statusFilter === key
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                >
+                  <Icon className="w-4 h-4 mr-2" />
+                  {label}
+                  <span className="ml-2 px-2 py-0.5 text-xs rounded-full bg-white/20">
+                    {statusCounts[key as keyof typeof statusCounts]}
+                  </span>
+                </button>
+              ))}
+            </div>
+            
+            {/* 管理員部門篩選 */}
+            {isAdmin && departments.length > 0 && (
+              <div className="flex items-center gap-2 ml-auto">
+                <span className="text-sm text-gray-600">部門：</span>
+                <select
+                  value={departmentFilter}
+                  onChange={(e) => setDepartmentFilter(e.target.value)}
+                  className="px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900 focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="ALL">全部部門</option>
+                  {departments.map(dept => (
+                    <option key={dept} value={dept}>{dept}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+            
+            {/* 類別篩選 */}
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-gray-600">類別：</span>
+              <select
+                value={categoryFilter}
+                onChange={(e) => setCategoryFilter(e.target.value)}
+                className="px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900 focus:ring-2 focus:ring-blue-500"
               >
-                <Icon className="w-4 h-4 mr-2" />
-                {label}
-                <span className="ml-2 px-2 py-0.5 text-xs rounded-full bg-white/20">
-                  {statusCounts[key as keyof typeof statusCounts]}
-                </span>
-              </button>
-            ))}
+                <option value="ALL">全部類別</option>
+                {CATEGORY_OPTIONS.map(cat => (
+                  <option key={cat.value} value={cat.value}>{cat.icon} {cat.label}</option>
+                ))}
+              </select>
+            </div>
           </div>
         </div>
 
@@ -448,6 +673,7 @@ export default function PurchaseRequestsPage() {
                   <th className="px-6 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">單號</th>
                   <th className="px-6 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">申請人</th>
                   <th className="px-6 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">主旨</th>
+                  <th className="px-6 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">類別</th>
                   <th className="px-6 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('amount')}>金額 {sortConfig.field === 'amount' && (sortConfig.direction === 'asc' ? '↑' : '↓')}</th>
                   <th className="px-6 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('priority')}>優先 {sortConfig.field === 'priority' && (sortConfig.direction === 'asc' ? '↑' : '↓')}</th>
                   <th className="px-6 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('status')}>狀態 {sortConfig.field === 'status' && (sortConfig.direction === 'asc' ? '↑' : '↓')}</th>
@@ -457,7 +683,8 @@ export default function PurchaseRequestsPage() {
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
                 {sortedRequests.map((req) => (
-                  <tr key={req.id} className="hover:bg-gray-50">
+                  <React.Fragment key={req.id}>
+                  <tr className="hover:bg-gray-50">
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-blue-600">
                       {req.requestNumber}
                     </td>
@@ -467,6 +694,11 @@ export default function PurchaseRequestsPage() {
                     </td>
                     <td className="px-6 py-4 text-sm text-gray-900 max-w-xs truncate">
                       {req.title}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <span className={`px-2 py-1 text-xs rounded-full border ${CATEGORY_COLORS[req.category] || CATEGORY_COLORS.OTHER}`}>
+                        {CATEGORY_ICONS[req.category] || '📦'} {CATEGORY_LABELS[req.category] || '其他'}
+                      </span>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 font-medium">
                       ${req.totalAmount.toLocaleString()}
@@ -520,9 +752,37 @@ export default function PurchaseRequestsPage() {
                             )}
                           </>
                         )}
+                        {/* 查看審核進度按鈕 */}
+                        <button
+                          onClick={() => handleToggleApproval(req.id)}
+                          className="inline-flex items-center gap-1 text-gray-600 hover:text-blue-600"
+                          title="查看審核進度"
+                        >
+                          {expandedId === req.id ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                        </button>
                       </div>
                     </td>
                   </tr>
+                  {/* 展開的審核進度區域 */}
+                  {expandedId === req.id && (
+                    <tr>
+                      <td colSpan={9} className="px-6 py-4 bg-gray-50">
+                        {approvalData ? (
+                          <ApprovalProgress
+                            currentLevel={approvalData.currentLevel}
+                            maxLevel={approvalData.maxLevel}
+                            status={approvalData.status}
+                            reviews={approvalData.reviews}
+                          />
+                        ) : (
+                          <div className="text-center py-4 text-gray-500">
+                            載入中...
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                  </React.Fragment>
                 ))}
               </tbody>
             </table>
@@ -537,23 +797,40 @@ export default function PurchaseRequestsPage() {
             <div className="p-6 border-b">
               <div className="flex items-center justify-between">
                 <h2 className="text-xl font-bold text-gray-900">新增請購單</h2>
-                <button onClick={() => setShowNewForm(false)} className="text-gray-500 hover:text-gray-700">
+                <button onClick={() => setShowNewForm(false)} className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors">
                   <X className="w-6 h-6" />
                 </button>
               </div>
             </div>
 
             <form onSubmit={handleSubmit} className="p-6 space-y-6">
-              <div>
-                <label className="block text-sm font-semibold text-gray-800 mb-2">採購主旨 *</label>
-                <input
-                  type="text"
-                  value={newRequest.title}
-                  onChange={(e) => setNewRequest({ ...newRequest, title: e.target.value })}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900"
-                  placeholder="例：辦公室用品採購"
-                  required
-                />
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-semibold text-gray-800 mb-2">採購主旨 *</label>
+                  <input
+                    type="text"
+                    value={newRequest.title}
+                    onChange={(e) => setNewRequest({ ...newRequest, title: e.target.value })}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900"
+                    placeholder="例：辦公室用品採購"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-semibold text-gray-800 mb-2">採購類別 *</label>
+                  <select
+                    value={newRequest.category}
+                    onChange={(e) => setNewRequest({ ...newRequest, category: e.target.value })}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900"
+                  >
+                    {CATEGORY_OPTIONS.map(cat => (
+                      <option key={cat.value} value={cat.value}>
+                        {cat.icon} {cat.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
 
               <div>
@@ -579,62 +856,84 @@ export default function PurchaseRequestsPage() {
                     className="text-sm text-blue-600 hover:text-blue-800"
                   >
                     + 新增項目
-                  </button>
+                </button>
                 </div>
-                <div className="space-y-3">
+                
+                {/* 欄位標題 */}
+                <div className="grid grid-cols-12 gap-3 px-3 py-2 bg-gray-100 rounded-t-lg text-xs font-medium text-gray-600">
+                  <div className="col-span-3">品項</div>
+                  <div className="col-span-3">數量/單位</div>
+                  <div className="col-span-2">單價</div>
+                  <div className="col-span-1">小計</div>
+                  <div className="col-span-2">備註</div>
+                  <div className="col-span-1"></div>
+                </div>
+                
+                <div className="space-y-2 border border-gray-200 border-t-0 rounded-b-lg p-3">
                   {newRequest.items.map((item, index) => (
-                    <div key={index} className="flex items-start gap-2 p-3 bg-gray-50 rounded-lg">
-                      <div className="flex-1 grid grid-cols-2 md:grid-cols-4 gap-2">
+                    <div key={index} className="grid grid-cols-12 gap-3 items-center">
+                      <div className="col-span-3">
                         <input
                           type="text"
                           value={item.name}
                           onChange={(e) => updateItem(index, 'name', e.target.value)}
-                          className="px-3 py-2 border border-gray-300 rounded text-sm text-gray-900"
+                          className="w-full px-3 py-2 border border-gray-300 rounded text-sm text-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                           placeholder="品項名稱"
                         />
-                        <div className="flex gap-1">
-                          <input
-                            type="number"
-                            value={item.quantity}
-                            onChange={(e) => updateItem(index, 'quantity', parseInt(e.target.value) || 1)}
-                            className="w-16 px-2 py-2 border border-gray-300 rounded text-sm text-gray-900"
-                            min="1"
-                          />
-                          <select
-                            value={item.unit}
-                            onChange={(e) => updateItem(index, 'unit', e.target.value)}
-                            className="w-16 px-1 py-2 border border-gray-300 rounded text-sm text-gray-900"
-                          >
-                            {UNIT_OPTIONS.map((unit) => (
-                              <option key={unit} value={unit}>{unit}</option>
-                            ))}
-                          </select>
-                        </div>
+                      </div>
+                      <div className="col-span-3 flex gap-2">
+                        <input
+                          type="number"
+                          value={item.quantity}
+                          onChange={(e) => updateItem(index, 'quantity', parseInt(e.target.value) || 1)}
+                          className="w-16 px-2 py-2 border border-gray-300 rounded text-sm text-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                          min="1"
+                        />
+                        <select
+                          value={item.unit}
+                          onChange={(e) => updateItem(index, 'unit', e.target.value)}
+                          className="w-16 px-1 py-2 border border-gray-300 rounded text-sm text-gray-900 focus:ring-2 focus:ring-blue-500"
+                        >
+                          {UNIT_OPTIONS.map((unit) => (
+                            <option key={unit} value={unit}>{unit}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="col-span-2">
                         <input
                           type="number"
                           value={item.price}
                           onChange={(e) => updateItem(index, 'price', parseFloat(e.target.value) || 0)}
-                          className="px-3 py-2 border border-gray-300 rounded text-sm text-gray-900"
+                          className="w-full px-3 py-2 border border-gray-300 rounded text-sm text-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                           placeholder="單價"
                           min="0"
                         />
+                      </div>
+                      <div className="col-span-1">
+                        <span className="text-sm font-medium text-gray-700">
+                          ${(item.quantity * item.price).toLocaleString()}
+                        </span>
+                      </div>
+                      <div className="col-span-2">
                         <input
                           type="text"
                           value={item.note}
                           onChange={(e) => updateItem(index, 'note', e.target.value)}
-                          className="px-3 py-2 border border-gray-300 rounded text-sm text-gray-900"
+                          className="w-full px-3 py-2 border border-gray-300 rounded text-sm text-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                           placeholder="備註"
                         />
                       </div>
-                      {newRequest.items.length > 1 && (
-                        <button
-                          type="button"
-                          onClick={() => removeItem(index)}
-                          className="text-red-500 hover:text-red-700 mt-2"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      )}
+                      <div className="col-span-1 flex justify-center">
+                        {newRequest.items.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => removeItem(index)}
+                            className="text-red-500 hover:text-red-700"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -686,7 +985,7 @@ export default function PurchaseRequestsPage() {
                   <h2 className="text-xl font-bold text-gray-900">{selectedRequest.requestNumber}</h2>
                   <p className="text-sm text-gray-500">{formatDate(selectedRequest.createdAt)}</p>
                 </div>
-                <button onClick={() => setShowDetailModal(false)} className="text-gray-500 hover:text-gray-700">
+                <button onClick={() => setShowDetailModal(false)} className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors">
                   <X className="w-6 h-6" />
                 </button>
               </div>
@@ -723,6 +1022,15 @@ export default function PurchaseRequestsPage() {
               <div>
                 <label className="text-sm text-gray-500">採購主旨</label>
                 <p className="font-medium text-gray-900 mt-1">{selectedRequest.title}</p>
+              </div>
+
+              <div>
+                <label className="text-sm text-gray-500">採購類別</label>
+                <p className="mt-1">
+                  <span className={`px-2 py-1 text-xs rounded-full border ${CATEGORY_COLORS[selectedRequest.category] || CATEGORY_COLORS.OTHER}`}>
+                    {CATEGORY_ICONS[selectedRequest.category] || '📦'} {CATEGORY_LABELS[selectedRequest.category] || '其他'}
+                  </span>
+                </p>
               </div>
 
               <div>

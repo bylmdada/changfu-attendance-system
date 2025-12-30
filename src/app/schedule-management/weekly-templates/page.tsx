@@ -9,12 +9,13 @@ import {
   X,
   Edit2,
   Trash2,
-  ArrowLeft,
   Clock,
   User,
-  Save
+  Save,
+  ArrowLeft
 } from 'lucide-react';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import Link from 'next/link';
 
 interface DaySchedule {
   shiftType: string;
@@ -27,6 +28,9 @@ interface WeeklyTemplate {
   id: number;
   name: string;
   description: string;
+  department: string | null;    // null = 通用（全機構）
+  createdById: number | null;
+  createdByName: string | null;
   monday: DaySchedule;
   tuesday: DaySchedule;
   wednesday: DaySchedule;
@@ -59,7 +63,8 @@ const SHIFT_TYPE_LABELS = {
   RD: 'RD (例假)',
   rd: 'rd (休息日)',
   FDL: 'FDL (全日請假)',
-  OFF: 'OFF (休假)'
+  OFF: 'OFF (休假)',
+  TD: 'TD (天災假)'
 };
 
 const SHIFT_TYPE_COLORS = {
@@ -70,7 +75,21 @@ const SHIFT_TYPE_COLORS = {
   RD: 'bg-gray-100 text-gray-800 border-gray-200',
   rd: 'bg-gray-50 text-gray-600 border-gray-100',
   FDL: 'bg-yellow-100 text-yellow-800 border-yellow-200',
-  OFF: 'bg-orange-100 text-orange-800 border-orange-200'
+  OFF: 'bg-orange-100 text-orange-800 border-orange-200',
+  TD: 'bg-cyan-100 text-cyan-800 border-cyan-200'
+};
+
+// 顯示用的短標籤（在週模版列表中使用）
+const SHIFT_TYPE_SHORT_LABELS: Record<string, string> = {
+  A: 'A',
+  B: 'B',
+  C: 'C',
+  NH: '國定假日',
+  RD: '例假',
+  rd: '休息日',
+  FDL: '全日請假',
+  OFF: '休假',
+  TD: '天災假'
 };
 
 const WEEKDAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
@@ -302,12 +321,21 @@ export default function WeeklyTemplatesPage() {
         {/* 標題區 */}
         <div className="mb-8">
           <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-3xl font-bold text-gray-900 flex items-center">
-                <CalendarDays className="w-8 h-8 text-indigo-600 mr-3" />
-                週班模版管理
-              </h1>
-              <p className="text-gray-600 mt-2">管理週班模版，可套用至員工班表</p>
+            <div className="flex items-center space-x-6">
+              <Link
+                href="/schedule-management"
+                className="border border-indigo-600 text-indigo-600 hover:bg-indigo-50 rounded-lg px-4 py-2 flex items-center transition-colors"
+              >
+                <ArrowLeft className="w-5 h-5 mr-2" />
+                返回班表管理
+              </Link>
+              <div>
+                <h1 className="text-3xl font-bold text-gray-900 flex items-center">
+                  <CalendarDays className="w-8 h-8 text-indigo-600 mr-3" />
+                  週班模版管理
+                </h1>
+                <p className="text-gray-600 mt-1">管理週班模版，可套用至員工班表</p>
+              </div>
             </div>
             <button
               onClick={() => setShowCreateModal(true)}
@@ -375,10 +403,19 @@ export default function WeeklyTemplatesPage() {
               <div className="p-6">
                 <div className="flex items-start justify-between mb-4">
                   <div>
-                    <h3 className="text-xl font-bold text-gray-900">{template.name}</h3>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-xl font-bold text-gray-900">{template.name}</h3>
+                      <span className={`px-2 py-0.5 text-xs font-medium rounded-full ${
+                        template.department === null 
+                          ? 'bg-purple-100 text-purple-700' 
+                          : 'bg-blue-100 text-blue-700'
+                      }`}>
+                        {template.department === null ? '全機構' : template.department}
+                      </span>
+                    </div>
                     <p className="text-gray-600 mt-1">{template.description}</p>
                     <p className="text-sm text-gray-500 mt-2">
-                      建立時間：{new Date(template.createdAt).toLocaleDateString('zh-TW')}
+                      建立：{template.createdByName || '系統'} · {new Date(template.createdAt).toLocaleDateString('zh-TW')}
                     </p>
                   </div>
                   <div className="flex space-x-2">
@@ -420,7 +457,7 @@ export default function WeeklyTemplatesPage() {
                         </span>
                         <div className="flex-1 ml-4">
                           <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${SHIFT_TYPE_COLORS[daySchedule.shiftType as keyof typeof SHIFT_TYPE_COLORS]}`}>
-                            {daySchedule.shiftType}
+                            {SHIFT_TYPE_SHORT_LABELS[daySchedule.shiftType] || daySchedule.shiftType}
                           </span>
                           {daySchedule.startTime && daySchedule.endTime && (
                             <span className="ml-2 text-sm text-gray-600">
@@ -505,7 +542,7 @@ export default function WeeklyTemplatesPage() {
                   {WEEKDAYS.map((day) => {
                     const dayData = newTemplate[day as keyof typeof newTemplate] as DaySchedule;
                     return (
-                      <div key={day} className="grid grid-cols-6 gap-4 items-center p-4 bg-gray-50 rounded-lg">
+                      <div key={day} className="grid grid-cols-5 gap-3 items-center p-4 bg-gray-50 rounded-lg">
                         <div className="font-medium text-gray-700">
                           {WEEKDAY_LABELS[day as keyof typeof WEEKDAY_LABELS]}
                         </div>
@@ -513,10 +550,10 @@ export default function WeeklyTemplatesPage() {
                           <select
                             value={dayData.shiftType}
                             onChange={(e) => updateDaySchedule(day, 'shiftType', e.target.value)}
-                            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-900 bg-white"
                           >
                             {Object.entries(SHIFT_TYPE_LABELS).map(([value, label]) => (
-                              <option key={value} value={value}>{label}</option>
+                              <option key={value} value={value} className="text-gray-900 bg-white">{label}</option>
                             ))}
                           </select>
                         </div>
@@ -525,8 +562,8 @@ export default function WeeklyTemplatesPage() {
                             type="time"
                             value={dayData.startTime}
                             onChange={(e) => updateDaySchedule(day, 'startTime', e.target.value)}
-                            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                            disabled={['RD', 'rd', 'FDL', 'OFF'].includes(dayData.shiftType)}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-900 bg-white disabled:text-gray-500 disabled:bg-gray-100"
+                            disabled={['RD', 'rd', 'FDL', 'OFF', 'NH', 'TD'].includes(dayData.shiftType)}
                           />
                         </div>
                         <div>
@@ -534,8 +571,8 @@ export default function WeeklyTemplatesPage() {
                             type="time"
                             value={dayData.endTime}
                             onChange={(e) => updateDaySchedule(day, 'endTime', e.target.value)}
-                            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                            disabled={['RD', 'rd', 'FDL', 'OFF'].includes(dayData.shiftType)}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-900 bg-white disabled:text-gray-500 disabled:bg-gray-100"
+                            disabled={['RD', 'rd', 'FDL', 'OFF', 'NH', 'TD'].includes(dayData.shiftType)}
                           />
                         </div>
                         <div>
@@ -543,11 +580,11 @@ export default function WeeklyTemplatesPage() {
                             type="number"
                             value={dayData.breakTime}
                             onChange={(e) => updateDaySchedule(day, 'breakTime', parseInt(e.target.value) || 0)}
-                            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-900 bg-white disabled:text-gray-500 disabled:bg-gray-100"
                             min="0"
                             max="480"
                             placeholder="分鐘"
-                            disabled={['RD', 'rd', 'FDL', 'OFF'].includes(dayData.shiftType)}
+                            disabled={['RD', 'rd', 'FDL', 'OFF', 'NH', 'TD'].includes(dayData.shiftType)}
                           />
                         </div>
                         <div className="text-xs text-gray-500">
@@ -630,7 +667,7 @@ export default function WeeklyTemplatesPage() {
                   {WEEKDAYS.map((day) => {
                     const dayData = editingTemplate[day as keyof WeeklyTemplate] as DaySchedule;
                     return (
-                      <div key={day} className="grid grid-cols-6 gap-4 items-center p-4 bg-gray-50 rounded-lg">
+                      <div key={day} className="grid grid-cols-5 gap-3 items-center p-4 bg-gray-50 rounded-lg">
                         <div className="font-medium text-gray-700">
                           {WEEKDAY_LABELS[day as keyof typeof WEEKDAY_LABELS]}
                         </div>
@@ -638,10 +675,10 @@ export default function WeeklyTemplatesPage() {
                           <select
                             value={dayData.shiftType}
                             onChange={(e) => updateDaySchedule(day, 'shiftType', e.target.value, true)}
-                            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-900 bg-white"
                           >
                             {Object.entries(SHIFT_TYPE_LABELS).map(([value, label]) => (
-                              <option key={value} value={value}>{label}</option>
+                              <option key={value} value={value} className="text-gray-900 bg-white">{label}</option>
                             ))}
                           </select>
                         </div>
@@ -650,7 +687,7 @@ export default function WeeklyTemplatesPage() {
                             type="time"
                             value={dayData.startTime}
                             onChange={(e) => updateDaySchedule(day, 'startTime', e.target.value, true)}
-                            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-900 bg-white disabled:text-gray-500 disabled:bg-gray-100"
                             disabled={['RD', 'rd', 'FDL', 'OFF'].includes(dayData.shiftType)}
                           />
                         </div>
@@ -659,7 +696,7 @@ export default function WeeklyTemplatesPage() {
                             type="time"
                             value={dayData.endTime}
                             onChange={(e) => updateDaySchedule(day, 'endTime', e.target.value, true)}
-                            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-900 bg-white disabled:text-gray-500 disabled:bg-gray-100"
                             disabled={['RD', 'rd', 'FDL', 'OFF'].includes(dayData.shiftType)}
                           />
                         </div>
@@ -668,7 +705,7 @@ export default function WeeklyTemplatesPage() {
                             type="number"
                             value={dayData.breakTime}
                             onChange={(e) => updateDaySchedule(day, 'breakTime', parseInt(e.target.value) || 0, true)}
-                            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-900 bg-white disabled:text-gray-500 disabled:bg-gray-100"
                             min="0"
                             max="480"
                             disabled={['RD', 'rd', 'FDL', 'OFF'].includes(dayData.shiftType)}

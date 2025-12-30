@@ -5,6 +5,7 @@ import { calculateAllDeductions } from '@/lib/tax-calculator';
 import { Prisma } from '@prisma/client';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { calculatePerfectAttendanceBonus } from '@/lib/perfect-attendance';
 
 function buildEmployeeSelect(includeExtended: boolean): Prisma.EmployeeSelect {
   const employeeModel = Prisma.dmmf.datamodel.models.find(m => m.name === 'Employee');
@@ -170,7 +171,24 @@ export async function POST(request: NextRequest) {
     // 計算薪資
     const basePay = employee.baseSalary;
     const overtimePay = totalOvertimeHours * employee.hourlyRate;
-    const grossPay = basePay + overtimePay;
+    
+    // 計算全勤獎金
+    let perfectAttendanceBonus = 0;
+    try {
+      const paResult = await calculatePerfectAttendanceBonus(
+        employee.id,
+        parseInt(payYear),
+        parseInt(payMonth)
+      );
+      if (paResult.eligible) {
+        perfectAttendanceBonus = paResult.actualAmount;
+        console.log(`✅ 全勤獎金計算: ${employee.name} - ${perfectAttendanceBonus} 元 (${paResult.details})`);
+      }
+    } catch (paError) {
+      console.warn('計算全勤獎金失敗:', paError);
+    }
+    
+    const grossPay = basePay + overtimePay + perfectAttendanceBonus;
     
     // 查詢該月份是否有獎金記錄，並計算對應的補充保費
     let bonusSupplementaryPremium = 0;

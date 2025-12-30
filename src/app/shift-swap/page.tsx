@@ -394,13 +394,13 @@ export default function ShiftSwapPage() {
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div className="flex items-center gap-2">
                           <User className="w-4 h-4 text-gray-400" />
-                          <span className="text-sm">
+                          <span className="text-sm text-gray-900">
                             <strong>{req.requester.name}</strong> 的班 ({req.originalWorkDate})
                           </span>
                         </div>
                         <div className="flex items-center gap-2">
                           <ArrowLeftRight className="w-4 h-4 text-blue-500" />
-                          <span className="text-sm">
+                          <span className="text-sm text-gray-900">
                             ↔ <strong>{req.targetEmployee.name}</strong> 的班 ({req.targetWorkDate})
                           </span>
                         </div>

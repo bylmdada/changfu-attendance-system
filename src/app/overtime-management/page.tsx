@@ -1,10 +1,12 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { Clock, Plus, Search, Filter, CheckCircle, XCircle, Trash2, Calendar, User, Timer, Pencil, Download } from 'lucide-react';
+import { Clock, Plus, Search, Filter, CheckCircle, XCircle, Trash2, Calendar, User, Timer, Pencil, X, ChevronDown, ChevronUp, Eye } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import BatchApproveBar from '@/components/BatchApproveBar';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import ApprovalProgress, { ApprovalReviewRecord } from '@/components/ApprovalProgress';
+import React from 'react';
 
 interface OvertimeRequest {
   id: number;
@@ -66,6 +68,7 @@ export default function OvertimeManagementPage() {
   const [filteredRequests, setFilteredRequests] = useState<OvertimeRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [user, setUser] = useState<User | null>(null);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [showNewRequestForm, setShowNewRequestForm] = useState(false);
@@ -102,6 +105,16 @@ export default function OvertimeManagementPage() {
   
   // 排序狀態
   const [sortConfig, setSortConfig] = useState<{ field: 'employee' | 'date' | 'status' | 'hours'; direction: 'asc' | 'desc' }>({ field: 'date', direction: 'desc' });
+
+  // 展開審核進度
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [approvalData, setApprovalData] = useState<{
+    currentLevel: number;
+    maxLevel: number;
+    status: string;
+    reviews: ApprovalReviewRecord[];
+  } | null>(null);
+
 
   // Toast 顯示函數
   const showToast = (type: 'success' | 'error', message: string) => {
@@ -379,6 +392,36 @@ export default function OvertimeManagementPage() {
     setDeleteConfirm(null);
   };
 
+  // 展開/收合審核進度並取得真實資料
+  const handleToggleApproval = async (requestId: number) => {
+    if (expandedId === requestId) {
+      setExpandedId(null);
+      setApprovalData(null);
+      return;
+    }
+    
+    setExpandedId(requestId);
+    setApprovalData(null);
+    
+    try {
+      const response = await fetch(`/api/approval-reviews?requestType=OVERTIME&requestId=${requestId}`, {
+        credentials: 'include'
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        setApprovalData({
+          currentLevel: data.currentLevel,
+          maxLevel: data.maxLevel,
+          status: data.status,
+          reviews: data.reviews
+        });
+      }
+    } catch (error) {
+      console.error('取得審核歷程失敗:', error);
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -398,35 +441,19 @@ export default function OvertimeManagementPage() {
         {/* 標題區 */}
         <div className="mb-8">
           <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-3xl font-bold text-gray-900 flex items-center">
-                <Clock className="w-8 h-8 text-blue-600 mr-3" />
-                加班管理
-              </h1>
-              <p className="text-gray-600 mt-2">管理員工加班申請，最少0.5小時，最多4小時</p>
+            <div className="flex items-center gap-3">
+              <Clock className="w-8 h-8 text-blue-600" />
+              <h1 className="text-3xl font-bold text-gray-900">加班管理</h1>
             </div>
             <button
               onClick={() => setShowNewRequestForm(true)}
-              className="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition-colors flex items-center"
+              className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
             >
-              <Plus className="w-5 h-5 mr-2" />
+              <Plus className="w-5 h-5" />
               申請加班
             </button>
-            <button
-              onClick={exportToCSV}
-              className="bg-green-600 text-white px-4 py-3 rounded-lg hover:bg-green-700 transition-colors flex items-center"
-            >
-              <Download className="w-5 h-5 mr-2" />
-              CSV
-            </button>
-            <button
-              onClick={exportToExcel}
-              className="bg-indigo-600 text-white px-4 py-3 rounded-lg hover:bg-indigo-700 transition-colors flex items-center"
-            >
-              <Download className="w-5 h-5 mr-2" />
-              Excel
-            </button>
           </div>
+          <p className="text-gray-600 mt-2">管理員工加班申請，最少0.5小時，最多4小時</p>
         </div>
 
         {/* 統計卡片 */}
@@ -538,6 +565,53 @@ export default function OvertimeManagementPage() {
               />
             </div>
           </div>
+
+          {/* 排序和匯出欄 */}
+          <div className="flex flex-wrap items-center justify-between gap-4 pt-4 mt-4 border-t border-gray-200">
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-gray-600">排序：</span>
+              <button
+                onClick={() => handleSort('employee')}
+                className={`px-3 py-1.5 text-sm rounded ${sortConfig.field === 'employee' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+              >
+                員工 {sortConfig.field === 'employee' && (sortConfig.direction === 'desc' ? '↓' : '↑')}
+              </button>
+              <button
+                onClick={() => handleSort('date')}
+                className={`px-3 py-1.5 text-sm rounded ${sortConfig.field === 'date' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+              >
+                日期 {sortConfig.field === 'date' && (sortConfig.direction === 'desc' ? '↓' : '↑')}
+              </button>
+              <button
+                onClick={() => handleSort('status')}
+                className={`px-3 py-1.5 text-sm rounded ${sortConfig.field === 'status' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+              >
+                狀態 {sortConfig.field === 'status' && (sortConfig.direction === 'desc' ? '↓' : '↑')}
+              </button>
+              <button
+                onClick={() => handleSort('hours')}
+                className={`px-3 py-1.5 text-sm rounded ${sortConfig.field === 'hours' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+              >
+                時數 {sortConfig.field === 'hours' && (sortConfig.direction === 'desc' ? '↓' : '↑')}
+              </button>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={exportToCSV}
+                disabled={sortedRequests.length === 0}
+                className="px-3 py-1.5 text-sm bg-gray-600 text-white rounded hover:bg-gray-700 disabled:opacity-50"
+              >
+                匯出 CSV
+              </button>
+              <button
+                onClick={exportToExcel}
+                disabled={sortedRequests.length === 0}
+                className="px-3 py-1.5 text-sm bg-emerald-600 text-white rounded hover:bg-emerald-700 disabled:opacity-50"
+              >
+                匯出 Excel
+              </button>
+            </div>
+          </div>
         </div>
 
         {/* 加班申請列表 */}
@@ -582,7 +656,8 @@ export default function OvertimeManagementPage() {
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
                 {sortedRequests.map((request) => (
-                  <tr key={request.id} className={`hover:bg-gray-50 ${selectedIds.includes(request.id) ? 'bg-blue-50' : ''}`}>
+                  <React.Fragment key={request.id}>
+                  <tr className={`hover:bg-gray-50 ${selectedIds.includes(request.id) ? 'bg-blue-50' : ''}`}>
                     {isAdmin && (
                       <td className="px-3 py-4 text-center">
                         {request.status === 'PENDING' && (
@@ -707,9 +782,38 @@ export default function OvertimeManagementPage() {
                         >
                           <Trash2 className="w-4 h-4 mr-1" /> 刪除
                         </button>
+                        {/* 查看審核進度按鈕 */}
+                        <button
+                          onClick={() => handleToggleApproval(request.id)}
+                          className="ml-2 inline-flex items-center gap-1 text-gray-600 hover:text-blue-600"
+                          title="查看審核進度"
+                        >
+                          <Eye className="w-4 h-4" />
+                          {expandedId === request.id ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                        </button>
                       </div>
                     </td>
                   </tr>
+                  {/* 展開的審核進度區域 */}
+                  {expandedId === request.id && (
+                    <tr>
+                      <td colSpan={isAdmin ? 9 : 8} className="px-6 py-4 bg-gray-50">
+                        {approvalData ? (
+                          <ApprovalProgress
+                            currentLevel={approvalData.currentLevel}
+                            maxLevel={approvalData.maxLevel}
+                            status={approvalData.status}
+                            reviews={approvalData.reviews}
+                          />
+                        ) : (
+                          <div className="text-center py-4 text-gray-500">
+                            載入中...
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
                 ))}
               </tbody>
             </table>
@@ -733,9 +837,9 @@ export default function OvertimeManagementPage() {
                 <h2 className="text-xl font-bold text-gray-900">申請加班</h2>
                 <button
                   onClick={() => setShowNewRequestForm(false)}
-                  className="text-gray-400 hover:text-gray-600"
+                  className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
                 >
-                  ×
+                  <X className="w-6 h-6" />
                 </button>
               </div>
 
@@ -849,7 +953,7 @@ export default function OvertimeManagementPage() {
             <div className="p-6">
               <div className="flex items-center justify-between mb-6">
                 <h2 className="text-xl font-bold text-gray-900">編輯加班申請</h2>
-                <button onClick={() => setEditing(null)} className="text-gray-400 hover:text-gray-600">×</button>
+                <button onClick={() => setEditing(null)} className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"><X className="w-6 h-6" /></button>
               </div>
               <form onSubmit={handleEditSubmit} className="space-y-4">
                 <div>
@@ -931,7 +1035,7 @@ export default function OvertimeManagementPage() {
       {isAdmin && (
         <BatchApproveBar
           selectedIds={selectedIds}
-          apiEndpoint="/api/overtime-requests/batch-approve"
+          apiEndpoint="/api/overtime-requests/batch"
           onSuccess={fetchOvertimeRequests}
           onClear={() => setSelectedIds([])}
           itemName="加班申請"

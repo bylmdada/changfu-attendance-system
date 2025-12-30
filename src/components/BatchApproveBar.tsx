@@ -42,13 +42,15 @@ export default function BatchApproveBar({
         body: { 
           ids: selectedIds, 
           action,
-          remarks: action === 'REJECTED' ? remarks : undefined
+          reason: action === 'REJECTED' ? remarks : undefined  // 改用 reason
         }
       });
 
       if (response.ok) {
         const data = await response.json();
-        alert(data.message || `已${action === 'APPROVED' ? '批准' : '拒絕'} ${data.count} 筆${itemName}`);
+        // 使用 API 返回的 message 或自己組合訊息
+        const successCount = data.successCount || data.count || selectedIds.length;
+        alert(data.message || `已${action === 'APPROVED' ? '批准' : '拒絕'} ${successCount} 筆${itemName}`);
         setRemarks('');
         setShowRemarks(false);
         onSuccess();

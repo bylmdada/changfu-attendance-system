@@ -558,27 +558,27 @@ function CalculationExample({
         <div className="space-y-2 text-sm">
           <div className="flex justify-between">
             <span className="text-gray-900">投保金額：</span>
-            <span className="font-medium">NT$ {result.insuredAmount.toLocaleString()}</span>
+            <span className="font-medium text-gray-900">NT$ {result.insuredAmount.toLocaleString()}</span>
           </div>
           <div className="flex justify-between">
             <span className="text-gray-900">眷屬人數：</span>
-            <span className="font-medium">{result.dependentCount} 人</span>
+            <span className="font-medium text-gray-900">{result.dependentCount} 人</span>
           </div>
           <div className="flex justify-between">
             <span className="text-gray-900">總投保金額：</span>
-            <span className="font-medium">NT$ {result.totalInsuredAmount.toLocaleString()}</span>
+            <span className="font-medium text-gray-900">NT$ {result.totalInsuredAmount.toLocaleString()}</span>
           </div>
           <div className="flex justify-between">
             <span className="text-gray-900">總健保費：</span>
-            <span className="font-medium">NT$ {result.totalPremium.toLocaleString()}</span>
+            <span className="font-medium text-gray-900">NT$ {result.totalPremium.toLocaleString()}</span>
           </div>
           <div className="flex justify-between">
             <span className="text-gray-900">員工負擔：</span>
-            <span className="font-medium text-red-600">NT$ {result.employeePremium.toLocaleString()}</span>
+            <span className="font-bold text-red-700">NT$ {result.employeePremium.toLocaleString()}</span>
           </div>
           <div className="flex justify-between">
             <span className="text-gray-900">公司負擔：</span>
-            <span className="font-medium text-green-600">NT$ {result.companyPremium.toLocaleString()}</span>
+            <span className="font-bold text-green-700">NT$ {result.companyPremium.toLocaleString()}</span>
           </div>
         </div>
       ) : (
@@ -589,3 +589,4 @@ function CalculationExample({
     </div>
   );
 }
+

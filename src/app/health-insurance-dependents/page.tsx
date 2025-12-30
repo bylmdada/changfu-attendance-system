@@ -2,9 +2,10 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Users, Save, Plus, Edit2, Trash2, Search, AlertTriangle, Download, Upload, X } from 'lucide-react';
+import { Users, Save, Plus, Edit2, Trash2, Search, AlertTriangle, Download, Upload, X, FileText, BarChart3, History, CheckCircle, Clock } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
-import SystemNavbar from '@/components/SystemNavbar';
+import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+
 
 interface EmployeeDependent {
   id?: number;
@@ -46,11 +47,75 @@ export default function HealthInsuranceDependentsPage() {
   const [saving, setSaving] = useState(false);
   const [dependentSummaries, setDependentSummaries] = useState<DependentSummary[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
+  const [departmentFilter, setDepartmentFilter] = useState<string>('');
   const [showForm, setShowForm] = useState(false);
   const [showBatchForm, setShowBatchForm] = useState(false);
   const [editingDependent, setEditingDependent] = useState<EmployeeDependent | null>(null);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<{ id: number; name: string } | null>(null);
+  
+  // 頁籤狀態
+  const [activeTab, setActiveTab] = useState<'dependents' | 'enrollment' | 'statistics' | 'history' | 'applications'>('dependents');
+  
+  // 加退保記錄
+  const [enrollmentLogs, setEnrollmentLogs] = useState<Array<{
+    id: number;
+    dependentName: string;
+    employeeName: string;
+    type: string;
+    effectiveDate: string;
+    reportStatus: string;
+    reportDate: string | null;
+    createdBy: string;
+    createdAt: string;
+  }>>([]);
+  
+  // 統計資料
+  const [statistics, setStatistics] = useState<{
+    summary: { totalDependents: number; totalEmployeesWithDependents: number; averageDependentsPerEmployee: number };
+    monthlyStats: Array<{ month: number; dependentCount: number; estimatedPremium: number }>;
+    departmentStats: Array<{ department: string; count: number }>;
+    relationshipStats: Array<{ relationship: string; count: number }>;
+  } | null>(null);
+  
+  // 異動歷史
+  const [historyLogs, setHistoryLogs] = useState<Array<{
+    id: number;
+    dependentName: string;
+    employeeName: string;
+    action: string;
+    fieldName: string | null;
+    oldValue: string | null;
+    newValue: string | null;
+    changedBy: string;
+    changedAt: string;
+  }>>([]);
+
+  // 待審核申請
+  const [pendingApplications, setPendingApplications] = useState<Array<{
+    id: number;
+    employeeId: number;
+    employeeName: string;
+    applicationType: string;
+    status: string;
+    dependentName: string;
+    relationship: string;
+    idNumber: string;
+    birthDate: string;
+    effectiveDate: string;
+    remarks: string | null;
+    createdAt: string;
+    attachments: Array<{
+      id: number;
+      fileType: string;
+      fileTypeName: string;
+      fileName: string;
+      filePath: string;
+      fileSize: number;
+      mimeType: string;
+    }>;
+  }>>([]);
+  const [applicationStats, setApplicationStats] = useState({ pending: 0, approved: 0, rejected: 0 });
 
   // Helper function to get auth headers
   const getAuthHeaders = (): HeadersInit => {
@@ -107,6 +172,98 @@ export default function HealthInsuranceDependentsPage() {
     } catch (error) {
       console.error('載入眷屬資料失敗:', error);
     }
+  };
+
+  // 載入加退保記錄
+  const loadEnrollmentLogs = async () => {
+    try {
+      const response = await fetch('/api/system-settings/dependent-enrollment', {
+        credentials: 'include'
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setEnrollmentLogs(data.logs || []);
+      }
+    } catch (error) {
+      console.error('載入加退保記錄失敗:', error);
+    }
+  };
+
+  // 載入統計資料
+  const loadStatistics = async () => {
+    try {
+      const response = await fetch('/api/system-settings/dependent-statistics', {
+        credentials: 'include'
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setStatistics(data);
+      }
+    } catch (error) {
+      console.error('載入統計資料失敗:', error);
+    }
+  };
+
+  // 載入異動歷史
+  const loadHistoryLogs = async () => {
+    try {
+      const response = await fetch('/api/system-settings/dependent-history', {
+        credentials: 'include'
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setHistoryLogs(data.logs || []);
+      }
+    } catch (error) {
+      console.error('載入異動歷史失敗:', error);
+    }
+  };
+
+  // 載入待審核申請
+  const loadApplications = async () => {
+    try {
+      const response = await fetch('/api/dependent-applications', {
+        credentials: 'include'
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setPendingApplications(data.applications || []);
+        setApplicationStats(data.stats || { pending: 0, approved: 0, rejected: 0 });
+      }
+    } catch (error) {
+      console.error('載入待審核申請失敗:', error);
+    }
+  };
+
+  // 審核申請
+  const handleReviewApplication = async (id: number, action: 'APPROVE' | 'REJECT', reviewNote?: string) => {
+    try {
+      const response = await fetchJSONWithCSRF('/api/dependent-applications', {
+        method: 'PUT',
+        body: { id, action, reviewNote }
+      });
+
+      if (response.ok) {
+        setMessage({ type: 'success', text: action === 'APPROVE' ? '申請已通過' : '申請已退回' });
+        await loadApplications();
+        await loadDependents();
+      } else {
+        const error = await response.json();
+        setMessage({ type: 'error', text: error.error || '操作失敗' });
+      }
+    } catch (error) {
+      console.error('審核失敗:', error);
+      setMessage({ type: 'error', text: '操作失敗' });
+    }
+  };
+
+  // 頁籤切換時載入對應資料
+  const handleTabChange = (tab: typeof activeTab) => {
+    setActiveTab(tab);
+    if (tab === 'enrollment') loadEnrollmentLogs();
+    if (tab === 'statistics') loadStatistics();
+    if (tab === 'history') loadHistoryLogs();
+    if (tab === 'applications') loadApplications();
   };
 
   const handleSaveDependent = async (dependent: EmployeeDependent) => {
@@ -239,14 +396,28 @@ export default function HealthInsuranceDependentsPage() {
     setShowBatchForm(true);
   };
 
-  // 過濾搜尋結果
-  const filteredSummaries = dependentSummaries.filter(summary =>
-    summary.employeeName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    summary.department.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    summary.dependents.some(dep => 
-      dep.dependentName.toLowerCase().includes(searchTerm.toLowerCase())
-    )
-  );
+  // 取得所有部門（用於篩選器）
+  const allDepartments = [...new Set(dependentSummaries.map(s => s.department).filter(Boolean))].sort();
+
+  // 過濾搜尋結果（加入部門篩選）
+  const filteredSummaries = dependentSummaries.filter(summary => {
+    // 部門篩選
+    if (departmentFilter && summary.department !== departmentFilter) {
+      return false;
+    }
+    // 文字搜尋
+    if (searchTerm) {
+      const term = searchTerm.toLowerCase();
+      return (
+        summary.employeeName.toLowerCase().includes(term) ||
+        summary.department.toLowerCase().includes(term) ||
+        summary.dependents.some(dep => 
+          dep.dependentName.toLowerCase().includes(term)
+        )
+      );
+    }
+    return true;
+  });
 
   // 統計資料
   const totalEmployeesWithDependents = dependentSummaries.filter(s => s.dependentCount > 0).length;
@@ -257,29 +428,24 @@ export default function HealthInsuranceDependentsPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
-          <p className="mt-4 text-gray-900">載入中...</p>
+      <AuthenticatedLayout>
+        <div className="flex items-center justify-center min-h-screen">
+          <div className="text-gray-600">載入中...</div>
         </div>
-      </div>
+      </AuthenticatedLayout>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* 頂部導航 */}
-      <SystemNavbar user={user} backUrl="/system-settings" backLabel="系統設定" />
-
-      {/* 主要內容 */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <AuthenticatedLayout>
+      <div className="max-w-7xl mx-auto p-6">
         {/* 標題區 */}
-        <div className="mb-8">
+        <div className="mb-6">
           <h1 className="text-3xl font-bold text-gray-900 flex items-center">
             <Users className="w-8 h-8 text-blue-600 mr-3" />
             健保眷屬管理
           </h1>
-          <p className="text-gray-600 mt-2">管理員工健保投保眷屬資料</p>
+          <p className="text-gray-600 mt-1">管理員工健保投保眷屬資料</p>
         </div>
 
         {message && (
@@ -320,28 +486,366 @@ export default function HealthInsuranceDependentsPage() {
           </div>
         </div>
 
+        {/* 頁籤切換 */}
+        <div className="mb-6 flex border-b border-gray-200">
+          <button
+            onClick={() => handleTabChange('dependents')}
+            className={`px-4 py-2 font-medium border-b-2 transition-colors ${
+              activeTab === 'dependents'
+                ? 'border-blue-600 text-blue-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            <Users className="inline-block w-4 h-4 mr-2" />
+            眷屬管理
+          </button>
+          <button
+            onClick={() => handleTabChange('enrollment')}
+            className={`px-4 py-2 font-medium border-b-2 transition-colors ${
+              activeTab === 'enrollment'
+                ? 'border-blue-600 text-blue-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            <FileText className="inline-block w-4 h-4 mr-2" />
+            加退保記錄
+          </button>
+          <button
+            onClick={() => handleTabChange('statistics')}
+            className={`px-4 py-2 font-medium border-b-2 transition-colors ${
+              activeTab === 'statistics'
+                ? 'border-blue-600 text-blue-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            <BarChart3 className="inline-block w-4 h-4 mr-2" />
+            統計報表
+          </button>
+          <button
+            onClick={() => handleTabChange('history')}
+            className={`px-4 py-2 font-medium border-b-2 transition-colors ${
+              activeTab === 'history'
+                ? 'border-blue-600 text-blue-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            <History className="inline-block w-4 h-4 mr-2" />
+            異動歷史
+          </button>
+          <button
+            onClick={() => handleTabChange('applications')}
+            className={`px-4 py-2 font-medium border-b-2 transition-colors ${
+              activeTab === 'applications'
+                ? 'border-blue-600 text-blue-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            <Clock className="inline-block w-4 h-4 mr-2" />
+            待審核
+            {applicationStats.pending > 0 && (
+              <span className="ml-2 inline-flex items-center justify-center px-2 py-0.5 text-xs font-bold bg-red-500 text-white rounded-full">
+                {applicationStats.pending}
+              </span>
+            )}
+          </button>
+        </div>
+
+        {/* 加退保記錄頁籤 */}
+        {activeTab === 'enrollment' && (
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200">
+            <div className="px-6 py-4 border-b border-gray-200">
+              <h2 className="text-lg font-medium text-gray-900">加退保記錄</h2>
+            </div>
+            {enrollmentLogs.length === 0 ? (
+              <div className="text-center py-12 text-gray-500">
+                <FileText className="h-12 w-12 mx-auto mb-4 text-gray-400" />
+                <p>尚無加退保記錄</p>
+              </div>
+            ) : (
+              <table className="min-w-full">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">眷屬</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">員工</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">類型</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">生效日</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">申報狀態</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-200">
+                  {enrollmentLogs.map(log => (
+                    <tr key={log.id}>
+                      <td className="px-4 py-3 text-gray-900">{log.dependentName}</td>
+                      <td className="px-4 py-3 text-gray-600">{log.employeeName}</td>
+                      <td className="px-4 py-3">
+                        <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                          log.type === 'ENROLL' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                        }`}>
+                          {log.type === 'ENROLL' ? '加保' : '退保'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-gray-600">{new Date(log.effectiveDate).toLocaleDateString()}</td>
+                      <td className="px-4 py-3">
+                        <span className={`inline-flex items-center gap-1 px-2 py-1 text-xs font-semibold rounded-full ${
+                          log.reportStatus === 'COMPLETED' ? 'bg-green-100 text-green-800' :
+                          log.reportStatus === 'REPORTED' ? 'bg-yellow-100 text-yellow-800' :
+                          'bg-gray-100 text-gray-800'
+                        }`}>
+                          {log.reportStatus === 'COMPLETED' && <CheckCircle className="h-3 w-3" />}
+                          {log.reportStatus === 'REPORTED' && <Clock className="h-3 w-3" />}
+                          {log.reportStatus === 'PENDING' && <Clock className="h-3 w-3" />}
+                          {log.reportStatus === 'COMPLETED' ? '已完成' : log.reportStatus === 'REPORTED' ? '已申報' : '待申報'}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
+
+        {/* 統計報表頁籤 */}
+        {activeTab === 'statistics' && statistics && (
+          <div className="space-y-6">
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+              <h2 className="text-lg font-medium text-gray-900 mb-4">部門眷屬統計</h2>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                {statistics.departmentStats.map(dept => (
+                  <div key={dept.department} className="bg-gray-50 rounded-lg p-4">
+                    <div className="text-2xl font-bold text-blue-600">{dept.count}</div>
+                    <div className="text-sm text-gray-600">{dept.department}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+              <h2 className="text-lg font-medium text-gray-900 mb-4">眷屬關係統計</h2>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                {statistics.relationshipStats.map(rel => (
+                  <div key={rel.relationship} className="bg-purple-50 rounded-lg p-4">
+                    <div className="text-2xl font-bold text-purple-600">{rel.count}</div>
+                    <div className="text-sm text-gray-600">{rel.relationship}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 異動歷史頁籤 */}
+        {activeTab === 'history' && (
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200">
+            <div className="px-6 py-4 border-b border-gray-200">
+              <h2 className="text-lg font-medium text-gray-900">異動歷史</h2>
+            </div>
+            {historyLogs.length === 0 ? (
+              <div className="text-center py-12 text-gray-500">
+                <History className="h-12 w-12 mx-auto mb-4 text-gray-400" />
+                <p>尚無異動記錄</p>
+              </div>
+            ) : (
+              <table className="min-w-full">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">時間</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">眷屬</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">操作</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">變更</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">操作人</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-200">
+                  {historyLogs.map(log => (
+                    <tr key={log.id}>
+                      <td className="px-4 py-3 text-gray-600 text-sm">{new Date(log.changedAt).toLocaleString()}</td>
+                      <td className="px-4 py-3 text-gray-900">{log.dependentName}</td>
+                      <td className="px-4 py-3">
+                        <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                          log.action === 'CREATE' ? 'bg-green-100 text-green-800' :
+                          log.action === 'UPDATE' ? 'bg-blue-100 text-blue-800' :
+                          'bg-red-100 text-red-800'
+                        }`}>
+                          {log.action === 'CREATE' ? '新增' : log.action === 'UPDATE' ? '更新' : '刪除'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-sm text-gray-600">
+                        {log.fieldName && (
+                          <span>
+                            {log.fieldName}: <span className="line-through text-red-500">{log.oldValue}</span> → <span className="text-green-600">{log.newValue}</span>
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-gray-600">{log.changedBy}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
+
+        {/* 待審核頁籤 */}
+        {activeTab === 'applications' && (
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200">
+            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+              <h2 className="text-lg font-medium text-gray-900">待審核申請</h2>
+              <div className="flex gap-4 text-sm">
+                <span className="text-yellow-600">待審核: {applicationStats.pending}</span>
+                <span className="text-green-600">已通過: {applicationStats.approved}</span>
+                <span className="text-red-600">已退回: {applicationStats.rejected}</span>
+              </div>
+            </div>
+            {pendingApplications.length === 0 ? (
+              <div className="text-center py-12 text-gray-500">
+                <Clock className="h-12 w-12 mx-auto mb-4 text-gray-400" />
+                <p>沒有申請記錄</p>
+              </div>
+            ) : (
+              <table className="min-w-full">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">申請時間</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">員工</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">類型</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">眷屬</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">關係</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">生效日</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">附件</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">狀態</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">操作</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-200">
+                  {pendingApplications.map(app => (
+                    <tr key={app.id}>
+                      <td className="px-4 py-3 text-gray-600 text-sm">{new Date(app.createdAt).toLocaleString()}</td>
+                      <td className="px-4 py-3 text-gray-900 font-medium">{app.employeeName}</td>
+                      <td className="px-4 py-3">
+                        <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                          app.applicationType === 'ADD' ? 'bg-green-100 text-green-800' :
+                          app.applicationType === 'REMOVE' ? 'bg-red-100 text-red-800' :
+                          'bg-blue-100 text-blue-800'
+                        }`}>
+                          {app.applicationType === 'ADD' ? '加保' : app.applicationType === 'REMOVE' ? '退保' : '變更'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-gray-900">{app.dependentName}</td>
+                      <td className="px-4 py-3 text-gray-600">{app.relationship}</td>
+                      <td className="px-4 py-3 text-gray-600">{app.effectiveDate}</td>
+                      <td className="px-4 py-3">
+                        {app.attachments && app.attachments.length > 0 ? (
+                          <div className="flex flex-wrap gap-1">
+                            {app.attachments.map(att => (
+                              <a
+                                key={att.id}
+                                href={att.filePath}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 px-2 py-0.5 text-xs bg-blue-50 text-blue-700 rounded hover:bg-blue-100"
+                                title={`${att.fileName} (${(att.fileSize / 1024).toFixed(1)} KB)`}
+                              >
+                                <FileText className="h-3 w-3" />
+                                {att.fileTypeName}
+                              </a>
+                            ))}
+                          </div>
+                        ) : (
+                          <span className="text-gray-400 text-xs">無附件</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                          app.status === 'PENDING' ? 'bg-yellow-100 text-yellow-800' :
+                          app.status === 'APPROVED' ? 'bg-green-100 text-green-800' :
+                          'bg-red-100 text-red-800'
+                        }`}>
+                          {app.status === 'PENDING' ? '待審核' : app.status === 'APPROVED' ? '已通過' : '已退回'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        {app.status === 'PENDING' && (
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => handleReviewApplication(app.id, 'APPROVE')}
+                              className="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700"
+                            >
+                              通過
+                            </button>
+                            <button
+                              onClick={() => handleReviewApplication(app.id, 'REJECT')}
+                              className="px-2 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700"
+                            >
+                              退回
+                            </button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
+
+        {/* 眷屬管理頁籤（原有內容） */}
+        {activeTab === 'dependents' && (
+          <>
         {/* 搜尋列和操作按鈕 */}
         <div className="mb-6 bg-white rounded-lg shadow-sm border border-gray-200 p-4">
-          <div className="flex items-center justify-between space-x-4">
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-4">
+            {/* 部門篩選器 */}
+            <div className="w-full sm:w-48">
+              <select
+                value={departmentFilter}
+                onChange={(e) => setDepartmentFilter(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500 text-gray-900 bg-white"
+              >
+                <option value="">所有部門</option>
+                {allDepartments.map(dept => (
+                  <option key={dept} value={dept}>{dept}</option>
+                ))}
+              </select>
+            </div>
+            
+            {/* 搜尋框 */}
             <div className="flex-1 relative">
               <Search className="h-5 w-5 text-gray-400 absolute left-3 top-1/2 transform -translate-y-1/2" />
               <input
                 type="text"
-                placeholder="搜尋員工姓名、部門或眷屬姓名..."
+                placeholder="搜尋員工姓名或眷屬姓名..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-md focus:ring-red-500 focus:border-red-500 text-gray-900"
+                className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500 text-gray-900"
               />
             </div>
+            
+            {/* 匯出按鈕 */}
             <button
               onClick={handleExportCSV}
               disabled={totalDependents === 0}
-              className="inline-flex items-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="inline-flex items-center justify-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
             >
               <Download className="w-4 h-4 mr-2" />
               匯出 CSV
             </button>
           </div>
+          
+          {/* 篩選結果提示 */}
+          {(departmentFilter || searchTerm) && (
+            <div className="mt-3 flex items-center gap-2 text-sm text-gray-600">
+              <span>篩選結果：{filteredSummaries.length} 位員工</span>
+              {(departmentFilter || searchTerm) && (
+                <button
+                  onClick={() => { setDepartmentFilter(''); setSearchTerm(''); }}
+                  className="text-blue-600 hover:text-blue-800 underline"
+                >
+                  清除篩選
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
         {/* 眷屬列表 */}
@@ -507,8 +1011,10 @@ export default function HealthInsuranceDependentsPage() {
             </div>
           </div>
         )}
-      </main>
-    </div>
+        </>
+        )}
+      </div>
+    </AuthenticatedLayout>
   );
 }
 
@@ -540,10 +1046,16 @@ function DependentForm({
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
       <div className="bg-white rounded-lg max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-        <div className="px-6 py-4 border-b border-gray-200">
+        <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
           <h3 className="text-lg font-medium text-gray-900">
             {dependent.id ? '編輯眷屬資料' : '新增眷屬資料'}
           </h3>
+          <button
+            onClick={onCancel}
+            className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+          >
+            <X className="w-6 h-6" />
+          </button>
         </div>
         
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
@@ -878,9 +1390,9 @@ function BatchDependentForm({
           </div>
           <button
             onClick={onCancel}
-            className="p-2 text-gray-400 hover:text-gray-600"
+            className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
           >
-            <X className="w-5 h-5" />
+            <X className="w-6 h-6" />
           </button>
         </div>
         

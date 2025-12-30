@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { FileText, Save, Edit2, Trash2, Eye, Download, Plus, AlertTriangle, Power, PowerOff } from 'lucide-react';
+import { FileText, Save, Edit2, Trash2, Eye, Download, Plus, AlertTriangle, Power, PowerOff, Copy, Printer, ZoomIn, ZoomOut, Maximize2, X } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import SystemNavbar from '@/components/SystemNavbar';
 
@@ -55,6 +55,11 @@ interface PayslipTemplate {
       left: number;
       right: number;
     };
+  };
+  securityConfig: {
+    passwordProtected: boolean;
+    passwordType: 'none' | 'id_last4' | 'birthday' | 'custom';
+    customPassword?: string;
   };
 }
 
@@ -240,6 +245,10 @@ export default function PayslipManagementPage() {
         left: 20,
         right: 20
       }
+    },
+    securityConfig: {
+      passwordProtected: false,
+      passwordType: 'none'
     }
   });
 
@@ -338,6 +347,20 @@ export default function PayslipManagementPage() {
     setShowTemplateForm(true);
   };
 
+  // 複製範本
+  const handleCopyTemplate = (template: PayslipTemplate) => {
+    const copiedTemplate: PayslipTemplate = {
+      ...template,
+      id: undefined, // 給新 ID
+      name: `${template.name} (複製)`,
+      isDefault: false,
+      isActive: false
+    };
+    setEditingTemplate(copiedTemplate);
+    setShowTemplateForm(true);
+    setMessage({ type: 'success', text: `已複製範本「${template.name}」，請修改後儲存` });
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -420,6 +443,7 @@ export default function PayslipManagementPage() {
             onCreate={startCreate}
             onDelete={showDeleteConfirmDialog}
             onToggleActive={handleToggleActive}
+            onCopy={handleCopyTemplate}
           />
         )}
 
@@ -489,13 +513,15 @@ function TemplatesTab({
   onEdit,
   onCreate,
   onDelete,
-  onToggleActive
+  onToggleActive,
+  onCopy
 }: { 
   templates: PayslipTemplate[];
   onEdit: (template: PayslipTemplate) => void;
   onCreate: () => void;
   onDelete: (template: PayslipTemplate) => void;
   onToggleActive: (template: PayslipTemplate) => void;
+  onCopy: (template: PayslipTemplate) => void;
 }) {
   return (
     <div className="bg-white rounded-lg shadow-sm border border-gray-200">
@@ -580,6 +606,13 @@ function TemplatesTab({
                   title="預覽"
                 >
                   <Eye className="h-4 w-4" />
+                </button>
+                <button
+                  onClick={() => onCopy(template)}
+                  className="p-2 text-purple-600 hover:text-purple-900 hover:bg-purple-50 rounded-md"
+                  title="複製範本"
+                >
+                  <Copy className="h-4 w-4" />
                 </button>
                 {!template.isDefault && (
                   <button
@@ -877,6 +910,182 @@ function PreviewTab({
   const [selectedTemplate, setSelectedTemplate] = useState<PayslipTemplate | null>(
     templates.find(t => t.isDefault) || templates[0] || null
   );
+  const [zoomLevel, setZoomLevel] = useState(100);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // 列印預覽
+  const handlePrint = () => {
+    const printContent = document.getElementById('payslip-preview');
+    if (printContent) {
+      const printWindow = window.open('', '_blank');
+      if (printWindow) {
+        printWindow.document.write(`
+          <html>
+            <head>
+              <title>薪資條預覽</title>
+              <style>
+                body { font-family: 'Microsoft JhengHei', Arial, sans-serif; margin: 20px; color: #333; }
+                * { box-sizing: border-box; }
+                .mb-8, .mb-6 { margin-bottom: 1.5rem; }
+                .mb-4 { margin-bottom: 1rem; }
+                .mt-2, .mt-3 { margin-top: 0.5rem; }
+                .mt-8 { margin-top: 2rem; }
+                .p-4, .p-8 { padding: 1rem; }
+                .px-4 { padding-left: 1rem; padding-right: 1rem; }
+                .py-1\\.5, .py-2 { padding-top: 0.375rem; padding-bottom: 0.375rem; }
+                .pt-2, .pt-3, .pt-4 { padding-top: 0.5rem; }
+                .grid { display: grid; }
+                .grid-cols-2 { grid-template-columns: repeat(2, 1fr); }
+                .gap-4 { gap: 1rem; }
+                .gap-6 { gap: 1.5rem; }
+                .flex { display: flex; }
+                .items-center { align-items: center; }
+                .justify-between { justify-content: space-between; }
+                .justify-center { justify-content: center; }
+                .flex-shrink-0 { flex-shrink: 0; }
+                .text-center { text-align: center; }
+                .text-2xl { font-size: 1.5rem; }
+                .text-xl { font-size: 1.25rem; }
+                .text-lg { font-size: 1.125rem; }
+                .text-base { font-size: 1rem; }
+                .text-sm { font-size: 0.875rem; }
+                .font-bold { font-weight: 700; }
+                .font-semibold { font-weight: 600; }
+                .font-medium { font-weight: 500; }
+                .text-gray-600 { color: #4b5563; }
+                .text-gray-700 { color: #374151; }
+                .text-gray-800 { color: #1f2937; }
+                .text-gray-900 { color: #111827; }
+                .text-green-800, .text-green-900 { color: #166534; }
+                .text-red-700, .text-red-800, .text-red-900 { color: #991b1b; }
+                .text-blue-900 { color: #1e3a8a; }
+                .border { border-width: 1px; }
+                .border-t { border-top-width: 1px; }
+                .border-t-2 { border-top-width: 2px; }
+                .border-b { border-bottom-width: 1px; }
+                .border-gray-300 { border-color: #d1d5db; }
+                .border-gray-400 { border-color: #9ca3af; }
+                .border-blue-400 { border-color: #60a5fa; }
+                .rounded { border-radius: 0.25rem; }
+                .bg-gray-100 { background-color: #f3f4f6; }
+                .bg-green-100 { background-color: #dcfce7; }
+                .bg-red-100 { background-color: #fee2e2; }
+                .bg-blue-100 { background-color: #dbeafe; }
+                .h-16 { height: 4rem; }
+                .w-auto { width: auto; }
+                .w-16 { width: 4rem; }
+                .object-contain { object-fit: contain; }
+                .flex-1 { flex: 1; }
+                img { max-width: 100%; height: auto; }
+              </style>
+            </head>
+            <body>${printContent.innerHTML}</body>
+          </html>
+        `);
+        printWindow.document.close();
+        printWindow.onload = () => {
+          printWindow.print();
+          printWindow.close();
+        };
+      }
+    }
+  };
+
+  // 下載 PDF（透過列印對話框另存 PDF）
+  const handleDownloadPDF = () => {
+    const printContent = document.getElementById('payslip-preview');
+    if (printContent) {
+      const printWindow = window.open('', '_blank');
+      if (printWindow) {
+        printWindow.document.write(`
+          <html>
+            <head>
+              <title>薪資條範本預覽 - 另存為 PDF</title>
+              <style>
+                @page { size: A4; margin: 15mm; }
+                body { font-family: 'Microsoft JhengHei', Arial, sans-serif; margin: 0; padding: 20px; color: #333; }
+                * { box-sizing: border-box; }
+                .print-notice {
+                  background: #dbeafe;
+                  border: 1px solid #93c5fd;
+                  border-radius: 8px;
+                  padding: 12px 16px;
+                  margin-bottom: 20px;
+                  text-align: center;
+                  font-size: 14px;
+                  color: #1e40af;
+                }
+                .mb-8, .mb-6 { margin-bottom: 1.5rem; }
+                .mb-4 { margin-bottom: 1rem; }
+                .mt-2, .mt-3 { margin-top: 0.5rem; }
+                .mt-8 { margin-top: 2rem; }
+                .p-4, .p-8 { padding: 1rem; }
+                .px-4 { padding-left: 1rem; padding-right: 1rem; }
+                .py-1\\.5, .py-2 { padding-top: 0.375rem; padding-bottom: 0.375rem; }
+                .pt-2, .pt-3, .pt-4 { padding-top: 0.5rem; }
+                .grid { display: grid; }
+                .grid-cols-2 { grid-template-columns: repeat(2, 1fr); }
+                .gap-4 { gap: 1rem; }
+                .gap-6 { gap: 1.5rem; }
+                .flex { display: flex; }
+                .items-center { align-items: center; }
+                .justify-between { justify-content: space-between; }
+                .justify-center { justify-content: center; }
+                .flex-shrink-0 { flex-shrink: 0; }
+                .text-center { text-align: center; }
+                .text-2xl { font-size: 1.5rem; }
+                .text-xl { font-size: 1.25rem; }
+                .text-lg { font-size: 1.125rem; }
+                .text-base { font-size: 1rem; }
+                .text-sm { font-size: 0.875rem; }
+                .font-bold { font-weight: 700; }
+                .font-semibold { font-weight: 600; }
+                .font-medium { font-weight: 500; }
+                .text-gray-600 { color: #4b5563; }
+                .text-gray-700 { color: #374151; }
+                .text-gray-800 { color: #1f2937; }
+                .text-gray-900 { color: #111827; }
+                .text-green-800, .text-green-900 { color: #166534; }
+                .text-red-700, .text-red-800, .text-red-900 { color: #991b1b; }
+                .text-blue-900 { color: #1e3a8a; }
+                .border { border-width: 1px; }
+                .border-t { border-top-width: 1px; }
+                .border-t-2 { border-top-width: 2px; }
+                .border-b { border-bottom-width: 1px; }
+                .border-gray-300 { border-color: #d1d5db; }
+                .border-gray-400 { border-color: #9ca3af; }
+                .border-blue-400 { border-color: #60a5fa; }
+                .rounded { border-radius: 0.25rem; }
+                .bg-gray-100 { background-color: #f3f4f6; }
+                .bg-green-100 { background-color: #dcfce7; }
+                .bg-red-100 { background-color: #fee2e2; }
+                .bg-blue-100 { background-color: #dbeafe; }
+                .h-16 { height: 4rem; }
+                .w-auto { width: auto; }
+                .w-16 { width: 4rem; }
+                .object-contain { object-fit: contain; }
+                .flex-1 { flex: 1; }
+                img { max-width: 100%; height: auto; }
+                @media print { .print-notice { display: none; } }
+              </style>
+            </head>
+            <body>
+              <div class="print-notice">
+                💡 提示：請在列印對話框中選擇「另存為 PDF」來下載 PDF 檔案
+              </div>
+              ${printContent.innerHTML}
+              <script>window.onload = function() { window.print(); }</script>
+            </body>
+          </html>
+        `);
+        printWindow.document.close();
+      }
+    }
+  };
+
+  // 縮放控制
+  const handleZoomIn = () => setZoomLevel(prev => Math.min(prev + 25, 200));
+  const handleZoomOut = () => setZoomLevel(prev => Math.max(prev - 25, 50));
 
   if (!selectedTemplate) {
     return (
@@ -888,42 +1097,124 @@ function PreviewTab({
   }
 
   return (
-    <div className="space-y-6">
-      {/* 範本選擇 */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-lg font-medium text-gray-900">選擇預覽範本</h2>
-            <p className="text-sm text-gray-900">選擇要預覽的薪資條範本</p>
+    <>
+      <div className="space-y-6">
+        {/* 範本選擇和工具列 */}
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <div className="flex items-center justify-between flex-wrap gap-4">
+            <div>
+              <h2 className="text-lg font-medium text-gray-900">選擇預覽範本</h2>
+              <p className="text-sm text-gray-600">選擇要預覽的薪資條範本</p>
+            </div>
+            <div className="flex items-center space-x-2">
+              {/* 範本選擇 */}
+              <select
+                value={selectedTemplate.id || ''}
+                onChange={(e) => {
+                  const template = templates.find(t => t.id === parseInt(e.target.value));
+                  if (template) setSelectedTemplate(template);
+                }}
+                className="rounded-md border-gray-300 shadow-sm focus:border-green-500 focus:ring-green-500 text-gray-900"
+              >
+                {templates.map((template) => (
+                  <option key={template.id} value={template.id}>
+                    {template.name}
+                  </option>
+                ))}
+              </select>
+              
+              {/* 縮放控制 */}
+              <div className="flex items-center bg-gray-100 rounded-lg">
+                <button 
+                  onClick={handleZoomOut}
+                  className="p-2 hover:bg-gray-200 rounded-l-lg"
+                  title="縮小"
+                >
+                  <ZoomOut className="h-4 w-4 text-gray-600" />
+                </button>
+                <span className="px-2 text-sm text-gray-700 min-w-[50px] text-center">{zoomLevel}%</span>
+                <button 
+                  onClick={handleZoomIn}
+                  className="p-2 hover:bg-gray-200 rounded-r-lg"
+                  title="放大"
+                >
+                  <ZoomIn className="h-4 w-4 text-gray-600" />
+                </button>
+              </div>
+              
+              {/* 全螢幕 */}
+              <button 
+                onClick={() => setIsFullscreen(true)}
+                className="p-2 bg-gray-100 hover:bg-gray-200 rounded-lg"
+                title="全螢幕預覽"
+              >
+                <Maximize2 className="h-4 w-4 text-gray-600" />
+              </button>
+              
+              {/* 列印 */}
+              <button 
+                onClick={handlePrint}
+                className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+              >
+                <Printer className="h-4 w-4" />
+                <span>列印</span>
+              </button>
+              
+              {/* 下載 PDF */}
+              <button 
+                onClick={handleDownloadPDF}
+                className="flex items-center space-x-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
+              >
+                <Download className="h-4 w-4" />
+                <span>下載 PDF</span>
+              </button>
+            </div>
           </div>
-          <div className="flex items-center space-x-4">
-            <select
-              value={selectedTemplate.id || ''}
-              onChange={(e) => {
-                const template = templates.find(t => t.id === parseInt(e.target.value));
-                if (template) setSelectedTemplate(template);
-              }}
-              className="rounded-md border-gray-300 shadow-sm focus:border-green-500 focus:ring-green-500 text-gray-900"
-            >
-              {templates.map((template) => (
-                <option key={template.id} value={template.id}>
-                  {template.name}
-                </option>
-              ))}
-            </select>
-            <button className="flex items-center space-x-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700">
-              <Download className="h-4 w-4" />
-              <span>下載 PDF</span>
-            </button>
+        </div>
+
+        {/* 薪資條預覽 */}
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-auto">
+          <div 
+            style={{ transform: `scale(${zoomLevel / 100})`, transformOrigin: 'top left' }}
+            className="transition-transform duration-200"
+          >
+            <div id="payslip-preview">
+              <PayslipPreview template={selectedTemplate} />
+            </div>
           </div>
         </div>
       </div>
 
-      {/* 薪資條預覽 */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200">
-        <PayslipPreview template={selectedTemplate} />
-      </div>
-    </div>
+      {/* 全螢幕預覽模態框 */}
+      {isFullscreen && (
+        <div className="fixed inset-0 bg-black bg-opacity-75 z-50 flex items-center justify-center p-8">
+          <div className="bg-white rounded-lg max-w-4xl w-full max-h-[90vh] overflow-auto relative">
+            <div className="sticky top-0 bg-white border-b border-gray-200 p-4 flex items-center justify-between z-10">
+              <h3 className="text-lg font-medium text-gray-900">全螢幕預覽</h3>
+              <div className="flex items-center space-x-2">
+                <button 
+                  onClick={handlePrint}
+                  className="flex items-center space-x-2 px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm"
+                >
+                  <Printer className="h-4 w-4" />
+                  <span>列印</span>
+                </button>
+                <button 
+                  onClick={() => setIsFullscreen(false)}
+                  className="p-2 hover:bg-gray-100 rounded-lg"
+                  title="關閉"
+                >
+                  <X className="h-5 w-5 text-gray-600" />
+                </button>
+              </div>
+            </div>
+            <div className="p-6">
+              <PayslipPreview template={selectedTemplate} />
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -955,24 +1246,53 @@ function PayslipPreview({ template }: { template: PayslipTemplate }) {
   };
 
   return (
-    <div className="p-8 bg-white" style={{ fontFamily: template.formatting.fontFamily, fontSize: `${template.formatting.fontSize}px` }}>
-      {/* 標題區塊 */}
-      <div className="text-center mb-8">
-        <h1 className="text-2xl font-bold mb-2">{template.headerConfig.companyName}</h1>
-        <p className="text-sm text-gray-600 mb-2">{template.headerConfig.companyAddress}</p>
-        <h2 className="text-xl font-semibold">薪資條</h2>
-        <p className="text-sm text-gray-600">{mockData.payroll.year} 年 {mockData.payroll.month} 月份</p>
+    <div className="p-8 bg-white text-gray-900" style={{ fontFamily: template.formatting.fontFamily, fontSize: `${Math.max(template.formatting.fontSize, 14)}px` }}>
+      {/* 標題區塊（含 Logo） */}
+      <div className="mb-8">
+        <div className={`flex items-center ${
+          template.headerConfig.logoPosition === 'center' ? 'justify-center' :
+          template.headerConfig.logoPosition === 'right' ? 'justify-between flex-row-reverse' :
+          'justify-between'
+        } mb-4`}>
+          {/* Logo */}
+          {template.headerConfig.showLogo && (
+            <div className="flex-shrink-0">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img 
+                src="/logo.png" 
+                alt="長福會 Logo" 
+                className="h-16 w-auto object-contain"
+              />
+            </div>
+          )}
+          
+          {/* 公司資訊 */}
+          <div className={`${template.headerConfig.showLogo && template.headerConfig.logoPosition !== 'center' ? '' : 'text-center flex-1'}`}>
+            <h1 className="text-2xl font-bold text-gray-900">{template.headerConfig.companyName}</h1>
+            <p className="text-sm text-gray-700">{template.headerConfig.companyAddress}</p>
+          </div>
+          
+          {/* Logo 置中時不需要右側佔位 */}
+          {template.headerConfig.showLogo && template.headerConfig.logoPosition !== 'center' && (
+            <div className="w-16"></div>
+          )}
+        </div>
+        
+        <div className="text-center border-t border-gray-300 pt-4">
+          <h2 className="text-xl font-semibold text-gray-900">薪資條</h2>
+          <p className="text-sm text-gray-700">{mockData.payroll.year} 年 {mockData.payroll.month} 月份</p>
+        </div>
       </div>
 
       {/* 員工資訊 */}
-      <div className="mb-6 border border-gray-300 rounded">
-        <div className="bg-gray-50 px-4 py-2 border-b border-gray-300">
-          <h3 className="font-semibold">員工資訊</h3>
+      <div className="mb-6 border border-gray-400 rounded">
+        <div className="bg-gray-100 px-4 py-2 border-b border-gray-400">
+          <h3 className="font-bold text-gray-900">員工資訊</h3>
         </div>
-        <div className="p-4 grid grid-cols-2 gap-4">
+        <div className="p-4 grid grid-cols-2 gap-4 text-base">
           {template.employeeSection.showEmployeeId && (
             <div>
-              <span className="text-gray-600">員工編號：</span>
+              <span className="text-gray-700 font-medium">員工編號：</span>
               <span>{mockData.employee.id}</span>
             </div>
           )}
@@ -982,25 +1302,25 @@ function PayslipPreview({ template }: { template: PayslipTemplate }) {
           </div>
           {template.employeeSection.showDepartment && (
             <div>
-              <span className="text-gray-600">部門：</span>
+              <span className="text-gray-700 font-medium">部門：</span>
               <span>{mockData.employee.department}</span>
             </div>
           )}
           {template.employeeSection.showPosition && (
             <div>
-              <span className="text-gray-600">職位：</span>
+              <span className="text-gray-700 font-medium">職位：</span>
               <span>{mockData.employee.position}</span>
             </div>
           )}
           {template.employeeSection.showHireDate && (
             <div>
-              <span className="text-gray-600">到職日：</span>
+              <span className="text-gray-700 font-medium">到職日：</span>
               <span>{mockData.employee.hireDate}</span>
             </div>
           )}
           {template.employeeSection.showBankAccount && (
             <div>
-              <span className="text-gray-600">銀行帳號：</span>
+              <span className="text-gray-700 font-medium">銀行帳號：</span>
               <span>{mockData.employee.bankAccount}</span>
             </div>
           )}
@@ -1011,19 +1331,19 @@ function PayslipPreview({ template }: { template: PayslipTemplate }) {
       <div className="mb-6">
         <div className="grid grid-cols-2 gap-6">
           {/* 收入項目 */}
-          <div className="border border-gray-300 rounded">
-            <div className="bg-green-50 px-4 py-2 border-b border-gray-300">
-              <h3 className="font-semibold text-green-800">收入項目</h3>
+          <div className="border border-gray-400 rounded">
+            <div className="bg-green-100 px-4 py-2 border-b border-gray-400">
+              <h3 className="font-bold text-green-900">收入項目</h3>
             </div>
-            <div className="p-4">
+            <div className="p-4 text-base">
               {template.earningsSection.items.filter(item => item.isVisible).map(item => (
-                <div key={item.id} className="flex justify-between py-1">
-                  <span>{item.label}：</span>
-                  <span>NT$ {getItemAmount(item.code, mockData).toLocaleString()}</span>
+                <div key={item.id} className="flex justify-between py-1.5">
+                  <span className="text-gray-800 font-medium">{item.label}：</span>
+                  <span className="text-gray-900 font-semibold">NT$ {getItemAmount(item.code, mockData).toLocaleString()}</span>
                 </div>
               ))}
               {template.earningsSection.showSubtotal && (
-                <div className="border-t border-gray-300 mt-2 pt-2 flex justify-between font-semibold">
+                <div className="border-t border-gray-400 mt-2 pt-2 flex justify-between font-bold text-green-800">
                   <span>收入小計：</span>
                   <span>NT$ {mockData.payroll.grossPay.toLocaleString()}</span>
                 </div>
@@ -1032,19 +1352,19 @@ function PayslipPreview({ template }: { template: PayslipTemplate }) {
           </div>
 
           {/* 扣除項目 */}
-          <div className="border border-gray-300 rounded">
-            <div className="bg-red-50 px-4 py-2 border-b border-gray-300">
-              <h3 className="font-semibold text-red-800">扣除項目</h3>
+          <div className="border border-gray-400 rounded">
+            <div className="bg-red-100 px-4 py-2 border-b border-gray-400">
+              <h3 className="font-bold text-red-900">扣除項目</h3>
             </div>
-            <div className="p-4">
+            <div className="p-4 text-base">
               {template.deductionsSection.items.filter(item => item.isVisible).map(item => (
-                <div key={item.id} className="flex justify-between py-1">
-                  <span>{item.label}：</span>
-                  <span>NT$ {getItemAmount(item.code, mockData).toLocaleString()}</span>
+                <div key={item.id} className="flex justify-between py-1.5">
+                  <span className="text-gray-800 font-medium">{item.label}：</span>
+                  <span className="text-gray-900 font-semibold">NT$ {getItemAmount(item.code, mockData).toLocaleString()}</span>
                 </div>
               ))}
               {template.deductionsSection.showSubtotal && (
-                <div className="border-t border-gray-300 mt-2 pt-2 flex justify-between font-semibold">
+                <div className="border-t border-gray-400 mt-2 pt-2 flex justify-between font-bold text-red-800">
                   <span>扣除小計：</span>
                   <span>NT$ {mockData.payroll.totalDeductions.toLocaleString()}</span>
                 </div>
@@ -1056,38 +1376,38 @@ function PayslipPreview({ template }: { template: PayslipTemplate }) {
 
       {/* 薪資總計 */}
       {template.summarySection.showNetPay && (
-        <div className="mb-6 border border-gray-300 rounded">
-          <div className="bg-blue-50 px-4 py-2 border-b border-gray-300">
-            <h3 className="font-semibold text-blue-800">薪資總計</h3>
+        <div className="mb-6 border border-gray-400 rounded">
+          <div className="bg-blue-100 px-4 py-2 border-b border-gray-400">
+            <h3 className="font-bold text-blue-900">薪資總計</h3>
           </div>
-          <div className="p-4">
+          <div className="p-4 text-base">
             {template.summarySection.showGrossPay && (
-              <div className="flex justify-between py-1">
-                <span>總收入：</span>
-                <span>NT$ {mockData.payroll.grossPay.toLocaleString()}</span>
+              <div className="flex justify-between py-1.5">
+                <span className="text-gray-800 font-medium">總收入：</span>
+                <span className="text-gray-900 font-semibold">NT$ {mockData.payroll.grossPay.toLocaleString()}</span>
               </div>
             )}
             {template.summarySection.showTotalDeductions && (
-              <div className="flex justify-between py-1">
-                <span>總扣除：</span>
-                <span>NT$ {mockData.payroll.totalDeductions.toLocaleString()}</span>
+              <div className="flex justify-between py-1.5">
+                <span className="text-gray-800 font-medium">總扣除：</span>
+                <span className="text-red-700 font-semibold">-NT$ {mockData.payroll.totalDeductions.toLocaleString()}</span>
               </div>
             )}
-            <div className="border-t border-gray-300 mt-2 pt-2 flex justify-between font-bold text-lg">
-              <span>實發薪資：</span>
-              <span>NT$ {mockData.payroll.netPay.toLocaleString()}</span>
+            <div className="border-t-2 border-blue-400 mt-3 pt-3 flex justify-between font-bold text-lg">
+              <span className="text-blue-900">實發薪資：</span>
+              <span className="text-blue-900">NT$ {mockData.payroll.netPay.toLocaleString()}</span>
             </div>
           </div>
         </div>
       )}
 
       {/* 頁尾 */}
-      <div className="mt-8 text-center text-sm text-gray-600">
+      <div className="mt-8 text-center text-sm text-gray-700">
         {template.footerConfig.showGeneratedDate && (
-          <p>產生日期：{new Date().toLocaleDateString()}</p>
+          <p className="font-medium">產生日期：{new Date().toLocaleDateString()}</p>
         )}
         {template.footerConfig.customText && (
-          <p className="mt-2">{template.footerConfig.customText}</p>
+          <p className="mt-2 text-gray-600">{template.footerConfig.customText}</p>
         )}
       </div>
     </div>
@@ -1230,6 +1550,77 @@ function TemplateForm({
                   className="block w-full rounded-md border-gray-300 shadow-sm focus:border-green-500 focus:ring-green-500 text-gray-900"
                 />
               </div>
+            </div>
+          </div>
+
+          {/* PDF 安全性設定 */}
+          <div className="border border-gray-200 rounded-lg p-4">
+            <h4 className="font-medium text-gray-900 mb-4">🔒 PDF 安全性設定</h4>
+            
+            <div className="space-y-4">
+              <div>
+                <label className="flex items-center space-x-2">
+                  <input
+                    type="checkbox"
+                    checked={formData.securityConfig?.passwordProtected || false}
+                    onChange={(e) => setFormData({
+                      ...formData,
+                      securityConfig: {
+                        ...formData.securityConfig,
+                        passwordProtected: e.target.checked,
+                        passwordType: e.target.checked ? 'id_last4' : 'none'
+                      }
+                    })}
+                    className="rounded border-gray-300 text-green-600 shadow-sm focus:border-green-300 focus:ring focus:ring-green-200 focus:ring-opacity-50"
+                  />
+                  <span className="text-sm text-gray-900">啟用 PDF 密碼保護</span>
+                </label>
+                <p className="mt-1 text-xs text-gray-600">開啟後，員工需輸入密碼才能開啟薪資條 PDF</p>
+              </div>
+
+              {formData.securityConfig?.passwordProtected && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-900 mb-2">
+                    密碼類型
+                  </label>
+                  <select
+                    value={formData.securityConfig?.passwordType || 'id_last4'}
+                    onChange={(e) => setFormData({
+                      ...formData,
+                      securityConfig: {
+                        ...formData.securityConfig,
+                        passwordType: e.target.value as 'none' | 'id_last4' | 'birthday' | 'custom'
+                      }
+                    })}
+                    className="block w-full rounded-md border-gray-300 shadow-sm focus:border-green-500 focus:ring-green-500 text-gray-900"
+                  >
+                    <option value="id_last4">身分證字號後4碼</option>
+                    <option value="birthday">生日 (MMDD)</option>
+                    <option value="custom">自訂密碼</option>
+                  </select>
+                  
+                  {formData.securityConfig?.passwordType === 'custom' && (
+                    <div className="mt-3">
+                      <label className="block text-sm font-medium text-gray-900 mb-2">
+                        自訂密碼
+                      </label>
+                      <input
+                        type="text"
+                        value={formData.securityConfig?.customPassword || ''}
+                        onChange={(e) => setFormData({
+                          ...formData,
+                          securityConfig: {
+                            ...formData.securityConfig,
+                            customPassword: e.target.value
+                          }
+                        })}
+                        placeholder="請輸入統一密碼"
+                        className="block w-full rounded-md border-gray-300 shadow-sm focus:border-green-500 focus:ring-green-500 text-gray-900"
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 

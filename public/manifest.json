@@ -1,8 +1,8 @@
 {
   "name": "長福考勤系統",
-  "short_name": "考勤",
+  "short_name": "考勤打卡",
   "description": "長福會員工考勤打卡與管理系統",
-  "start_url": "/",
+  "start_url": "/login?mode=quickclock",
   "display": "standalone",
   "background_color": "#ffffff",
   "theme_color": "#2563eb",

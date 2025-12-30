@@ -4,6 +4,8 @@ import { verifyToken } from '@/lib/auth';
 import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { validateLeaveRequest } from '@/lib/leave-rules-validator';
+import { createApprovalForRequest } from '@/lib/approval-helper';
 
 export async function GET(request: NextRequest) {
   try {
@@ -39,13 +41,40 @@ export async function GET(request: NextRequest) {
         gte?: Date;
         lte?: Date;
       };
+      employee?: {
+        department?: { in: string[] };
+      };
     } = {};
     
-    // 如果是一般員工，只能查看自己的請假記錄
-    if (decoded.role !== 'ADMIN' && decoded.role !== 'HR') {
-      where.employeeId = decoded.employeeId;
-    } else if (employeeId) {
-      where.employeeId = parseInt(employeeId);
+    // 權限檢查：決定可以看到哪些請假記錄
+    if (decoded.role === 'ADMIN' || decoded.role === 'HR') {
+      // ADMIN 和 HR 可以看所有記錄
+      if (employeeId) {
+        where.employeeId = parseInt(employeeId);
+      }
+    } else {
+      // 檢查是否為部門主管
+      const managedDepartments = await prisma.departmentManager.findMany({
+        where: {
+          employeeId: decoded.employeeId,
+          isActive: true
+        },
+        select: { department: true }
+      });
+      
+      if (managedDepartments.length > 0) {
+        // 部門主管可以看到所屬部門員工的請假記錄
+        const departments = managedDepartments.map(d => d.department);
+        where.employee = { department: { in: departments } };
+        
+        // 如果有指定 employeeId，額外過濾
+        if (employeeId) {
+          where.employeeId = parseInt(employeeId);
+        }
+      } else {
+        // 一般員工只能看到自己的記錄
+        where.employeeId = decoded.employeeId;
+      }
     }
 
     if (status) {
@@ -192,6 +221,18 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: '該時間段已有請假申請' }, { status: 400 });
       }
 
+      // 驗證假別規則
+      const leaveValidation = await validateLeaveRequest(
+        decoded.employeeId,
+        leaveType,
+        totalDays,
+        start.getFullYear()
+      );
+
+      if (!leaveValidation.valid) {
+        return NextResponse.json({ error: leaveValidation.error }, { status: 400 });
+      }
+
       const leaveRequest = await prisma.leaveRequest.create({
         data: {
           employeeId: decoded.employeeId,
@@ -212,6 +253,15 @@ export async function POST(request: NextRequest) {
             }
           }
         }
+      });
+
+      // 建立審核實例
+      await createApprovalForRequest({
+        requestType: 'LEAVE',
+        requestId: leaveRequest.id,
+        applicantId: leaveRequest.employee.id,
+        applicantName: leaveRequest.employee.name,
+        department: leaveRequest.employee.department
       });
 
       return NextResponse.json({ 
@@ -249,6 +299,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '該時間段已有請假申請' }, { status: 400 });
     }
 
+    // 驗證假別規則
+    const leaveValidation = await validateLeaveRequest(
+      decoded.employeeId,
+      leaveType,
+      totalDays,
+      start.getFullYear()
+    );
+
+    if (!leaveValidation.valid) {
+      return NextResponse.json({ error: leaveValidation.error }, { status: 400 });
+    }
+
     const leaveRequest = await prisma.leaveRequest.create({
       data: {
         employeeId: decoded.employeeId,
@@ -269,6 +331,15 @@ export async function POST(request: NextRequest) {
           }
         }
       }
+    });
+
+    // 建立審核實例
+    await createApprovalForRequest({
+      requestType: 'LEAVE',
+      requestId: leaveRequest.id,
+      applicantId: leaveRequest.employee.id,
+      applicantName: leaveRequest.employee.name,
+      department: leaveRequest.employee.department
     });
 
     return NextResponse.json({ 

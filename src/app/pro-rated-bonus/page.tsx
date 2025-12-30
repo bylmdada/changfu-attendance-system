@@ -8,7 +8,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Calculator, Users, FileText, AlertCircle, CheckCircle, Clock } from 'lucide-react';
+import { Calculator, Users, FileText, AlertCircle, CheckCircle, Clock, Download, Settings } from 'lucide-react';
+import SystemNavbar from '@/components/SystemNavbar';
 
 interface Employee {
   id: number;
@@ -65,6 +66,13 @@ interface CurrentUser {
   id: number;
   username: string;
   role: string;
+  employee?: {
+    id: number;
+    employeeId?: string;
+    name: string;
+    department?: string;
+    position?: string;
+  };
 }
 
 export default function ProRatedBonusPage() {
@@ -289,40 +297,108 @@ export default function ProRatedBonusPage() {
     statistics.averageBonusAmount = Math.round(statistics.totalBonusAmount / statistics.eligibleEmployees);
   }
 
+  // 匯出 CSV 功能
+  const handleExportCSV = () => {
+    if (calculationResults.length === 0) {
+      alert('請先計算獎金後再匯出');
+      return;
+    }
+
+    const headers = ['員工編號', '姓名', '部門', '到職日期', '服務月數', '基本薪資', '滿額獎金', '比例係數', '實發金額', '資格狀態'];
+    const rows: string[][] = [];
+
+    calculationResults.forEach((result: ProRatedBonusResult) => {
+      const employee = employees.find(emp => emp.id === result.employeeId);
+      if (!employee) return;
+
+      rows.push([
+        employee.employeeId,
+        employee.name,
+        employee.department,
+        new Date(employee.hireDate).toLocaleDateString('zh-TW'),
+        result.serviceMonths.toFixed(1),
+        employee.baseSalary.toString(),
+        result.fullAmount.toString(),
+        (result.proRatedRatio * 100).toFixed(1) + '%',
+        result.proRatedAmount.toString(),
+        result.calculationDetails.eligibleForBonus ? '符合資格' : '不符資格'
+      ]);
+    });
+
+    const BOM = '\uFEFF';
+    const csvContent = BOM + [
+      headers.join(','),
+      ...rows.map(row => row.map(cell => `"${cell}"`).join(','))
+    ].join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `按比例獎金計算結果_${settings.targetYear}_${settings.bonusType}.csv`;
+    link.click();
+  };
+
   return (
-    <div className="container mx-auto p-6 space-y-6">
-      <div className="flex justify-between items-center">
-        <h1 className="text-3xl font-bold">按比例獎金計算</h1>
-        <div className="flex gap-2">
-          <Button 
-            onClick={handleBatchCalculate}
-            disabled={loading}
-            className="flex items-center gap-2"
-          >
-            <Calculator className="h-4 w-4" />
-            {loading ? '計算中...' : '計算獎金'}
-          </Button>
-          <Button 
-            onClick={handleGenerateReport}
-            disabled={loading}
-            variant="outline"
-            className="flex items-center gap-2"
-          >
-            <FileText className="h-4 w-4" />
-            產生報表
-          </Button>
+    <div className="min-h-screen bg-gray-50">
+      <SystemNavbar user={currentUser} backUrl="/dashboard" backLabel="儀表板" />
+      
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {/* 標題和操作按鈕 */}
+        <div className="mb-6">
+          <div className="flex justify-between items-center">
+            <div>
+              <h1 className="text-3xl font-bold text-gray-900 flex items-center">
+                <Calculator className="w-8 h-8 text-purple-600 mr-3" />
+                按比例獎金計算
+              </h1>
+              <p className="text-gray-600 mt-1">計算員工按比例發放的年終獎金與三節獎金</p>
+            </div>
+            <div className="flex gap-2">
+              <a href="/system-settings/bonus-config">
+                <Button variant="outline" className="flex items-center gap-2">
+                  <Settings className="h-4 w-4" />
+                  配置設定
+                </Button>
+              </a>
+              <Button 
+                onClick={handleBatchCalculate}
+                disabled={loading}
+                className="flex items-center gap-2"
+              >
+                <Calculator className="h-4 w-4" />
+                {loading ? '計算中...' : '計算獎金'}
+              </Button>
+              <Button 
+                onClick={handleExportCSV}
+                disabled={calculationResults.length === 0}
+                variant="outline"
+                className="flex items-center gap-2"
+              >
+                <Download className="h-4 w-4" />
+                匯出 CSV
+              </Button>
+              <Button 
+                onClick={handleGenerateReport}
+                disabled={loading}
+                variant="outline"
+                className="flex items-center gap-2"
+              >
+                <FileText className="h-4 w-4" />
+                產生報表
+              </Button>
+            </div>
+          </div>
         </div>
-      </div>
 
       {/* 設定區域 */}
-      <Card>
+      <Card className="mb-6">
         <CardHeader>
-          <CardTitle>計算設定</CardTitle>
+          <CardTitle className="text-gray-900">計算設定</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             <div>
-              <label className="block text-sm font-medium mb-2">目標年度</label>
+              <label className="block text-sm font-medium text-gray-900 mb-2">目標年度</label>
               <Input
                 type="number"
                 value={settings.targetYear}
@@ -331,7 +407,7 @@ export default function ProRatedBonusPage() {
             </div>
 
             <div>
-              <label className="block text-sm font-medium mb-2">獎金類型</label>
+              <label className="block text-sm font-medium text-gray-900 mb-2">獎金類型</label>
               <Select 
                 value={settings.bonusType} 
                 onValueChange={(value) => setSettings({...settings, bonusType: value})}
@@ -351,7 +427,7 @@ export default function ProRatedBonusPage() {
 
             {settings.bonusType === 'FESTIVAL' && (
               <div>
-                <label className="block text-sm font-medium mb-2">節慶類型</label>
+                <label className="block text-sm font-medium text-gray-900 mb-2">節慶類型</label>
                 <Select 
                   value={settings.festivalType} 
                   onValueChange={(value) => setSettings({...settings, festivalType: value})}
@@ -378,7 +454,7 @@ export default function ProRatedBonusPage() {
               />
               <label
                 htmlFor="autoCreate"
-                className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+                className="text-sm font-medium text-gray-900 leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
               >
                 自動創建記錄
               </label>
@@ -389,9 +465,9 @@ export default function ProRatedBonusPage() {
 
       {/* 統計資訊 */}
       {calculationResults.length > 0 && (
-        <Card>
+        <Card className="mb-6">
           <CardHeader>
-            <CardTitle>統計資訊</CardTitle>
+            <CardTitle className="text-gray-900">統計資訊</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
@@ -399,31 +475,31 @@ export default function ProRatedBonusPage() {
                 <div className="text-2xl font-bold text-blue-600">
                   {statistics.totalEmployees}
                 </div>
-                <div className="text-sm text-gray-600">總員工數</div>
+                <div className="text-sm text-gray-800">總員工數</div>
               </div>
               <div className="text-center p-4 bg-green-50 rounded-lg">
                 <div className="text-2xl font-bold text-green-600">
                   {statistics.eligibleEmployees}
                 </div>
-                <div className="text-sm text-gray-600">符合資格</div>
+                <div className="text-sm text-gray-800">符合資格</div>
               </div>
               <div className="text-center p-4 bg-yellow-50 rounded-lg">
                 <div className="text-2xl font-bold text-yellow-600">
                   {statistics.proRatedEmployees}
                 </div>
-                <div className="text-sm text-gray-600">按比例發放</div>
+                <div className="text-sm text-gray-800">按比例發放</div>
               </div>
               <div className="text-center p-4 bg-purple-50 rounded-lg">
                 <div className="text-2xl font-bold text-purple-600">
                   NT$ {statistics.totalBonusAmount.toLocaleString()}
                 </div>
-                <div className="text-sm text-gray-600">獎金總額</div>
+                <div className="text-sm text-gray-800">獎金總額</div>
               </div>
               <div className="text-center p-4 bg-indigo-50 rounded-lg">
                 <div className="text-2xl font-bold text-indigo-600">
                   NT$ {statistics.averageBonusAmount.toLocaleString()}
                 </div>
-                <div className="text-sm text-gray-600">平均獎金</div>
+                <div className="text-sm text-gray-800">平均獎金</div>
               </div>
             </div>
           </CardContent>
@@ -432,10 +508,10 @@ export default function ProRatedBonusPage() {
 
       {/* 計算結果表格 */}
       {calculationResults.length > 0 && (
-        <Card>
+        <Card className="mb-6">
           <CardHeader>
             <div className="flex justify-between items-center">
-              <CardTitle>計算結果</CardTitle>
+              <CardTitle className="text-gray-900">計算結果</CardTitle>
               <div className="flex gap-2">
                 <Button
                   onClick={toggleSelectAll}
@@ -468,14 +544,14 @@ export default function ProRatedBonusPage() {
                       onCheckedChange={toggleSelectAll}
                     />
                   </TableHead>
-                  <TableHead>員工</TableHead>
-                  <TableHead>到職日期</TableHead>
-                  <TableHead>服務月數</TableHead>
-                  <TableHead>基本薪資</TableHead>
-                  <TableHead>滿額獎金</TableHead>
-                  <TableHead>比例係數</TableHead>
-                  <TableHead>實發金額</TableHead>
-                  <TableHead>狀態</TableHead>
+                  <TableHead className="text-gray-900">員工</TableHead>
+                  <TableHead className="text-gray-900">到職日期</TableHead>
+                  <TableHead className="text-gray-900">服務月數</TableHead>
+                  <TableHead className="text-gray-900">基本薪資</TableHead>
+                  <TableHead className="text-gray-900">滿額獎金</TableHead>
+                  <TableHead className="text-gray-900">比例係數</TableHead>
+                  <TableHead className="text-gray-900">實發金額</TableHead>
+                  <TableHead className="text-gray-900">狀態</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -494,18 +570,18 @@ export default function ProRatedBonusPage() {
                       </TableCell>
                       <TableCell>
                         <div>
-                          <div className="font-medium">{employee.name}</div>
-                          <div className="text-sm text-gray-900">
+                          <div className="font-medium text-gray-900">{employee.name}</div>
+                          <div className="text-sm text-gray-600">
                             {employee.employeeId} - {employee.department}
                           </div>
                         </div>
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="text-gray-900">
                         {new Date(employee.hireDate).toLocaleDateString('zh-TW')}
                       </TableCell>
                       <TableCell>
                         <div className="text-center">
-                          <div className="font-medium">{result.serviceMonths.toFixed(1)} 個月</div>
+                          <div className="font-medium text-gray-900">{result.serviceMonths.toFixed(1)} 個月</div>
                           {result.isProRated && (
                             <Badge variant="outline" className="mt-1">
                               <Clock className="h-3 w-3 mr-1" />
@@ -514,23 +590,23 @@ export default function ProRatedBonusPage() {
                           )}
                         </div>
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="text-gray-900">
                         NT$ {employee.baseSalary.toLocaleString()}
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="text-gray-900">
                         NT$ {result.fullAmount.toLocaleString()}
                       </TableCell>
                       <TableCell>
                         <div className="text-center">
-                          <div className="font-medium">
+                          <div className="font-medium text-gray-900">
                             {(result.proRatedRatio * 100).toFixed(1)}%
                           </div>
-                          <div className="text-xs text-gray-900">
+                          <div className="text-xs text-gray-600">
                             ({result.serviceMonths.toFixed(1)}/{result.totalMonths})
                           </div>
                         </div>
                       </TableCell>
-                      <TableCell className="font-medium">
+                      <TableCell className="font-medium text-gray-900">
                         NT$ {result.proRatedAmount.toLocaleString()}
                       </TableCell>
                       <TableCell>
@@ -565,28 +641,28 @@ export default function ProRatedBonusPage() {
       {reportData && (
         <Card>
           <CardHeader>
-            <CardTitle>{reportData.targetYear}年度綜合獎金報表</CardTitle>
+            <CardTitle className="text-gray-900">{reportData.targetYear}年度綜合獎金報表</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 {/* 年終獎金統計 */}
                 <div className="bg-blue-50 p-4 rounded-lg">
-                  <h3 className="font-semibold text-lg mb-3">年終獎金</h3>
+                  <h3 className="font-semibold text-lg text-gray-900 mb-3">年終獎金</h3>
                   <div className="space-y-2">
-                    <div className="flex justify-between">
+                    <div className="flex justify-between text-gray-900">
                       <span>符合資格人數:</span>
                       <span className="font-medium">{reportData.statistics.yearEndBonus.eligibleCount}人</span>
                     </div>
-                    <div className="flex justify-between">
+                    <div className="flex justify-between text-gray-900">
                       <span>按比例發放:</span>
                       <span className="font-medium">{reportData.statistics.yearEndBonus.proRatedCount}人</span>
                     </div>
-                    <div className="flex justify-between">
+                    <div className="flex justify-between text-gray-900">
                       <span>獎金總額:</span>
                       <span className="font-medium">NT$ {reportData.statistics.yearEndBonus.totalAmount.toLocaleString()}</span>
                     </div>
-                    <div className="flex justify-between">
+                    <div className="flex justify-between text-gray-900">
                       <span>平均金額:</span>
                       <span className="font-medium">NT$ {reportData.statistics.yearEndBonus.averageAmount.toLocaleString()}</span>
                     </div>
@@ -595,7 +671,7 @@ export default function ProRatedBonusPage() {
 
                 {/* 三節獎金統計 */}
                 <div className="bg-green-50 p-4 rounded-lg">
-                  <h3 className="font-semibold text-lg mb-3">三節獎金</h3>
+                  <h3 className="font-semibold text-lg text-gray-900 mb-3">三節獎金</h3>
                   <div className="space-y-3">
                     {['spring', 'dragonBoat', 'midAutumn'].map(festival => {
                       const festivalNames = {
@@ -607,7 +683,7 @@ export default function ProRatedBonusPage() {
                       
                       return (
                         <div key={festival} className="border-l-2 border-green-300 pl-3">
-                          <div className="font-medium text-sm">{festivalNames[festival as keyof typeof festivalNames]}獎金</div>
+                          <div className="font-medium text-sm text-gray-900">{festivalNames[festival as keyof typeof festivalNames]}獎金</div>
                           <div className="text-xs text-gray-600">
                             符合資格: {festivalData.eligibleCount}人 | 
                             按比例: {festivalData.proRatedCount}人 | 
@@ -623,6 +699,7 @@ export default function ProRatedBonusPage() {
           </CardContent>
         </Card>
       )}
+      </main>
     </div>
   );
 }

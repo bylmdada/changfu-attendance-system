@@ -1,24 +1,28 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   Megaphone, Plus, Search, Filter, Edit2, Trash2, Download, 
   FileText, User, Calendar, Clock, AlertTriangle, CheckCircle,
-  Eye, EyeOff, Upload, X, Building2
+  Eye, EyeOff, Upload, X, Building2, Pin, ChevronDown, ChevronUp
 } from 'lucide-react';
 import { DEPARTMENT_OPTIONS } from '@/constants/departments';
 import { fetchWithCSRF, fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import ApprovalProgress, { ApprovalReviewRecord } from '@/components/ApprovalProgress';
+
 
 interface Announcement {
   id: number;
   title: string;
   content: string;
   priority: 'HIGH' | 'NORMAL' | 'LOW';
+  category: 'PERSONNEL' | 'POLICY' | 'EVENT' | 'SYSTEM' | 'BENEFITS' | 'URGENT' | 'GENERAL';
   publisherId: number;
   isPublished: boolean;
   publishedAt?: string;
   expiryDate?: string;
+  scheduledPublishAt?: string; // 定時發布時間
   
   // 新增：部門相關字段
   targetDepartments?: string; // JSON格式的部門列表
@@ -79,12 +83,44 @@ const PRIORITY_BORDER = {
   LOW: 'border-l-gray-500'
 };
 
+// 公告類型常數
+const CATEGORY_OPTIONS = [
+  { value: 'PERSONNEL', label: '人事公告', icon: '🟣', color: 'bg-purple-100 text-purple-800 border-purple-200' },
+  { value: 'POLICY', label: '政策規定', icon: '🟢', color: 'bg-blue-100 text-blue-800 border-blue-200' },
+  { value: 'EVENT', label: '活動通知', icon: '🟢', color: 'bg-green-100 text-green-800 border-green-200' },
+  { value: 'SYSTEM', label: '系統公告', icon: '⚪', color: 'bg-gray-100 text-gray-800 border-gray-200' },
+  { value: 'BENEFITS', label: '福利通知', icon: '🟡', color: 'bg-yellow-100 text-yellow-800 border-yellow-200' },
+  { value: 'URGENT', label: '緊急通知', icon: '🔴', color: 'bg-red-100 text-red-800 border-red-200' },
+  { value: 'GENERAL', label: '一般通知', icon: '⚪', color: 'bg-slate-100 text-slate-800 border-slate-200' }
+];
+
+const CATEGORY_LABELS: Record<string, string> = {
+  PERSONNEL: '人事公告',
+  POLICY: '政策規定',
+  EVENT: '活動通知',
+  SYSTEM: '系統公告',
+  BENEFITS: '福利通知',
+  URGENT: '緊急通知',
+  GENERAL: '一般通知'
+};
+
+const CATEGORY_COLORS: Record<string, string> = {
+  PERSONNEL: 'bg-purple-100 text-purple-800',
+  POLICY: 'bg-blue-100 text-blue-800',
+  EVENT: 'bg-green-100 text-green-800',
+  SYSTEM: 'bg-gray-100 text-gray-800',
+  BENEFITS: 'bg-yellow-100 text-yellow-800',
+  URGENT: 'bg-red-100 text-red-800',
+  GENERAL: 'bg-slate-100 text-slate-800'
+};
+
 export default function AnnouncementsPage() {
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [filteredAnnouncements, setFilteredAnnouncements] = useState<Announcement[]>([]);
   const [loading, setLoading] = useState(true);
   const [userLoading, setUserLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [user, setUser] = useState<User | null>(null);
   const [showNewAnnouncementForm, setShowNewAnnouncementForm] = useState(false);
   const [showEditForm, setShowEditForm] = useState(false);
@@ -95,8 +131,10 @@ export default function AnnouncementsPage() {
     title: '',
     content: '',
     priority: 'NORMAL' as 'HIGH' | 'NORMAL' | 'LOW',
+    category: 'GENERAL' as 'PERSONNEL' | 'POLICY' | 'EVENT' | 'SYSTEM' | 'BENEFITS' | 'URGENT' | 'GENERAL',
     isPublished: false,
     expiryDate: '',
+    scheduledPublishAt: '', // 定時發布時間
     // 新增：部門相關字段
     isGlobalAnnouncement: true, // 預設為全員通告
     selectedDepartments: [] as string[] // 選定的部門列表
@@ -107,6 +145,7 @@ export default function AnnouncementsPage() {
   // 篩選狀態
   const [filters, setFilters] = useState({
     priority: '',
+    category: '',
     isPublished: '',
     search: ''
   });
@@ -129,8 +168,14 @@ export default function AnnouncementsPage() {
   // 批量選擇狀態
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
 
-  // 定時發布狀態
-  const [schedulePublish, setSchedulePublish] = useState<{ date: string; time: string } | null>(null);
+  // 審核歷程
+  const [approvalHistoryId, setApprovalHistoryId] = useState<number | null>(null);
+  const [approvalData, setApprovalData] = useState<{
+    currentLevel: number;
+    maxLevel: number;
+    status: string;
+    reviews: ApprovalReviewRecord[];
+  } | null>(null);
 
   useEffect(() => {
     fetchCurrentUser();
@@ -142,6 +187,10 @@ export default function AnnouncementsPage() {
 
     if (filters.priority) {
       filtered = filtered.filter(ann => ann.priority === filters.priority);
+    }
+
+    if (filters.category) {
+      filtered = filtered.filter(ann => ann.category === filters.category);
     }
 
     if (filters.isPublished !== '') {
@@ -227,9 +276,15 @@ export default function AnnouncementsPage() {
       formData.append('title', newAnnouncement.title);
       formData.append('content', newAnnouncement.content);
       formData.append('priority', newAnnouncement.priority);
+      formData.append('category', newAnnouncement.category);
       formData.append('isPublished', newAnnouncement.isPublished.toString());
       if (newAnnouncement.expiryDate) {
         formData.append('expiryDate', newAnnouncement.expiryDate);
+      }
+      
+      // 定時發布
+      if (newAnnouncement.scheduledPublishAt) {
+        formData.append('scheduledPublishAt', newAnnouncement.scheduledPublishAt);
       }
 
       // 新增：部門相關數據
@@ -285,6 +340,7 @@ export default function AnnouncementsPage() {
           title: editingAnnouncement.title,
           content: editingAnnouncement.content,
           priority: editingAnnouncement.priority,
+          category: editingAnnouncement.category || 'GENERAL',
           isPublished: editingAnnouncement.isPublished,
           expiryDate: editingAnnouncement.expiryDate || null,
           isGlobalAnnouncement: editingAnnouncement.isGlobalAnnouncement,
@@ -381,8 +437,10 @@ export default function AnnouncementsPage() {
       title: `${announcement.title} (複製)`,
       content: announcement.content,
       priority: announcement.priority,
+      category: announcement.category || 'GENERAL',
       isPublished: false,
       expiryDate: '',
+      scheduledPublishAt: '',
       isGlobalAnnouncement: announcement.isGlobalAnnouncement ?? true,
       selectedDepartments: announcement.targetDepartments 
         ? JSON.parse(announcement.targetDepartments) 
@@ -480,8 +538,12 @@ export default function AnnouncementsPage() {
     }));
   };
 
-  // 排序公告
+  // 排序公告（緊急通知自動置頂）
   const sortedAnnouncements = [...filteredAnnouncements].sort((a, b) => {
+    // 緊急通知優先置頂
+    if (a.category === 'URGENT' && b.category !== 'URGENT') return -1;
+    if (a.category !== 'URGENT' && b.category === 'URGENT') return 1;
+    
     const direction = sortConfig.direction === 'asc' ? 1 : -1;
     
     switch (sortConfig.field) {
@@ -506,17 +568,6 @@ export default function AnnouncementsPage() {
   // 開啟預覽
   const openPreview = (announcement: Announcement) => {
     setPreviewAnnouncement(announcement);
-  };
-
-  // 設定定時發布
-  const handleSchedulePublish = () => {
-    if (!schedulePublish?.date || !schedulePublish?.time) {
-      showToast('error', '請設定發布日期和時間');
-      return;
-    }
-    // 暫時用 Toast 提示（實際定時發布需後端支持）
-    showToast('success', `已設定於 ${schedulePublish.date} ${schedulePublish.time} 發布`);
-    setSchedulePublish(null);
   };
 
   const handleDownloadAttachment = async (attachmentId: number, fileName: string) => {
@@ -548,8 +599,10 @@ export default function AnnouncementsPage() {
       title: '',
       content: '',
       priority: 'NORMAL',
+      category: 'GENERAL',
       isPublished: false,
       expiryDate: '',
+      scheduledPublishAt: '',
       isGlobalAnnouncement: true,
       selectedDepartments: []
     });
@@ -595,6 +648,36 @@ export default function AnnouncementsPage() {
     const sizes = ['Bytes', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  };
+
+  // 顯示審核歷程
+  const handleShowApprovalHistory = async (announcementId: number) => {
+    if (approvalHistoryId === announcementId) {
+      setApprovalHistoryId(null);
+      setApprovalData(null);
+      return;
+    }
+    
+    setApprovalHistoryId(announcementId);
+    setApprovalData(null);
+    
+    try {
+      const response = await fetch(`/api/approval-reviews?requestType=ANNOUNCEMENT&requestId=${announcementId}`, {
+        credentials: 'include'
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        setApprovalData({
+          currentLevel: data.currentLevel,
+          maxLevel: data.maxLevel,
+          status: data.status,
+          reviews: data.reviews
+        });
+      }
+    } catch (error) {
+      console.error('取得審核歷程失敗:', error);
+    }
   };
 
   if (loading) {
@@ -653,7 +736,7 @@ export default function AnnouncementsPage() {
         </div>
 
         {/* 統計卡片 */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-6 mb-8">
           <div className="bg-white p-6 rounded-lg shadow">
             <div className="flex items-center">
               <FileText className="w-8 h-8 text-blue-600" />
@@ -678,9 +761,21 @@ export default function AnnouncementsPage() {
             </div>
           </div>
 
+          <div className="bg-white p-6 rounded-lg shadow border-l-4 border-red-500">
+            <div className="flex items-center">
+              <Pin className="w-8 h-8 text-red-600 -rotate-45" />
+              <div className="ml-4">
+                <p className="text-sm font-medium text-gray-600">緊急通知</p>
+                <p className="text-2xl font-bold text-red-600">
+                  {(announcements || []).filter(ann => ann.category === 'URGENT').length}
+                </p>
+              </div>
+            </div>
+          </div>
+
           <div className="bg-white p-6 rounded-lg shadow">
             <div className="flex items-center">
-              <AlertTriangle className="w-8 h-8 text-red-600" />
+              <AlertTriangle className="w-8 h-8 text-orange-600" />
               <div className="ml-4">
                 <p className="text-sm font-medium text-gray-600">高優先級</p>
                 <p className="text-2xl font-bold text-gray-900">
@@ -690,18 +785,15 @@ export default function AnnouncementsPage() {
             </div>
           </div>
 
-          <div className="bg-white p-6 rounded-lg shadow">
+          <div className="bg-white p-6 rounded-lg shadow border-l-4 border-yellow-500">
             <div className="flex items-center">
               <Clock className="w-8 h-8 text-yellow-600" />
               <div className="ml-4">
-                <p className="text-sm font-medium text-gray-600">本月新增</p>
-                <p className="text-2xl font-bold text-gray-900">
-                  {(announcements || []).filter(ann => {
-                    const created = new Date(ann.createdAt);
-                    const now = new Date();
-                    return created.getMonth() === now.getMonth() && 
-                           created.getFullYear() === now.getFullYear();
-                  }).length}
+                <p className="text-sm font-medium text-gray-600">待定時發布</p>
+                <p className="text-2xl font-bold text-yellow-600">
+                  {(announcements || []).filter(ann => 
+                    ann.scheduledPublishAt && !ann.isPublished
+                  ).length}
                 </p>
               </div>
             </div>
@@ -735,12 +827,26 @@ export default function AnnouncementsPage() {
               <select
                 value={filters.priority}
                 onChange={(e) => setFilters({ ...filters, priority: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900"
               >
                 <option value="">全部優先級</option>
                 <option value="HIGH">高</option>
                 <option value="NORMAL">普通</option>
                 <option value="LOW">低</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">公告類型</label>
+              <select
+                value={filters.category}
+                onChange={(e) => setFilters({ ...filters, category: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900"
+              >
+                <option value="">全部類型</option>
+                {CATEGORY_OPTIONS.map(cat => (
+                  <option key={cat.value} value={cat.value}>{cat.label}</option>
+                ))}
               </select>
             </div>
 
@@ -750,7 +856,7 @@ export default function AnnouncementsPage() {
                 <select
                   value={filters.isPublished}
                   onChange={(e) => setFilters({ ...filters, isPublished: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900"
                 >
                   <option value="">全部狀態</option>
                   <option value="true">已發布</option>
@@ -830,7 +936,14 @@ export default function AnnouncementsPage() {
         {/* 公告列表 */}
         <div className="space-y-6">
           {sortedAnnouncements.map((announcement) => (
-            <div key={announcement.id} className={`bg-white rounded-lg shadow border-l-4 ${PRIORITY_BORDER[announcement.priority]} ${selectedIds.has(announcement.id) ? 'ring-2 ring-blue-400' : ''}`}>
+            <div 
+              key={announcement.id} 
+              className={`bg-white rounded-lg shadow border-l-4 ${
+                announcement.category === 'URGENT' 
+                  ? 'border-l-red-500 bg-red-50/30' 
+                  : PRIORITY_BORDER[announcement.priority]
+              } ${selectedIds.has(announcement.id) ? 'ring-2 ring-blue-400' : ''}`}
+            >
               <div className="p-6">
                 <div className="flex items-start justify-between mb-4">
                   {/* 勾選框 */}
@@ -846,30 +959,42 @@ export default function AnnouncementsPage() {
                   )}
                   
                   <div className="flex-1">
-                    <div className="flex items-center mb-2">
-                      <h3 className="text-xl font-bold text-gray-900 mr-3">
+                    <div className="flex items-center mb-2 flex-wrap gap-2">
+                      {announcement.category === 'URGENT' && (
+                        <span title="置頂"><Pin className="w-5 h-5 text-red-500 -rotate-45" /></span>
+                      )}
+                      <h3 className="text-xl font-bold text-gray-900">
                         {announcement.title}
                       </h3>
-                      <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full mr-2 ${PRIORITY_COLORS[announcement.priority]}`}>
+                      <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${CATEGORY_COLORS[announcement.category] || CATEGORY_COLORS.GENERAL}`}>
+                        {CATEGORY_LABELS[announcement.category] || '一般通知'}
+                      </span>
+                      <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${PRIORITY_COLORS[announcement.priority]}`}>
                         {PRIORITY_LABELS[announcement.priority]}
                       </span>
-                      {/* 快速發布/取消狀態按鈕 */}
                       {canManage ? (
-                        <button
-                          onClick={() => handleTogglePublish(announcement)}
-                          className={`flex items-center gap-1 px-2 py-1 rounded text-xs ${
-                            announcement.isPublished 
-                              ? 'bg-green-50 text-green-700 hover:bg-green-100' 
-                              : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                          } transition-colors`}
-                          title={announcement.isPublished ? '點擊取消發布' : '點擊發布'}
-                        >
-                          {announcement.isPublished ? (
-                            <><Eye className="w-3 h-3" /> 已發布</>
-                          ) : (
-                            <><EyeOff className="w-3 h-3" /> 草稿</>
-                          )}
-                        </button>
+                        announcement.scheduledPublishAt && !announcement.isPublished ? (
+                          <span className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-yellow-50 text-yellow-700">
+                            <Clock className="w-3 h-3" />
+                            定時發布: {new Date(announcement.scheduledPublishAt).toLocaleString('zh-TW')}
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => handleTogglePublish(announcement)}
+                            className={`flex items-center gap-1 px-2 py-1 rounded text-xs ${
+                              announcement.isPublished 
+                                ? 'bg-green-50 text-green-700 hover:bg-green-100' 
+                                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                            } transition-colors`}
+                            title={announcement.isPublished ? '點擊取消發布' : '點擊發布'}
+                          >
+                            {announcement.isPublished ? (
+                              <><Eye className="w-3 h-3" /> 已發布</>
+                            ) : (
+                              <><EyeOff className="w-3 h-3" /> 草稿</>
+                            )}
+                          </button>
+                        )
                       ) : (
                         <div className="flex items-center">
                           {announcement.isPublished ? (
@@ -1061,6 +1186,19 @@ export default function AnnouncementsPage() {
 
                 <div className="grid grid-cols-2 gap-4">
                   <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">公告類型</label>
+                    <select
+                      value={newAnnouncement.category}
+                      onChange={(e) => setNewAnnouncement({ ...newAnnouncement, category: e.target.value as typeof newAnnouncement.category })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
+                    >
+                      {CATEGORY_OPTIONS.map(cat => (
+                        <option key={cat.value} value={cat.value}>{cat.label}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">優先級</label>
                     <select
                       value={newAnnouncement.priority}
@@ -1072,7 +1210,9 @@ export default function AnnouncementsPage() {
                       <option value="LOW">低</option>
                     </select>
                   </div>
+                </div>
 
+                <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">到期日期</label>
                     <input
@@ -1082,6 +1222,18 @@ export default function AnnouncementsPage() {
                       className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
                     />
                     <p className="text-xs text-gray-500 mt-1">留空表示不會過期</p>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">定時發布</label>
+                    <input
+                      type="datetime-local"
+                      value={newAnnouncement.scheduledPublishAt}
+                      onChange={(e) => setNewAnnouncement({ ...newAnnouncement, scheduledPublishAt: e.target.value })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
+                      min={new Date().toISOString().slice(0, 16)}
+                    />
+                    <p className="text-xs text-gray-500 mt-1">留空表示立即發布（若已勾選發布）</p>
                   </div>
                 </div>
 
@@ -1264,6 +1416,19 @@ export default function AnnouncementsPage() {
 
                 <div className="grid grid-cols-2 gap-4">
                   <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">公告類型</label>
+                    <select
+                      value={editingAnnouncement.category || 'GENERAL'}
+                      onChange={(e) => setEditingAnnouncement({ ...editingAnnouncement, category: e.target.value as Announcement['category'] })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
+                    >
+                      {CATEGORY_OPTIONS.map(cat => (
+                        <option key={cat.value} value={cat.value}>{cat.label}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">優先級</label>
                     <select
                       value={editingAnnouncement.priority}
@@ -1275,16 +1440,16 @@ export default function AnnouncementsPage() {
                       <option value="LOW">低</option>
                     </select>
                   </div>
+                </div>
 
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">到期日期</label>
-                    <input
-                      type="date"
-                      value={editingAnnouncement.expiryDate ? editingAnnouncement.expiryDate.split('T')[0] : ''}
-                      onChange={(e) => setEditingAnnouncement({ ...editingAnnouncement, expiryDate: e.target.value || undefined })}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
-                    />
-                  </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">到期日期</label>
+                  <input
+                    type="date"
+                    value={editingAnnouncement.expiryDate ? editingAnnouncement.expiryDate.split('T')[0] : ''}
+                    onChange={(e) => setEditingAnnouncement({ ...editingAnnouncement, expiryDate: e.target.value || undefined })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
+                  />
                 </div>
 
                 {/* 編輯：公告對象設定 */}
@@ -1466,10 +1631,13 @@ export default function AnnouncementsPage() {
               {/* 預覽內容 */}
               <div className={`bg-white rounded-lg shadow border-l-4 ${PRIORITY_BORDER[previewAnnouncement.priority]}`}>
                 <div className="p-6">
-                  <div className="flex items-center mb-3">
-                    <h3 className="text-2xl font-bold text-gray-900 mr-3">
+                  <div className="flex items-center mb-3 flex-wrap gap-2">
+                    <h3 className="text-2xl font-bold text-gray-900">
                       {previewAnnouncement.title}
                     </h3>
+                    <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${CATEGORY_COLORS[previewAnnouncement.category] || CATEGORY_COLORS.GENERAL}`}>
+                      {CATEGORY_LABELS[previewAnnouncement.category] || '一般通知'}
+                    </span>
                     <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${PRIORITY_COLORS[previewAnnouncement.priority]}`}>
                       {PRIORITY_LABELS[previewAnnouncement.priority]}
                     </span>
@@ -1494,6 +1662,34 @@ export default function AnnouncementsPage() {
                 </div>
               </div>
               
+              {/* 審核歷程區塊 */}
+              <div className="mt-4 border-t pt-4">
+                <button
+                  onClick={() => handleShowApprovalHistory(previewAnnouncement.id)}
+                  className="flex items-center gap-2 px-4 py-2 border border-blue-300 text-blue-700 rounded-lg hover:bg-blue-50"
+                >
+                  {approvalHistoryId === previewAnnouncement.id ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                  {approvalHistoryId === previewAnnouncement.id ? '隱藏審核歷程' : '查看審核歷程'}
+                </button>
+                
+                {approvalHistoryId === previewAnnouncement.id && (
+                  <div className="mt-4">
+                    {approvalData ? (
+                      <ApprovalProgress
+                        currentLevel={approvalData.currentLevel}
+                        maxLevel={approvalData.maxLevel}
+                        status={approvalData.status}
+                        reviews={approvalData.reviews}
+                      />
+                    ) : (
+                      <div className="text-center py-4 text-gray-500">
+                        載入審核歷程中...
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+              
               <div className="flex justify-end pt-4">
                 <button
                   onClick={() => setPreviewAnnouncement(null)}
@@ -1507,51 +1703,6 @@ export default function AnnouncementsPage() {
         </div>
       )}
 
-      {/* 定時發布對話框 */}
-      {schedulePublish !== null && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4 p-6">
-            <div className="flex items-center text-blue-600 mb-4">
-              <Clock className="w-8 h-8 mr-3" />
-              <h3 className="text-xl font-semibold">定時發布</h3>
-            </div>
-            <div className="space-y-4 mb-6">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">發布日期</label>
-                <input
-                  type="date"
-                  value={schedulePublish?.date || ''}
-                  onChange={(e) => setSchedulePublish(prev => ({ ...prev!, date: e.target.value }))}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">發布時間</label>
-                <input
-                  type="time"
-                  value={schedulePublish?.time || ''}
-                  onChange={(e) => setSchedulePublish(prev => ({ ...prev!, time: e.target.value }))}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-            </div>
-            <div className="flex justify-end space-x-3">
-              <button
-                onClick={() => setSchedulePublish(null)}
-                className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
-              >
-                取消
-              </button>
-              <button
-                onClick={handleSchedulePublish}
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-              >
-                確認設定
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </AuthenticatedLayout>
   );
 }

@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { CheckCircle, XCircle, AlertCircle, Clock, CalendarDays, User, Filter, Search, Plus, Pencil, Trash2, Download } from 'lucide-react';
+import { CheckCircle, XCircle, AlertCircle, Clock, CalendarDays, User, Filter, Search, Plus, Pencil, Trash2, X } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 
@@ -40,6 +40,7 @@ interface ShiftExchangeRequest {
   shiftDate: string; // 調班日期
   originalShiftType: string; // 原班別
   newShiftType: string; // 新班別
+  leaveType?: string; // 請假類型（當FDL時）
   reason: string;
   status: 'PENDING' | 'APPROVED' | 'REJECTED';
   approvedBy?: number;
@@ -71,7 +72,23 @@ const SHIFT_TYPE_LABELS = {
   RD: 'RD (例假)',
   rd: 'rd (休息日)',
   FDL: 'FDL (全日請假)',
-  OFF: 'OFF (休假)'
+  OFF: 'OFF (休假)',
+  TD: 'TD (天災假)'
+};
+
+// 請假類型標籤
+const LEAVE_TYPES = {
+  ANNUAL: '特休假',
+  COMPENSATORY: '補休',
+  SICK: '病假',
+  PERSONAL: '事假',
+  MARRIAGE: '婚假',
+  BEREAVEMENT: '喪假',
+  MATERNITY: '產假',
+  PATERNITY_CHECKUP: '陪產檢及陪產假',
+  PRENATAL_CHECKUP: '產檢假',
+  OFFICIAL: '公假',
+  OCCUPATIONAL_INJURY: '公傷假'
 };
 
 const STATUS_LABELS = {
@@ -120,6 +137,7 @@ export default function ShiftExchangePage() {
     shiftDate: '', // 調班日期
     originalShiftType: 'A', // 原班別
     newShiftType: 'A', // 新班別
+    leaveType: '', // 請假類型（當選擇FDL時必填）
     reason: '',
     reasonDetail: '' // 詳細說明
   });
@@ -131,6 +149,7 @@ export default function ShiftExchangePage() {
     shiftDate: '',
     originalShiftType: 'A',
     newShiftType: 'A',
+    leaveType: '',
     reason: '',
     reasonDetail: ''
   });
@@ -296,6 +315,12 @@ export default function ShiftExchangePage() {
       return;
     }
 
+    // 驗證：如果選擇FDL，必須選擇請假類型
+    if (newRequest.newShiftType === 'FDL' && !newRequest.leaveType) {
+      alert('調班為全日請假時，請選擇請假類型');
+      return;
+    }
+
     try {
       // 先探測 GET 以喚起路由
       const ping = await fetch('/api/shift-exchanges', { method: 'GET', credentials: 'include' });
@@ -315,6 +340,7 @@ export default function ShiftExchangePage() {
             shiftDate: newRequest.shiftDate,
             originalShiftType: newRequest.originalShiftType,
             newShiftType: newRequest.newShiftType,
+            leaveType: newRequest.newShiftType === 'FDL' ? newRequest.leaveType : undefined,
             reason: newRequest.reason === '其它' 
               ? `${newRequest.reason}：${newRequest.reasonDetail}` 
               : newRequest.reason
@@ -334,6 +360,7 @@ export default function ShiftExchangePage() {
           shiftDate: '',
           originalShiftType: 'A',
           newShiftType: 'A',
+          leaveType: '',
           reason: '',
           reasonDetail: ''
         });
@@ -624,7 +651,8 @@ export default function ShiftExchangePage() {
     }));
   };
 
-  // 匹出 CSV
+  // 匯出 CSV
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const exportToCSV = () => {
     const headers = ['申請日期', '申請人', '調班日期', '原班別', '新班別', '原因', '狀態', '審核人', '審核時間'];
     const rows = sortedRequests.map(r => [
@@ -686,6 +714,7 @@ export default function ShiftExchangePage() {
       shiftDate: r.shiftDate?.substring(0,10),
       originalShiftType: r.originalShiftType,
       newShiftType: r.newShiftType,
+      leaveType: r.leaveType || '',
       reason: reason,
       reasonDetail: reasonDetail
     });
@@ -998,6 +1027,7 @@ export default function ShiftExchangePage() {
                     targetWorkDate?: string;
                     originalShiftType?: string;
                     newShiftType?: string;
+                    leaveType?: string;
                     reason?: string;
                     status?: 'PENDING' | 'APPROVED' | 'REJECTED';
                     approver?: { id?: number; name?: string } | null;
@@ -1065,9 +1095,16 @@ export default function ShiftExchangePage() {
                          </span>
                        </td>
                        <td className="px-6 py-4 whitespace-nowrap">
-                         <span className="px-2 py-1 text-xs font-medium bg-green-100 text-green-800 rounded-full">
-                           {SHIFT_TYPE_LABELS[(r.newShiftType || 'A') as keyof typeof SHIFT_TYPE_LABELS]}
-                         </span>
+                         <div className="flex flex-col">
+                           <span className="px-2 py-1 text-xs font-medium bg-green-100 text-green-800 rounded-full inline-block w-fit">
+                             {SHIFT_TYPE_LABELS[(r.newShiftType || 'A') as keyof typeof SHIFT_TYPE_LABELS]}
+                           </span>
+                           {r.newShiftType === 'FDL' && r.leaveType && (
+                             <span className="mt-1 text-xs text-yellow-700">
+                               {(LEAVE_TYPES as Record<string, string>)[r.leaveType] || r.leaveType}
+                             </span>
+                           )}
+                         </div>
                        </td>
                        <td className="px-6 py-4">
                          <div className="text-sm text-gray-900 max-w-xs truncate" title={r.reason}>
@@ -1084,7 +1121,7 @@ export default function ShiftExchangePage() {
                        </td>
                        <td className="px-6 py-4 whitespace-nowrap">
                         {r.status !== 'PENDING' && r.approver && (
-                          <div className="text-sm">
+                          <div className="text-sm text-gray-900">
                             <div className="font-medium">{r.approver.name}</div>
                             <div className="text-xs text-gray-500">
                               {(r.approver as Employee)?.employeeId || 'N/A'} • {(r.approver as Employee)?.position || 'N/A'}
@@ -1158,9 +1195,9 @@ export default function ShiftExchangePage() {
               <h3 className="text-lg font-medium text-gray-900">申請調班</h3>
               <button
                 onClick={() => setShowNewRequestForm(false)}
-                className="text-gray-400 hover:text-gray-600"
+                className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
               >
-                <XCircle className="w-6 h-6" />
+                <X className="w-6 h-6" />
               </button>
             </div>
 
@@ -1218,7 +1255,14 @@ export default function ShiftExchangePage() {
                     <label className="block text-sm font-medium text-gray-700 mb-1">新班別</label>
                     <select
                       value={newRequest.newShiftType}
-                      onChange={(e) => setNewRequest({ ...newRequest, newShiftType: e.target.value })}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        setNewRequest({ 
+                          ...newRequest, 
+                          newShiftType: value,
+                          leaveType: value === 'FDL' ? newRequest.leaveType : '' // 非FDL時清空leaveType
+                        });
+                      }}
                       className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
                       required
                     >
@@ -1228,6 +1272,29 @@ export default function ShiftExchangePage() {
                     </select>
                   </div>
                 </div>
+
+                {/* 請假類型 - 當選擇FDL時顯示 */}
+                {newRequest.newShiftType === 'FDL' && (
+                  <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                    <label className="block text-sm font-medium text-yellow-800 mb-2">
+                      請假類型 <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      value={newRequest.leaveType}
+                      onChange={(e) => setNewRequest({ ...newRequest, leaveType: e.target.value })}
+                      className="w-full px-3 py-2 border border-yellow-300 rounded-md focus:outline-none focus:ring-2 focus:ring-yellow-500 text-black bg-white"
+                      required
+                    >
+                      <option value="">請選擇請假類型</option>
+                      {Object.entries(LEAVE_TYPES).map(([key, label]) => (
+                        <option key={key} value={key}>{label}</option>
+                      ))}
+                    </select>
+                    <p className="text-xs text-yellow-700 mt-2">
+                      調班為全日請假時，請選擇對應的請假類型以便正確計算薪資
+                    </p>
+                  </div>
+                )}
               </div>
 
               <div>
@@ -1302,8 +1369,8 @@ export default function ShiftExchangePage() {
           <div className="relative top-20 mx-auto p-5 border w-full max-w-2xl bg-white rounded-lg shadow-lg">
             <div className="flex items-center justify-between border-b border-gray-200 pb-4 mb-6">
               <h3 className="text-lg font-medium text-gray-900">編輯調班申請</h3>
-              <button onClick={() => setShowEditModal(false)} className="text-gray-400 hover:text-gray-600">
-                <XCircle className="w-6 h-6" />
+              <button onClick={() => setShowEditModal(false)} className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors">
+                <X className="w-6 h-6" />
               </button>
             </div>
 

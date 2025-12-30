@@ -1,73 +1,51 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import jwt from 'jsonwebtoken';
-import fs from 'fs';
-import path from 'path';
+import { getUserFromRequest } from '@/lib/auth';
 
-interface ScheduleData {
-  id: number;
-  employeeId: number;
-  workDate: string;
-  shiftType: string;
-  startTime: string;
-  endTime: string;
-  breakTime: number;
-  createdAt: string;
-  updatedAt: string;
-  employee: {
-    id: number;
-    employeeId: string;
-    name: string;
-    department: string;
-    position: string;
-  };
-}
-
-interface JWTPayload {
-  userId: number;
-  role: string;
-}
-
-async function getCurrentUser(request: NextRequest) {
-  try {
-    const token = request.cookies.get('auth-token')?.value;
-    if (!token) return null;
-
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key') as JWTPayload;
-    const user = await prisma.user.findUnique({
-      where: { id: decoded.userId },
-      include: {
-        employee: true
-      }
-    });
-
-    return user;
-  } catch {
-    return null;
+// 計算用戶可管理的據點列表
+async function getManageableLocations(user: { role: string; employeeId?: number }): Promise<string[]> {
+  if (user.role === 'ADMIN' || user.role === 'HR') {
+    return []; // 空陣列代表不限
   }
-}
-
-// 從JSON文件讀取班表數據
-function readSchedulesFromJSON(): ScheduleData[] {
-  try {
-    const dataPath = path.join(process.cwd(), 'data', 'schedules.json');
-    const data = fs.readFileSync(dataPath, 'utf8');
-    return JSON.parse(data);
-  } catch (error) {
-    console.error('讀取班表數據失敗:', error);
-    return [];
+  
+  if (!user.employeeId) return [];
+  
+  const locations: string[] = [];
+  
+  // 1. 部門主管：可管理自己部門
+  const managerRecord = await prisma.departmentManager.findFirst({
+    where: { employeeId: user.employeeId, isActive: true }
+  });
+  if (managerRecord) {
+    locations.push(managerRecord.department);
   }
+  
+  // 2. 授權員工：可管理 scheduleManagement 中的據點
+  const permRecord = await prisma.attendancePermission.findUnique({
+    where: { employeeId: user.employeeId }
+  });
+  if (permRecord?.permissions) {
+    const permissions = permRecord.permissions as { scheduleManagement?: string[] };
+    if (Array.isArray(permissions.scheduleManagement)) {
+      locations.push(...permissions.scheduleManagement);
+    }
+  }
+  
+  return [...new Set(locations)];
 }
 
 export async function GET(request: NextRequest) {
   try {
-    const user = await getCurrentUser(request);
+    const user = getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
 
-    // 只有管理員和HR可以查詢所有員工班表
-    if (user.role !== 'ADMIN' && user.role !== 'HR') {
+    const isFullAdmin = user.role === 'ADMIN' || user.role === 'HR';
+    const manageableLocations = await getManageableLocations(user);
+
+    // 非管理員且無管理權限，無法搜尋
+    if (!isFullAdmin && manageableLocations.length === 0) {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
 
@@ -75,69 +53,75 @@ export async function GET(request: NextRequest) {
     const yearMonth = searchParams.get('yearMonth');
     const employeeId = searchParams.get('employeeId');
     const employeeName = searchParams.get('employeeName');
+    const department = searchParams.get('department');
 
-    // 從JSON文件讀取數據
-    const allSchedules = readSchedulesFromJSON();
-    let filteredSchedules = allSchedules;
+    // 構建查詢條件
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const where: Record<string, any> = {};
+
+    // 非管理員只能查詢可管理的部門
+    if (!isFullAdmin && manageableLocations.length > 0) {
+      where.employee = { department: { in: manageableLocations } };
+    }
 
     // 按年月份篩選
     if (yearMonth) {
       const [year, month] = yearMonth.split('-');
-      filteredSchedules = filteredSchedules.filter((schedule: ScheduleData) => {
-        const scheduleDate = new Date(schedule.workDate);
-        return scheduleDate.getFullYear().toString() === year && 
-               (scheduleDate.getMonth() + 1).toString().padStart(2, '0') === month;
-      });
+      const startDate = `${year}-${month}-01`;
+      const endDate = `${year}-${month}-31`;
+      where.workDate = {
+        gte: startDate,
+        lte: endDate
+      };
     }
 
-    // 按員編篩選
-    if (employeeId) {
-      console.log('搜尋員編:', employeeId);
-      filteredSchedules = filteredSchedules.filter((schedule: ScheduleData) => {
-        const emp = schedule.employee;
-        if (!emp?.employeeId) return false;
-        
-        const empId = emp.employeeId.toLowerCase();
-        const searchId = employeeId.toLowerCase();
-        
-        // 直接比對
-        if (empId.includes(searchId)) return true;
-        
-        // 如果搜尋的是純數字（如0001），轉換為EMP格式
-        if (/^\d+$/.test(searchId)) {
-          const empWithPrefix = `emp${searchId.padStart(3, '0')}`;
-          console.log(`檢查數字轉EMP: ${searchId} -> ${empWithPrefix}, 比對 ${empId}`);
-          if (empId === empWithPrefix) return true;
+    // 按部門篩選（管理員可選擇任意部門，非管理員限制在可管理範圍內）
+    if (department) {
+      if (isFullAdmin || manageableLocations.includes(department)) {
+        where.employee = { ...where.employee, department };
+      }
+    }
+
+    // 按員編或姓名篩選
+    if (employeeId || employeeName) {
+      const employeeFilter: Record<string, unknown> = {};
+      if (employeeId) {
+        employeeFilter.employeeId = { contains: employeeId };
+      }
+      if (employeeName) {
+        employeeFilter.name = { contains: employeeName };
+      }
+      where.employee = { ...where.employee, ...employeeFilter };
+    }
+
+    // 從資料庫查詢
+    const schedules = await prisma.schedule.findMany({
+      where,
+      include: {
+        employee: {
+          select: {
+            id: true,
+            employeeId: true,
+            name: true,
+            department: true,
+            position: true
+          }
         }
-        
-        // 如果搜尋的是EMP開頭，也檢查純數字格式
-        if (searchId.startsWith('emp')) {
-          const numericPart = searchId.replace('emp', '');
-          console.log(`檢查EMP轉數字: ${searchId} -> ${numericPart}, 比對 ${empId}`);
-          if (empId.includes(numericPart)) return true;
-        }
-        
-        console.log(`員編比對失敗: 搜尋"${searchId}" vs 員工"${empId}"`);
-        return false;
-      });
-      console.log('員編篩選後結果數量:', filteredSchedules.length);
-    }
-
-    // 按姓名篩選
-    if (employeeName) {
-      filteredSchedules = filteredSchedules.filter((schedule: ScheduleData) => 
-        schedule.employee?.name?.includes(employeeName)
-      );
-    }
-
-    // 按日期排序
-    filteredSchedules.sort((a: ScheduleData, b: ScheduleData) => 
-      new Date(a.workDate).getTime() - new Date(b.workDate).getTime()
-    );
+      },
+      orderBy: { workDate: 'asc' }
+    });
 
     return NextResponse.json({
       success: true,
-      schedules: filteredSchedules
+      schedules: schedules.map(s => ({
+        id: s.id,
+        employeeId: s.employeeId,
+        workDate: s.workDate,
+        shiftType: s.shiftType,
+        startTime: s.startTime,
+        endTime: s.endTime,
+        employee: s.employee
+      }))
     });
 
   } catch (error) {

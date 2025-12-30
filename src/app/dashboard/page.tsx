@@ -2,13 +2,15 @@
 
 import { useEffect, useState } from 'react';
 import Image from 'next/image';
-import { Users, Clock, Calendar, DollarSign, LogOut, Timer, BarChart3, UserPlus, FileText, Key, Megaphone, X, AlertTriangle, ShoppingCart } from 'lucide-react';
+import { Users, Clock, Calendar, DollarSign, LogOut, Timer, BarChart3, UserPlus, FileText, Key, Megaphone, X, AlertTriangle, ShoppingCart, Heart, Cloud, Wallet } from 'lucide-react';
+import ResponsiveSidebar from '@/components/ResponsiveSidebar';
 
 interface Announcement {
   id: number;
   title: string;
   content: string;
   priority: 'HIGH' | 'NORMAL' | 'LOW';
+  category?: 'PERSONNEL' | 'POLICY' | 'EVENT' | 'SYSTEM' | 'BENEFITS' | 'URGENT' | 'GENERAL';
   isPublished: boolean;
   publishedAt?: string;
   expiryDate?: string;
@@ -71,6 +73,13 @@ export default function DashboardPage() {
   // 班表管理權限狀態（員工被授權管理的據點）
   const [hasSchedulePermission, setHasSchedulePermission] = useState(false);
 
+  // 班表確認狀態（待確認提醒）
+  const [scheduleConfirmStatus, setScheduleConfirmStatus] = useState<{
+    needsConfirmation: boolean;
+    yearMonth: string;
+    status: string;
+  } | null>(null);
+
   useEffect(() => {
     // 設定頁面標題
     document.title = '儀表板 - 長福會考勤系統';
@@ -92,6 +101,7 @@ export default function DashboardPage() {
       loadDashboardStats();
       loadCompLeaveBalance();
       loadAnnualLeaveBalance();
+      loadScheduleConfirmStatus(); // 載入班表確認狀態
       // 員工可能有班表管理權限
       if (user.role !== 'ADMIN' && user.role !== 'HR' && user.employee?.id) {
         loadSchedulePermission(user.employee.id);
@@ -294,6 +304,29 @@ export default function DashboardPage() {
     }
   };
 
+  // 載入班表確認狀態
+  const loadScheduleConfirmStatus = async () => {
+    try {
+      const now = new Date();
+      const yearMonth = `${now.getFullYear()}-${(now.getMonth() + 1).toString().padStart(2, '0')}`;
+      const response = await fetch(`/api/schedule-confirmation?type=my-status&yearMonth=${yearMonth}`, {
+        credentials: 'include'
+      });
+      if (response.ok) {
+        const data = await response.json();
+        // 如果狀態是 PENDING、NEED_RECONFIRM 或 EXPIRED，則需要提醒
+        const needsConfirm = ['PENDING', 'NEED_RECONFIRM', 'EXPIRED'].includes(data.status);
+        setScheduleConfirmStatus({
+          needsConfirmation: needsConfirm,
+          yearMonth,
+          status: data.status
+        });
+      }
+    } catch (error) {
+      console.error('載入班表確認狀態失敗:', error);
+    }
+  };
+
   const loadAnnouncements = async () => {
 
     try {
@@ -306,23 +339,33 @@ export default function DashboardPage() {
         console.log('📋 收到公告數據:', data.announcements?.length || 0, '筆');
         
         if (data.announcements && data.announcements.length > 0) {
-          // 只顯示已發布且未過期的高優先級公告
+          // 顯示已發布且未過期的高優先級或緊急通知公告
           const importantAnnouncements = data.announcements.filter((ann: Announcement) => {
             const now = new Date();
             const isNotExpired = !ann.expiryDate || new Date(ann.expiryDate) > now;
             const isPublished = ann.isPublished;
             const isHighPriority = ann.priority === 'HIGH';
+            const isUrgent = ann.category === 'URGENT';
             
             console.log('📢 公告篩選:', {
               title: ann.title,
               priority: ann.priority,
+              category: ann.category,
               isPublished,
               isNotExpired,
               isHighPriority,
-              shouldShow: isPublished && isNotExpired && isHighPriority
+              isUrgent,
+              shouldShow: isPublished && isNotExpired && (isHighPriority || isUrgent)
             });
             
-            return isPublished && isNotExpired && isHighPriority;
+            return isPublished && isNotExpired && (isHighPriority || isUrgent);
+          });
+          
+          // 緊急通知排在最前面
+          importantAnnouncements.sort((a: Announcement, b: Announcement) => {
+            if (a.category === 'URGENT' && b.category !== 'URGENT') return -1;
+            if (a.category !== 'URGENT' && b.category === 'URGENT') return 1;
+            return 0;
           });
           
           console.log('✅ 符合推播條件的公告:', importantAnnouncements.length, '筆');
@@ -364,10 +407,15 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <nav className="bg-white shadow-sm border-b border-gray-200">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      {/* 響應式側邊欄 */}
+      {user && <ResponsiveSidebar user={user} />}
+      
+      <nav className="bg-white shadow-sm border-b border-gray-200 sticky top-0 z-30">
+        <div className="max-w-full mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between h-16">
             <div className="flex items-center">
+              {/* 手機版留空間給側邊欄的漢堡按鈕 */}
+              <div className="w-10 lg:hidden"></div>
               <Image
                 src="/logo.png"
                 alt="長福會考勤系統 Logo"
@@ -376,10 +424,11 @@ export default function DashboardPage() {
                 className="object-contain"
                 priority
               />
-              <span className="ml-3 font-bold text-xl text-gray-900">長福會考勤系統</span>
+              <span className="ml-3 font-bold text-xl text-gray-900 hidden sm:block">長福會考勤系統</span>
+              <span className="ml-2 font-bold text-lg text-gray-900 sm:hidden">考勤系統</span>
             </div>
-            <div className="flex items-center space-x-4">
-              <div className="text-gray-700 font-medium text-base">
+            <div className="flex items-center space-x-2 sm:space-x-4">
+              <div className="hidden md:block text-gray-700 font-medium text-base">
                 歡迎，{user?.employee?.employeeId} {user?.employee?.name}
                 <span className="ml-2 px-2 py-1 bg-blue-100 text-blue-800 rounded-full text-xs">
                   {user?.role === 'ADMIN' ? '管理員' : user?.role === 'HR' ? 'HR' : '員工'}
@@ -390,14 +439,15 @@ export default function DashboardPage() {
                 className="flex items-center space-x-1 bg-red-600 hover:bg-red-700 text-white px-3 py-2 rounded-lg text-sm transition-colors"
               >
                 <LogOut className="w-4 h-4" />
-                <span>登出</span>
+                <span className="hidden sm:inline">登出</span>
               </button>
             </div>
           </div>
         </div>
       </nav>
 
-      <div className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
+      {/* 主內容區 - 桌面版有側邊欄時需偏移 */}
+      <div className="lg:pl-64 max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
         <div className="px-4 py-6 sm:px-0">
           <div className="mb-8">
             <h1 className="text-3xl font-bold text-gray-900">儀表板</h1>
@@ -473,7 +523,7 @@ export default function DashboardPage() {
           {/* 重要公告推播 */}
           {announcements.filter(ann => !dismissedAnnouncements.includes(ann.id)).map((announcement) => (
             <div key={announcement.id} className="mb-6">
-              <div className="bg-red-50 border-l-4 border-red-400 rounded-r-lg shadow-sm">
+              <div className={`${announcement.category === 'URGENT' ? 'bg-red-100' : 'bg-red-50'} border-l-4 border-red-400 rounded-r-lg shadow-sm`}>
                 <div className="flex items-start justify-between p-4">
                   <div className="flex items-start">
                     <div className="flex-shrink-0">
@@ -484,8 +534,12 @@ export default function DashboardPage() {
                         <h3 className="text-lg font-semibold text-red-800">
                           {announcement.title}
                         </h3>
-                        <span className="ml-2 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
-                          重要公告
+                        <span className={`ml-2 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                          announcement.category === 'URGENT' 
+                            ? 'bg-red-200 text-red-900' 
+                            : 'bg-red-100 text-red-800'
+                        }`}>
+                          {announcement.category === 'URGENT' ? '🚨 緊急通知' : '重要公告'}
                         </span>
                       </div>
                       <p className="text-red-700 leading-relaxed mb-3">
@@ -514,6 +568,42 @@ export default function DashboardPage() {
               </div>
             </div>
           ))}
+          
+          {/* 班表確認提醒 */}
+          {scheduleConfirmStatus?.needsConfirmation && (
+            <div className="mb-6">
+              <div className="bg-orange-50 border-l-4 border-orange-400 rounded-r-lg shadow-sm">
+                <div className="flex items-start justify-between p-4">
+                  <div className="flex items-start">
+                    <div className="flex-shrink-0">
+                      <Calendar className="w-6 h-6 text-orange-400" />
+                    </div>
+                    <div className="ml-3 flex-1">
+                      <div className="flex items-center mb-2">
+                        <h3 className="text-lg font-semibold text-orange-800">
+                          📋 班表待確認
+                        </h3>
+                        <span className="ml-2 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-orange-200 text-orange-900">
+                          {scheduleConfirmStatus.status === 'NEED_RECONFIRM' ? '🔄 需重新確認' : 
+                           scheduleConfirmStatus.status === 'EXPIRED' ? '⚠️ 已逾期' : '⏳ 待確認'}
+                        </span>
+                      </div>
+                      <p className="text-orange-700 leading-relaxed mb-3">
+                        您尚未確認 {scheduleConfirmStatus.yearMonth.replace('-', '年')}月 的班表安排，請前往「我的班表」頁面完成確認，否則將無法打卡。
+                      </p>
+                      <a
+                        href="/my-schedule"
+                        className="inline-flex items-center bg-orange-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-orange-700 transition-colors text-sm"
+                      >
+                        <Calendar className="w-4 h-4 mr-2" />
+                        前往確認班表
+                      </a>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
           
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
             {/* 員工權限顯示不同的統計卡片 */}
@@ -738,6 +828,8 @@ export default function DashboardPage() {
           <div className="bg-white shadow rounded-lg p-6">
             <h2 className="text-lg font-medium text-gray-900 mb-4">系統功能</h2>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              
+              {/* ======== 1. 考勤相關 ======== */}
               <a href="/attendance" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
                 <Clock className="h-8 w-8 text-blue-600 mb-2 group-hover:scale-110 transition-transform" />
                 <h3 className="font-medium text-gray-900">打卡管理</h3>
@@ -750,44 +842,44 @@ export default function DashboardPage() {
                 <p className="text-sm text-gray-500">查看歷史考勤記錄</p>
               </a>
 
-              {user?.role === 'ADMIN' && (
-                <a href="/employees" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
-                  <UserPlus className="h-8 w-8 text-purple-600 mb-2 group-hover:scale-110 transition-transform" />
-                  <h3 className="font-medium text-gray-900">員工管理</h3>
-                  <p className="text-sm text-gray-500">管理員工資料</p>
-                </a>
-              )}
-              
-              <a href="/leave-management" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
-                <Calendar className="h-8 w-8 text-yellow-600 mb-2 group-hover:scale-110 transition-transform" />
-                <h3 className="font-medium text-gray-900">請假管理</h3>
-                <p className="text-sm text-gray-500">申請請假、查看記錄</p>
-              </a>
-
               <a href="/missed-clock" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
                 <Clock className="h-8 w-8 text-red-600 mb-2 group-hover:scale-110 transition-transform" />
                 <h3 className="font-medium text-gray-900">忘打卡管理</h3>
                 <p className="text-sm text-gray-500">申請忘打卡、補登記錄</p>
               </a>
 
-              {(user?.role !== 'ADMIN' && user?.role !== 'HR') && (
-                <a href="/employee-payroll" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
-                  <DollarSign className="h-8 w-8 text-green-600 mb-2 group-hover:scale-110 transition-transform" />
-                  <h3 className="font-medium text-gray-900">薪資查詢</h3>
-                  <p className="text-sm text-gray-500">查看個人薪資紀錄</p>
+              {/* ======== 2. 班表相關 ======== */}
+              <a href="/my-schedule" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
+                <Calendar className="h-8 w-8 text-indigo-600 mb-2 group-hover:scale-110 transition-transform" />
+                <h3 className="font-medium text-gray-900">個人班表查詢</h3>
+                <p className="text-sm text-gray-500">查看個人班表安排</p>
+              </a>
+
+              {(user?.role === 'ADMIN' || user?.role === 'HR' || hasSchedulePermission) && (
+                <a href="/schedule-management" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
+                  <Calendar className="h-8 w-8 text-blue-600 mb-2 group-hover:scale-110 transition-transform" />
+                  <h3 className="font-medium text-gray-900">班表管理</h3>
+                  <p className="text-sm text-gray-500">{hasSchedulePermission && user?.role !== 'ADMIN' && user?.role !== 'HR' ? '管理授權據點班表' : '員工班表、班別安排'}</p>
                 </a>
               )}
+
+              <a href="/shift-exchange" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
+                <Calendar className="h-8 w-8 text-purple-600 mb-2 group-hover:scale-110 transition-transform" />
+                <h3 className="font-medium text-gray-900">調班管理</h3>
+                <p className="text-sm text-gray-500">{user?.role === 'ADMIN' || user?.role === 'HR' ? '調班申請審核與管理' : '申請調班及查看審核狀態'}</p>
+              </a>
+
+              {/* ======== 3. 請假/加班相關 ======== */}
+              <a href="/leave-management" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
+                <Calendar className="h-8 w-8 text-yellow-600 mb-2 group-hover:scale-110 transition-transform" />
+                <h3 className="font-medium text-gray-900">請假管理</h3>
+                <p className="text-sm text-gray-500">申請請假、查看記錄</p>
+              </a>
 
               <a href="/overtime-management" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
                 <Timer className="h-8 w-8 text-blue-600 mb-2 group-hover:scale-110 transition-transform" />
                 <h3 className="font-medium text-gray-900">加班管理</h3>
                 <p className="text-sm text-gray-500">申請加班、時數管理</p>
-              </a>
-
-              <a href="/purchase-requests" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
-                <ShoppingCart className="h-8 w-8 text-purple-600 mb-2 group-hover:scale-110 transition-transform" />
-                <h3 className="font-medium text-gray-900">請購單</h3>
-                <p className="text-sm text-gray-500">申請採購、查看審核狀態</p>
               </a>
 
               {user?.role === 'ADMIN' && (
@@ -798,19 +890,28 @@ export default function DashboardPage() {
                 </a>
               )}
 
-              {(user?.role === 'ADMIN' || user?.role === 'HR') && (
-                <a href="/announcements" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
-                  <Megaphone className="h-8 w-8 text-blue-600 mb-2 group-hover:scale-110 transition-transform" />
-                  <h3 className="font-medium text-gray-900">公告管理</h3>
-                  <p className="text-sm text-gray-500">發布系統公告、管理附件</p>
-                </a>
-              )}
+              <a href="/my-annual-leave" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
+                <Calendar className="h-8 w-8 text-teal-600 mb-2 group-hover:scale-110 transition-transform" />
+                <h3 className="font-medium text-gray-900">特休假查詢</h3>
+                <p className="text-sm text-gray-500">
+                  {(user?.role === 'ADMIN' || user?.role === 'HR') ? '查看全部員工特休狀況' : '查看個人特休假餘額'}
+                </p>
+              </a>
 
+              <a href="/pension-contribution" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
+                <Wallet className="h-8 w-8 text-indigo-600 mb-2 group-hover:scale-110 transition-transform" />
+                <h3 className="font-medium text-gray-900">勞退自提管理</h3>
+                <p className="text-sm text-gray-500">
+                  {(user?.role === 'ADMIN' || user?.role === 'HR') ? '審核員工自提申請' : '申請變更自提比例'}
+                </p>
+              </a>
+
+              {/* ======== 4. 薪資相關 ======== */}
               {(user?.role !== 'ADMIN' && user?.role !== 'HR') && (
-                <a href="/announcements/view" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
-                  <Megaphone className="h-8 w-8 text-blue-600 mb-2 group-hover:scale-110 transition-transform" />
-                  <h3 className="font-medium text-gray-900">公告訊息</h3>
-                  <p className="text-sm text-gray-500">查看公司公告、重要通知</p>
+                <a href="/employee-payroll" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
+                  <DollarSign className="h-8 w-8 text-green-600 mb-2 group-hover:scale-110 transition-transform" />
+                  <h3 className="font-medium text-gray-900">薪資查詢</h3>
+                  <p className="text-sm text-gray-500">查看個人薪資紀錄</p>
                 </a>
               )}
 
@@ -821,6 +922,17 @@ export default function DashboardPage() {
                   <p className="text-sm text-gray-500">生成薪資記錄、查看明細</p>
                 </a>
               )}
+
+              {/* 薪資異議 */}
+              <a href="/payroll-disputes" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
+                <AlertTriangle className="h-8 w-8 text-orange-600 mb-2 group-hover:scale-110 transition-transform" />
+                <h3 className="font-medium text-gray-900">
+                  {(user?.role === 'ADMIN' || user?.role === 'HR') ? '薪資異議管理' : '薪資異議申請'}
+                </h3>
+                <p className="text-sm text-gray-500">
+                  {(user?.role === 'ADMIN' || user?.role === 'HR') ? '審核員工薪資異議申請' : '對薪資有疑問時可提出異議'}
+                </p>
+              </a>
 
               {(user?.role === 'ADMIN' || user?.role === 'HR') && (
                 <a href="/payroll-statistics" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
@@ -838,36 +950,86 @@ export default function DashboardPage() {
                 </a>
               )}
 
-
-
-              {(user?.role === 'ADMIN' || user?.role === 'HR' || hasSchedulePermission) && (
-                <a href="/schedule-management" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
-                  <Calendar className="h-8 w-8 text-blue-600 mb-2 group-hover:scale-110 transition-transform" />
-                  <h3 className="font-medium text-gray-900">班表管理</h3>
-                  <p className="text-sm text-gray-500">{hasSchedulePermission && user?.role !== 'ADMIN' && user?.role !== 'HR' ? '管理授權據點班表' : '員工班表、班別安排'}</p>
+              {/* ======== 5. 人員/眷屬管理 ======== */}
+              {user?.role === 'ADMIN' && (
+                <a href="/employees" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
+                  <UserPlus className="h-8 w-8 text-purple-600 mb-2 group-hover:scale-110 transition-transform" />
+                  <h3 className="font-medium text-gray-900">員工管理</h3>
+                  <p className="text-sm text-gray-500">管理員工資料</p>
                 </a>
               )}
 
-              <a href="/shift-exchange" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
-                <Calendar className="h-8 w-8 text-purple-600 mb-2 group-hover:scale-110 transition-transform" />
-                <h3 className="font-medium text-gray-900">調班管理</h3>
-                <p className="text-sm text-gray-500">{user?.role === 'ADMIN' || user?.role === 'HR' ? '調班申請審核與管理' : '申請調班及查看審核狀態'}</p>
+              <a href="/my-dependents" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
+                <Heart className="h-8 w-8 text-red-500 mb-2 group-hover:scale-110 transition-transform" />
+                <h3 className="font-medium text-gray-900">我的眷屬</h3>
+                <p className="text-sm text-gray-500">健保眷屬申請與管理</p>
               </a>
 
-              {(user?.role !== 'ADMIN' && user?.role !== 'HR') && (
-                <a href="/my-schedule" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
-                  <Calendar className="h-8 w-8 text-indigo-600 mb-2 group-hover:scale-110 transition-transform" />
-                  <h3 className="font-medium text-gray-900">個人班表查詢</h3>
-                  <p className="text-sm text-gray-500">查看個人班表安排</p>
+              {(user?.role === 'ADMIN' || user?.role === 'HR') && (
+                <a href="/system-settings/health-insurance-dependents" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
+                  <Users className="h-8 w-8 text-pink-600 mb-2 group-hover:scale-110 transition-transform" />
+                  <h3 className="font-medium text-gray-900">健保眷屬管理</h3>
+                  <p className="text-sm text-gray-500">員工眷屬與申請審核</p>
                 </a>
               )}
 
+              {/* ======== 6. 其他管理功能 ======== */}
+              <a href="/purchase-requests" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
+                <ShoppingCart className="h-8 w-8 text-purple-600 mb-2 group-hover:scale-110 transition-transform" />
+                <h3 className="font-medium text-gray-900">請購管理</h3>
+                <p className="text-sm text-gray-500">申請採購、查看審核狀態</p>
+              </a>
+
+              {/* 天災假管理 - 管理員 */}
+              {(user?.role === 'ADMIN' || user?.role === 'HR') && (
+                <a href="/disaster-day-off" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
+                  <Cloud className="h-8 w-8 text-cyan-600 mb-2 group-hover:scale-110 transition-transform" />
+                  <h3 className="font-medium text-gray-900">天災假管理</h3>
+                  <p className="text-sm text-gray-500">批量設定颱風、地震等停班</p>
+                </a>
+              )}
+
+              {/* ======== 7. 公告/通知 ======== */}
+              {(user?.role === 'ADMIN' || user?.role === 'HR') && (
+                <a href="/announcements" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
+                  <Megaphone className="h-8 w-8 text-blue-600 mb-2 group-hover:scale-110 transition-transform" />
+                  <h3 className="font-medium text-gray-900">公告管理</h3>
+                  <p className="text-sm text-gray-500">發布系統公告、管理附件</p>
+                </a>
+              )}
+
+              {(user?.role !== 'ADMIN' && user?.role !== 'HR') && (
+                <a href="/announcements/view" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
+                  <Megaphone className="h-8 w-8 text-blue-600 mb-2 group-hover:scale-110 transition-transform" />
+                  <h3 className="font-medium text-gray-900">公告訊息</h3>
+                  <p className="text-sm text-gray-500">查看公司公告、重要通知</p>
+                </a>
+              )}
+
+              {/* ======== 7. 帳號/離職管理 ======== */}
               <a href="/password-management" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
                 <Key className="h-8 w-8 text-red-600 mb-2 group-hover:scale-110 transition-transform" />
                 <h3 className="font-medium text-gray-900">密碼管理</h3>
                 <p className="text-sm text-gray-500">修改密碼、重置員工密碼</p>
               </a>
 
+              {(user?.role === 'ADMIN' || user?.role === 'HR') && (
+                <a href="/resignation-management" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
+                  <Users className="h-8 w-8 text-gray-600 mb-2 group-hover:scale-110 transition-transform" />
+                  <h3 className="font-medium text-gray-900">離職管理</h3>
+                  <p className="text-sm text-gray-500">審核離職申請、交接管理</p>
+                </a>
+              )}
+
+              {user?.role !== 'ADMIN' && user?.role !== 'HR' && (
+                <a href="/employee-resignation" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
+                  <Users className="h-8 w-8 text-gray-600 mb-2 group-hover:scale-110 transition-transform" />
+                  <h3 className="font-medium text-gray-900">離職申請</h3>
+                  <p className="text-sm text-gray-500">提交離職申請、查看進度</p>
+                </a>
+              )}
+
+              {/* ======== 8. 系統設定 (僅管理員) ======== */}
               {user?.role === 'ADMIN' && (
                 <a href="/system-settings" className="border border-orange-200 bg-orange-50 rounded-lg p-4 hover:bg-orange-100 cursor-pointer transition-colors group">
                   <div className="flex items-center gap-2 mb-2">

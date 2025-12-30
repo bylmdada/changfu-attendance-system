@@ -24,7 +24,11 @@ export type NotificationType =
   | 'PAYROLL_READY'
   | 'ANNOUNCEMENT'
   | 'SECURITY_ALERT'
-  | 'MAINTENANCE';
+  | 'MAINTENANCE'
+  | 'APPROVAL'
+  | 'APPROVAL_RESULT'
+  | 'APPROVAL_REMINDER'
+  | 'FREEZE_REMINDER';
 
 export type NotificationPriority = 'LOW' | 'NORMAL' | 'HIGH' | 'URGENT';
 
@@ -375,7 +379,11 @@ export class RealTimeNotificationSystem {
       'PAYROLL_READY': 0,
       'ANNOUNCEMENT': 0,
       'SECURITY_ALERT': 0,
-      'MAINTENANCE': 0
+      'MAINTENANCE': 0,
+      'APPROVAL': 0,
+      'APPROVAL_RESULT': 0,
+      'APPROVAL_REMINDER': 0,
+      'FREEZE_REMINDER': 0
     };
 
     // 按優先級統計

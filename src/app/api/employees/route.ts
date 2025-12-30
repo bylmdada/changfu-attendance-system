@@ -14,7 +14,41 @@ export async function GET(request: NextRequest) {
     }
 
     const user = getUserFromRequest(request);
-    if (!user || user.role !== 'ADMIN') {
+    if (!user) {
+      return NextResponse.json({ error: '未登入' }, { status: 401 });
+    }
+
+    const isFullAdmin = user.role === 'ADMIN' || user.role === 'HR';
+    
+    // 計算可管理的部門/據點列表
+    let manageableLocations: string[] = [];
+    
+    if (!isFullAdmin && user.employeeId) {
+      // 1. 部門主管：可管理自己部門
+      const managerRecord = await prisma.departmentManager.findFirst({
+        where: { employeeId: user.employeeId, isActive: true }
+      });
+      if (managerRecord) {
+        manageableLocations.push(managerRecord.department);
+      }
+      
+      // 2. 授權員工：可管理 scheduleManagement 中的據點
+      const permRecord = await prisma.attendancePermission.findUnique({
+        where: { employeeId: user.employeeId }
+      });
+      if (permRecord?.permissions) {
+        const permissions = permRecord.permissions as { scheduleManagement?: string[] };
+        if (Array.isArray(permissions.scheduleManagement)) {
+          manageableLocations.push(...permissions.scheduleManagement);
+        }
+      }
+      
+      // 去重
+      manageableLocations = [...new Set(manageableLocations)];
+    }
+
+    // 非管理員且無任何管理權限無權限
+    if (!isFullAdmin && manageableLocations.length === 0) {
       return NextResponse.json({ error: '無權限' }, { status: 403 });
     }
 
@@ -28,17 +62,24 @@ export async function GET(request: NextRequest) {
 
     const skip = (page - 1) * limit;
     
-    const where: {
-      OR?: Array<{
-        name?: { contains: string };
-        employeeId?: { contains: string };
-        department?: { contains: string };
-        position?: { contains: string };
-      }>;
-      department?: string;
-      position?: string;
-      isActive?: boolean;
-    } = {};
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const where: Record<string, any> = {};
+    
+    // 非管理員只能查詢自己可管理的部門
+    if (!isFullAdmin && manageableLocations.length > 0) {
+      if (manageableLocations.length === 1) {
+        where.department = manageableLocations[0];
+      } else {
+        where.department = { in: manageableLocations };
+      }
+      // 如果有指定部門篩選，且在可管理範圍內才生效
+      if (department && manageableLocations.includes(department)) {
+        where.department = department;
+      }
+    } else if (department) {
+      // 管理員可按部門篩選
+      where.department = department;
+    }
     
     // 搜尋條件
     if (search) {
@@ -48,11 +89,6 @@ export async function GET(request: NextRequest) {
         { department: { contains: search } },
         { position: { contains: search } }
       ];
-    }
-    
-    // 部門篩選條件
-    if (department) {
-      where.department = department;
     }
 
     // 職位篩選條件
@@ -75,6 +111,15 @@ export async function GET(request: NextRequest) {
               username: true,
               role: true,
               isActive: true
+            }
+          },
+          // 部門主管資料
+          departmentManagers: {
+            where: { isActive: true },
+            select: {
+              id: true,
+              department: true,
+              isPrimary: true
             }
           }
         },

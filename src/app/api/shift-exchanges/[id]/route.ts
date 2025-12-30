@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getUserFromRequest } from '@/lib/auth';
 import { prisma } from '@/lib/database';
+import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
 
 interface EmployeeLite { id: number; employeeId: string; name: string; position: string; department?: string }
 interface ShiftExchangeLite {
@@ -98,6 +99,31 @@ export async function PATCH(
       if (current.status !== 'PENDING') {
         return NextResponse.json({ error: '此申請已被處理' }, { status: 400 });
       }
+
+      // 核准時檢查凍結狀態
+      if (action === 'approve') {
+        const originalDateObj = new Date(current.originalWorkDate);
+        const freezeCheck = await checkAttendanceFreeze(originalDateObj);
+        if (freezeCheck.isFrozen) {
+          const freezeDateStr = freezeCheck.freezeInfo?.freezeDate.toLocaleString('zh-TW');
+          return NextResponse.json({
+            error: `該月份已被凍結，無法核准調班申請。凍結時間：${freezeDateStr}，操作者：${freezeCheck.freezeInfo?.creator.name}`
+          }, { status: 403 });
+        }
+
+        // 互調班時也檢查目標日期
+        if (current.originalWorkDate !== current.targetWorkDate) {
+          const targetDateObj = new Date(current.targetWorkDate);
+          const targetFreezeCheck = await checkAttendanceFreeze(targetDateObj);
+          if (targetFreezeCheck.isFrozen) {
+            const freezeDateStr = targetFreezeCheck.freezeInfo?.freezeDate.toLocaleString('zh-TW');
+            return NextResponse.json({
+              error: `目標月份已被凍結，無法核准調班申請。凍結時間：${freezeDateStr}，操作者：${targetFreezeCheck.freezeInfo?.creator.name}`
+            }, { status: 403 });
+          }
+        }
+      }
+
       const now = new Date();
       const newStatus = action === 'approve' ? 'APPROVED' : 'REJECTED';
 

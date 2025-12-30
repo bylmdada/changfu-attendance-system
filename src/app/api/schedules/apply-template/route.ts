@@ -1,25 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { prisma } from '@/lib/database';
+import { getUserFromRequest } from '@/lib/auth';
 import fs from 'fs';
 import path from 'path';
-
-interface Schedule {
-  id: number;
-  employeeId: number;
-  workDate: string;
-  shiftType: string;
-  startTime: string;
-  endTime: string;
-  breakTime: number;
-  createdAt: string;
-  updatedAt: string;
-  employee: {
-    id: number;
-    employeeId: string;
-    name: string;
-    department: string;
-    position: string;
-  };
-}
 
 interface Template {
   id: number;
@@ -36,17 +19,8 @@ interface Template {
   updatedAt?: string;
 }
 
-interface Employee {
-  id: number;
-  employeeId: string;
-  name: string;
-  department: string;
-  position: string;
-}
-
 const DATA_DIR = path.join(process.cwd(), 'data');
 const TEMPLATES_FILE = path.join(DATA_DIR, 'weekly-templates.json');
-const SCHEDULES_FILE = path.join(DATA_DIR, 'schedules.json');
 
 // 確保資料目錄存在
 function ensureDataDir() {
@@ -55,7 +29,7 @@ function ensureDataDir() {
   }
 }
 
-// 載入模版
+// 載入模版（從 JSON 檔案）
 function loadTemplates(): Template[] {
   ensureDataDir();
   try {
@@ -69,31 +43,6 @@ function loadTemplates(): Template[] {
   return [];
 }
 
-// 載入排程
-function loadSchedules(): Schedule[] {
-  ensureDataDir();
-  try {
-    if (fs.existsSync(SCHEDULES_FILE)) {
-      const data = fs.readFileSync(SCHEDULES_FILE, 'utf8');
-      return JSON.parse(data);
-    }
-  } catch (error) {
-    console.error('載入排程失敗:', error);
-  }
-  return [];
-}
-
-// 儲存排程
-function saveSchedules(schedules: Schedule[]) {
-  ensureDataDir();
-  try {
-    fs.writeFileSync(SCHEDULES_FILE, JSON.stringify(schedules, null, 2));
-  } catch (error) {
-    console.error('儲存排程失敗:', error);
-    throw error;
-  }
-}
-
 // 獲取月份的所有日期
 function getMonthDates(year: number, month: number) {
   const dates = [];
@@ -101,8 +50,10 @@ function getMonthDates(year: number, month: number) {
   
   for (let day = 1; day <= daysInMonth; day++) {
     const date = new Date(year, month - 1, day);
+    // 使用本地日期格式，避免 toISOString() 的 UTC 轉換問題
+    const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
     dates.push({
-      date: date.toISOString().split('T')[0],
+      date: dateStr,
       dayOfWeek: date.getDay() // 0=Sunday, 1=Monday, ..., 6=Saturday
     });
   }
@@ -110,33 +61,34 @@ function getMonthDates(year: number, month: number) {
   return dates;
 }
 
-// 獲取員工列表
-async function getEmployees(): Promise<Employee[]> {
-  // 直接使用模擬資料，避免內部 HTTP 請求的複雜性
-  console.log('使用模擬員工資料');
-  return [
-    {
-      id: 1,
-      employeeId: 'EMP001',
-      name: '張三',
-      department: '技術部',
-      position: '工程師'
-    },
-    {
-      id: 2,
-      employeeId: 'EMP002', 
-      name: '李四',
-      department: '業務部',
-      position: '業務員'
-    },
-    {
-      id: 3,
-      employeeId: 'EMP003',
-      name: '王五',
-      department: '人事部',
-      position: '人事專員'
+// 計算用戶可管理的據點列表
+async function getManageableLocations(user: { role: string; employeeId?: number }): Promise<string[]> {
+  if (user.role === 'ADMIN' || user.role === 'HR') {
+    return []; // 空陣列代表不限
+  }
+  
+  if (!user.employeeId) return [];
+  
+  const locations: string[] = [];
+  
+  const managerRecord = await prisma.departmentManager.findFirst({
+    where: { employeeId: user.employeeId, isActive: true }
+  });
+  if (managerRecord) {
+    locations.push(managerRecord.department);
+  }
+  
+  const permRecord = await prisma.attendancePermission.findUnique({
+    where: { employeeId: user.employeeId }
+  });
+  if (permRecord?.permissions) {
+    const permissions = permRecord.permissions as { scheduleManagement?: string[] };
+    if (Array.isArray(permissions.scheduleManagement)) {
+      locations.push(...permissions.scheduleManagement);
     }
-  ];
+  }
+  
+  return [...new Set(locations)];
 }
 
 export async function OPTIONS() {
@@ -146,6 +98,13 @@ export async function OPTIONS() {
 export async function POST(request: NextRequest) {
   try {
     console.log('🚀 開始處理套用模版請求');
+    
+    // 權限檢查
+    const user = getUserFromRequest(request);
+    if (!user) {
+      return NextResponse.json({ error: '請先登入' }, { status: 401 });
+    }
+
     const body = await request.json();
     const { templateId, year, month, employeeIds } = body;
     console.log('📥 接收到參數:', { templateId, year, month, employeeIds });
@@ -158,17 +117,23 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // 檢查權限
+    const isFullAdmin = user.role === 'ADMIN' || user.role === 'HR';
+    const manageableLocations = await getManageableLocations(user);
+    
+    if (!isFullAdmin && manageableLocations.length === 0) {
+      return NextResponse.json({ error: '無權限執行此操作' }, { status: 403 });
+    }
+
     // 載入模版
     console.log('📂 載入模版...');
     const templates = loadTemplates();
     console.log(`📋 找到模版數量: ${templates.length}`);
     
-    // 確保 templateId 是數字類型進行比較
     const template = templates.find((t: Template) => Number(t.id) === Number(templateId));
     
     if (!template) {
       console.log(`❌ 找不到指定的模版, templateId: ${templateId}`);
-      console.log('🔍 可用模版:', templates.map(t => `${t.id}: ${t.name}`).join(', '));
       return NextResponse.json(
         { error: '找不到指定的模版' },
         { status: 404 }
@@ -176,85 +141,93 @@ export async function POST(request: NextRequest) {
     }
     console.log(`✅ 找到模版: ${template.name}`);
 
-    // 載入現有排程
-    console.log('📂 載入現有排程...');
-    const schedules = loadSchedules();
-    console.log(`📊 現有排程數量: ${schedules.length}`);
-    
-    // 獲取員工列表
-    console.log('👥 獲取員工列表...');
-    const employees = await getEmployees();
-    console.log(`👤 員工數量: ${employees.length}`);
-    
+    // 從資料庫獲取員工
+    console.log('👥 從資料庫獲取員工...');
+    const employees = await prisma.employee.findMany({
+      where: {
+        id: { in: employeeIds },
+        isActive: true
+      },
+      select: {
+        id: true,
+        employeeId: true,
+        name: true,
+        department: true,
+        position: true
+      }
+    });
+    console.log(`👤 找到員工數量: ${employees.length}`);
+
+    // 權限檢查：確保只能管理可管理部門的員工
+    if (!isFullAdmin && manageableLocations.length > 0) {
+      const invalidEmployees = employees.filter(emp => !emp.department || !manageableLocations.includes(emp.department));
+      if (invalidEmployees.length > 0) {
+        return NextResponse.json({
+          error: `無權限管理以下員工的班表: ${invalidEmployees.map(e => e.name).join(', ')}`
+        }, { status: 403 });
+      }
+    }
+
     // 獲取該月份的所有日期
     console.log('📅 生成月份日期...');
     const monthDates = getMonthDates(year, month);
     console.log(`📆 月份日期數量: ${monthDates.length}`);
-    
-    // 移除該月份現有的排程（僅針對選定的員工）
-    const filteredSchedules = schedules.filter((schedule: Schedule) => {
-      const scheduleDate = new Date(schedule.workDate);
-      const isTargetMonth = scheduleDate.getFullYear() === year && scheduleDate.getMonth() === month - 1;
-      const isSelectedEmployee = employeeIds.includes(schedule.employeeId);
-      
-      // 保留非目標月份的排程，或不是選定員工的排程
-      return !(isTargetMonth && isSelectedEmployee);
-    });
-    console.log(`🧹 移除現有排程後剩餘: ${filteredSchedules.length}`);
 
-    // 獲取選定的員工
-    const selectedEmployees = employees.filter(emp => employeeIds.includes(emp.id));
-    console.log(`👥 選定員工數量: ${selectedEmployees.length}`);
+    // 刪除該月份選定員工的現有排程
+    const monthStart = `${year}-${String(month).padStart(2, '0')}-01`;
+    const monthEnd = `${year}-${String(month).padStart(2, '0')}-31`;
+    
+    const deleteResult = await prisma.schedule.deleteMany({
+      where: {
+        employeeId: { in: employeeIds },
+        workDate: {
+          gte: monthStart,
+          lte: monthEnd
+        }
+      }
+    });
+    console.log(`🧹 刪除現有排程數量: ${deleteResult.count}`);
 
     // 生成新的排程
-    const newSchedules: Schedule[] = [];
-    let scheduleId = Math.max(0, ...schedules.map((s: Schedule) => s.id || 0)) + 1;
+    const newSchedules = [];
 
-    for (const employee of selectedEmployees) {
+    for (const employee of employees) {
       for (const dateInfo of monthDates) {
-        // 根據星期幾獲取對應的模版排程
         const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
         const dayName = dayNames[dateInfo.dayOfWeek] as keyof Template;
         const daySchedule = template[dayName] as { shiftType: string; startTime: string; endTime: string; breakTime: number };
 
-        if (daySchedule && daySchedule.shiftType && 
-            daySchedule.shiftType !== 'OFF' && 
-            daySchedule.shiftType !== 'RD' && 
-            daySchedule.shiftType !== 'rd') {
+        // 只排除 OFF，RD/rd 等也要建立記錄以便在月曆上顯示
+        if (daySchedule && daySchedule.shiftType && daySchedule.shiftType !== 'OFF') {
+          // 非工作班別（NH/RD/rd/FDL/TD）不應有時間
+          const noTimeShiftTypes = ['NH', 'RD', 'rd', 'FDL', 'TD'];
+          const hasTime = !noTimeShiftTypes.includes(daySchedule.shiftType);
+          
           newSchedules.push({
-            id: scheduleId++,
             employeeId: employee.id,
             workDate: dateInfo.date,
             shiftType: daySchedule.shiftType,
-            startTime: daySchedule.startTime,
-            endTime: daySchedule.endTime,
-            breakTime: daySchedule.breakTime || 60,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-            employee: {
-              id: employee.id,
-              employeeId: employee.employeeId,
-              name: employee.name,
-              department: employee.department,
-              position: employee.position
-            }
+            startTime: hasTime ? (daySchedule.startTime || '') : '',
+            endTime: hasTime ? (daySchedule.endTime || '') : ''
           });
         }
       }
     }
 
-    console.log(`✨ 生成新排程數量: ${newSchedules.length}`);
+    console.log(`✨ 準備新增排程數量: ${newSchedules.length}`);
 
-    // 合併並儲存排程
-    const allSchedules = [...filteredSchedules, ...newSchedules];
-    console.log(`💾 準備儲存排程，總數量: ${allSchedules.length}`);
-    saveSchedules(allSchedules);
+    // 批量新增排程到資料庫
+    if (newSchedules.length > 0) {
+      await prisma.schedule.createMany({
+        data: newSchedules
+      });
+    }
     console.log('✅ 排程儲存完成');
 
     return NextResponse.json({
-      message: `成功套用模版 "${template.name}" 到 ${year}年${month}月，共 ${selectedEmployees.length} 位員工`,
+      message: `成功套用模版 "${template.name}" 到 ${year}年${month}月，共 ${employees.length} 位員工`,
       applied: newSchedules.length,
-      employees: selectedEmployees.length,
+      employees: employees.length,
       success: true
     });
 

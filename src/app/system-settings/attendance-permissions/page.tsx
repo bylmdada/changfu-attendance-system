@@ -346,7 +346,7 @@ export default function AttendancePermissionsPage() {
         </div>
 
         {/* 統計卡片 */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-6 mb-8">
           <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-200">
             <div className="flex items-center">
               <div className="flex-shrink-0">
@@ -404,6 +404,22 @@ export default function AttendancePermissionsPage() {
                 <div className="text-sm font-medium text-gray-500">調班審核員</div>
                 <div className="text-2xl font-bold text-gray-900">
                   {permissions.filter(p => p.permissions.shiftExchanges?.length > 0).length}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-200">
+            <div className="flex items-center">
+              <div className="flex-shrink-0">
+                <div className="flex items-center justify-center w-8 h-8 bg-orange-100 rounded-md">
+                  <Calendar className="w-5 h-5 text-orange-600" />
+                </div>
+              </div>
+              <div className="ml-4">
+                <div className="text-sm font-medium text-gray-500">班表管理員</div>
+                <div className="text-2xl font-bold text-gray-900">
+                  {permissions.filter(p => p.permissions.scheduleManagement?.length > 0).length}
                 </div>
               </div>
             </div>

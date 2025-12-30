@@ -1,10 +1,13 @@
 'use client';
 
+import React from 'react';
 import { useState, useEffect, useCallback } from 'react';
-import { Clock, Plus, Search, Filter, CheckCircle, XCircle, Trash2, Calendar, User, AlertTriangle } from 'lucide-react';
+import { Clock, Plus, Search, Filter, CheckCircle, XCircle, Trash2, Calendar, User, AlertTriangle, X, ChevronDown, ChevronUp, Eye } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import BatchApproveBar from '@/components/BatchApproveBar';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import ApprovalProgress, { ApprovalReviewRecord } from '@/components/ApprovalProgress';
+
 
 interface MissedClockRequest {
   id: number;
@@ -84,6 +87,7 @@ export default function MissedClockPage() {
   const [filteredRequests, setFilteredRequests] = useState<MissedClockRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [user, setUser] = useState<User | null>(null);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [showNewRequestForm, setShowNewRequestForm] = useState(false);
@@ -105,6 +109,15 @@ export default function MissedClockPage() {
   // 分頁狀態
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 15;
+
+  // 展開審核進度
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [approvalData, setApprovalData] = useState<{
+    currentLevel: number;
+    maxLevel: number;
+    status: string;
+    reviews: ApprovalReviewRecord[];
+  } | null>(null);
 
   // 新申請表單狀態
   const [newRequest, setNewRequest] = useState({
@@ -449,6 +462,36 @@ export default function MissedClockPage() {
     setDeleteConfirm(null);
   };
 
+  // 展開/收合審核進度並取得真實資料
+  const handleToggleApproval = async (requestId: number) => {
+    if (expandedId === requestId) {
+      setExpandedId(null);
+      setApprovalData(null);
+      return;
+    }
+    
+    setExpandedId(requestId);
+    setApprovalData(null);
+    
+    try {
+      const response = await fetch(`/api/approval-reviews?requestType=MISSED_CLOCK&requestId=${requestId}`, {
+        credentials: 'include'
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        setApprovalData({
+          currentLevel: data.currentLevel,
+          maxLevel: data.maxLevel,
+          status: data.status,
+          reviews: data.reviews
+        });
+      }
+    } catch (error) {
+      console.error('取得審核歷程失敗:', error);
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -655,7 +698,8 @@ export default function MissedClockPage() {
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
                   {paginatedRequests.map((request) => (
-                    <tr key={request.id} className={`hover:bg-gray-50 ${selectedIds.includes(request.id) ? 'bg-blue-50' : ''}`}>
+                    <React.Fragment key={request.id}>
+                    <tr className={`hover:bg-gray-50 ${selectedIds.includes(request.id) ? 'bg-blue-50' : ''}`}>
                       {isAdmin && (
                         <td className="px-3 py-4 text-center">
                           {request.status === 'PENDING' && (
@@ -755,10 +799,39 @@ export default function MissedClockPage() {
                               刪除
                             </button>
                           )}
+                          {/* 查看審核進度按鈕 */}
+                          <button
+                            onClick={() => handleToggleApproval(request.id)}
+                            className="ml-2 inline-flex items-center gap-1 text-gray-600 hover:text-blue-600"
+                            title="查看審核進度"
+                          >
+                            <Eye className="w-4 h-4" />
+                            {expandedId === request.id ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                          </button>
                         </div>
                       </td>
 
                     </tr>
+                    {/* 展開的審核進度區域 */}
+                    {expandedId === request.id && (
+                      <tr>
+                        <td colSpan={isAdmin ? 8 : 7} className="px-6 py-4 bg-gray-50">
+                          {approvalData ? (
+                            <ApprovalProgress
+                              currentLevel={approvalData.currentLevel}
+                              maxLevel={approvalData.maxLevel}
+                              status={approvalData.status}
+                              reviews={approvalData.reviews}
+                            />
+                          ) : (
+                            <div className="text-center py-4 text-gray-500">
+                              載入中...
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
                   ))}
                 </tbody>
               </table>
@@ -782,9 +855,9 @@ export default function MissedClockPage() {
                 <h2 className="text-xl font-bold text-gray-900">申請補打卡</h2>
                 <button
                   onClick={() => setShowNewRequestForm(false)}
-                  className="text-gray-600 hover:text-gray-800"
+                  className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
                 >
-                  ×
+                  <X className="w-6 h-6" />
                 </button>
               </div>
 

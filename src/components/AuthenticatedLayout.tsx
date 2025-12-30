@@ -3,6 +3,7 @@
 import { useState, useEffect, ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import SystemNavbar from './SystemNavbar';
+import ResponsiveSidebar from './ResponsiveSidebar';
 
 interface User {
   id: number;
@@ -21,12 +22,14 @@ interface AuthenticatedLayoutProps {
   children: ReactNode;
   backUrl?: string;
   backLabel?: string;
+  hideSidebar?: boolean; // 某些頁面可隱藏側邊欄
 }
 
 export default function AuthenticatedLayout({ 
   children, 
   backUrl, 
-  backLabel 
+  backLabel,
+  hideSidebar = false
 }: AuthenticatedLayoutProps) {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
@@ -34,6 +37,7 @@ export default function AuthenticatedLayout({
 
   useEffect(() => {
     checkAuth();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const checkAuth = async () => {
@@ -73,8 +77,14 @@ export default function AuthenticatedLayout({
 
   return (
     <div className="min-h-screen bg-gray-50">
+      {/* 頂部導覽列 */}
       <SystemNavbar user={user} backUrl={backUrl} backLabel={backLabel} />
-      <main>
+      
+      {/* 側邊欄 */}
+      {!hideSidebar && <ResponsiveSidebar user={user} />}
+      
+      {/* 主內容區 - 桌面版有側邊欄時需偏移 */}
+      <main className={!hideSidebar ? 'lg:pl-64' : ''}>
         {children}
       </main>
     </div>

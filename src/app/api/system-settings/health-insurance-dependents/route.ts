@@ -210,17 +210,66 @@ export async function POST(request: NextRequest) {
     };
 
     let savedDependent;
+    const changedBy = user.employee?.name || user.username;
 
     if (id) {
+      // 取得舊資料用於記錄變更
+      const oldDependent = await prisma.healthInsuranceDependent.findUnique({
+        where: { id },
+        include: { employee: { select: { name: true } } }
+      });
+      
       // 更新現有眷屬
       savedDependent = await prisma.healthInsuranceDependent.update({
         where: { id },
-        data: dependentData
+        data: dependentData,
+        include: { employee: { select: { name: true } } }
       });
+
+      // 記錄更新歷史
+      if (oldDependent) {
+        const changes: { field: string; oldVal: string; newVal: string }[] = [];
+        if (oldDependent.dependentName !== dependentData.dependentName) {
+          changes.push({ field: 'dependentName', oldVal: oldDependent.dependentName, newVal: dependentData.dependentName });
+        }
+        if (oldDependent.relationship !== dependentData.relationship) {
+          changes.push({ field: 'relationship', oldVal: oldDependent.relationship, newVal: dependentData.relationship });
+        }
+        if (oldDependent.isActive !== dependentData.isActive) {
+          changes.push({ field: 'isActive', oldVal: String(oldDependent.isActive), newVal: String(dependentData.isActive) });
+        }
+        
+        for (const change of changes) {
+          await prisma.dependentHistoryLog.create({
+            data: {
+              dependentId: id,
+              dependentName: dependentData.dependentName,
+              employeeName: savedDependent.employee.name,
+              action: 'UPDATE',
+              fieldName: change.field,
+              oldValue: change.oldVal,
+              newValue: change.newVal,
+              changedBy
+            }
+          });
+        }
+      }
     } else {
       // 新增眷屬
       savedDependent = await prisma.healthInsuranceDependent.create({
-        data: dependentData
+        data: dependentData,
+        include: { employee: { select: { name: true } } }
+      });
+
+      // 記錄新增歷史
+      await prisma.dependentHistoryLog.create({
+        data: {
+          dependentId: savedDependent.id,
+          dependentName: dependentData.dependentName,
+          employeeName: savedDependent.employee.name,
+          action: 'CREATE',
+          changedBy
+        }
       });
     }
 
@@ -293,6 +342,18 @@ export async function DELETE(request: NextRequest) {
         { status: 404 }
       );
     }
+
+    // 刪除眷屬資料前記錄歷史
+    const changedBy = user.employee?.name || user.username;
+    await prisma.dependentHistoryLog.create({
+      data: {
+        dependentId: dependent.id,
+        dependentName: dependent.dependentName,
+        employeeName: '', // 已刪除無法取得
+        action: 'DELETE',
+        changedBy
+      }
+    });
 
     // 刪除眷屬資料
     await prisma.healthInsuranceDependent.delete({

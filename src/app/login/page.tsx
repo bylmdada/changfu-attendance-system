@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { useState, useEffect, Suspense } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Eye, EyeOff, Lock, User, Clock, MapPin, AlertCircle } from 'lucide-react';
 import Image from 'next/image';
 
@@ -76,6 +76,7 @@ function QuickClockForm({
     username: '',
     password: ''
   });
+  const [rememberUsername, setRememberUsername] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [clockLoading, setClockLoading] = useState(false);
   const [checkingEmployee, setCheckingEmployee] = useState(false);
@@ -112,6 +113,12 @@ function QuickClockForm({
     isActive: boolean;
   }[]>([]);
 
+  // Face ID / 指紋相關狀態
+  const [hasFaceId, setHasFaceId] = useState(false);
+  const [faceIdLoading, setFaceIdLoading] = useState(false);
+  const [showFaceIdSetup, setShowFaceIdSetup] = useState(false);
+  const [biometricSupported, setBiometricSupported] = useState(false);
+
   // 計算兩點之間距離（公尺）
   const calculateDistance = (lat1: number, lng1: number, lat2: number, lng2: number): number => {
     const R = 6371000;
@@ -123,6 +130,15 @@ function QuickClockForm({
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     return R * c;
   };
+
+  // 載入已儲存的員編（自動填入）
+  useEffect(() => {
+    const savedUsername = localStorage.getItem('quickclock_remembered_username');
+    if (savedUsername) {
+      setClockData(prev => ({ ...prev, username: savedUsername }));
+      setRememberUsername(true);
+    }
+  }, []);
 
   // 載入GPS設定和允許位置
   useEffect(() => {
@@ -305,6 +321,221 @@ function QuickClockForm({
     }
   }, [attendanceStatus, locationStatus, locationError, gpsSettings.enabled, currentLocation, onStatusChange]);
 
+  // 檢查 Face ID 支援和已設定狀態
+  useEffect(() => {
+    // 檢查裝置是否支援 WebAuthn
+    const checkBiometricSupport = async () => {
+      if (window.PublicKeyCredential && 
+          typeof window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable === 'function') {
+        try {
+          const available = await window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+          setBiometricSupported(available);
+        } catch {
+          setBiometricSupported(false);
+        }
+      }
+    };
+    checkBiometricSupport();
+  }, []);
+
+  // 當用戶名改變時檢查是否已設定 Face ID
+  useEffect(() => {
+    const checkFaceId = async () => {
+      if (clockData.username.length >= 3) {
+        try {
+          const response = await fetch('/api/webauthn/check', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: clockData.username })
+          });
+          if (response.ok) {
+            const data = await response.json();
+            setHasFaceId(data.hasCredentials);
+          }
+        } catch {
+          setHasFaceId(false);
+        }
+      } else {
+        setHasFaceId(false);
+      }
+    };
+    checkFaceId();
+  }, [clockData.username]);
+
+  // Face ID 打卡
+  const handleFaceIdClock = async (type: 'in' | 'out') => {
+    if (!biometricSupported) {
+      onError('此裝置不支援 Face ID / 指紋');
+      return;
+    }
+
+    setFaceIdLoading(true);
+    onError('');
+
+    try {
+      // 1. 獲取驗證選項
+      const optionsRes = await fetch('/api/webauthn/auth-options', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: clockData.username })
+      });
+
+      if (!optionsRes.ok) {
+        const error = await optionsRes.json();
+        throw new Error(error.error || '獲取驗證選項失敗');
+      }
+
+      const { options } = await optionsRes.json();
+
+      // 2. 調用 WebAuthn API
+      const credential = await navigator.credentials.get({
+        publicKey: {
+          challenge: Uint8Array.from(atob(options.challenge.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0)),
+          rpId: options.rpId,
+          timeout: options.timeout,
+          userVerification: options.userVerification as UserVerificationRequirement,
+          allowCredentials: options.allowCredentials.map((c: { id: string; type: string; transports?: string[] }) => ({
+            id: Uint8Array.from(atob(c.id.replace(/-/g, '+').replace(/_/g, '/')), ch => ch.charCodeAt(0)),
+            type: c.type,
+            transports: c.transports
+          }))
+        }
+      }) as PublicKeyCredential;
+
+      if (!credential) {
+        throw new Error('Face ID 驗證被取消');
+      }
+
+      // 3. 發送驗證結果
+      const response = credential.response as AuthenticatorAssertionResponse;
+      const verifyRes = await fetch('/api/webauthn/auth-verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          credential: {
+            id: credential.id,
+            rawId: btoa(String.fromCharCode(...new Uint8Array(credential.rawId))),
+            response: {
+              clientDataJSON: btoa(String.fromCharCode(...new Uint8Array(response.clientDataJSON))),
+              authenticatorData: btoa(String.fromCharCode(...new Uint8Array(response.authenticatorData))),
+              signature: btoa(String.fromCharCode(...new Uint8Array(response.signature)))
+            },
+            type: credential.type
+          },
+          clockType: type
+        })
+      });
+
+      const result = await verifyRes.json();
+
+      if (verifyRes.ok) {
+        setSuccessMessage(`${result.employee || '員工'} ${type === 'in' ? '上班' : '下班'}打卡成功！`);
+        // 重新檢查狀態
+        await checkEmployeeStatus(clockData.username);
+      } else {
+        throw new Error(result.error || '打卡失敗');
+      }
+    } catch (error) {
+      console.error('Face ID 打卡錯誤:', error);
+      onError(error instanceof Error ? error.message : 'Face ID 驗證失敗');
+    } finally {
+      setFaceIdLoading(false);
+    }
+  };
+
+  // 設定 Face ID
+  const handleSetupFaceId = async () => {
+    if (!biometricSupported) {
+      onError('此裝置不支援 Face ID / 指紋');
+      return;
+    }
+
+    if (!clockData.password) {
+      onError('請先輸入密碼以驗證身份');
+      return;
+    }
+
+    setFaceIdLoading(true);
+    onError('');
+
+    try {
+      // 1. 獲取註冊選項
+      const optionsRes = await fetch('/api/webauthn/register-options', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          username: clockData.username, 
+          password: clockData.password 
+        })
+      });
+
+      if (!optionsRes.ok) {
+        const error = await optionsRes.json();
+        throw new Error(error.error || '驗證失敗');
+      }
+
+      const { options } = await optionsRes.json();
+
+      // 2. 調用 WebAuthn API 註冊
+      const credential = await navigator.credentials.create({
+        publicKey: {
+          challenge: Uint8Array.from(atob(options.challenge.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0)),
+          rp: options.rp,
+          user: {
+            id: Uint8Array.from(atob(options.user.id.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0)),
+            name: options.user.name,
+            displayName: options.user.displayName
+          },
+          pubKeyCredParams: options.pubKeyCredParams,
+          timeout: options.timeout,
+          attestation: options.attestation as AttestationConveyancePreference,
+          authenticatorSelection: options.authenticatorSelection
+        }
+      }) as PublicKeyCredential;
+
+      if (!credential) {
+        throw new Error('Face ID 設定被取消');
+      }
+
+      // 3. 發送註冊結果
+      const response = credential.response as AuthenticatorAttestationResponse;
+      const verifyRes = await fetch('/api/webauthn/register-verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          credential: {
+            id: credential.id,
+            rawId: btoa(String.fromCharCode(...new Uint8Array(credential.rawId))),
+            response: {
+              clientDataJSON: btoa(String.fromCharCode(...new Uint8Array(response.clientDataJSON))),
+              attestationObject: btoa(String.fromCharCode(...new Uint8Array(response.attestationObject))),
+              transports: response.getTransports?.() || ['internal']
+            },
+            type: credential.type
+          },
+          deviceName: navigator.userAgent.includes('iPhone') ? 'iPhone' : 
+                      navigator.userAgent.includes('iPad') ? 'iPad' : 
+                      navigator.userAgent.includes('Android') ? 'Android 裝置' : '裝置'
+        })
+      });
+
+      const result = await verifyRes.json();
+
+      if (verifyRes.ok) {
+        setSuccessMessage('Face ID / 指紋設定成功！下次可直接使用生物識別打卡');
+        setHasFaceId(true);
+        setShowFaceIdSetup(false);
+      } else {
+        throw new Error(result.error || '設定失敗');
+      }
+    } catch (error) {
+      console.error('Face ID 設定錯誤:', error);
+      onError(error instanceof Error ? error.message : 'Face ID 設定失敗');
+    } finally {
+      setFaceIdLoading(false);
+    }
+  };
+
   const handleQuickClock = async (type: 'in' | 'out') => {
     // 快速打卡模式：只有在GPS明確無效且不允許離線時才阻止
     const shouldBlockForGPS = gpsSettings.enabled && 
@@ -384,6 +615,11 @@ function QuickClockForm({
           // 保存帳密用於原因更新 (密碼會在下一行被清除，所以先保存)
           setPendingCredentials({ username: clockData.username, password: clockData.password });
           setShowReasonModal(true);
+        }
+        
+        // 打卡成功，自動保存員編（如果有勾選）
+        if (rememberUsername && clockData.username) {
+          localStorage.setItem('quickclock_remembered_username', clockData.username);
         }
         
         // 清除密碼但保留用戶名，方便再次打卡
@@ -623,6 +859,24 @@ function QuickClockForm({
             </button>
           </div>
         </div>
+
+        {/* 記住員編 */}
+        <label className="flex items-center gap-2 cursor-pointer mt-2">
+          <input
+            type="checkbox"
+            checked={rememberUsername}
+            onChange={(e) => {
+              setRememberUsername(e.target.checked);
+              if (e.target.checked && clockData.username) {
+                localStorage.setItem('quickclock_remembered_username', clockData.username);
+              } else {
+                localStorage.removeItem('quickclock_remembered_username');
+              }
+            }}
+            className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+          />
+          <span className="text-sm text-gray-600">記住員編（下次自動填入）</span>
+        </label>
       </div>
 
       {/* 打卡按鈕 */}
@@ -659,11 +913,89 @@ function QuickClockForm({
           }
         </button>
       </div>
+
+      {/* Face ID 區塊 */}
+      {biometricSupported && clockData.username.length >= 3 && (
+        <div className="mt-4 pt-4 border-t border-gray-200">
+          {hasFaceId ? (
+            // 已設定 Face ID - 顯示快速打卡按鈕
+            <div className="space-y-2">
+              <div className="text-xs text-gray-500 text-center mb-2">使用 Face ID / 指紋快速打卡</div>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={() => handleFaceIdClock('in')}
+                  disabled={faceIdLoading || attendanceStatus?.hasClockIn}
+                  className={`py-3 px-3 text-sm font-medium rounded-xl transition-colors flex items-center justify-center gap-2 ${
+                    attendanceStatus?.hasClockIn
+                      ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                      : 'bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 text-white shadow-lg'
+                  }`}
+                >
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                  </svg>
+                  {faceIdLoading ? '驗證中...' : 'Face ID 上班'}
+                </button>
+                <button
+                  onClick={() => handleFaceIdClock('out')}
+                  disabled={faceIdLoading || attendanceStatus?.hasClockOut}
+                  className={`py-3 px-3 text-sm font-medium rounded-xl transition-colors flex items-center justify-center gap-2 ${
+                    attendanceStatus?.hasClockOut
+                      ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                      : 'bg-gradient-to-r from-orange-400 to-pink-500 hover:from-orange-500 hover:to-pink-600 text-white shadow-lg'
+                  }`}
+                >
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                  </svg>
+                  {faceIdLoading ? '驗證中...' : 'Face ID 下班'}
+                </button>
+              </div>
+            </div>
+          ) : (
+            // 尚未設定 Face ID - 顯示設定按鈕
+            !showFaceIdSetup ? (
+              <button
+                onClick={() => setShowFaceIdSetup(true)}
+                className="w-full py-2 text-sm text-blue-600 hover:text-blue-800 flex items-center justify-center gap-1"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                </svg>
+                設定 Face ID / 指紋登錄
+              </button>
+            ) : (
+              <div className="bg-blue-50 rounded-xl p-4">
+                <div className="text-sm text-blue-800 mb-3">
+                  請先輸入密碼驗證身份，然後點擊「確認設定」
+                </div>
+                <button
+                  onClick={handleSetupFaceId}
+                  disabled={faceIdLoading || !clockData.password}
+                  className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors disabled:opacity-50"
+                >
+                  {faceIdLoading ? '設定中...' : '確認設定 Face ID'}
+                </button>
+                <button
+                  onClick={() => setShowFaceIdSetup(false)}
+                  className="w-full mt-2 py-2 text-sm text-gray-500 hover:text-gray-700"
+                >
+                  取消
+                </button>
+              </div>
+            )
+          )}
+        </div>
+      )}
     </>
   );
 }
 
-export default function LoginPage() {
+function LoginPageContent() {
+  const searchParams = useSearchParams();
   const [activeTab, setActiveTab] = useState<'login' | 'quickClock'>('login');
   const [formData, setFormData] = useState({
     username: '',
@@ -675,6 +1007,18 @@ export default function LoginPage() {
   const [currentTime, setCurrentTime] = useState(new Date());
   const [quickClockStatus, setQuickClockStatus] = useState<QuickClockStatus | null>(null);
   const router = useRouter();
+  
+  // 2FA 狀態
+  const [requires2FA, setRequires2FA] = useState(false);
+  const [totpCode, setTotpCode] = useState('');
+
+  // 檢查 URL 參數，自動切換到快速打卡
+  useEffect(() => {
+    const mode = searchParams.get('mode');
+    if (mode === 'quickclock') {
+      setActiveTab('quickClock');
+    }
+  }, [searchParams]);
 
   // 動態更新時間
   useEffect(() => {
@@ -698,19 +1042,33 @@ export default function LoginPage() {
       const response = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData),
+        body: JSON.stringify({
+          ...formData,
+          totpCode: requires2FA ? totpCode : undefined
+        }),
       });
 
+      const data = await response.json();
+      
       if (response.ok) {
-        const data = await response.json();
-        // 保存token到localStorage
+        // 檢查是否需要 2FA
+        if (data.requires2FA) {
+          setRequires2FA(true);
+          setTotpCode('');
+          return;
+        }
+        
+        // 登入成功
         if (data.token) {
           localStorage.setItem('token', data.token);
         }
         router.push('/dashboard');
       } else {
-        const data = await response.json();
         setError(data.error || '登入失敗');
+        // 如果 2FA 驗證失敗，清除驗證碼
+        if (requires2FA) {
+          setTotpCode('');
+        }
       }
     } catch (err) {
       console.error('Login error:', err);
@@ -718,6 +1076,13 @@ export default function LoginPage() {
     } finally {
       setLoading(false);
     }
+  };
+  
+  // 返回登入步驟（從 2FA 返回）
+  const handleBack2FA = () => {
+    setRequires2FA(false);
+    setTotpCode('');
+    setError('');
   };
 
   return (
@@ -796,56 +1161,123 @@ export default function LoginPage() {
               {/* 系統登入表單 */}
               {activeTab === 'login' && (
                 <form onSubmit={handleSubmit} className="space-y-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1.5">員編</label>
-                    <div className="relative">
-                      <User className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
-                      <input
-                        type="text"
-                        required
-                        value={formData.username}
-                        onChange={(e) => setFormData({...formData, username: e.target.value})}
-                        className="w-full pl-10 pr-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 text-black bg-gray-50"
-                        placeholder="請輸入員編"
-                      />
-                    </div>
-                  </div>
+                  {!requires2FA ? (
+                    <>
+                      {/* 帳號密碼輸入 */}
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1.5">員編</label>
+                        <div className="relative">
+                          <User className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
+                          <input
+                            type="text"
+                            required
+                            value={formData.username}
+                            onChange={(e) => setFormData({...formData, username: e.target.value})}
+                            className="w-full pl-10 pr-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 text-black bg-gray-50"
+                            placeholder="請輸入員編"
+                          />
+                        </div>
+                      </div>
 
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1.5">密碼</label>
-                    <div className="relative">
-                      <Lock className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
-                      <input
-                        type={showPassword ? 'text' : 'password'}
-                        required
-                        value={formData.password}
-                        onChange={(e) => setFormData({...formData, password: e.target.value})}
-                        className="w-full pl-10 pr-10 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 text-black bg-gray-50"
-                        placeholder="請輸入密碼"
-                      />
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1.5">密碼</label>
+                        <div className="relative">
+                          <Lock className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
+                          <input
+                            type={showPassword ? 'text' : 'password'}
+                            required
+                            value={formData.password}
+                            onChange={(e) => setFormData({...formData, password: e.target.value})}
+                            className="w-full pl-10 pr-10 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 text-black bg-gray-50"
+                            placeholder="請輸入密碼"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowPassword(!showPassword)}
+                            className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                          >
+                            {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                          </button>
+                        </div>
+                      </div>
+
+                      <button
+                        type="submit"
+                        disabled={loading}
+                        className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 px-4 rounded-xl transition-colors disabled:opacity-50 shadow-sm"
+                      >
+                        {loading ? '登入中...' : '登入系統'}
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      {/* 2FA 驗證碼輸入 */}
+                      <div className="text-center mb-4">
+                        <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-3">
+                          <Lock className="w-8 h-8 text-blue-600" />
+                        </div>
+                        <h3 className="text-lg font-semibold text-gray-900">雙因素驗證</h3>
+                        <p className="text-sm text-gray-500 mt-1">請輸入驗證器 APP 顯示的驗證碼</p>
+                      </div>
+
+                      <div>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          pattern="[0-9]*"
+                          maxLength={6}
+                          required
+                          value={totpCode}
+                          onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                          className="w-full text-center text-2xl font-mono tracking-widest py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 text-black bg-gray-50"
+                          placeholder="000000"
+                          autoFocus
+                        />
+                      </div>
+
+                      <button
+                        type="submit"
+                        disabled={loading || totpCode.length !== 6}
+                        className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 px-4 rounded-xl transition-colors disabled:opacity-50 shadow-sm"
+                      >
+                        {loading ? '驗證中...' : '驗證並登入'}
+                      </button>
+
                       <button
                         type="button"
-                        onClick={() => setShowPassword(!showPassword)}
-                        className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                        onClick={handleBack2FA}
+                        className="w-full text-gray-500 hover:text-gray-700 text-sm py-2"
                       >
-                        {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                        ← 返回輸入帳號密碼
                       </button>
-                    </div>
-                  </div>
-
-                  <button
-                    type="submit"
-                    disabled={loading}
-                    className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 px-4 rounded-xl transition-colors disabled:opacity-50 shadow-sm"
-                  >
-                    {loading ? '登入中...' : '登入系統'}
-                  </button>
+                    </>
+                  )}
                 </form>
               )}
 
               {/* 快速打卡：員編密碼 */}
               {activeTab === 'quickClock' && (
-                <QuickClockForm onError={setError} onStatusChange={setQuickClockStatus} />
+                <>
+                  {/* 手機版時鐘 - 只在手機上顯示 */}
+                  <div className="lg:hidden text-center bg-gradient-to-br from-blue-50 to-cyan-50 rounded-xl p-4 border border-blue-100 mb-4">
+                    <div className="text-3xl font-mono font-bold bg-gradient-to-r from-blue-600 to-cyan-600 bg-clip-text text-transparent">
+                      {currentTime.toLocaleTimeString('zh-TW', { 
+                        hour: '2-digit', 
+                        minute: '2-digit', 
+                        second: '2-digit',
+                        hour12: false 
+                      })}
+                    </div>
+                    <div className="text-xs text-gray-600 mt-1">
+                      {currentTime.toLocaleDateString('zh-TW', {
+                        month: 'numeric',
+                        day: 'numeric',
+                        weekday: 'short'
+                      })}
+                    </div>
+                  </div>
+                  <QuickClockForm onError={setError} onStatusChange={setQuickClockStatus} />
+                </>
               )}
 
               {/* 忘記密碼連結 */}
@@ -1109,5 +1541,18 @@ export default function LoginPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+// 包裝元件，提供 Suspense boundary 以符合 Next.js 15 要求
+export default function LoginPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900">
+        <div className="text-white text-lg">載入中...</div>
+      </div>
+    }>
+      <LoginPageContent />
+    </Suspense>
   );
 }

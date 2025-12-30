@@ -4,34 +4,21 @@ import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { 
   Power, PowerOff, 
-  Server, Bell, Send, Loader2, CheckCircle, XCircle, Mail
+  Bell, Save, CheckCircle, XCircle, Mail, Settings, ExternalLink
 } from 'lucide-react';
 import SystemNavbar from '@/components/SystemNavbar';
+import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 
-interface EmailSettings {
+interface NotificationSettings {
   enabled: boolean;
-  smtpHost: string;
-  smtpPort: number;
-  smtpSecure: boolean;
-  smtpUser: string;
-  smtpPass: string;
-  senderName: string;
-  senderEmail: string;
   notifyLeaveApproval: boolean;
   notifyOvertimeApproval: boolean;
   notifyScheduleChange: boolean;
   notifyPasswordReset: boolean;
 }
 
-const DEFAULT_SETTINGS: EmailSettings = {
+const DEFAULT_SETTINGS: NotificationSettings = {
   enabled: false,
-  smtpHost: '',
-  smtpPort: 587,
-  smtpSecure: false,
-  smtpUser: '',
-  smtpPass: '',
-  senderName: '長福考勤系統',
-  senderEmail: '',
   notifyLeaveApproval: true,
   notifyOvertimeApproval: true,
   notifyScheduleChange: true,
@@ -41,16 +28,17 @@ const DEFAULT_SETTINGS: EmailSettings = {
 export default function EmailNotificationPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
-  const [testing, setTesting] = useState(false);
-  const [settings, setSettings] = useState<EmailSettings>(DEFAULT_SETTINGS);
+  const [saving, setSaving] = useState(false);
+  const [settings, setSettings] = useState<NotificationSettings>(DEFAULT_SETTINGS);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [smtpConfigured, setSmtpConfigured] = useState(false);
   const [user, setUser] = useState<{
     id: number;
     username: string;
     role: string;
     employee?: {
       id: number;
-      employeeId: string;
+      employeeId?: string;
       name: string;
       department?: string;
       position?: string;
@@ -77,6 +65,7 @@ export default function EmailNotificationPage() {
         setUser(currentUser);
       }
 
+      // 載入通知設定
       const response = await fetch('/api/system-settings/email-notification', {
         credentials: 'include',
         headers: getAuthHeaders()
@@ -85,10 +74,29 @@ export default function EmailNotificationPage() {
       if (response.ok) {
         const data = await response.json();
         if (data.settings) {
-          setSettings(data.settings);
+          setSettings({
+            enabled: data.settings.enabled || false,
+            notifyLeaveApproval: data.settings.notifyLeaveApproval ?? true,
+            notifyOvertimeApproval: data.settings.notifyOvertimeApproval ?? true,
+            notifyScheduleChange: data.settings.notifyScheduleChange ?? true,
+            notifyPasswordReset: data.settings.notifyPasswordReset ?? true
+          });
         }
       } else if (response.status === 401 || response.status === 403) {
         router.push('/login');
+      }
+
+      // 檢查 SMTP 是否已設定
+      const smtpResponse = await fetch('/api/system-settings/smtp', {
+        credentials: 'include',
+        headers: getAuthHeaders()
+      });
+
+      if (smtpResponse.ok) {
+        const smtpData = await smtpResponse.json();
+        if (smtpData.settings?.smtpHost) {
+          setSmtpConfigured(true);
+        }
       }
     } catch (error) {
       console.error('載入設定失敗:', error);
@@ -101,19 +109,27 @@ export default function EmailNotificationPage() {
     loadSettings();
   }, [loadSettings]);
 
-  const handleTestEmail = async () => {
-    setTesting(true);
+  const handleSave = async () => {
+    setSaving(true);
     setMessage(null);
 
-    // 模擬測試（實際需要發送測試郵件）
-    setTimeout(() => {
-      if (settings.smtpHost && settings.smtpUser && settings.senderEmail) {
-        setMessage({ type: 'success', text: 'SMTP 設定格式正確，請儲存設定後測試實際發送' });
+    try {
+      const response = await fetchJSONWithCSRF('/api/system-settings/email-notification', {
+        method: 'POST',
+        body: settings
+      });
+
+      if (response.ok) {
+        setMessage({ type: 'success', text: '設定已儲存' });
       } else {
-        setMessage({ type: 'error', text: '請先填寫完整的 SMTP 設定' });
+        setMessage({ type: 'error', text: '儲存失敗' });
       }
-      setTesting(false);
-    }, 1000);
+    } catch (error) {
+      console.error('儲存失敗:', error);
+      setMessage({ type: 'error', text: '儲存失敗' });
+    } finally {
+      setSaving(false);
+    }
   };
 
   if (loading) {
@@ -126,18 +142,16 @@ export default function EmailNotificationPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* 頂部導航 */}
       <SystemNavbar user={user} backUrl="/system-settings" backLabel="系統設定" />
 
-      {/* 主內容 */}
-      <main className="max-w-5xl mx-auto px-4 py-6">
+      <main className="max-w-4xl mx-auto px-4 py-8">
         {/* 標題區 */}
         <div className="mb-8">
           <h1 className="text-3xl font-bold text-gray-900 flex items-center">
-            <Mail className="w-8 h-8 text-blue-600 mr-3" />
+            <Bell className="w-8 h-8 text-blue-600 mr-3" />
             郵件通知設定
           </h1>
-          <p className="text-gray-600 mt-2">管理系統郵件通知規則與設定</p>
+          <p className="text-gray-600 mt-2">設定考勤相關事件的 Email 通知開關</p>
         </div>
 
         {/* 訊息提示 */}
@@ -151,6 +165,31 @@ export default function EmailNotificationPage() {
             {message.text}
           </div>
         )}
+
+        {/* SMTP 設定提示 */}
+        <div className={`mb-6 p-4 rounded-lg border ${
+          smtpConfigured 
+            ? 'bg-green-50 border-green-200' 
+            : 'bg-yellow-50 border-yellow-200'
+        }`}>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Settings className={`w-5 h-5 ${smtpConfigured ? 'text-green-600' : 'text-yellow-600'}`} />
+              <span className={smtpConfigured ? 'text-green-800' : 'text-yellow-800'}>
+                {smtpConfigured 
+                  ? '郵件伺服器已設定' 
+                  : '尚未設定郵件伺服器，請先完成 SMTP 設定'}
+              </span>
+            </div>
+            <a
+              href="/system-settings/smtp"
+              className="inline-flex items-center gap-1 text-sm text-blue-600 hover:text-blue-800"
+            >
+              前往設定
+              <ExternalLink className="w-4 h-4" />
+            </a>
+          </div>
+        </div>
 
         {/* 啟用/停用開關 */}
         <div className="bg-white rounded-xl shadow-sm border p-6 mb-6">
@@ -172,9 +211,10 @@ export default function EmailNotificationPage() {
             </div>
             <button
               onClick={() => setSettings({ ...settings, enabled: !settings.enabled })}
+              disabled={!smtpConfigured}
               className={`relative inline-flex h-8 w-14 items-center rounded-full transition-colors ${
                 settings.enabled ? 'bg-green-600' : 'bg-gray-300'
-              }`}
+              } ${!smtpConfigured ? 'opacity-50 cursor-not-allowed' : ''}`}
             >
               <span
                 className={`inline-block h-6 w-6 transform rounded-full bg-white transition-transform shadow-md ${
@@ -185,193 +225,99 @@ export default function EmailNotificationPage() {
           </div>
         </div>
 
-        {/* SMTP 設定 */}
-        {settings.enabled && (
-          <>
-            <div className="bg-white rounded-xl shadow-sm border p-6 mb-6">
-              <h2 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
-                <Server className="w-5 h-5 text-blue-600" />
-                SMTP 伺服器設定
-              </h2>
+        {/* 通知類型設定 */}
+        <div className="bg-white rounded-xl shadow-sm border p-6 mb-6">
+          <h2 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
+            <Mail className="w-5 h-5 text-blue-600" />
+            通知類型設定
+          </h2>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">SMTP 主機</label>
-                  <input
-                    type="text"
-                    value={settings.smtpHost}
-                    onChange={(e) => setSettings({ ...settings, smtpHost: e.target.value })}
-                    placeholder="例如: smtp.gmail.com"
-                    className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">SMTP 連接埠</label>
-                  <input
-                    type="number"
-                    value={settings.smtpPort}
-                    onChange={(e) => setSettings({ ...settings, smtpPort: parseInt(e.target.value) || 587 })}
-                    className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">帳號</label>
-                  <input
-                    type="email"
-                    value={settings.smtpUser}
-                    onChange={(e) => setSettings({ ...settings, smtpUser: e.target.value })}
-                    placeholder="發送用帳號"
-                    className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">密碼 / 應用程式密碼</label>
-                  <input
-                    type="password"
-                    value={settings.smtpPass}
-                    onChange={(e) => setSettings({ ...settings, smtpPass: e.target.value })}
-                    placeholder="SMTP 密碼"
-                    className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">寄件者名稱</label>
-                  <input
-                    type="text"
-                    value={settings.senderName}
-                    onChange={(e) => setSettings({ ...settings, senderName: e.target.value })}
-                    placeholder="顯示的寄件者名稱"
-                    className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">寄件者 Email</label>
-                  <input
-                    type="email"
-                    value={settings.senderEmail}
-                    onChange={(e) => setSettings({ ...settings, senderEmail: e.target.value })}
-                    placeholder="例如: noreply@company.com"
-                    className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    id="smtpSecure"
-                    checked={settings.smtpSecure}
-                    onChange={(e) => setSettings({ ...settings, smtpSecure: e.target.checked })}
-                    className="w-4 h-4 text-blue-600 rounded"
-                  />
-                  <label htmlFor="smtpSecure" className="text-sm text-gray-700">使用 SSL/TLS 加密</label>
-                </div>
-
-                <div className="flex items-end">
-                  <button
-                    onClick={handleTestEmail}
-                    disabled={testing}
-                    className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 disabled:opacity-50"
-                  >
-                    {testing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                    測試連線
-                  </button>
-                </div>
+          <div className="space-y-4">
+            <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+              <div>
+                <p className="font-medium text-gray-900">請假審核結果</p>
+                <p className="text-sm text-gray-500">請假申請核准/駁回時通知員工</p>
               </div>
+              <button
+                onClick={() => setSettings({ ...settings, notifyLeaveApproval: !settings.notifyLeaveApproval })}
+                disabled={!settings.enabled}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                  settings.notifyLeaveApproval ? 'bg-blue-600' : 'bg-gray-300'
+                } ${!settings.enabled ? 'opacity-50' : ''}`}
+              >
+                <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  settings.notifyLeaveApproval ? 'translate-x-6' : 'translate-x-1'
+                }`} />
+              </button>
             </div>
 
-            {/* 通知類型設定 */}
-            <div className="bg-white rounded-xl shadow-sm border p-6">
-              <h2 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
-                <Bell className="w-5 h-5 text-blue-600" />
-                通知類型設定
-              </h2>
-
-              <div className="space-y-4">
-                <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
-                  <div>
-                    <p className="font-medium text-gray-900">請假審核結果</p>
-                    <p className="text-sm text-gray-500">請假申請核准/駁回時通知員工</p>
-                  </div>
-                  <button
-                    onClick={() => setSettings({ ...settings, notifyLeaveApproval: !settings.notifyLeaveApproval })}
-                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                      settings.notifyLeaveApproval ? 'bg-blue-600' : 'bg-gray-300'
-                    }`}
-                  >
-                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                      settings.notifyLeaveApproval ? 'translate-x-6' : 'translate-x-1'
-                    }`} />
-                  </button>
-                </div>
-
-                <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
-                  <div>
-                    <p className="font-medium text-gray-900">加班審核結果</p>
-                    <p className="text-sm text-gray-500">加班申請核准/駁回時通知員工</p>
-                  </div>
-                  <button
-                    onClick={() => setSettings({ ...settings, notifyOvertimeApproval: !settings.notifyOvertimeApproval })}
-                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                      settings.notifyOvertimeApproval ? 'bg-blue-600' : 'bg-gray-300'
-                    }`}
-                  >
-                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                      settings.notifyOvertimeApproval ? 'translate-x-6' : 'translate-x-1'
-                    }`} />
-                  </button>
-                </div>
-
-                <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
-                  <div>
-                    <p className="font-medium text-gray-900">班表異動通知</p>
-                    <p className="text-sm text-gray-500">班表調整時通知相關員工</p>
-                  </div>
-                  <button
-                    onClick={() => setSettings({ ...settings, notifyScheduleChange: !settings.notifyScheduleChange })}
-                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                      settings.notifyScheduleChange ? 'bg-blue-600' : 'bg-gray-300'
-                    }`}
-                  >
-                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                      settings.notifyScheduleChange ? 'translate-x-6' : 'translate-x-1'
-                    }`} />
-                  </button>
-                </div>
-
-                <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
-                  <div>
-                    <p className="font-medium text-gray-900">密碼重設通知</p>
-                    <p className="text-sm text-gray-500">密碼重設時發送連結給員工</p>
-                  </div>
-                  <button
-                    onClick={() => setSettings({ ...settings, notifyPasswordReset: !settings.notifyPasswordReset })}
-                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                      settings.notifyPasswordReset ? 'bg-blue-600' : 'bg-gray-300'
-                    }`}
-                  >
-                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                      settings.notifyPasswordReset ? 'translate-x-6' : 'translate-x-1'
-                    }`} />
-                  </button>
-                </div>
+            <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+              <div>
+                <p className="font-medium text-gray-900">加班審核結果</p>
+                <p className="text-sm text-gray-500">加班申請核准/駁回時通知員工</p>
               </div>
+              <button
+                onClick={() => setSettings({ ...settings, notifyOvertimeApproval: !settings.notifyOvertimeApproval })}
+                disabled={!settings.enabled}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                  settings.notifyOvertimeApproval ? 'bg-blue-600' : 'bg-gray-300'
+                } ${!settings.enabled ? 'opacity-50' : ''}`}
+              >
+                <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  settings.notifyOvertimeApproval ? 'translate-x-6' : 'translate-x-1'
+                }`} />
+              </button>
             </div>
-          </>
-        )}
 
-        {/* 提示訊息 */}
-        {!settings.enabled && (
-          <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-            <p className="text-yellow-800">
-              <strong>提示：</strong>Email 通知功能目前已停用。啟用後，系統會根據上方設定發送 Email 通知給員工。
-            </p>
+            <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+              <div>
+                <p className="font-medium text-gray-900">班表異動通知</p>
+                <p className="text-sm text-gray-500">班表調整時通知相關員工</p>
+              </div>
+              <button
+                onClick={() => setSettings({ ...settings, notifyScheduleChange: !settings.notifyScheduleChange })}
+                disabled={!settings.enabled}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                  settings.notifyScheduleChange ? 'bg-blue-600' : 'bg-gray-300'
+                } ${!settings.enabled ? 'opacity-50' : ''}`}
+              >
+                <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  settings.notifyScheduleChange ? 'translate-x-6' : 'translate-x-1'
+                }`} />
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+              <div>
+                <p className="font-medium text-gray-900">密碼重設通知</p>
+                <p className="text-sm text-gray-500">密碼重設時發送連結給員工</p>
+              </div>
+              <button
+                onClick={() => setSettings({ ...settings, notifyPasswordReset: !settings.notifyPasswordReset })}
+                disabled={!settings.enabled}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                  settings.notifyPasswordReset ? 'bg-blue-600' : 'bg-gray-300'
+                } ${!settings.enabled ? 'opacity-50' : ''}`}
+              >
+                <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  settings.notifyPasswordReset ? 'translate-x-6' : 'translate-x-1'
+                }`} />
+              </button>
+            </div>
           </div>
-        )}
+        </div>
+
+        {/* 儲存按鈕 */}
+        <div className="flex justify-end">
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="inline-flex items-center px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+          >
+            <Save className="w-4 h-4 mr-2" />
+            {saving ? '儲存中...' : '儲存設定'}
+          </button>
+        </div>
       </main>
     </div>
   );
