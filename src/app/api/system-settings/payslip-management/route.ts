@@ -306,6 +306,81 @@ export async function POST(request: NextRequest) {
   }
 }
 
+// PUT - 更新薪資條範本（切換啟用/停用狀態等）
+export async function PUT(request: NextRequest) {
+  try {
+    // Rate limiting
+    const rateLimitResult = await checkRateLimit(request, '/api/system-settings/payslip-management');
+    if (!rateLimitResult.allowed) {
+      return NextResponse.json(
+        { error: '薪條設定操作過於頻繁，請稍後再試', retryAfter: rateLimitResult.retryAfter },
+        { status: 429, headers: { 'Retry-After': rateLimitResult.retryAfter?.toString() || '60' } }
+      );
+    }
+
+    // CSRF protection
+    const csrfResult = await validateCSRF(request);
+    if (!csrfResult.valid) {
+      return NextResponse.json({ error: 'CSRF驗證失敗，請重新操作' }, { status: 403 });
+    }
+
+    const user = await verifyAdmin(request);
+    if (!user) {
+      return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
+    }
+
+    const { template } = await request.json();
+
+    if (!template || !template.id) {
+      return NextResponse.json({ error: '缺少範本資料' }, { status: 400 });
+    }
+
+    const templatesRecord = await prisma.systemSettings.findUnique({
+      where: { key: 'payslip_templates' }
+    });
+
+    if (!templatesRecord) {
+      return NextResponse.json({ error: '找不到薪資條範本' }, { status: 404 });
+    }
+
+    let templates = JSON.parse(templatesRecord.value);
+    const index = templates.findIndex((t: PayslipTemplate) => t.id === template.id);
+
+    if (index === -1) {
+      return NextResponse.json({ error: '範本不存在' }, { status: 404 });
+    }
+
+    // 更新範本
+    templates[index] = { ...templates[index], ...template };
+
+    // 如果設為預設範本，清除其他預設設定
+    if (template.isDefault) {
+      templates = templates.map((t: PayslipTemplate) => ({
+        ...t,
+        isDefault: t.id === template.id
+      }));
+    }
+
+    await prisma.systemSettings.update({
+      where: { key: 'payslip_templates' },
+      data: {
+        value: JSON.stringify(templates),
+        updatedAt: new Date()
+      }
+    });
+
+    return NextResponse.json({
+      success: true,
+      template: templates[index],
+      message: '薪資條範本已更新'
+    });
+
+  } catch (error) {
+    console.error('更新薪資條範本失敗:', error);
+    return NextResponse.json({ error: '更新失敗' }, { status: 500 });
+  }
+}
+
 // DELETE - 刪除薪資條範本
 export async function DELETE(request: NextRequest) {
   try {

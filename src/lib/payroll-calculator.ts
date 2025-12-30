@@ -52,6 +52,7 @@ export interface PayrollDeductions {
   laborInsurance: number;        // 勞工保險
   healthInsurance: number;       // 健康保險
   supplementaryInsurance: number; // 補充保費
+  laborPensionSelf: number;      // 勞退自提
   incomeTax: number;            // 所得稅
   other: number;                // 其他扣除
 }
@@ -67,6 +68,7 @@ export interface EmployeePayrollInfo {
   position: string;
   dependents?: number; // 眷屬人數（用於健保計算）
   insuredBase?: number; // 投保薪資（用於勞健保計算）
+  laborPensionSelfRate?: number; // 勞退自提比例（0-6%）
 }
 
 // 考勤記錄（用於薪資計算）
@@ -223,13 +225,19 @@ function calculateDeductions(employee: EmployeePayrollInfo, grossPay: number): P
     supplementaryInsurance = Math.round((grossPay - supplementaryThreshold) * 0.0211);
   }
 
-  // 所得稅計算（簡化版本）
-  const incomeTax = calculateSimpleIncomeTax(grossPay);
+  // 勞退自提計算（0-6%，員工自願提繳）
+  const laborPensionSelfRate = employee.laborPensionSelfRate || 0;
+  const laborPensionSelf = Math.round(insuredSalary * laborPensionSelfRate / 100);
+
+  // 所得稅計算（簡化版本，勞退自提可從所得扣除）
+  const taxableGross = grossPay - laborPensionSelf; // 勞退自提免稅
+  const incomeTax = calculateSimpleIncomeTax(taxableGross);
 
   return {
     laborInsurance,
     healthInsurance,
     supplementaryInsurance,
+    laborPensionSelf,
     incomeTax,
     other: 0
   };

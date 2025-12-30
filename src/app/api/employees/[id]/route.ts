@@ -50,6 +50,45 @@ export async function PUT(
     }
 
     const data = await request.json();
+    
+    // 檢查員工是否存在
+    const existingEmployee = await prisma.employee.findUnique({
+      where: { id: employeeId },
+      include: { user: true }
+    });
+
+    if (!existingEmployee) {
+      return NextResponse.json({ error: '員工不存在' }, { status: 404 });
+    }
+
+    // 如果只是更新 isActive 狀態（部分更新）
+    if (data.isActive !== undefined && Object.keys(data).length === 1) {
+      const result = await prisma.$transaction(async (tx) => {
+        // 更新員工狀態
+        const updatedEmployee = await tx.employee.update({
+          where: { id: employeeId },
+          data: { isActive: data.isActive }
+        });
+
+        // 如果有關聯用戶，同步更新用戶狀態
+        if (existingEmployee.user) {
+          await tx.user.update({
+            where: { id: existingEmployee.user.id },
+            data: { isActive: data.isActive }
+          });
+        }
+
+        return updatedEmployee;
+      });
+
+      console.log('✅ 員工狀態更新成功:', result.id, 'isActive:', result.isActive);
+      return NextResponse.json({ 
+        message: data.isActive ? '員工已啟用' : '員工已停用',
+        employee: result
+      });
+    }
+
+    // 完整更新模式
     const {
       employeeId: empId,
       name,
@@ -65,17 +104,13 @@ export async function PUT(
       position,
       username,
       password,
-      createAccount
+      createAccount,
+      role // 新增角色欄位
     } = data;
 
-    // 檢查員工是否存在
-    const existingEmployee = await prisma.employee.findUnique({
-      where: { id: employeeId },
-      include: { user: true }
-    });
-
-    if (!existingEmployee) {
-      return NextResponse.json({ error: '員工不存在' }, { status: 404 });
+    // 驗證必填欄位
+    if (!empId || !name || !birthday || !hireDate || !baseSalary || !hourlyRate || !department || !position) {
+      return NextResponse.json({ error: '缺少必要欄位' }, { status: 400 });
     }
 
     // 檢查員工編號是否重複（排除當前員工）
@@ -134,13 +169,24 @@ export async function PUT(
         const hashedPassword = await bcrypt.hash(password, 10);
 
         if (existingEmployee.user) {
-          // 更新現有用戶
+          // 更新現有用戶（包含角色）
+          const updateData: { username: string; passwordHash?: string; role?: string } = {
+            username
+          };
+          
+          // 只有當提供密碼時才更新密碼
+          if (password) {
+            updateData.passwordHash = hashedPassword;
+          }
+          
+          // 更新角色（如果有提供）
+          if (role && ['EMPLOYEE', 'HR', 'ADMIN'].includes(role)) {
+            updateData.role = role;
+          }
+          
           await tx.user.update({
             where: { id: existingEmployee.user.id },
-            data: {
-              username,
-              passwordHash: hashedPassword
-            }
+            data: updateData
           });
         } else {
           // 創建新用戶

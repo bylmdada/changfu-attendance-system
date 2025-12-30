@@ -3,6 +3,8 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { createApprovalForRequest } from '@/lib/approval-helper';
+import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
 
 // 獲取忘打卡申請列表
 export async function GET(request: NextRequest) {
@@ -140,6 +142,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // 檢查凍結狀態
+    const workDateObj = new Date(workDate);
+    const freezeCheck = await checkAttendanceFreeze(workDateObj);
+    if (freezeCheck.isFrozen) {
+      const freezeDateStr = freezeCheck.freezeInfo?.freezeDate.toLocaleString('zh-TW');
+      return NextResponse.json({
+        error: `該月份已被凍結，無法提交忘打卡申請。凍結時間：${freezeDateStr}，操作者：${freezeCheck.freezeInfo?.creator.name}`
+      }, { status: 403 });
+    }
+
     // 創建新申請
     const newRequest = await prisma.missedClockRequest.create({
       data: {
@@ -161,6 +173,15 @@ export async function POST(request: NextRequest) {
           }
         }
       }
+    });
+
+    // 建立審核實例
+    await createApprovalForRequest({
+      requestType: 'MISSED_CLOCK',
+      requestId: newRequest.id,
+      applicantId: newRequest.employee.id,
+      applicantName: newRequest.employee.name,
+      department: newRequest.employee.department
     });
 
     return NextResponse.json({ 

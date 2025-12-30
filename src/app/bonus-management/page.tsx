@@ -434,7 +434,7 @@ export default function BonusManagementPage() {
                       NT$ {record.insuredAmount.toLocaleString()}
                     </TableCell>
                     <TableCell>
-                      <div className="text-sm">
+                      <div className="text-sm text-gray-900">
                         <div>發放前: NT$ {record.cumulativeBonusBefore.toLocaleString()}</div>
                         <div>發放後: NT$ {record.cumulativeBonusAfter.toLocaleString()}</div>
                         <div className="text-xs text-gray-500">
@@ -486,7 +486,7 @@ export default function BonusManagementPage() {
             <form onSubmit={handleSubmit} className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium mb-2">員工</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">員工</label>
                   <Select 
                     value={formData.employeeId} 
                     onValueChange={(value) => setFormData({...formData, employeeId: value})}
@@ -505,7 +505,7 @@ export default function BonusManagementPage() {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium mb-2">獎金類型</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">獎金類型</label>
                   <Select 
                     value={formData.bonusType} 
                     onValueChange={(value) => setFormData({...formData, bonusType: value})}
@@ -524,7 +524,7 @@ export default function BonusManagementPage() {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium mb-2">獎金金額</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">獎金金額</label>
                   <Input
                     type="number"
                     step="0.01"
@@ -535,7 +535,7 @@ export default function BonusManagementPage() {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium mb-2">年份</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">年份</label>
                   <Input
                     type="number"
                     value={formData.payrollYear}
@@ -544,7 +544,7 @@ export default function BonusManagementPage() {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium mb-2">月份</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">月份</label>
                   <Select 
                     value={formData.payrollMonth} 
                     onValueChange={(value) => setFormData({...formData, payrollMonth: value})}
@@ -563,7 +563,7 @@ export default function BonusManagementPage() {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium mb-2">獎金名稱 (可選)</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">獎金名稱 (可選)</label>
                   <Input
                     value={formData.bonusTypeName}
                     onChange={(e) => setFormData({...formData, bonusTypeName: e.target.value})}

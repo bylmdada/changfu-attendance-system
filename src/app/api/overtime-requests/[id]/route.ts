@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { verifyToken } from '@/lib/auth';
+import { notifyOvertimeApproval } from '@/lib/email';
+import { calculateOvertimePayForRequest, OvertimeType } from '@/lib/salary-utils';
 
 // 審核或編輯加班申請
 export async function PATCH(
@@ -51,12 +53,40 @@ export async function PATCH(
         return NextResponse.json({ error: '該加班申請已經被審核過' }, { status: 400 });
       }
 
+      // 如果選擇加班費，計算加班費金額
+      let overtimePay: number | null = null;
+      let hourlyRateUsed: number | null = null;
+      let overtimeType: OvertimeType = 'WEEKDAY';
+
+      if (status === 'APPROVED' && existing.compensationType === 'OVERTIME_PAY') {
+        // 取得加班類型（從請求中獲取，或預設為平日加班）
+        overtimeType = (body.overtimeType as OvertimeType) || 'WEEKDAY';
+        
+        // 計算加班費
+        const payResult = await calculateOvertimePayForRequest(
+          existing.employeeId,
+          existing.overtimeDate,
+          existing.totalHours,
+          overtimeType
+        );
+
+        if (payResult.success) {
+          overtimePay = payResult.overtimePay || null;
+          hourlyRateUsed = payResult.hourlyRate || null;
+        } else {
+          console.error('計算加班費失敗:', payResult.error);
+        }
+      }
+
       const updatedOvertimeRequest = await prisma.overtimeRequest.update({
         where: { id: overtimeRequestId },
         data: {
           status,
           approvedBy: decoded.employeeId,
-          approvedAt: new Date()
+          approvedAt: new Date(),
+          overtimeType: overtimeType || undefined,
+          overtimePay: overtimePay || undefined,
+          hourlyRateUsed: hourlyRateUsed || undefined
         },
         include: {
           employee: {
@@ -95,6 +125,21 @@ export async function PATCH(
             pendingEarn: existing.totalHours
           }
         });
+      }
+
+      // 發送審核結果通知
+      try {
+        await notifyOvertimeApproval({
+          employeeId: existing.employeeId,
+          employeeName: existing.employee.name,
+          employeeEmail: existing.employee.email || undefined,
+          approved: status === 'APPROVED',
+          overtimeDate: existing.overtimeDate.toISOString().split('T')[0],
+          hours: existing.totalHours,
+          reason: body.rejectionReason,
+        });
+      } catch (notifyError) {
+        console.error('發送通知失敗:', notifyError);
       }
 
       return NextResponse.json({

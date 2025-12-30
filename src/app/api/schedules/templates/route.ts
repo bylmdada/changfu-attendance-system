@@ -1,18 +1,30 @@
 import { NextRequest, NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
+import { getUserFromRequest } from '@/lib/auth';
+import { prisma } from '@/lib/database';
+
+interface DaySchedule {
+  shiftType: string;
+  startTime: string;
+  endTime: string;
+  breakTime: number;
+}
 
 interface WeeklyTemplate {
   id: number;
   name: string;
   description: string;
-  monday: { shiftType: string; startTime: string; endTime: string; breakTime: number; };
-  tuesday: { shiftType: string; startTime: string; endTime: string; breakTime: number; };
-  wednesday: { shiftType: string; startTime: string; endTime: string; breakTime: number; };
-  thursday: { shiftType: string; startTime: string; endTime: string; breakTime: number; };
-  friday: { shiftType: string; startTime: string; endTime: string; breakTime: number; };
-  saturday: { shiftType: string; startTime: string; endTime: string; breakTime: number; };
-  sunday: { shiftType: string; startTime: string; endTime: string; breakTime: number; };
+  department: string | null; // null = 通用模版（全機構）
+  createdById: number | null;
+  createdByName: string | null;
+  monday: DaySchedule;
+  tuesday: DaySchedule;
+  wednesday: DaySchedule;
+  thursday: DaySchedule;
+  friday: DaySchedule;
+  saturday: DaySchedule;
+  sunday: DaySchedule;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -39,27 +51,16 @@ function loadTemplates(): WeeklyTemplate[] {
           id: 1,
           name: '標準工作週',
           description: '週一到週五A班，週末休息',
+          department: null, // 通用模版
+          createdById: null,
+          createdByName: '系統',
           monday: { shiftType: 'A', startTime: '07:30', endTime: '16:30', breakTime: 60 },
           tuesday: { shiftType: 'A', startTime: '07:30', endTime: '16:30', breakTime: 60 },
           wednesday: { shiftType: 'A', startTime: '07:30', endTime: '16:30', breakTime: 60 },
           thursday: { shiftType: 'A', startTime: '07:30', endTime: '16:30', breakTime: 60 },
           friday: { shiftType: 'A', startTime: '07:30', endTime: '16:30', breakTime: 60 },
           saturday: { shiftType: 'RD', startTime: '', endTime: '', breakTime: 0 },
-          sunday: { shiftType: 'RD', startTime: '', endTime: '', breakTime: 0 },
-          createdAt: '2025-01-01T00:00:00.000Z',
-          updatedAt: '2025-01-01T00:00:00.000Z'
-        },
-        {
-          id: 2,
-          name: '輪班制度',
-          description: 'B班輪班制度',
-          monday: { shiftType: 'B', startTime: '08:00', endTime: '17:00', breakTime: 60 },
-          tuesday: { shiftType: 'B', startTime: '08:00', endTime: '17:00', breakTime: 60 },
-          wednesday: { shiftType: 'B', startTime: '08:00', endTime: '17:00', breakTime: 60 },
-          thursday: { shiftType: 'B', startTime: '08:00', endTime: '17:00', breakTime: 60 },
-          friday: { shiftType: 'B', startTime: '08:00', endTime: '17:00', breakTime: 60 },
-          saturday: { shiftType: 'RD', startTime: '', endTime: '', breakTime: 0 },
-          sunday: { shiftType: 'RD', startTime: '', endTime: '', breakTime: 0 },
+          sunday: { shiftType: 'rd', startTime: '', endTime: '', breakTime: 0 },
           createdAt: '2025-01-01T00:00:00.000Z',
           updatedAt: '2025-01-01T00:00:00.000Z'
         }
@@ -69,7 +70,14 @@ function loadTemplates(): WeeklyTemplate[] {
     }
     
     const data = fs.readFileSync(TEMPLATES_FILE, 'utf8');
-    return JSON.parse(data);
+    const templates = JSON.parse(data);
+    // 確保舊模版有新欄位
+    return templates.map((t: Partial<WeeklyTemplate> & { id: number; name: string }) => ({
+      ...t,
+      department: t.department ?? null,
+      createdById: t.createdById ?? null,
+      createdByName: t.createdByName ?? '系統'
+    }));
   } catch (error) {
     console.error('讀取模版失敗:', error);
     return [];
@@ -86,13 +94,68 @@ function saveTemplates(templates: WeeklyTemplate[]): void {
   }
 }
 
-// GET - 獲取排程模板列表
-export async function GET() {
+// 取得用戶可管理的部門
+async function getUserManagedDepartments(user: { role: string; employeeId: number }): Promise<string[]> {
+  // ADMIN 和 HR 可管理所有
+  if (user.role === 'ADMIN' || user.role === 'HR') {
+    return ['*']; // 特殊標記表示全部
+  }
+
+  const departments: string[] = [];
+
+  // 取得用戶自己的部門
+  const employee = await prisma.employee.findUnique({
+    where: { id: user.employeeId },
+    select: { department: true }
+  });
+  if (employee?.department) {
+    departments.push(employee.department);
+  }
+
+  // 檢查是否有排班權限
+  const permission = await prisma.attendancePermission.findUnique({
+    where: { employeeId: user.employeeId }
+  });
+
+  if (permission) {
+    const perms = permission.permissions as { scheduleManagement?: { enabled?: boolean; managedLocations?: string[] } };
+    if (perms.scheduleManagement?.enabled && perms.scheduleManagement?.managedLocations) {
+      for (const loc of perms.scheduleManagement.managedLocations) {
+        if (!departments.includes(loc)) {
+          departments.push(loc);
+        }
+      }
+    }
+  }
+
+  return departments;
+}
+
+// GET - 獲取排程模板列表（依權限過濾）
+export async function GET(request: NextRequest) {
   try {
+    const user = getUserFromRequest(request);
+    if (!user) {
+      return NextResponse.json({ error: '未授權' }, { status: 401 });
+    }
+
     const templates = loadTemplates();
+    const managedDepartments = await getUserManagedDepartments(user);
+
+    // 過濾模版
+    let filteredTemplates = templates;
+    if (!managedDepartments.includes('*')) {
+      filteredTemplates = templates.filter(t => 
+        t.department === null || // 通用模版
+        managedDepartments.includes(t.department) // 用戶可管理的部門
+      );
+    }
+
     return NextResponse.json({
       success: true,
-      templates: templates
+      templates: filteredTemplates,
+      managedDepartments: managedDepartments.includes('*') ? [] : managedDepartments,
+      isAdmin: managedDepartments.includes('*')
     });
   } catch (error) {
     console.error('獲取排程模板失敗:', error);
@@ -106,11 +169,45 @@ export async function GET() {
 // POST - 建立新的週模版
 export async function POST(request: NextRequest) {
   try {
+    const user = getUserFromRequest(request);
+    if (!user) {
+      return NextResponse.json({ error: '未授權' }, { status: 401 });
+    }
+
     const body = await request.json();
-    const { name, description, monday, tuesday, wednesday, thursday, friday, saturday, sunday } = body;
+    const { name, description, department, monday, tuesday, wednesday, thursday, friday, saturday, sunday } = body;
 
     if (!name) {
       return NextResponse.json({ error: '缺少模版名稱' }, { status: 400 });
+    }
+
+    // 取得用戶資訊
+    const employee = await prisma.employee.findUnique({
+      where: { id: user.employeeId },
+      select: { name: true, department: true }
+    });
+
+    // 權限檢查
+    const managedDepartments = await getUserManagedDepartments(user);
+    const isAdmin = managedDepartments.includes('*');
+
+    // 決定模版部門
+    let templateDepartment: string | null = null;
+    if (department === '' || department === null) {
+      // 設為通用模版 - 只有 ADMIN/HR 可以
+      if (!isAdmin) {
+        return NextResponse.json({ error: '只有管理員可建立通用模版' }, { status: 403 });
+      }
+      templateDepartment = null;
+    } else if (department) {
+      // 指定部門 - 檢查權限
+      if (!isAdmin && !managedDepartments.includes(department)) {
+        return NextResponse.json({ error: '無權限建立該部門的模版' }, { status: 403 });
+      }
+      templateDepartment = department;
+    } else {
+      // 未指定部門 - 使用建立者的部門
+      templateDepartment = employee?.department || null;
     }
 
     // 驗證每日班表資料
@@ -119,7 +216,8 @@ export async function POST(request: NextRequest) {
       if (!schedule || typeof schedule !== 'object') {
         return NextResponse.json({ error: `${day} 班表資料格式錯誤` }, { status: 400 });
       }
-      if (!schedule.shiftType) {
+      const s = schedule as DaySchedule;
+      if (!s.shiftType) {
         return NextResponse.json({ error: `${day} 缺少班別類型` }, { status: 400 });
       }
     }
@@ -130,11 +228,14 @@ export async function POST(request: NextRequest) {
     // 生成新的 ID
     const newId = templates.length > 0 ? Math.max(...templates.map(t => t.id)) + 1 : 1;
 
-    // 模擬建立模版成功
+    // 建立新模版
     const newTemplate: WeeklyTemplate = {
       id: newId,
       name,
       description: description || '',
+      department: templateDepartment,
+      createdById: user.employeeId,
+      createdByName: employee?.name || '未知',
       monday,
       tuesday,
       wednesday,
@@ -151,6 +252,7 @@ export async function POST(request: NextRequest) {
     saveTemplates(templates);
 
     return NextResponse.json({ 
+      success: true,
       message: '週模版建立成功',
       template: newTemplate 
     });

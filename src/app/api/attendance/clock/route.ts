@@ -3,6 +3,7 @@ import { getUserFromRequest } from '@/lib/auth';
 import { prisma } from '@/lib/database';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { canEmployeeClockIn } from '@/lib/schedule-confirm-service';
 
 // GET - 獲取今日打卡狀態
 export async function GET(request: NextRequest) {
@@ -118,6 +119,15 @@ export async function POST(request: NextRequest) {
 
     if (!user || !user.employee) {
       return NextResponse.json({ error: '找不到員工資料' }, { status: 404 });
+    }
+
+    // 班表確認檢查：員工必須已確認當月班表才能打卡
+    const clockCheck = await canEmployeeClockIn(user.employee.id, new Date());
+    if (!clockCheck.allowed) {
+      return NextResponse.json({ 
+        error: clockCheck.reason || '無法打卡',
+        code: 'SCHEDULE_NOT_CONFIRMED'
+      }, { status: 403 });
     }
 
     // 獲取今日日期和當前時間

@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { 
-  History, Calendar, Clock, ArrowLeft, Download, 
+  History, Calendar, Clock, Download, 
   ChevronLeft, ChevronRight, Filter, BarChart3
 } from 'lucide-react';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';

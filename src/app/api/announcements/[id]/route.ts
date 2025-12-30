@@ -13,6 +13,7 @@ interface AnnouncementLite {
   title: string;
   content: string;
   priority: 'HIGH' | 'NORMAL' | 'LOW';
+  category: 'PERSONNEL' | 'POLICY' | 'EVENT' | 'SYSTEM' | 'BENEFITS' | 'URGENT' | 'GENERAL';
   publisherId: number;
   isPublished: boolean;
   publishedAt: string | null;
@@ -100,7 +101,8 @@ export async function PUT(
     const { 
       title, 
       content, 
-      priority, 
+      priority,
+      category,
       isPublished, 
       expiryDate,
       isGlobalAnnouncement,
@@ -132,6 +134,7 @@ export async function PUT(
         ...(title !== undefined ? { title } : {}),
         ...(content !== undefined ? { content } : {}),
         ...(priority !== undefined ? { priority } : {}),
+        ...(category !== undefined ? { category } : {}),
         ...(isPublished !== undefined ? { isPublished } : {}),
         ...(publishedAtUpdate !== undefined ? { publishedAt: publishedAtUpdate } : {}),
         ...(expiryDate !== undefined ? { expiryDate: expiryDate ? new Date(expiryDate) : null } : {}),

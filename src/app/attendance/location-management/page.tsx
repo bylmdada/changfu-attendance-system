@@ -306,9 +306,17 @@ export default function LocationManagement() {
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
             <div className="bg-white rounded-lg shadow-lg max-w-md w-full mx-4">
               <div className="p-6">
-                <h3 className="text-lg font-semibold text-gray-900 mb-4">
-                  {editingLocation ? '編輯位置' : '添加新位置'}
-                </h3>
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-semibold text-gray-900">
+                    {editingLocation ? '編輯位置' : '添加新位置'}
+                  </h3>
+                  <button
+                    onClick={resetForm}
+                    className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                  >
+                    <X className="w-6 h-6" />
+                  </button>
+                </div>
 
                 <div className="space-y-4">
                   {/* 位置名稱 */}

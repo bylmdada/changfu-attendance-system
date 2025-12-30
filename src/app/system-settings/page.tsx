@@ -14,9 +14,14 @@ import {
   Shield,
   MapPin,
   Key,
-  Mail
+  Mail,
+  Settings,
+  Bell,
+  Smartphone,
+  CreditCard
 } from 'lucide-react';
 import SystemNavbar from '@/components/SystemNavbar';
+import ResponsiveSidebar from '@/components/ResponsiveSidebar';
 
 export default function SystemSettingsPage() {
   const router = useRouter();
@@ -144,10 +149,28 @@ export default function SystemSettingsPage() {
           icon: Clock
         },
         {
-          name: 'Email 通知設定',
-          path: '/system-settings/email-notification',
-          description: '設定 Email 通知功能與 SMTP 伺服器',
+          name: '郵件伺服器設定',
+          path: '/system-settings/smtp',
+          description: '設定系統共用的 SMTP 郵件發送伺服器',
           icon: Mail
+        },
+        {
+          name: '郵件通知設定',
+          path: '/system-settings/email-notification',
+          description: '設定考勤相關事件的 Email 通知開關',
+          icon: Mail
+        },
+        {
+          name: '系統通知設定',
+          path: '/system-settings/notification-config',
+          description: '設定審核通知、年假到期提醒等系統通知功能',
+          icon: Bell
+        },
+        {
+          name: '推播通知設定',
+          path: '/system-settings/push-notifications',
+          description: '設定 PWA 推播通知，接收即時打卡提醒',
+          icon: Smartphone
         },
         {
           name: '部門職位管理',
@@ -166,6 +189,30 @@ export default function SystemSettingsPage() {
           path: '/system-settings/password-policy',
           description: '設定密碼複雜度要求與安全規則',
           icon: Key
+        },
+        {
+          name: '雙因素驗證 (2FA)',
+          path: '/system-settings/2fa',
+          description: '設定管理員/HR 雙因素驗證保護',
+          icon: Shield
+        },
+        {
+          name: '登入日誌',
+          path: '/system-settings/login-logs',
+          description: '查看系統登入記錄與安全監控',
+          icon: FileText
+        },
+        {
+          name: '審核代理人',
+          path: '/system-settings/approval-delegates',
+          description: '設定審核權限代理，主管請假時由代理人審核',
+          icon: Users
+        },
+        {
+          name: '審核流程管理',
+          path: '/system-settings/approval-workflows',
+          description: '設定各類申請的審核層級、時效與部門主管',
+          icon: Settings
         }
       ]
     },
@@ -175,6 +222,12 @@ export default function SystemSettingsPage() {
       icon: DollarSign,
       color: 'green',
       items: [
+        {
+          name: '薪資管理',
+          path: '/salary-management',
+          description: '員工薪資調整、薪資歷史查詢',
+          icon: DollarSign
+        },
         {
           name: '加班費計算管理',
           path: '/system-settings/overtime-calculation',
@@ -192,6 +245,24 @@ export default function SystemSettingsPage() {
           path: '/system-settings/payslip-management',
           description: '薪資條格式與內容設定',
           icon: FileText
+        },
+        {
+          name: '薪資條發送設定',
+          path: '/system-settings/payslip-email',
+          description: '薪資條 Email 發送郵件範本設定',
+          icon: Mail
+        },
+        {
+          name: '國定假日管理',
+          path: '/system-settings/holidays',
+          description: '管理年度國定假日，用於薪資加班費計算',
+          icon: Calendar
+        },
+        {
+          name: '銀行帳戶管理',
+          path: '/system-settings/bank-accounts',
+          description: '管理員工薪轉銀行帳號，產出元大銀行薪轉格式',
+          icon: CreditCard
         }
       ]
     },
@@ -208,10 +279,10 @@ export default function SystemSettingsPage() {
           icon: Gift
         },
         {
-          name: '按比例獎金系統',
-          path: '/system-settings/prorated-bonus',
-          description: '配置按比例獎金計算方式',
-          icon: Calculator
+          name: '獎金配置設定',
+          path: '/system-settings/bonus-config',
+          description: '整合設定年終/三節獎金基數、計算方式與服務月數',
+          icon: Settings
         }
       ]
     },
@@ -222,16 +293,22 @@ export default function SystemSettingsPage() {
       color: 'red',
       items: [
         {
-          name: '健保眷屬管理',
-          path: '/system-settings/health-insurance-dependents',
-          description: '管理員工健保眷屬資料',
-          icon: Users
-        },
-        {
           name: '健保公式配置管理',
           path: '/system-settings/health-insurance-formula',
           description: '設定健保費計算公式與參數',
           icon: Heart
+        },
+        {
+          name: '法規參數設定',
+          path: '/system-settings/labor-law-config',
+          description: '設定勞基法相關參數（基本工資、勞健保費率等）',
+          icon: Shield
+        },
+        {
+          name: '假別規則設定',
+          path: '/system-settings/leave-rules-config',
+          description: '設定育嬰留停、家庭照顧假、病假等假別規則',
+          icon: Calendar
         }
       ]
     }
@@ -273,11 +350,14 @@ export default function SystemSettingsPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
+      {/* 響應式側邊欄 */}
+      <ResponsiveSidebar user={user} />
+      
       {/* 頂部導航 */}
       <SystemNavbar user={user} />
 
-      {/* 主要內容 */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      {/* 主要內容 - 桌面版需偏移側邊欄寬度 */}
+      <main className="lg:pl-64 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* 安全提醒 */}
         <div className="mb-8 bg-yellow-50 border border-yellow-200 rounded-lg p-4">
           <div className="flex items-start space-x-3">

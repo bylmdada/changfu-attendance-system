@@ -132,18 +132,18 @@
       "breakTime": 60
     },
     "saturday": {
-      "shiftType": "RD",
-      "startTime": "",
-      "endTime": "",
-      "breakTime": 0
-    },
-    "sunday": {
       "shiftType": "rd",
       "startTime": "",
       "endTime": "",
       "breakTime": 0
     },
+    "sunday": {
+      "shiftType": "RD",
+      "startTime": "",
+      "endTime": "",
+      "breakTime": 0
+    },
     "createdAt": "2025-07-31T07:07:43.067Z",
-    "updatedAt": "2025-07-31T07:07:43.067Z"
+    "updatedAt": "2025-12-29T18:22:36.002Z"
   }
 ]

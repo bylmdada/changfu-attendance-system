@@ -9,11 +9,13 @@ import {
   ChevronRight, 
   Plus, 
   Copy, 
-  X
+  X,
+  Trash2
 } from 'lucide-react';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import QuickCopySchedule from '@/components/QuickCopySchedule';
+import { useLocalToast, SimpleToast } from '@/components/Toast';
 
 interface Schedule {
   id: number;
@@ -67,6 +69,8 @@ interface User {
   id: number;
   username: string;
   role: string;
+  isDepartmentManager?: boolean;
+  isDeputyManager?: boolean;
   employee?: {
     id: number;
     employeeId: string;
@@ -85,7 +89,8 @@ const SHIFT_TYPE_LABELS = {
   RD: 'RD (例假)',
   rd: 'rd (休息日)',
   FDL: 'FDL (全日請假)',
-  OFF: 'OFF (休假)'
+  OFF: 'OFF (休假)',
+  TD: 'TD (天災假)'
 };
 
 const SHIFT_TYPE_COLORS = {
@@ -96,7 +101,8 @@ const SHIFT_TYPE_COLORS = {
   RD: 'bg-gray-100 text-gray-800 border-gray-200',
   rd: 'bg-gray-50 text-gray-600 border-gray-100',
   FDL: 'bg-yellow-100 text-yellow-800 border-yellow-200',
-  OFF: 'bg-orange-100 text-orange-800 border-orange-200'
+  OFF: 'bg-orange-100 text-orange-800 border-orange-200',
+  TD: 'bg-cyan-100 text-cyan-800 border-cyan-200'
 };
 
 const SHIFT_TEMPLATES = {
@@ -107,14 +113,17 @@ const SHIFT_TEMPLATES = {
   RD: { startTime: '', endTime: '', breakTime: 0 },
   rd: { startTime: '', endTime: '', breakTime: 0 },
   FDL: { startTime: '', endTime: '', breakTime: 0 },
-  OFF: { startTime: '', endTime: '', breakTime: 0 }
+  OFF: { startTime: '', endTime: '', breakTime: 0 },
+  TD: { startTime: '', endTime: '', breakTime: 0 }
 };
 
 const WEEKDAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
 const WEEKDAY_LABELS = ['週一', '週二', '週三', '週四', '週五', '週六', '週日'];
 
-// 據點列表
+// 部門列表
 const LOCATIONS = [
+  '經營管理部',
+  '資訊部',
   '溪北輔具中心',
   '礁溪失智據點',
   '羅東失智據點',
@@ -152,7 +161,19 @@ export default function ScheduleManagementPage() {
   const [applyToMonth, setApplyToMonth] = useState('');
   const [selectedEmployees, setSelectedEmployees] = useState<number[]>([]);
   const [employeeSearch, setEmployeeSearch] = useState('');
+  const [templateDepartmentFilter, setTemplateDepartmentFilter] = useState(''); // 模版部門篩選
   
+  // 編輯排程相關狀態
+  const [showEditScheduleModal, setShowEditScheduleModal] = useState(false);
+  const [editingSchedule, setEditingSchedule] = useState<Schedule | null>(null);
+  const [editScheduleForm, setEditScheduleForm] = useState({
+    shiftType: 'A' as string,
+    startTime: '07:30',
+    endTime: '16:30'
+  });
+  
+  // Toast 通知
+  const { showToast, toast, clearToast } = useLocalToast();
   // 搜尋相關狀態
   const [searchFilters, setSearchFilters] = useState({
     yearMonth: '',
@@ -168,6 +189,10 @@ export default function ScheduleManagementPage() {
   const [searchResults, setSearchResults] = useState<Schedule[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const [locationFilter, setLocationFilter] = useState('');  // 日曆據點篩選
+  
+  // 國定假日狀態
+  const [holidays, setHolidays] = useState<{id: number; name: string; date: string}[]>([]);
+
   
   const [newTemplate, setNewTemplate] = useState<WeeklyTemplate>({
     name: '',
@@ -215,6 +240,22 @@ export default function ScheduleManagementPage() {
   useEffect(() => {
     if (currentDate) {
       fetchMonthlySchedules();
+      // 載入當月國定假日
+      const fetchHolidays = async () => {
+        try {
+          const year = currentDate.getFullYear();
+          const response = await fetch(`/api/system-settings/holidays?year=${year}`, {
+            credentials: 'include'
+          });
+          if (response.ok) {
+            const data = await response.json();
+            setHolidays(data.holidays || []);
+          }
+        } catch (error) {
+          console.error('獲取國定假日失敗:', error);
+        }
+      };
+      fetchHolidays();
     }
   }, [currentDate, fetchMonthlySchedules]);
 
@@ -392,6 +433,75 @@ export default function ScheduleManagementPage() {
     }
   };
 
+  // 點擊排程開啟編輯模態框
+  const handleScheduleClick = (schedule: Schedule) => {
+    setEditingSchedule(schedule);
+    setEditScheduleForm({
+      shiftType: schedule.shiftType,
+      startTime: schedule.startTime || '07:30',
+      endTime: schedule.endTime || '16:30'
+    });
+    setShowEditScheduleModal(true);
+  };
+
+  // 更新排程
+  const handleUpdateSchedule = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingSchedule) return;
+
+    try {
+      const noTimeShiftTypes = ['NH', 'RD', 'rd', 'OFF', 'FDL', 'TD'];
+      const requiresTime = !noTimeShiftTypes.includes(editScheduleForm.shiftType);
+      
+      const response = await fetchJSONWithCSRF(`/api/schedules/${editingSchedule.id}`, {
+        method: 'PUT',
+        body: {
+          shiftType: editScheduleForm.shiftType,
+          startTime: requiresTime ? editScheduleForm.startTime : '',
+          endTime: requiresTime ? editScheduleForm.endTime : ''
+        }
+      });
+
+      if (response.ok) {
+        alert('班表更新成功');
+        setShowEditScheduleModal(false);
+        setEditingSchedule(null);
+        fetchSchedules();
+        fetchMonthlySchedules();
+      } else {
+        const error = await response.json();
+        alert(error.error || '更新失敗');
+      }
+    } catch {
+      alert('更新失敗，請稍後再試');
+    }
+  };
+
+  // 刪除排程
+  const handleDeleteSchedule = async () => {
+    if (!editingSchedule) return;
+    if (!confirm(`確定要刪除 ${editingSchedule.employee.name} 在 ${editingSchedule.workDate} 的班表嗎？`)) return;
+
+    try {
+      const response = await fetchJSONWithCSRF(`/api/schedules/${editingSchedule.id}`, {
+        method: 'DELETE'
+      });
+
+      if (response.ok) {
+        alert('班表刪除成功');
+        setShowEditScheduleModal(false);
+        setEditingSchedule(null);
+        fetchSchedules();
+        fetchMonthlySchedules();
+      } else {
+        const error = await response.json();
+        alert(error.error || '刪除失敗');
+      }
+    } catch {
+      alert('刪除失敗，請稍後再試');
+    }
+  };
+
   const handleCreateTemplate = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
@@ -477,8 +587,13 @@ export default function ScheduleManagementPage() {
     }
   };
 
-  // 筛选员工
+  // 篩選員工（用於套用模版）
   const filteredEmployees = employees.filter(employee => {
+    // 先套用部門篩選
+    if (templateDepartmentFilter && employee.department !== templateDepartmentFilter) {
+      return false;
+    }
+    // 再套用搜尋篩選
     if (!employeeSearch) return true;
     const searchLower = employeeSearch.toLowerCase();
     return (
@@ -487,6 +602,9 @@ export default function ScheduleManagementPage() {
       employee.department.toLowerCase().includes(searchLower)
     );
   });
+
+  // 取得部門列表（用於模版部門篩選）
+  const templateDepartments = [...new Set(employees.map(e => e.department).filter(Boolean))].sort();
 
   // 处理员工选择
   const handleEmployeeToggle = (employeeId: number) => {
@@ -560,7 +678,12 @@ export default function ScheduleManagementPage() {
     if (!day) return '';
     const year = currentDate.getFullYear();
     const month = currentDate.getMonth();
-    return new Date(year, month, day).toISOString().split('T')[0];
+    // 使用本地時區格式化日期，避免 UTC 轉換導致日期偏移
+    const d = new Date(year, month, day);
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
   };
 
   const goToPreviousMonth = () => {
@@ -571,20 +694,46 @@ export default function ScheduleManagementPage() {
     setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1));
   };
 
+  // 取得該日期的國定假日資訊
+  const getHolidayForDate = (dateStr: string) => {
+    return holidays.find(h => {
+      // 處理時區問題：將 ISO 日期轉為本地日期格式比對
+      const holidayDate = new Date(h.date);
+      const yyyy = holidayDate.getFullYear();
+      const mm = String(holidayDate.getMonth() + 1).padStart(2, '0');
+      const dd = String(holidayDate.getDate()).padStart(2, '0');
+      const formattedHolidayDate = `${yyyy}-${mm}-${dd}`;
+      return formattedHolidayDate === dateStr;
+    });
+  };
+
+  // 發布班表（觸發員工確認機制）
   // 權限判斷
   const isFullAdmin = user && (user.role === 'ADMIN' || user.role === 'HR');
+  // 是否為部門主管或代理人
+  const isDepartmentManager = user?.isDepartmentManager || user?.isDeputyManager;
+  const userDepartment = user?.employee?.department;
   // 有班表管理權限的人員（透過考勤權限設定）
   const hasSchedulePermission = schedulePermissions.length > 0;
-  const canManage = isFullAdmin || hasSchedulePermission;
-  // 可管理的據點列表（管理員可管理全部，其他人員只能管理被授權的據點）
-  const allowedLocations = isFullAdmin ? LOCATIONS : schedulePermissions;
+  // 部門主管可管理自己部門
+  const canManage = isFullAdmin || hasSchedulePermission || isDepartmentManager;
+  // 可管理的據點列表
+  const allowedLocations = isFullAdmin 
+    ? LOCATIONS 
+    : hasSchedulePermission 
+      ? schedulePermissions 
+      : isDepartmentManager && userDepartment 
+        ? [userDepartment] 
+        : [];
 
-  // 有權限的人員，如果沒有選擇據點，自動選擇第一個可管理的據點
+  // 部門主管自動選擇自己的部門
   useEffect(() => {
-    if (hasSchedulePermission && !isFullAdmin && schedulePermissions.length === 1 && !locationFilter) {
+    if (isDepartmentManager && userDepartment && !isFullAdmin && !hasSchedulePermission && !locationFilter) {
+      setLocationFilter(userDepartment);
+    } else if (hasSchedulePermission && !isFullAdmin && schedulePermissions.length === 1 && !locationFilter) {
       setLocationFilter(schedulePermissions[0]);
     }
-  }, [hasSchedulePermission, isFullAdmin, schedulePermissions, locationFilter]);
+  }, [isDepartmentManager, userDepartment, hasSchedulePermission, isFullAdmin, schedulePermissions, locationFilter]);
 
   if (loading) {
     return (
@@ -599,6 +748,9 @@ export default function ScheduleManagementPage() {
 
   return (
     <AuthenticatedLayout>
+      {/* Toast 通知 */}
+      <SimpleToast toast={toast} onClose={clearToast} />
+      
       <div className="max-w-7xl mx-auto px-4 py-8">
         {/* 標題區 */}
         <div className="mb-8">
@@ -611,7 +763,7 @@ export default function ScheduleManagementPage() {
               <p className="text-gray-600 mt-2">管理員工班表，支援日曆檢視及週模版功能</p>
             </div>
             {canManage && (
-              <div className="flex space-x-3">
+              <div className="flex space-x-3 flex-wrap gap-2">
                 <QuickCopySchedule onSuccess={fetchMonthlySchedules} />
                 <button
                   onClick={() => window.location.href = '/schedule-management/weekly-templates'}
@@ -762,7 +914,7 @@ export default function ScheduleManagementPage() {
                 />
               </div>
               <div>
-                <label className="block text-sm font-semibold text-gray-800 mb-1">部門（據點）</label>
+                <label className="block text-sm font-semibold text-gray-800 mb-1">部門</label>
                 <select
                   value={searchFilters.department}
                   onChange={(e) => setSearchFilters({ ...searchFilters, department: e.target.value })}
@@ -909,25 +1061,46 @@ export default function ScheduleManagementPage() {
                 const daySchedules = locationFilter
                   ? allDaySchedules.filter(s => s.employee.department === locationFilter)
                   : allDaySchedules;
+                // 國定假日資訊
+                const holiday = day ? getHolidayForDate(dateStr) : null;
                 
                 return (
-                  <div key={index} className="min-h-[120px] border border-gray-200 rounded p-2">
+                  <div 
+                    key={index} 
+                    className={`min-h-[120px] border rounded p-2 ${
+                      holiday ? 'border-red-300 bg-red-50' : 'border-gray-200'
+                    }`}
+                  >
                     {day && (
                       <>
-                        <div className="font-medium text-sm text-gray-900 mb-2">{day}</div>
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="font-medium text-sm text-gray-900">{day}</div>
+                          {holiday && (
+                            <span className="text-xs text-red-600 font-medium" title={holiday.name}>
+                              🎌
+                            </span>
+                          )}
+                        </div>
+                        {/* 國定假日名稱 */}
+                        {holiday && (
+                          <div className="text-xs text-red-600 font-medium mb-1 truncate" title={holiday.name}>
+                            {holiday.name}
+                          </div>
+                        )}
                         <div className="space-y-1">
-                          {daySchedules.slice(0, 3).map((schedule) => (
+                          {daySchedules.slice(0, 2).map((schedule) => (
                             <div
                               key={schedule.id}
-                              className={`text-xs px-2 py-1 rounded border ${SHIFT_TYPE_COLORS[schedule.shiftType]}`}
+                              onClick={() => handleScheduleClick(schedule)}
+                              className={`text-xs px-2 py-1 rounded border cursor-pointer hover:ring-2 hover:ring-blue-400 transition-all ${SHIFT_TYPE_COLORS[schedule.shiftType]}`}
                             >
                               <div className="font-medium">{schedule.employee.name}</div>
                               <div>{SHIFT_TYPE_LABELS[schedule.shiftType]}</div>
                             </div>
                           ))}
-                          {daySchedules.length > 3 && (
+                          {daySchedules.length > 2 && (
                             <div className="text-xs text-gray-500 px-2">
-                              +{daySchedules.length - 3} 更多
+                              +{daySchedules.length - 2} 更多
                             </div>
                           )}
                         </div>
@@ -1170,10 +1343,10 @@ export default function ScheduleManagementPage() {
                                   }
                                 });
                               }}
-                              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
+                              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
                             >
                               {Object.entries(SHIFT_TYPE_LABELS).map(([key, label]) => (
-                                <option key={key} value={key}>{label}</option>
+                                <option key={key} value={key} className="text-gray-900 bg-white">{label}</option>
                               ))}
                             </select>
                           </div>
@@ -1189,7 +1362,7 @@ export default function ScheduleManagementPage() {
                                     ...newTemplate,
                                     [day]: { ...daySchedule, startTime: e.target.value }
                                   })}
-                                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
+                                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
                                 />
                               </div>
 
@@ -1202,7 +1375,7 @@ export default function ScheduleManagementPage() {
                                     ...newTemplate,
                                     [day]: { ...daySchedule, endTime: e.target.value }
                                   })}
-                                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
+                                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
                                 />
                               </div>
 
@@ -1215,7 +1388,7 @@ export default function ScheduleManagementPage() {
                                     ...newTemplate,
                                     [day]: { ...daySchedule, breakTime: parseInt(e.target.value) || 0 }
                                   })}
-                                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
+                                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
                                   min="0"
                                 />
                               </div>
@@ -1265,6 +1438,7 @@ export default function ScheduleManagementPage() {
                     setApplyToMonth('');
                     setSelectedEmployees([]);
                     setEmployeeSearch('');
+                    setTemplateDepartmentFilter('');
                   }}
                   className="text-gray-400 hover:text-gray-600"
                 >
@@ -1312,14 +1486,27 @@ export default function ScheduleManagementPage() {
                     </span>
                   </div>
                   
-                  {/* 搜索框 */}
-                  <div className="mb-4">
+                  {/* 部門篩選 + 搜尋框 */}
+                  <div className="grid grid-cols-2 gap-3 mb-4">
+                    <select
+                      value={templateDepartmentFilter}
+                      onChange={(e) => {
+                        setTemplateDepartmentFilter(e.target.value);
+                        setSelectedEmployees([]); // 切換部門時清空選擇
+                      }}
+                      className="px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-black text-sm"
+                    >
+                      <option value="">全部部門</option>
+                      {templateDepartments.map(dept => (
+                        <option key={dept} value={dept}>{dept}</option>
+                      ))}
+                    </select>
                     <input
                       type="text"
                       value={employeeSearch}
                       onChange={(e) => setEmployeeSearch(e.target.value)}
-                      placeholder="搜索員工 (員編、姓名、部門)"
-                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-black text-sm"
+                      placeholder="搜尋員工..."
+                      className="px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-black text-sm"
                     />
                   </div>
 
@@ -1330,7 +1517,7 @@ export default function ScheduleManagementPage() {
                       onClick={handleSelectAllEmployees}
                       className="text-sm text-blue-600 hover:text-blue-800"
                     >
-                      {selectedEmployees.length === filteredEmployees.length ? '取消全選' : '全選'}
+                      {selectedEmployees.length === filteredEmployees.length && filteredEmployees.length > 0 ? '取消全選' : '全選'}
                     </button>
                   </div>
 
@@ -1409,6 +1596,106 @@ export default function ScheduleManagementPage() {
           </div>
         </div>
       )}
+
+      {/* 編輯班表彈窗 */}
+      {showEditScheduleModal && editingSchedule && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-lg max-w-md w-full">
+            <div className="p-6">
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-xl font-bold text-gray-900">編輯班表</h2>
+                <button
+                  onClick={() => {
+                    setShowEditScheduleModal(false);
+                    setEditingSchedule(null);
+                  }}
+                  className="text-gray-400 hover:text-gray-600"
+                >
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+
+              {/* 員工與日期資訊 */}
+              <div className="mb-4 p-3 bg-gray-50 rounded-lg">
+                <div className="text-sm text-gray-600">員工</div>
+                <div className="font-medium text-gray-900">{editingSchedule.employee.name}</div>
+                <div className="text-sm text-gray-600 mt-2">日期</div>
+                <div className="font-medium text-gray-900">{editingSchedule.workDate}</div>
+              </div>
+
+              <form onSubmit={handleUpdateSchedule} className="space-y-4">
+                {/* 班別選擇 */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">班別</label>
+                  <select
+                    value={editScheduleForm.shiftType}
+                    onChange={(e) => setEditScheduleForm({ ...editScheduleForm, shiftType: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
+                  >
+                    {Object.entries(SHIFT_TYPE_LABELS).map(([value, label]) => (
+                      <option key={value} value={value} className="text-gray-900 bg-white">{label}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* 時間欄位（只在需要時顯示） */}
+                {!['NH', 'RD', 'rd', 'OFF', 'FDL', 'TD'].includes(editScheduleForm.shiftType) && (
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">開始時間</label>
+                      <input
+                        type="time"
+                        value={editScheduleForm.startTime}
+                        onChange={(e) => setEditScheduleForm({ ...editScheduleForm, startTime: e.target.value })}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">結束時間</label>
+                      <input
+                        type="time"
+                        value={editScheduleForm.endTime}
+                        onChange={(e) => setEditScheduleForm({ ...editScheduleForm, endTime: e.target.value })}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* 按鈕區 */}
+                <div className="flex space-x-3 pt-4">
+                  <button
+                    type="button"
+                    onClick={handleDeleteSchedule}
+                    className="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 flex items-center"
+                  >
+                    <Trash2 className="w-4 h-4 mr-2" />
+                    刪除
+                  </button>
+                  <div className="flex-1"></div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowEditScheduleModal(false);
+                      setEditingSchedule(null);
+                    }}
+                    className="px-4 py-2 border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50"
+                  >
+                    取消
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+                  >
+                    儲存
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
+
     </AuthenticatedLayout>
   );
 }

@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { verifyToken } from '@/lib/auth';
 import { cookies } from 'next/headers';
+import { createApprovalForRequest } from '@/lib/approval-helper';
 
 // 生成請購單號
 async function generateRequestNumber(): Promise<string> {
@@ -37,7 +38,7 @@ async function generateRequestNumber(): Promise<string> {
 export async function GET(request: NextRequest) {
   try {
     const cookieStore = await cookies();
-    const token = cookieStore.get('token')?.value;
+    const token = cookieStore.get('auth-token')?.value;
     
     if (!token) {
       return NextResponse.json({ error: '未登入' }, { status: 401 });
@@ -114,7 +115,7 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const cookieStore = await cookies();
-    const token = cookieStore.get('token')?.value;
+    const token = cookieStore.get('auth-token')?.value;
     
     if (!token) {
       return NextResponse.json({ error: '未登入' }, { status: 401 });
@@ -136,11 +137,15 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const { title, items, totalAmount, reason, priority } = body;
+    const { title, category, items, totalAmount, reason, priority } = body;
 
     if (!title || !items || !reason) {
       return NextResponse.json({ error: '請填寫必要欄位' }, { status: 400 });
     }
+
+    // 驗證類別
+    const validCategories = ['MEDICAL', 'CARE_SUPPLIES', 'OFFICE', 'IT_EQUIPMENT', 'FURNITURE', 'CLEANING', 'FOOD', 'KITCHEN', 'MAINTENANCE', 'UNIFORM', 'ACTIVITY', 'OTHER'];
+    const validCategory = validCategories.includes(category) ? category : 'OTHER';
 
     // 生成單號
     const requestNumber = await generateRequestNumber();
@@ -151,6 +156,7 @@ export async function POST(request: NextRequest) {
         employeeId: user.employee.id,
         department: user.employee.department || '',
         title,
+        category: validCategory,
         items: typeof items === 'string' ? items : JSON.stringify(items),
         totalAmount: totalAmount || 0,
         reason,
@@ -169,6 +175,15 @@ export async function POST(request: NextRequest) {
       }
     });
 
+    // 建立審核實例
+    await createApprovalForRequest({
+      requestType: 'PURCHASE',
+      requestId: purchaseRequest.id,
+      applicantId: purchaseRequest.employee.id,
+      applicantName: purchaseRequest.employee.name,
+      department: purchaseRequest.employee.department
+    });
+
     return NextResponse.json({ 
       message: '請購單已提交',
       purchaseRequest 
@@ -183,7 +198,7 @@ export async function POST(request: NextRequest) {
 export async function PUT(request: NextRequest) {
   try {
     const cookieStore = await cookies();
-    const token = cookieStore.get('token')?.value;
+    const token = cookieStore.get('auth-token')?.value;
     
     if (!token) {
       return NextResponse.json({ error: '未登入' }, { status: 401 });
@@ -268,7 +283,7 @@ export async function PUT(request: NextRequest) {
 export async function DELETE(request: NextRequest) {
   try {
     const cookieStore = await cookies();
-    const token = cookieStore.get('token')?.value;
+    const token = cookieStore.get('auth-token')?.value;
     
     if (!token) {
       return NextResponse.json({ error: '未登入' }, { status: 401 });

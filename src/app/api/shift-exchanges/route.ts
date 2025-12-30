@@ -4,6 +4,7 @@ import { getUserFromRequest } from '@/lib/auth';
 import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { createApprovalForRequest } from '@/lib/approval-helper';
 
 interface DBItem {
   id: number;
@@ -37,6 +38,7 @@ interface DBItem {
   shiftDate?: string;
   originalShiftType?: string;
   newShiftType?: string;
+  leaveType?: string;
   reason?: string;
 }
 
@@ -66,7 +68,7 @@ function normalizeItem(it: DBItem) {
 
   // derive frontend-friendly fields
   // If requestReason is structured SELF_CHANGE, extract shift types and shiftDate
-  let parsed: { type?: string; shiftDate?: string; original?: string; new?: string; note?: string; reason?: string } | null = null;
+  let parsed: { type?: string; shiftDate?: string; original?: string; new?: string; note?: string; reason?: string; leaveType?: string } | null = null;
   if (typeof item.requestReason === 'string' && isJSON(item.requestReason)) {
     try { 
       parsed = JSON.parse(item.requestReason); 
@@ -79,12 +81,14 @@ function normalizeItem(it: DBItem) {
     item.shiftDate = parsed.shiftDate ?? item.originalWorkDate;
     item.originalShiftType = parsed.original ?? 'A';
     item.newShiftType = parsed.new ?? item.originalShiftType ?? 'A';
+    item.leaveType = parsed.leaveType ?? '';
     item.reason = parsed.note ?? parsed.reason ?? '';
   } else {
     // for swap or generic, expose dates
     item.shiftDate = item.originalWorkDate || item.shiftDate || '';
     item.originalShiftType = item.originalShiftType || '';
     item.newShiftType = item.newShiftType || '';
+    item.leaveType = '';
     item.reason = typeof item.requestReason === 'string' ? item.requestReason : (item.reason || '');
   }
 
@@ -242,12 +246,14 @@ export async function POST(request: NextRequest) {
       const original = String(body.originalShiftType || body.original || 'A');
       const next = String(body.newShiftType || body.new || original);
       const note = body.reason || body.requestReason || '';
+      const leaveType = body.leaveType || ''; // 當選擇FDL時的請假類型
 
       console.error('📋 [STEP 8A] 自調班數據解析:', {
         shiftDate,
         original,
         next,
-        note
+        note,
+        leaveType
       });
 
       data = {
@@ -260,7 +266,8 @@ export async function POST(request: NextRequest) {
           shiftDate, 
           original, 
           new: next, 
-          note 
+          note,
+          leaveType: next === 'FDL' ? leaveType : undefined // 只有FDL時才儲存leaveType
         }),
         status: 'PENDING'
       };
@@ -358,6 +365,16 @@ export async function POST(request: NextRequest) {
       originalWorkDate: created.originalWorkDate,
       createdAt: created.createdAt
     }));
+    
+    // 建立審核實例
+    await createApprovalForRequest({
+      requestType: 'SHIFT_CHANGE',
+      requestId: created.id,
+      applicantId: created.requester?.id || created.requesterId,
+      applicantName: created.requester?.name || '未知',
+      department: created.requester?.department || null
+    });
+    console.error('✅ [STEP 12.5] 審核實例已建立');
     
     // 驗證記錄是否真的保存了
     const verification = await prisma.shiftExchangeRequest.findUnique({

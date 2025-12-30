@@ -95,16 +95,55 @@ self.addEventListener('fetch', (event) => {
   );
 });
 
-// 推播通知（可選）
+// 推播通知處理
 self.addEventListener('push', (event) => {
   if (event.data) {
-    const data = event.data.json();
+    let data;
+    try {
+      data = event.data.json();
+    } catch (e) {
+      data = {
+        title: '長福會考勤系統',
+        body: event.data.text()
+      };
+    }
+    
+    // 根據通知類型設定不同的操作按鈕
+    let actions = [];
+    const notificationType = data.data?.type || 'GENERAL';
+    
+    switch (notificationType) {
+      case 'ATTENDANCE_REMINDER':
+      case 'MISSED_CLOCK':
+        actions = [
+          { action: 'clock', title: '立即打卡', icon: '/icons/clock.png' },
+          { action: 'dismiss', title: '稍後', icon: '/icons/dismiss.png' }
+        ];
+        break;
+      case 'OVERTIME_WARNING':
+        actions = [
+          { action: 'view', title: '查看詳情', icon: '/icons/view.png' }
+        ];
+        break;
+      case 'LEAVE_APPROVED':
+      case 'LEAVE_REJECTED':
+        actions = [
+          { action: 'view', title: '查看', icon: '/icons/view.png' }
+        ];
+        break;
+      default:
+        actions = [];
+    }
+
     const options = {
       body: data.body,
-      icon: '/icons/icon-192x192.png',
-      badge: '/icons/icon-72x72.png',
+      icon: data.icon || '/icons/icon-192x192.png',
+      badge: data.badge || '/icons/icon-72x72.png',
       vibrate: [100, 50, 100],
-      data: data.data
+      data: data.data || {},
+      tag: data.tag || notificationType,
+      renotify: true,
+      actions
     };
     
     event.waitUntil(
@@ -113,13 +152,35 @@ self.addEventListener('push', (event) => {
   }
 });
 
-// 通知點擊
+// 通知點擊處理
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   
-  if (event.notification.data && event.notification.data.url) {
-    event.waitUntil(
-      clients.openWindow(event.notification.data.url)
-    );
+  const action = event.action;
+  const data = event.notification.data || {};
+  let targetUrl = '/';
+  
+  // 根據操作決定導向
+  if (action === 'clock') {
+    targetUrl = '/attendance';
+  } else if (action === 'view' || action === '') {
+    targetUrl = data.url || '/';
   }
+  
+  event.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true })
+      .then((clientList) => {
+        // 如果已有開啟的視窗，聚焦並導航
+        for (const client of clientList) {
+          if ('focus' in client && 'navigate' in client) {
+            return client.focus().then(() => client.navigate(targetUrl));
+          }
+        }
+        // 否則開新視窗
+        if (clients.openWindow) {
+          return clients.openWindow(targetUrl);
+        }
+      })
+  );
 });
+

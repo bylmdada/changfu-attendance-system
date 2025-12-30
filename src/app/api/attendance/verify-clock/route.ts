@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { verifyPassword } from '@/lib/auth';
 import { checkClockRateLimit, recordFailedClockAttempt, clearFailedAttempts, getClientIP } from '@/lib/rate-limit';
+import { canEmployeeClockIn } from '@/lib/schedule-confirm-service';
 
 // 導入GPS設定
 async function getGPSSettings() {
@@ -151,6 +152,18 @@ export async function POST(request: NextRequest) {
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
     const currentTime = now.toISOString();
+
+    // 📝 班表確認檢查（只對上班打卡檢查）
+    if (clockType === 'in') {
+      const clockPermission = await canEmployeeClockIn(user.employee.id, now);
+      if (!clockPermission.allowed) {
+        console.log('⛔ 班表未確認拒絕打卡:', username, clockPermission.reason);
+        return NextResponse.json({
+          error: clockPermission.reason || '請先確認本月班表後再打卡',
+          code: 'SCHEDULE_NOT_CONFIRMED'
+        }, { status: 403 });
+      }
+    }
 
     if (clockType === 'in') {
       // 上班打卡

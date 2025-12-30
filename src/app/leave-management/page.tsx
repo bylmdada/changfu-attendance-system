@@ -1,10 +1,11 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
-import { Calendar, Plus, Search, CheckCircle, XCircle, AlertCircle, Pencil, Trash2 } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Calendar, Plus, Search, CheckCircle, XCircle, AlertCircle, Pencil, Trash2, X, ChevronDown, ChevronUp, Eye } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import BatchApproveBar from '@/components/BatchApproveBar';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import ApprovalProgress, { ApprovalReviewRecord } from '@/components/ApprovalProgress';
 
 interface Employee {
   id: number;
@@ -197,6 +198,17 @@ export default function LeaveManagementPage() {
   // 分頁狀態
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 15;
+  
+  // 展開審核進度的列 ID
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+  
+  // 審核歷程資料
+  const [approvalData, setApprovalData] = useState<{
+    currentLevel: number;
+    maxLevel: number;
+    status: string;
+    reviews: ApprovalReviewRecord[];
+  } | null>(null);
   
   const [filters, setFilters] = useState({
     status: '',
@@ -711,6 +723,36 @@ export default function LeaveManagementPage() {
     setNewRequest({ leaveType: '', startDate: '', endDate: '', startHour: '', startMinute: '', endHour: '', endMinute: '', leaveReason: '', reason: '', attachments: [] });
   };
 
+  // 展開/收合審核進度並取得真實資料
+  const handleToggleApproval = async (requestId: number) => {
+    if (expandedId === requestId) {
+      setExpandedId(null);
+      setApprovalData(null);
+      return;
+    }
+    
+    setExpandedId(requestId);
+    setApprovalData(null);
+    
+    try {
+      const response = await fetch(`/api/approval-reviews?requestType=LEAVE&requestId=${requestId}`, {
+        credentials: 'include'
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        setApprovalData({
+          currentLevel: data.currentLevel,
+          maxLevel: data.maxLevel,
+          status: data.status,
+          reviews: data.reviews
+        });
+      }
+    } catch (error) {
+      console.error('取得審核歷程失敗:', error);
+    }
+  };
+
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleDateString('zh-TW');
   };
@@ -939,7 +981,8 @@ export default function LeaveManagementPage() {
                   const StatusIcon = STATUS_ICONS[request.status as keyof typeof STATUS_ICONS];
                   const isOwner = user?.employee?.id && request.employee.id === user.employee.id;
                   return (
-                    <tr key={request.id} className={`hover:bg-gray-50 ${selectedIds.includes(request.id) ? 'bg-blue-50' : ''}`}>
+                    <React.Fragment key={request.id}>
+                    <tr className={`hover:bg-gray-50 ${selectedIds.includes(request.id) ? 'bg-blue-50' : ''}`}>
                       {isAdmin && (
                         <td className="px-3 py-4 text-center">
                           {request.status === 'PENDING' && (
@@ -1037,7 +1080,7 @@ export default function LeaveManagementPage() {
                           </div>
                         )}
                         {/* 員工編輯/刪除（僅自己且 PENDING） */}
-                        {!isAdmin && isOwner && (
+                          {!isAdmin && isOwner && (
                           request.status === 'PENDING' ? (
                             <div className="flex gap-3">
                               <button
@@ -1057,8 +1100,37 @@ export default function LeaveManagementPage() {
                             <span className="text-gray-400">僅可檢視</span>
                           )
                         )}
+                        {/* 查看審核進度按鈕 */}
+                        <button
+                          onClick={() => handleToggleApproval(request.id)}
+                          className="ml-2 inline-flex items-center gap-1 text-gray-600 hover:text-blue-600"
+                          title="查看審核進度"
+                        >
+                          <Eye className="w-4 h-4" />
+                          {expandedId === request.id ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                        </button>
                       </td>
                     </tr>
+                    {/* 展開的審核進度區域 */}
+                    {expandedId === request.id && (
+                      <tr>
+                        <td colSpan={isAdmin ? 9 : 8} className="px-6 py-4 bg-gray-50">
+                          {approvalData ? (
+                            <ApprovalProgress
+                              currentLevel={approvalData.currentLevel}
+                              maxLevel={approvalData.maxLevel}
+                              status={approvalData.status}
+                              reviews={approvalData.reviews}
+                            />
+                          ) : (
+                            <div className="text-center py-4 text-gray-500">
+                              載入中...
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                    </React.Fragment>
                   );
                 })}
               </tbody>
@@ -1078,7 +1150,18 @@ export default function LeaveManagementPage() {
       {showNewRequestForm && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-lg max-w-md w-full p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">申請請假</h3>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-900">申請請假</h3>
+              <button
+                onClick={() => {
+                  setShowNewRequestForm(false);
+                  resetForm();
+                }}
+                className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
             
             <form onSubmit={handleSubmitRequest} className="space-y-4">
               <div>
@@ -1343,7 +1426,15 @@ export default function LeaveManagementPage() {
       {showEditModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-lg max-w-md w-full p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">編輯請假申請</h3>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-900">編輯請假申請</h3>
+              <button
+                onClick={() => { setShowEditModal(false); setEditingRequest(null); }}
+                className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
             <form onSubmit={handleSubmitEdit} className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">請假類型 *</label>
@@ -1511,7 +1602,7 @@ export default function LeaveManagementPage() {
       {isAdmin && (
         <BatchApproveBar
           selectedIds={selectedIds}
-          apiEndpoint="/api/leave-requests/batch-approve"
+          apiEndpoint="/api/leave-requests/batch"
           onSuccess={fetchLeaveRequests}
           onClear={() => setSelectedIds([])}
           itemName="請假申請"

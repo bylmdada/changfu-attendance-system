@@ -27,8 +27,22 @@ interface Employee {
     role: string;
     isActive: boolean;
   };
+  departmentManagers?: Array<{
+    id: number;
+    department: string;
+    isPrimary: boolean;
+  }>;
 }
 
+// 角色標籤
+const ROLE_LABELS: Record<string, string> = {
+  ADMIN: '管理員',
+  HR: '人資',
+  MANAGER: '主管',
+  EMPLOYEE: '員工'
+};
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 interface User {
   id: number;
   username: string;
@@ -266,6 +280,12 @@ export default function EmployeesPage() {
                           部門職位
                         </th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          角色
+                        </th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          部門主管
+                        </th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                           到職日期
                         </th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -305,6 +325,37 @@ export default function EmployeesPage() {
                             <div className="text-sm text-gray-900">{employee.department}</div>
                             <div className="text-sm text-gray-500">{employee.position}</div>
                           </td>
+                          {/* 角色欄位 */}
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            {employee.user ? (
+                              <span className={`inline-flex px-2 py-1 text-xs font-medium rounded-full ${
+                                employee.user.role === 'ADMIN' ? 'bg-purple-100 text-purple-800' :
+                                employee.user.role === 'HR' ? 'bg-orange-100 text-orange-800' :
+                                employee.user.role === 'MANAGER' ? 'bg-blue-100 text-blue-800' :
+                                'bg-gray-100 text-gray-800'
+                              }`}>
+                                {ROLE_LABELS[employee.user.role] || employee.user.role}
+                              </span>
+                            ) : (
+                              <span className="text-sm text-gray-400">無帳號</span>
+                            )}
+                          </td>
+                          {/* 部門主管欄位 */}
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            {employee.departmentManagers && employee.departmentManagers.length > 0 ? (
+                              <div className="space-y-1">
+                                {employee.departmentManagers.map((dm) => (
+                                  <span key={dm.id} className={`inline-flex px-2 py-1 text-xs font-medium rounded-full ${
+                                    dm.isPrimary ? 'bg-blue-100 text-blue-800' : 'bg-gray-100 text-gray-800'
+                                  }`}>
+                                    {dm.department} {dm.isPrimary ? '正' : '副'}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : (
+                              <span className="text-sm text-gray-400">-</span>
+                            )}
+                          </td>
                           <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                             {formatDate(employee.hireDate)}
                           </td>
@@ -312,14 +363,35 @@ export default function EmployeesPage() {
                             <div className="text-sm text-gray-900">{formatCurrency(employee.baseSalary)}</div>
                             <div className="text-sm text-gray-500">時薪 {formatCurrency(employee.hourlyRate)}</div>
                           </td>
+                          {/* 可編輯狀態 */}
                           <td className="px-6 py-4 whitespace-nowrap">
-                            <span className={`inline-flex px-2 py-1 text-xs font-medium rounded-full ${
-                              employee.isActive 
-                                ? 'bg-green-100 text-green-800' 
-                                : 'bg-red-100 text-red-800'
-                            }`}>
-                              {employee.isActive ? '活躍' : '停用'}
-                            </span>
+                            <select
+                              value={employee.isActive ? 'active' : 'inactive'}
+                              onChange={async (e) => {
+                                const newStatus = e.target.value === 'active';
+                                try {
+                                  const response = await fetchJSONWithCSRF(`/api/employees/${employee.id}`, {
+                                    method: 'PUT',
+                                    body: { isActive: newStatus }
+                                  });
+                                  if (response.ok) {
+                                    loadEmployees();
+                                  } else {
+                                    alert('更新狀態失敗');
+                                  }
+                                } catch {
+                                  alert('系統錯誤');
+                                }
+                              }}
+                              className={`text-xs font-medium rounded-full px-3 py-1 cursor-pointer ${
+                                employee.isActive 
+                                  ? 'bg-green-100 text-green-800' 
+                                  : 'bg-red-100 text-red-800'
+                              }`}
+                            >
+                              <option value="active">活躍</option>
+                              <option value="inactive">停用</option>
+                            </select>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
                             <div className="flex space-x-2">
@@ -592,10 +664,31 @@ function EmployeeModal({ employee, onClose, onSave }: {
     position: employee?.position || '',
     username: employee?.user?.username || initialEmployeeId,
     password: employee ? '' : generateDefaultPassword(initialEmployeeId),
-    createAccount: !employee // 新增員工時默認創建帳號
+    createAccount: !employee, // 新增員工時默認創建帳號
+    role: employee?.user?.role || 'EMPLOYEE' // 角色欄位
   });
   const [saving, setSaving] = useState(false);
   const [availablePositions, setAvailablePositions] = useState<string[]>([]);
+  const [autoCalculateHourlyRate, setAutoCalculateHourlyRate] = useState(!employee); // 新增時默認自動計算
+
+  // 月基本工時（台灣勞基法：30天 x 8小時）
+  const MONTHLY_BASE_HOURS = 240;
+
+  // 自動計算時薪
+  const calculateHourlyRate = (baseSalary: string) => {
+    const salary = parseFloat(baseSalary);
+    if (isNaN(salary) || salary <= 0) return '';
+    return Math.round(salary / MONTHLY_BASE_HOURS).toString();
+  };
+
+  // 處理底薪變更
+  const handleBaseSalaryChange = (value: string) => {
+    setFormData(prev => ({
+      ...prev,
+      baseSalary: value,
+      hourlyRate: autoCalculateHourlyRate ? calculateHourlyRate(value) : prev.hourlyRate
+    }));
+  };
 
   // 初始化職位選項
   useEffect(() => {
@@ -831,24 +924,51 @@ function EmployeeModal({ employee, onClose, onSave }: {
                 min="0"
                 step="1"
                 value={formData.baseSalary}
-                onChange={(e) => setFormData({...formData, baseSalary: e.target.value})}
+                onChange={(e) => handleBaseSalaryChange(e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
                 placeholder="請輸入底薪"
               />
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">時薪 *</label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-sm font-medium text-gray-700">
+                  時薪 {!autoCalculateHourlyRate && '*'}
+                </label>
+                <label className="flex items-center text-xs text-gray-500 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={autoCalculateHourlyRate}
+                    onChange={(e) => {
+                      setAutoCalculateHourlyRate(e.target.checked);
+                      if (e.target.checked && formData.baseSalary) {
+                        setFormData(prev => ({
+                          ...prev,
+                          hourlyRate: calculateHourlyRate(prev.baseSalary)
+                        }));
+                      }
+                    }}
+                    className="mr-1"
+                  />
+                  自動計算（底薪÷240）
+                </label>
+              </div>
               <input
                 type="number"
-                required
+                required={!autoCalculateHourlyRate}
                 min="0"
                 step="1"
                 value={formData.hourlyRate}
                 onChange={(e) => setFormData({...formData, hourlyRate: e.target.value})}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
-                placeholder="請輸入時薪"
+                className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-black ${autoCalculateHourlyRate ? 'bg-gray-100' : ''}`}
+                placeholder={autoCalculateHourlyRate ? '依底薪自動計算' : '請輸入時薪'}
+                readOnly={autoCalculateHourlyRate}
               />
+              {autoCalculateHourlyRate && formData.baseSalary && (
+                <p className="mt-1 text-xs text-green-600">
+                  ✓ 自動計算：{formData.baseSalary} ÷ 240 = {formData.hourlyRate} 元/小時
+                </p>
+              )}
             </div>
 
             <div>
@@ -950,6 +1070,36 @@ function EmployeeModal({ employee, onClose, onSave }: {
               )}
             </div>
           </div>
+
+          {/* 角色選擇區域 - 僅編輯時顯示 */}
+          {employee && (
+            <div className="mt-6 p-4 bg-purple-50 rounded-lg border border-purple-200">
+              <h4 className="text-lg font-medium text-purple-900 mb-4 flex items-center">
+                <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                </svg>
+                權限管理
+              </h4>
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  角色身份
+                </label>
+                <select
+                  value={formData.role}
+                  onChange={(e) => setFormData({...formData, role: e.target.value})}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 text-black bg-white"
+                >
+                  <option value="EMPLOYEE">員工 (EMPLOYEE)</option>
+                  <option value="HR">人資 (HR)</option>
+                  <option value="ADMIN">管理員 (ADMIN)</option>
+                </select>
+                <p className="mt-2 text-xs text-purple-700">
+                  ⚠️ 變更角色將影響該員工的系統權限
+                </p>
+              </div>
+            </div>
+          )}
 
           <div className="mt-6 flex justify-end space-x-3">
             <button

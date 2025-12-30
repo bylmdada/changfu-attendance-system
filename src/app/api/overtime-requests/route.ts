@@ -4,6 +4,7 @@ import { verifyToken } from '@/lib/auth';
 import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { createApprovalForRequest } from '@/lib/approval-helper';
 
 // 簡易型別：避免直接耦合到 Prisma 生成客戶端
 interface ScheduleLite { shiftType: string; startTime: string; endTime: string }
@@ -325,6 +326,15 @@ export async function POST(request: NextRequest) {
           }
         }
       }
+    });
+
+    // 建立審核實例
+    await createApprovalForRequest({
+      requestType: 'OVERTIME',
+      requestId: overtimeRequest.id,
+      applicantId: overtimeRequest.employee.id,
+      applicantName: overtimeRequest.employee.name,
+      department: overtimeRequest.employee.department
     });
 
     return NextResponse.json({

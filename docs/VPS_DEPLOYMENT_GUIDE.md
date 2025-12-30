@@ -43,9 +43,13 @@ sudo apt install -y nodejs
 # 安裝其他工具
 sudo apt install -y git nginx certbot python3-certbot-nginx
 
+# 安裝 qpdf（PDF 密碼加密用）
+sudo apt install -y qpdf
+
 # 確認版本
 node -v  # 應該顯示 v20.x.x
 npm -v
+qpdf --version  # 應該顯示 qpdf version 11.x 或更高
 ```
 
 ---

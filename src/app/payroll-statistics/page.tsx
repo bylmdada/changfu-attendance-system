@@ -62,6 +62,7 @@ const MONTHS = [
 
 export default function PayrollStatisticsPage() {
   const [statistics, setStatistics] = useState<PayrollStatistics | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [departments, setDepartments] = useState<{ id: number; name: string }[]>([]);
@@ -265,9 +266,35 @@ export default function PayrollStatisticsPage() {
               <button
                 onClick={() => handleExportReport('excel')}
                 disabled={exporting}
-                className="flex-1 flex items-center justify-center gap-1 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 text-sm"
+                className="flex items-center justify-center gap-1 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 text-sm"
               >
                 {exporting ? '匯出中...' : '匯出報表'}
+              </button>
+              {/* 元大薪轉匯出 */}
+              <button
+                onClick={() => {
+                  const params = new URLSearchParams();
+                  params.append('year', filters.year);
+                  if (filters.month) params.append('month', filters.month);
+                  params.append('type', 'salary');
+                  window.open(`/api/reports/yuanta-transfer?${params}`, '_blank');
+                }}
+                className="flex items-center justify-center gap-1 px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm"
+                title="匯出元大銀行薪轉格式（依部門分頁）"
+              >
+                元大薪轉
+              </button>
+              <button
+                onClick={() => {
+                  const params = new URLSearchParams();
+                  params.append('year', filters.year);
+                  params.append('type', 'bonus');
+                  window.open(`/api/reports/yuanta-transfer?${params}`, '_blank');
+                }}
+                className="flex items-center justify-center gap-1 px-3 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors text-sm"
+                title="匯出年終獎金元大薪轉格式（依部門分頁）"
+              >
+                年終薪轉
               </button>
             </div>
           </div>
@@ -391,21 +418,21 @@ export default function PayrollStatisticsPage() {
                     <span className="text-sm text-gray-500">{dept.employeeCount} 人</span>
                   </div>
                   <div className="grid grid-cols-2 gap-4 text-sm">
-                    <div>
-                      <span className="text-gray-500">總薪資：</span>
-                      <span className="font-medium">{formatCurrency(dept.totalGrossPay)}</span>
+                    <div className="text-gray-600">
+                      <span>總薪資：</span>
+                      <span className="font-semibold text-gray-900">{formatCurrency(dept.totalGrossPay)}</span>
                     </div>
-                    <div>
-                      <span className="text-gray-500">平均薪資：</span>
-                      <span className="font-medium">{formatCurrency(dept.avgGrossPay)}</span>
+                    <div className="text-gray-600">
+                      <span>平均薪資：</span>
+                      <span className="font-semibold text-gray-900">{formatCurrency(dept.avgGrossPay)}</span>
                     </div>
-                    <div>
-                      <span className="text-gray-500">總工時：</span>
-                      <span className="font-medium">{formatHours(dept.totalRegularHours)}</span>
+                    <div className="text-gray-600">
+                      <span>總工時：</span>
+                      <span className="font-semibold text-gray-900">{formatHours(dept.totalRegularHours)}</span>
                     </div>
-                    <div>
-                      <span className="text-gray-500">加班時數：</span>
-                      <span className="font-medium">{formatHours(dept.totalOvertimeHours)}</span>
+                    <div className="text-gray-600">
+                      <span>加班時數：</span>
+                      <span className="font-semibold text-gray-900">{formatHours(dept.totalOvertimeHours)}</span>
                     </div>
                   </div>
                 </div>
@@ -515,19 +542,19 @@ export default function PayrollStatisticsPage() {
             <div className="space-y-4">
               <div className="flex justify-between">
                 <span className="text-gray-600">總正常工時：</span>
-                <span className="font-medium">{formatHours(statistics.overall.totalRegularHours)}</span>
+                <span className="font-semibold text-gray-900">{formatHours(statistics.overall.totalRegularHours)}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-gray-600">總加班時數：</span>
-                <span className="font-medium">{formatHours(statistics.overall.totalOvertimeHours)}</span>
+                <span className="font-semibold text-gray-900">{formatHours(statistics.overall.totalOvertimeHours)}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-gray-600">平均正常工時：</span>
-                <span className="font-medium">{formatHours(statistics.overall.avgRegularHours)}</span>
+                <span className="font-semibold text-gray-900">{formatHours(statistics.overall.avgRegularHours)}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-gray-600">平均加班時數：</span>
-                <span className="font-medium">{formatHours(statistics.overall.avgOvertimeHours)}</span>
+                <span className="font-semibold text-gray-900">{formatHours(statistics.overall.avgOvertimeHours)}</span>
               </div>
             </div>
           </div>
@@ -537,21 +564,21 @@ export default function PayrollStatisticsPage() {
             <div className="space-y-4">
               <div className="flex justify-between">
                 <span className="text-gray-600">應發薪資：</span>
-                <span className="font-medium">{formatCurrency(statistics.overall.totalGrossPay)}</span>
+                <span className="font-semibold text-gray-900">{formatCurrency(statistics.overall.totalGrossPay)}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-gray-600">實發薪資：</span>
-                <span className="font-medium">{formatCurrency(statistics.overall.totalNetPay)}</span>
+                <span className="font-semibold text-gray-900">{formatCurrency(statistics.overall.totalNetPay)}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-gray-600">扣款金額：</span>
-                <span className="font-medium">
+                <span className="font-semibold text-red-600">
                   {formatCurrency(statistics.overall.totalGrossPay - statistics.overall.totalNetPay)}
                 </span>
               </div>
               <div className="flex justify-between">
                 <span className="text-gray-600">實發比率：</span>
-                <span className="font-medium">
+                <span className="font-semibold text-green-600">
                   {statistics.overall.totalGrossPay > 0 
                     ? ((statistics.overall.totalNetPay / statistics.overall.totalGrossPay) * 100).toFixed(1)
                     : 0}%

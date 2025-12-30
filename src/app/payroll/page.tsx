@@ -1,9 +1,10 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { DollarSign, Plus, Search, Users, Calculator, TrendingUp, BarChart3, Download, FileText } from 'lucide-react';
+import { DollarSign, Plus, Search, Users, Calculator, TrendingUp, BarChart3, Download, FileText, Eye, Loader2, X } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import { LOGO_BASE64 } from '@/lib/logoBase64';
 
 interface Employee {
   id: number;
@@ -100,8 +101,25 @@ export default function PayrollManagementPage() {
   const [generateForm, setGenerateForm] = useState({
     payYear: new Date().getFullYear().toString(),
     payMonth: new Date().getMonth() + 1,
-    selectedEmployees: [] as string[]
+    selectedEmployees: [] as string[],
+    department: '' // 新增部門篩選
   });
+
+  // 進度條狀態
+  const [progress, setProgress] = useState({
+    isProcessing: false,
+    isPreviewing: false,
+    current: 0,
+    total: 0,
+    status: ''
+  });
+
+  // 預覽結果
+  const [previewData, setPreviewData] = useState<{
+    summary: { totalEmployees: number; previewCount: number; existingCount: number; totalGrossPay: number; totalNetPay: number; totalBonus: number };
+    previews: { employeeId: string; employeeName: string; department: string; grossPay: number; netPay: number; festivalBonus: number; yearEndBonus: number; totalBonus: number; isValid: boolean }[];
+    existingRecords: { employeeId: string; employeeName: string; department: string }[];
+  } | null>(null);
 
   // 單一創建表單
   const [createForm, setCreateForm] = useState({
@@ -121,9 +139,11 @@ export default function PayrollManagementPage() {
           credentials: 'include'
         });
         
+        let currentUser = null;
         if (authResponse.ok) {
           const userData = await authResponse.json();
-          setUser(userData.user);
+          currentUser = userData.user;
+          setUser(currentUser);
         }
 
         // 獲取薪資記錄
@@ -131,14 +151,9 @@ export default function PayrollManagementPage() {
         if (filters.year) payrollUrl.searchParams.set('year', filters.year);
         if (filters.month) payrollUrl.searchParams.set('month', filters.month);
         
-        const [payrollResponse, employeesResponse] = await Promise.all([
-          fetch(payrollUrl.toString(), {
-            credentials: 'include'
-          }),
-          fetch('/api/employees', {
-            credentials: 'include'
-          })
-        ]);
+        const payrollResponse = await fetch(payrollUrl.toString(), {
+          credentials: 'include'
+        });
 
         if (payrollResponse.ok) {
           const payrollData = await payrollResponse.json();
@@ -148,23 +163,31 @@ export default function PayrollManagementPage() {
           console.error('❌ 薪資數據載入失敗:', payrollResponse.status, payrollResponse.statusText);
         }
 
-        if (employeesResponse.ok) {
-          const employeesData = await employeesResponse.json();
-          console.log('✅ 員工數據載入成功:', employeesData.employees?.length || 0, '名員工');
-          setEmployees(employeesData.employees || []);
-        } else {
-          console.error('❌ 員工數據載入失敗:', employeesResponse.status, employeesResponse.statusText);
-        }
-
-        // 獲取部門列表
-        try {
-          const deptResponse = await fetch('/api/departments', { credentials: 'include' });
-          if (deptResponse.ok) {
-            const deptData = await deptResponse.json();
-            setDepartments(deptData.departments || []);
+        // 只有 ADMIN/HR 才載入員工列表和部門列表（用於批量生成薪資）
+        if (currentUser && (currentUser.role === 'ADMIN' || currentUser.role === 'HR')) {
+          try {
+            const employeesResponse = await fetch('/api/employees', {
+              credentials: 'include'
+            });
+            if (employeesResponse.ok) {
+              const employeesData = await employeesResponse.json();
+              console.log('✅ 員工數據載入成功:', employeesData.employees?.length || 0, '名員工');
+              setEmployees(employeesData.employees || []);
+            }
+          } catch (empError) {
+            console.error('獲取員工列表失敗:', empError);
           }
-        } catch (deptError) {
-          console.error('獲取部門列表失敗:', deptError);
+
+          // 獲取部門列表
+          try {
+            const deptResponse = await fetch('/api/departments', { credentials: 'include' });
+            if (deptResponse.ok) {
+              const deptData = await deptResponse.json();
+              setDepartments(deptData.departments || []);
+            }
+          } catch (deptError) {
+            console.error('獲取部門列表失敗:', deptError);
+          }
         }
       } catch (error) {
         console.error('獲取數據失敗:', error);
@@ -197,37 +220,75 @@ export default function PayrollManagementPage() {
     }
   };
 
+  // 預覽薪資計算
+  const handlePreviewPayroll = async () => {
+    setProgress({ ...progress, isPreviewing: true, status: '正在預覽計算...' });
+    try {
+      const response = await fetch('/api/payroll/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          payYear: parseInt(generateForm.payYear),
+          payMonth: generateForm.payMonth,
+          employeeIds: generateForm.selectedEmployees.length > 0 ? generateForm.selectedEmployees : undefined,
+          department: generateForm.department || undefined
+        })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setPreviewData(data);
+      } else {
+        const error = await response.json();
+        showToast('error', error.error || '預覽失敗');
+      }
+    } catch {
+      showToast('error', '預覽失敗，請稍後再試');
+    } finally {
+      setProgress({ ...progress, isPreviewing: false, status: '' });
+    }
+  };
+
   const handleGeneratePayroll = async (e: React.FormEvent) => {
     e.preventDefault();
+    setProgress({ isProcessing: true, isPreviewing: false, current: 0, total: previewData?.summary.previewCount || 0, status: '正在生成薪資記錄...' });
+    
     try {
       const response = await fetchJSONWithCSRF('/api/payroll/generate', {
         method: 'POST',
         body: {
           payYear: parseInt(generateForm.payYear),
           payMonth: generateForm.payMonth,
-          employeeIds: generateForm.selectedEmployees.length > 0 ? generateForm.selectedEmployees : undefined
+          employeeIds: generateForm.selectedEmployees.length > 0 ? generateForm.selectedEmployees : undefined,
+          department: generateForm.department || undefined
         }
       });
 
       if (response.ok) {
         const data = await response.json();
-        alert(data.message);
+        setProgress({ ...progress, current: data.results?.length || 0, status: '完成！' });
+        showToast('success', data.message);
         if (data.errors && data.errors.length > 0) {
-          alert('部分記錄生成失敗：\n' + data.errors.join('\n'));
+          showToast('error', `部分記錄生成失敗：${data.errors.length} 筆`);
         }
         setShowGenerateForm(false);
+        setPreviewData(null);
         setGenerateForm({
           payYear: new Date().getFullYear().toString(),
           payMonth: new Date().getMonth() + 1,
-          selectedEmployees: []
+          selectedEmployees: [],
+          department: ''
         });
         fetchPayrollRecords();
       } else {
         const error = await response.json();
-        alert(error.error);
+        showToast('error', error.error);
       }
     } catch {
-      alert('批量生成失敗，請稍後再試');
+      showToast('error', '批量生成失敗，請稍後再試');
+    } finally {
+      setProgress({ isProcessing: false, isPreviewing: false, current: 0, total: 0, status: '' });
     }
   };
 
@@ -370,6 +431,16 @@ export default function PayrollManagementPage() {
       if (response.ok) {
         const data = await response.json();
         
+        // 檢查是否有密碼保護
+        if (data.security?.hasPassword) {
+          // 顯示密碼提示
+          const confirmMsg = `此薪資條有密碼保護：\n\n📌 ${data.security.hint}\n\n${data.security.password ? `密碼：${data.security.password}` : ''}\n\n是否繼續列印？`;
+          if (!confirm(confirmMsg)) {
+            setPayslipLoading(false);
+            return;
+          }
+        }
+        
         // 創建新視窗並顯示薪資條HTML
         const printWindow = window.open('', '_blank');
         if (printWindow) {
@@ -393,6 +464,45 @@ export default function PayrollManagementPage() {
     setPayslipLoading(false);
   };
 
+  // 下載加密 PDF
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const downloadEncryptedPDF = async (payrollId: number) => {
+    setPayslipLoading(true);
+    try {
+      const response = await fetch(`/api/payroll/payslip-download?payrollId=${payrollId}`, {
+        credentials: 'include',
+      });
+
+      if (response.ok) {
+        const blob = await response.blob();
+        const contentDisposition = response.headers.get('Content-Disposition');
+        let fileName = '薪資條.pdf';
+        
+        if (contentDisposition) {
+          const match = contentDisposition.match(/filename="(.+)"/);
+          if (match) {
+            fileName = decodeURIComponent(match[1]);
+          }
+        }
+        
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileName;
+        a.click();
+        URL.revokeObjectURL(url);
+        showToast('success', '薪資條已下載（已加密）');
+      } else {
+        const errorData = await response.json();
+        showToast('error', '下載薪資條失敗: ' + (errorData.error || '未知錯誤'));
+      }
+    } catch (error) {
+      console.error('下載薪資條失敗:', error);
+      showToast('error', '下載薪資條失敗');
+    }
+    setPayslipLoading(false);
+  };
+
   const generatePayslip = async (payrollId: number) => {
     setPayslipLoading(true);
     try {
@@ -405,20 +515,24 @@ export default function PayrollManagementPage() {
         
         // 創建並下載薪資條
         const payslipContent = generatePayslipHTML(data.payslip);
-        const blob = new Blob([payslipContent], { type: 'text/html' });
+        const blob = new Blob([payslipContent], { type: 'text/html;charset=utf-8' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
         a.download = `薪資條_${data.payslip.employee.name}_${data.payslip.period.monthName}.html`;
+        a.style.display = 'none';
+        document.body.appendChild(a);
         a.click();
-        URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        showToast('success', '薪資條已下載');
       } else {
         const errorData = await response.json();
-        alert('生成薪資條失敗: ' + (errorData.error || '未知錯誤'));
+        showToast('error', '生成薪資條失敗: ' + (errorData.error || '未知錯誤'));
       }
     } catch (error) {
       console.error('生成薪資條失敗:', error);
-      alert('生成薪資條失敗: ' + (error instanceof Error ? error.message : '未知錯誤'));
+      showToast('error', '生成薪資條失敗: ' + (error instanceof Error ? error.message : '未知錯誤'));
     }
     setPayslipLoading(false);
   };
@@ -537,20 +651,20 @@ export default function PayrollManagementPage() {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const generatePayslipHTML = (payslip: any) => {
-    // 生成收入項目HTML
-    const earningsHTML = payslip.earnings?.map((item: PayslipItem) => `
-      <div class="info-row">
-        <span>${item.name}${(item.quantity ?? 0) > 1 ? ` (${item.quantity})` : ''}:</span>
-        <span class="amount">NT$ ${item.amount.toLocaleString()}</span>
-      </div>
+    // 生成收入項目表格行
+    const earningsRows = payslip.earnings?.map((item: PayslipItem) => `
+      <tr>
+        <td style="padding: 8px 12px; border-bottom: 1px solid #e5e7eb;">${item.name}${(item.quantity ?? 0) > 1 ? ` (${item.quantity})` : ''}</td>
+        <td style="padding: 8px 12px; border-bottom: 1px solid #e5e7eb; text-align: right; color: #059669; font-weight: 500;">NT$ ${item.amount.toLocaleString()}</td>
+      </tr>
     `).join('') || '';
 
-    // 生成扣除項目HTML
-    const deductionsHTML = payslip.deductions?.map((item: PayslipItem) => `
-      <div class="info-row">
-        <span>${item.name}${(item.quantity ?? 0) > 1 ? ` (${item.quantity})` : ''}:</span>
-        <span>NT$ ${item.amount.toLocaleString()}</span>
-      </div>
+    // 生成扣除項目表格行
+    const deductionsRows = payslip.deductions?.map((item: PayslipItem) => `
+      <tr>
+        <td style="padding: 8px 12px; border-bottom: 1px solid #e5e7eb;">${item.name}${(item.quantity ?? 0) > 1 ? ` (${item.quantity})` : ''}</td>
+        <td style="padding: 8px 12px; border-bottom: 1px solid #e5e7eb; text-align: right; color: #dc2626;">NT$ ${item.amount.toLocaleString()}</td>
+      </tr>
     `).join('') || '';
 
     return `
@@ -558,72 +672,252 @@ export default function PayrollManagementPage() {
     <html>
     <head>
       <meta charset="UTF-8">
-      <title>薪資條 - ${payslip.employee.name}</title>
+      <title>薪資條 - ${payslip.employee.name} - ${payslip.period.monthName}</title>
       <style>
-        body { font-family: Arial, sans-serif; margin: 20px; }
-        .header { text-align: center; border-bottom: 2px solid #333; padding-bottom: 10px; }
-        .info-section { margin: 20px 0; }
-        .info-row { display: flex; justify-content: space-between; margin: 5px 0; }
-        .amount { font-weight: bold; color: #2563eb; }
-        .deduction { color: #dc2626; }
-        .total { border-top: 2px solid #333; padding-top: 10px; font-size: 18px; font-weight: bold; }
-        .section-title { font-weight: bold; margin-bottom: 10px; color: #374151; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+          background: #f8fafc;
+          padding: 20px;
+          min-height: 100vh;
+        }
+        .payslip-container {
+          max-width: 800px;
+          margin: 0 auto;
+          background: white;
+          border-radius: 12px;
+          box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+          overflow: hidden;
+          position: relative;
+        }
+        .watermark {
+          position: absolute;
+          top: 50%;
+          left: 50%;
+          transform: translate(-50%, -50%) rotate(-45deg);
+          font-size: 60px;
+          color: rgba(100, 116, 139, 0.12);
+          font-weight: bold;
+          white-space: nowrap;
+          pointer-events: none;
+          z-index: 10;
+          user-select: none;
+          text-shadow: 0 0 2px rgba(255,255,255,0.5);
+        }
+        .content { position: relative; z-index: 1; }
+        .header {
+          background: linear-gradient(135deg, #1e40af 0%, #3b82f6 100%);
+          color: white;
+          padding: 24px 32px;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+        }
+        .header-left { display: flex; align-items: center; gap: 16px; }
+        .logo {
+          width: 56px;
+          height: 56px;
+          border-radius: 50%;
+          object-fit: cover;
+          background: white;
+          padding: 4px;
+        }
+        .logo-text {
+          width: 56px;
+          height: 56px;
+          background: white;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-weight: bold;
+          color: #1e40af;
+          font-size: 11px;
+        }
+        .header-title h1 { font-size: 24px; margin-bottom: 4px; }
+        .header-title p { font-size: 14px; opacity: 0.9; }
+        .period-badge {
+          background: rgba(255,255,255,0.2);
+          padding: 8px 16px;
+          border-radius: 20px;
+          font-size: 16px;
+          font-weight: 500;
+        }
+        .employee-info {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 24px;
+          padding: 24px 32px;
+          background: #f8fafc;
+          border-bottom: 1px solid #e5e7eb;
+        }
+        .info-card {
+          background: white;
+          padding: 16px;
+          border-radius: 8px;
+          border: 1px solid #e5e7eb;
+        }
+        .info-card h3 {
+          font-size: 14px;
+          color: #6b7280;
+          margin-bottom: 12px;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+        .info-item {
+          display: flex;
+          justify-content: space-between;
+          padding: 6px 0;
+          font-size: 14px;
+        }
+        .info-label { color: #6b7280; }
+        .info-value { font-weight: 500; color: #111827; }
+        .salary-section { padding: 24px 32px; }
+        .section-header {
+          padding: 12px 16px;
+          border-radius: 8px 8px 0 0;
+          font-weight: 600;
+          font-size: 14px;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+        .section-header.income { background: #dcfce7; color: #166534; }
+        .section-header.deduction { background: #fee2e2; color: #991b1b; }
+        .salary-table {
+          width: 100%;
+          border-collapse: collapse;
+          font-size: 14px;
+          border: 1px solid #e5e7eb;
+          border-top: none;
+        }
+        .salary-table td { color: #374151; }
+        .total-row td { font-weight: 600 !important; background: #f9fafb; }
+        .net-pay-section {
+          margin: 0 32px 24px;
+          background: linear-gradient(135deg, #1e40af 0%, #3b82f6 100%);
+          border-radius: 12px;
+          padding: 24px;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          color: white;
+        }
+        .net-pay-label { font-size: 18px; }
+        .net-pay-amount { font-size: 32px; font-weight: bold; }
+        .footer {
+          padding: 16px 32px;
+          background: #f8fafc;
+          border-top: 1px solid #e5e7eb;
+          font-size: 12px;
+          color: #6b7280;
+          text-align: center;
+        }
+        .confidential-notice {
+          background: #fef3c7;
+          color: #92400e;
+          padding: 8px 16px;
+          border-radius: 4px;
+          margin-bottom: 12px;
+          font-weight: 500;
+        }
+        /* 列印按鈕 */
+        .print-actions {
+          position: fixed;
+          top: 20px;
+          right: 20px;
+          display: flex;
+          gap: 8px;
+          z-index: 2000;
+        }
+        .print-btn {
+          padding: 10px 16px;
+          border: none;
+          border-radius: 8px;
+          font-size: 13px;
+          font-weight: 500;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+          background: #1e40af;
+          color: white;
+        }
+        .print-btn:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,0.2); }
+        @media print {
+          body { background: white; padding: 0; }
+          .payslip-container { box-shadow: none; }
+          .watermark { color: rgba(156, 163, 175, 0.1); }
+          .print-actions { display: none !important; }
+        }
       </style>
     </head>
     <body>
-      <div class="header">
-        <h1>${payslip.companyInfo.name}</h1>
-        <h2>薪資條</h2>
-        <p>${payslip.period.monthName}</p>
+      <!-- 列印按鈕 -->
+      <div class="print-actions">
+        <button class="print-btn" onclick="window.print()">🖨️ 列印 / 存為 PDF</button>
       </div>
 
-      <div class="info-section">
-        <h3>員工資訊</h3>
-        <div class="info-row"><span>員工編號:</span><span>${payslip.employee.employeeId}</span></div>
-        <div class="info-row"><span>姓名:</span><span>${payslip.employee.name}</span></div>
-        <div class="info-row"><span>部門:</span><span>${payslip.employee.department || 'N/A'}</span></div>
-        <div class="info-row"><span>職位:</span><span>${payslip.employee.position || 'N/A'}</span></div>
-      </div>
-
-      <div class="info-section">
-        <h3>工時統計</h3>
-        <div class="info-row"><span>正常工時:</span><span>${payslip.workHours.regular} 小時</span></div>
-        <div class="info-row"><span>加班工時:</span><span>${payslip.workHours.overtime} 小時</span></div>
-        <div class="info-row"><span>總工時:</span><span>${payslip.workHours.total} 小時</span></div>
-      </div>
-
-      ${earningsHTML ? `
-      <div class="info-section">
-        <div class="section-title">收入項目</div>
-        ${earningsHTML}
-        <div class="info-row total">
-          <span>總收入:</span>
-          <span class="amount">NT$ ${payslip.summary.totalEarnings.toLocaleString()}</span>
+      <div class="payslip-container">
+        <div class="watermark">內部機密 僅限本人查閱</div>
+        <div class="content">
+          <div class="header">
+            <div class="header-left">
+              <img src="${LOGO_BASE64}" alt="長福會" class="logo" /><div class="logo-text" style="display:none;">長福會</div>
+              <div class="header-title">
+                <h1>薪資條</h1>
+                <p>${payslip.companyInfo?.name || '社團法人宜蘭縣長期照護及社會福祉推廣協會'}</p>
+              </div>
+            </div>
+            <div class="period-badge">${payslip.period.monthName}</div>
+          </div>
+          <div class="employee-info">
+            <div class="info-card">
+              <h3>👤 員工資訊</h3>
+              <div class="info-item"><span class="info-label">員工編號</span><span class="info-value">${payslip.employee.employeeId}</span></div>
+              <div class="info-item"><span class="info-label">姓名</span><span class="info-value">${payslip.employee.name}</span></div>
+              <div class="info-item"><span class="info-label">部門</span><span class="info-value">${payslip.employee.department || 'N/A'}</span></div>
+              <div class="info-item"><span class="info-label">職位</span><span class="info-value">${payslip.employee.position || 'N/A'}</span></div>
+            </div>
+            <div class="info-card">
+              <h3>⏰ 工時統計</h3>
+              <div class="info-item"><span class="info-label">正常工時</span><span class="info-value">${payslip.workHours.regular} 小時</span></div>
+              <div class="info-item"><span class="info-label">加班工時</span><span class="info-value">${payslip.workHours.overtime} 小時</span></div>
+              <div class="info-item"><span class="info-label">總工時</span><span class="info-value">${payslip.workHours.total} 小時</span></div>
+            </div>
+          </div>
+          <div class="salary-section">
+            <div class="section-header income">💰 收入項目</div>
+            <table class="salary-table">
+              ${earningsRows}
+              <tr class="total-row">
+                <td style="padding: 12px; border-bottom: 1px solid #e5e7eb;">應發合計</td>
+                <td style="padding: 12px; border-bottom: 1px solid #e5e7eb; text-align: right; color: #059669; font-size: 16px;">NT$ ${payslip.summary?.totalEarnings?.toLocaleString() || '0'}</td>
+              </tr>
+            </table>
+            <div class="section-header deduction" style="margin-top: 16px;">📉 扣除項目</div>
+            <table class="salary-table">
+              ${deductionsRows}
+              <tr class="total-row">
+                <td style="padding: 12px; border-bottom: 1px solid #e5e7eb;">扣除合計</td>
+                <td style="padding: 12px; border-bottom: 1px solid #e5e7eb; text-align: right; color: #dc2626; font-size: 16px;">NT$ ${payslip.summary?.totalDeductions?.toLocaleString() || '0'}</td>
+              </tr>
+            </table>
+          </div>
+          <div class="net-pay-section">
+            <span class="net-pay-label">實領薪資</span>
+            <span class="net-pay-amount">NT$ ${payslip.summary?.netPay?.toLocaleString() || '0'}</span>
+          </div>
+          <div class="footer">
+            <div class="confidential-notice">
+              🔒 本薪資條專供 ${payslip.employee.name} (${payslip.employee.employeeId}) 查閱，請妥善保管
+            </div>
+            <p>生成時間：${new Date(payslip.generatedAt).toLocaleString('zh-TW')}</p>
+            <p style="margin-top: 4px;">${payslip.companyInfo?.name || '長福會'} | 如有疑問請洽人事部門</p>
+          </div>
         </div>
-      </div>
-      ` : ''}
-
-      ${deductionsHTML ? `
-      <div class="info-section">
-        <div class="section-title">扣除項目</div>
-        ${deductionsHTML}
-        <div class="info-row">
-          <span>總扣除:</span>
-          <span class="deduction">NT$ ${payslip.summary.totalDeductions.toLocaleString()}</span>
-        </div>
-      </div>
-      ` : ''}
-
-      <div class="info-section total">
-        <div class="info-row">
-          <span>實領薪資:</span>
-          <span class="amount">NT$ ${payslip.summary.netPay.toLocaleString()}</span>
-        </div>
-      </div>
-
-      <div style="margin-top: 30px; text-align: center; font-size: 12px; color: #666;">
-        <p>生成時間: ${new Date(payslip.generatedAt).toLocaleString()}</p>
-        <p>${payslip.companyInfo.name}</p>
       </div>
     </body>
     </html>
@@ -1010,8 +1304,25 @@ export default function PayrollManagementPage() {
       {/* 批量生成表單 */}
       {showGenerateForm && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-lg max-w-md w-full p-6 max-h-96 overflow-y-auto">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">批量生成薪資記錄</h3>
+          <div className="bg-white rounded-lg max-w-md w-full p-6 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-900">批量生成薪資記錄</h3>
+              <button
+                onClick={() => {
+                  setShowGenerateForm(false);
+                  setPreviewData(null);
+                  setGenerateForm({
+                    payYear: new Date().getFullYear().toString(),
+                    payMonth: new Date().getMonth() + 1,
+                    selectedEmployees: [],
+                    department: ''
+                  });
+                }}
+                className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
             
             <form onSubmit={handleGeneratePayroll} className="space-y-4">
               <div>
@@ -1051,10 +1362,34 @@ export default function PayrollManagementPage() {
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  選擇員工（留空則為所有員工生成）
+                  部門篩選
                 </label>
-                <div className="max-h-32 overflow-y-auto border border-gray-300 rounded-lg p-2">
-                  {employees.map((employee) => (
+                <select
+                  value={generateForm.department}
+                  onChange={(e) => {
+                    setGenerateForm({ 
+                      ...generateForm, 
+                      department: e.target.value,
+                      selectedEmployees: [] // 清空已選員工
+                    });
+                  }}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900"
+                >
+                  <option value="">所有部門</option>
+                  {departments.map((dept) => (
+                    <option key={dept.id} value={dept.name}>{dept.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  選擇員工（留空則為{generateForm.department ? `「${generateForm.department}」部門` : '所有'}員工生成）
+                </label>
+                <div className="max-h-40 overflow-y-auto border border-gray-300 rounded-lg p-2">
+                  {employees
+                    .filter(emp => !generateForm.department || emp.department === generateForm.department)
+                    .map((employee) => (
                     <label key={employee.id} className="flex items-center space-x-2 py-1">
                       <input
                         type="checkbox"
@@ -1074,23 +1409,70 @@ export default function PayrollManagementPage() {
                             });
                           }
                         }}
-                        className="rounded"
+                        className="rounded text-blue-600 focus:ring-blue-500"
                       />
-                      <span className="text-sm">{employee.name} ({employee.employeeId})</span>
+                      <span className="text-sm text-gray-900">{employee.name} ({employee.employeeId})</span>
+                      <span className="text-xs text-gray-500">- {employee.department}</span>
                     </label>
                   ))}
+                  {employees.filter(emp => !generateForm.department || emp.department === generateForm.department).length === 0 && (
+                    <div className="text-sm text-gray-500 text-center py-2">無符合條件的員工</div>
+                  )}
                 </div>
+                {generateForm.department && (
+                  <div className="mt-2 text-xs text-blue-600">
+                    已篩選「{generateForm.department}」部門，共 {employees.filter(emp => emp.department === generateForm.department).length} 人
+                  </div>
+                )}
               </div>
+
+              {/* 進度條 */}
+              {(progress.isProcessing || progress.isPreviewing) && (
+                <div className="mb-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm text-gray-600">{progress.status}</span>
+                    {progress.total > 0 && (
+                      <span className="text-sm text-gray-600">{progress.current} / {progress.total}</span>
+                    )}
+                  </div>
+                  <div className="w-full bg-gray-200 rounded-full h-2">
+                    <div 
+                      className={`h-2 rounded-full transition-all ${progress.isProcessing ? 'bg-blue-600' : 'bg-yellow-500'}`}
+                      style={{ width: progress.total > 0 ? `${(progress.current / progress.total) * 100}%` : '100%' }}
+                    ></div>
+                  </div>
+                </div>
+              )}
+
+              {/* 預覽結果 */}
+              {previewData && (
+                <div className="mb-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                  <h4 className="font-semibold text-gray-900 mb-3">預覽結果</h4>
+                  <div className="grid grid-cols-2 gap-3 text-sm">
+                    <div className="text-gray-700">可生成人數：<span className="font-semibold text-gray-900">{previewData.summary.previewCount}</span></div>
+                    <div className="text-gray-700">已存在記錄：<span className="font-semibold text-yellow-600">{previewData.summary.existingCount}</span></div>
+                    <div className="text-gray-700">總薪資：<span className="font-semibold text-gray-900">NT$ {previewData.summary.totalGrossPay.toLocaleString()}</span></div>
+                    <div className="text-gray-700">含獎金：<span className="font-semibold text-green-600">NT$ {previewData.summary.totalBonus.toLocaleString()}</span></div>
+                  </div>
+                  {previewData.existingRecords.length > 0 && (
+                    <div className="mt-3 p-2 bg-yellow-50 border border-yellow-200 rounded text-sm text-yellow-700">
+                      ⚠️ 已存在記錄（將略過）：{previewData.existingRecords.map(r => r.employeeName).join('、')}
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div className="flex gap-3 pt-4">
                 <button
                   type="button"
                   onClick={() => {
                     setShowGenerateForm(false);
+                    setPreviewData(null);
                     setGenerateForm({
                       payYear: new Date().getFullYear().toString(),
                       payMonth: new Date().getMonth() + 1,
-                      selectedEmployees: []
+                      selectedEmployees: [],
+                      department: ''
                     });
                   }}
                   className="flex-1 border border-gray-300 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-50 transition-colors"
@@ -1098,10 +1480,34 @@ export default function PayrollManagementPage() {
                   取消
                 </button>
                 <button
-                  type="submit"
-                  className="flex-1 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
+                  type="button"
+                  onClick={handlePreviewPayroll}
+                  disabled={progress.isPreviewing}
+                  className="flex-1 bg-yellow-500 text-white px-4 py-2 rounded-lg hover:bg-yellow-600 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
                 >
-                  生成薪資記錄
+                  {progress.isPreviewing ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      預覽中...
+                    </>
+                  ) : (
+                    <>
+                      <Eye className="h-4 w-4" />
+                      預覽
+                    </>
+                  )}
+                </button>
+                <button
+                  type="submit"
+                  disabled={progress.isProcessing}
+                  className="flex-1 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {progress.isProcessing ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      生成中...
+                    </>
+                  ) : '生成薪資記錄'}
                 </button>
               </div>
             </form>
@@ -1113,7 +1519,22 @@ export default function PayrollManagementPage() {
       {showCreateForm && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-lg max-w-md w-full p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">創建薪資記錄</h3>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-900">創建薪資記錄</h3>
+              <button
+                onClick={() => {
+                  setShowCreateForm(false);
+                  setCreateForm({
+                    employeeId: '',
+                    payYear: new Date().getFullYear().toString(),
+                    payMonth: new Date().getMonth() + 1
+                  });
+                }}
+                className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
             
             <form onSubmit={handleCreatePayroll} className="space-y-4">
               <div>

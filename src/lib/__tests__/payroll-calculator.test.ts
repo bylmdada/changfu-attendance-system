@@ -104,6 +104,7 @@ describe('月薪資計算整合測試', () => {
           laborInsurance: 828,
           healthInsurance: 550,
           supplementaryInsurance: 0,
+          laborPensionSelf: 0,
           incomeTax: 500,
           other: 0
         },
@@ -140,6 +141,7 @@ describe('月薪資計算整合測試', () => {
           laborInsurance: 828,
           healthInsurance: 550,
           supplementaryInsurance: 0,
+          laborPensionSelf: 0,
           incomeTax: 500,
           other: 10000
         },
@@ -176,6 +178,7 @@ describe('月薪資計算整合測試', () => {
           laborInsurance: 1000,
           healthInsurance: 700,
           supplementaryInsurance: 0,
+          laborPensionSelf: 0,
           incomeTax: 1000,
           other: 0
         },

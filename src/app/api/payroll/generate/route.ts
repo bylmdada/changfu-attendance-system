@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
+import { validateCSRF } from '@/lib/csrf';
 import { 
   calculateMonthlyPayroll, 
   validatePayrollCalculation,
@@ -9,22 +10,110 @@ import {
 } from '@/lib/payroll-calculator';
 import { OvertimeType } from '@/lib/overtime-calculator';
 
+// 輔助函數：取得國定假日
+async function getHolidaysForMonth(year: number, month: number): Promise<Set<string>> {
+  const startDate = new Date(year, month - 1, 1);
+  const endDate = new Date(year, month, 0);
+  
+  const holidays = await prisma.holiday.findMany({
+    where: {
+      year,
+      isActive: true,
+      date: {
+        gte: startDate,
+        lte: endDate
+      }
+    }
+  });
+  
+  return new Set(holidays.map(h => h.date.toISOString().split('T')[0]));
+}
+
+// 輔助函數：計算獎金
+async function calculateBonusForMonth(
+  employee: { id: number; baseSalary: number; hireDate: Date },
+  year: number,
+  month: number
+): Promise<{ festivalBonus: number; yearEndBonus: number }> {
+  let festivalBonus = 0;
+  let yearEndBonus = 0;
+
+  try {
+    const configs = await prisma.bonusConfiguration.findMany({
+      where: { isActive: true }
+    });
+
+    for (const config of configs) {
+      const eligibilityRules = typeof config.eligibilityRules === 'string'
+        ? JSON.parse(config.eligibilityRules)
+        : config.eligibilityRules || {};
+      
+      const paymentSchedule = typeof config.paymentSchedule === 'string'
+        ? JSON.parse(config.paymentSchedule)
+        : config.paymentSchedule || {};
+
+      const hireDate = new Date(employee.hireDate);
+      const currentDate = new Date(year, month - 1, 1);
+      const serviceMonths = Math.floor(
+        (currentDate.getTime() - hireDate.getTime()) / (1000 * 60 * 60 * 24 * 30)
+      );
+
+      const minimumServiceMonths = eligibilityRules.minimumServiceMonths || 0;
+      if (serviceMonths < minimumServiceMonths) {
+        continue;
+      }
+
+      const proRateRatio = Math.min(serviceMonths / 12, 1);
+
+      if (config.bonusType === 'YEAR_END') {
+        const paymentMonth = paymentSchedule.yearEndMonth || 2;
+        if (month === paymentMonth) {
+          const baseMultiplier = eligibilityRules.baseMultiplier || 1;
+          yearEndBonus = Math.round(employee.baseSalary * baseMultiplier * proRateRatio);
+        }
+      } else if (config.bonusType === 'FESTIVAL') {
+        const festivalMultipliers = eligibilityRules.festivalMultipliers || {};
+        
+        if (month === (paymentSchedule.springMonth || 2)) {
+          const multiplier = festivalMultipliers.spring_festival || 0.5;
+          festivalBonus += Math.round(employee.baseSalary * multiplier * proRateRatio);
+        }
+        if (month === (paymentSchedule.dragonBoatMonth || 6)) {
+          const multiplier = festivalMultipliers.dragon_boat || 0.3;
+          festivalBonus += Math.round(employee.baseSalary * multiplier * proRateRatio);
+        }
+        if (month === (paymentSchedule.midAutumnMonth || 9)) {
+          const multiplier = festivalMultipliers.mid_autumn || 0.3;
+          festivalBonus += Math.round(employee.baseSalary * multiplier * proRateRatio);
+        }
+      }
+    }
+  } catch (error) {
+    console.error('計算獎金失敗:', error);
+  }
+
+  return { festivalBonus, yearEndBonus };
+}
+
 export async function POST(request: NextRequest) {
   try {
+    const csrfResult = await validateCSRF(request);
+    if (!csrfResult.valid) {
+      return NextResponse.json({ error: 'CSRF 驗證失敗' }, { status: 403 });
+    }
+
     const user = getUserFromRequest(request);
     
     if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    // 只有管理員和HR可以批量生成薪資記錄
     if (user.role !== 'ADMIN' && user.role !== 'HR') {
       return NextResponse.json({ error: '無權限執行此操作' }, { status: 403 });
     }
 
-    const { payYear, payMonth, employeeIds } = await request.json();
+    const { payYear, payMonth, employeeIds, department, includeBonus = true } = await request.json();
 
-    // 驗證必填欄位
     if (!payYear || !payMonth) {
       return NextResponse.json({ error: '年份和月份為必填' }, { status: 400 });
     }
@@ -32,26 +121,33 @@ export async function POST(request: NextRequest) {
     const year = parseInt(payYear);
     const month = parseInt(payMonth);
 
-    // 如果沒有指定員工，則為所有活躍員工生成薪資記錄
-    let employees;
-    if (employeeIds && employeeIds.length > 0) {
-      employees = await prisma.employee.findMany({
-        where: {
-          id: { in: employeeIds.map((id: string) => parseInt(id)) },
-          isActive: true
-        }
-      });
-    } else {
-      employees = await prisma.employee.findMany({
-        where: { isActive: true }
-      });
+    // 取得國定假日
+    const holidayDates = await getHolidaysForMonth(year, month);
+
+    // 建立員工查詢條件（支援部門篩選）
+    interface EmployeeWhereClause {
+      isActive: boolean;
+      id?: { in: number[] };
+      department?: string;
     }
+    
+    const whereClause: EmployeeWhereClause = { isActive: true };
+    
+    if (employeeIds && employeeIds.length > 0) {
+      whereClause.id = { in: employeeIds.map((id: string) => parseInt(id)) };
+    }
+    if (department) {
+      whereClause.department = department;
+    }
+
+    const employees = await prisma.employee.findMany({
+      where: whereClause
+    });
 
     if (employees.length === 0) {
       return NextResponse.json({ error: '找不到符合條件的員工' }, { status: 400 });
     }
 
-    // 計算該月份的日期範圍
     const startDate = new Date(year, month - 1, 1);
     const endDate = new Date(year, month, 0);
 
@@ -85,27 +181,27 @@ export async function POST(request: NextRequest) {
           }
         });
 
-        // 轉換考勤記錄格式以符合新計算器需求
+        // 轉換考勤記錄格式，整合國定假日
         const attendanceForPayroll: AttendanceForPayroll[] = attendanceRecords.map(record => {
-          // 判斷加班類型
-          let overtimeType = OvertimeType.WEEKDAY;
+          const dateStr = record.workDate.toISOString().split('T')[0];
           const dayOfWeek = record.workDate.getDay();
+          const isHoliday = holidayDates.has(dateStr);
           
-          // 簡化判斷：週六為休息日，週日為例假日
-          if (dayOfWeek === 6) {
+          let overtimeType = OvertimeType.WEEKDAY;
+          if (isHoliday) {
+            overtimeType = OvertimeType.HOLIDAY;
+          } else if (dayOfWeek === 6) {
             overtimeType = OvertimeType.REST_DAY;
           } else if (dayOfWeek === 0) {
             overtimeType = OvertimeType.MANDATORY_REST;
           }
-          
-          // TODO: 這裡應該整合國定假日資料庫來正確判斷假日類型
           
           return {
             workDate: record.workDate,
             regularHours: record.regularHours || 0,
             overtimeHours: record.overtimeHours || 0,
             overtimeType,
-            isHoliday: false, // TODO: 整合假日資料
+            isHoliday,
             isRestDay: dayOfWeek === 6,
             isMandatoryRest: dayOfWeek === 0
           };
@@ -121,10 +217,11 @@ export async function POST(request: NextRequest) {
           department: employee.department || '',
           position: employee.position || '',
           dependents: employee.dependents || 0,
-          insuredBase: employee.insuredBase || undefined
+          insuredBase: employee.insuredBase || undefined,
+          laborPensionSelfRate: employee.laborPensionSelfRate || 0
         };
 
-        // 使用新的薪資計算器
+        // 使用薪資計算器
         const payrollResult = calculateMonthlyPayroll(
           employeeInfo,
           attendanceForPayroll,
@@ -139,7 +236,24 @@ export async function POST(request: NextRequest) {
           continue;
         }
 
-        // 創建薪資記錄（使用現有schema，暫時簡化）
+        // 計算獎金
+        let festivalBonus = 0;
+        let yearEndBonus = 0;
+        if (includeBonus) {
+          const bonusResult = await calculateBonusForMonth(
+            { id: employee.id, baseSalary: employee.baseSalary, hireDate: employee.hireDate },
+            year,
+            month
+          );
+          festivalBonus = bonusResult.festivalBonus;
+          yearEndBonus = bonusResult.yearEndBonus;
+        }
+
+        const totalBonus = festivalBonus + yearEndBonus;
+        const adjustedGrossPay = payrollResult.grossPay + totalBonus;
+        const adjustedNetPay = payrollResult.netPay + totalBonus;
+
+        // 創建薪資記錄（獎金已合併到 grossPay/netPay）
         const payrollRecord = await prisma.payrollRecord.create({
           data: {
             employeeId: employee.id,
@@ -147,16 +261,23 @@ export async function POST(request: NextRequest) {
             payMonth: month,
             regularHours: payrollResult.regularHours,
             overtimeHours: payrollResult.totalOvertimeHours,
-            hourlyWage: employee.hourlyRate || 0, // 添加缺少的欄位
+            hourlyWage: employee.hourlyRate || 0,
             basePay: payrollResult.basePay,
             overtimePay: payrollResult.totalOvertimePay,
-            grossPay: payrollResult.grossPay,
+            grossPay: adjustedGrossPay,
             laborInsurance: payrollResult.deductions.laborInsurance,
             healthInsurance: payrollResult.deductions.healthInsurance,
             supplementaryInsurance: payrollResult.deductions.supplementaryInsurance,
+            laborPensionSelf: payrollResult.deductions.laborPensionSelf,
             incomeTax: payrollResult.deductions.incomeTax,
             totalDeductions: payrollResult.totalDeductions,
-            netPay: payrollResult.netPay
+            netPay: adjustedNetPay,
+            calculationNotes: totalBonus > 0 ? {
+              festivalBonus,
+              yearEndBonus,
+              totalBonus,
+              bonusNote: `含三節獎金 ${festivalBonus}、年終獎金 ${yearEndBonus}`
+            } : undefined
           },
           include: {
             employee: {

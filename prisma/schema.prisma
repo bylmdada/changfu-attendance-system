@@ -37,6 +37,11 @@ model Employee {
   healthInsuranceStartDate DateTime? @map("health_insurance_start_date")
   healthInsuranceEndDate   DateTime? @map("health_insurance_end_date")
 
+  // 新增：銀行帳戶資訊（薪轉用）
+  idNumber     String?  @map("id_number")      // 身分證字號（加密儲存）
+  bankCode     String?  @default("806") @map("bank_code")  // 銀行代碼（806=元大）
+  bankAccount  String?  @map("bank_account")   // 銀行帳號
+
   user              User?
   annualLeaves      AnnualLeave[]
   leaveRequests     LeaveRequest[]
@@ -84,6 +89,9 @@ model Employee {
   resignationSettlement   ResignationSettlement?
   processedSettlements    ResignationSettlement[] @relation("SettlementProcessor")
 
+  // 離職申請關聯
+  resignationRecords      ResignationRecord[]
+
   // 加班打卡關聯
   overtimeClockRecords    OvertimeClockRecord[]
   
@@ -99,6 +107,43 @@ model Employee {
   purchaseRequests        PurchaseRequest[]
   approvedPurchaseRequests PurchaseRequest[] @relation("PurchaseRequestApprover")
 
+  // 年假餘額歷史關聯
+  leaveBalanceHistory     LeaveBalanceHistory[]
+
+  // 系統內通知關聯
+  inAppNotifications      InAppNotification[]
+
+  // 國定假日補休關聯
+  holidayCompensations    HolidayCompensation[]
+
+  // 薪資異議申請關聯
+  payrollDisputes         PayrollDispute[]
+  reviewedDisputes        PayrollDispute[] @relation("DisputeReviewer")
+  createdAdjustments      PayrollAdjustment[] @relation("AdjustmentCreator")
+  
+  // 天災假關聯
+  createdDisasterDayOffs  DisasterDayOff[] @relation("DisasterDayOffCreator")
+
+  // 審核流程關聯
+  departmentManagers      DepartmentManager[]
+  managerDeputies         ManagerDeputy[] @relation("DeputyEmployee")
+  approvalReviews         ApprovalReview[]
+  ccsSent                 ApprovalCC[] @relation("CCBy")      // 發起的 CC
+  ccsReceived             ApprovalCC[] @relation("CCTo")      // 接收的 CC
+
+  // 薪資歷史關聯
+  salaryHistories         SalaryHistory[]
+  approvedSalaryChanges   SalaryHistory[] @relation("SalaryApprover")
+
+  // 班表確認關聯
+  scheduleReleases        ScheduleMonthlyRelease[] @relation("ScheduleReleasePublisher")
+  scheduleConfirmations   ScheduleConfirmation[] @relation("ScheduleConfirmEmployee")
+
+  // 勞退自提申請關聯
+  pensionApplications     PensionContributionApplication[]
+  reviewedPensionApps     PensionContributionApplication[] @relation("PensionHRReviewer")
+  approvedPensionApps     PensionContributionApplication[] @relation("PensionAdminApprover")
+
   @@map("employees")
 }
 
@@ -109,6 +154,7 @@ model PurchaseRequest {
   employeeId      Int       @map("employee_id")             // 申請人
   department      String                                     // 部門
   title           String                                     // 採購主旨
+  category        String    @default("OTHER")               // 類別: MEDICAL/CARE_SUPPLIES/OFFICE/IT_EQUIPMENT/FURNITURE/CLEANING/FOOD/KITCHEN/MAINTENANCE/UNIFORM/ACTIVITY/OTHER
   items           String                                     // 採購項目 (JSON 格式)
   totalAmount     Float     @map("total_amount")            // 預估總金額
   reason          String                                     // 採購原因
@@ -155,7 +201,30 @@ model User {
   // 操作紀錄關聯
   auditLogs AuditLog[]
 
+  // 登入日誌關聯
+  loginLogs LoginLog[]
+
+  // WebAuthn 生物識別憑證關聯
+  webauthnCredentials WebAuthnCredential[]
+
   @@map("users")
+}
+
+// WebAuthn 生物識別憑證（Face ID / 指紋）
+model WebAuthnCredential {
+  id              Int      @id @default(autoincrement())
+  credentialId    String   @unique @map("credential_id") // Base64 編碼的憑證 ID
+  publicKey       String   @map("public_key") // Base64 編碼的公鑰
+  counter         Int      @default(0) // 防重放攻擊計數器
+  deviceName      String?  @map("device_name") // 裝置名稱（如 iPhone 12）
+  transports      String?  // JSON 陣列：["internal", "hybrid"] 等
+  userId          Int      @map("user_id")
+  createdAt       DateTime @default(now()) @map("created_at")
+  lastUsedAt      DateTime? @map("last_used_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("webauthn_credentials")
 }
 
 model AnnualLeave {
@@ -205,6 +274,12 @@ model OvertimeRequest {
   workContent      String?       @map("work_content")
   status           String        @default("PENDING")
   compensationType String        @default("COMP_LEAVE") @map("compensation_type") // 補償方式：COMP_LEAVE(補休) 或 OVERTIME_PAY(加班費)
+  
+  // 加班費相關欄位
+  overtimeType     String?       @map("overtime_type")      // 加班類型：WEEKDAY/REST_DAY/HOLIDAY
+  overtimePay      Float?        @map("overtime_pay")       // 計算後的加班費金額
+  hourlyRateUsed   Float?        @map("hourly_rate_used")   // 計算時使用的時薪
+  
   approvedBy       Int?          @map("approved_by")
   approvedAt       DateTime?     @map("approved_at")
   createdAt        DateTime      @default(now()) @map("created_at")
@@ -247,6 +322,29 @@ model AttendanceRecord {
   @@map("attendance_records")
 }
 
+// 薪資歷史記錄（用於追蹤調薪）
+model SalaryHistory {
+  id               Int       @id @default(autoincrement())
+  employeeId       Int       @map("employee_id")
+  effectiveDate    DateTime  @map("effective_date")    // 生效日期
+  baseSalary       Float     @map("base_salary")       // 月薪
+  hourlyRate       Float     @map("hourly_rate")       // 時薪（= 月薪 ÷ 240）
+  previousSalary   Float?    @map("previous_salary")   // 調薪前月薪
+  adjustmentAmount Float?    @map("adjustment_amount") // 調整金額
+  adjustmentType   String    @default("INITIAL") @map("adjustment_type") 
+                             // INITIAL=初始, RAISE=調薪, PROMOTION=晉升, ADJUSTMENT=調整
+  reason           String?                              // 調整原因
+  approvedById     Int       @map("approved_by_id")    // 核准人（管理員）
+  createdAt        DateTime  @default(now()) @map("created_at")
+  notes            String?                              // 備註
+  
+  employee   Employee @relation(fields: [employeeId], references: [id])
+  approvedBy Employee @relation("SalaryApprover", fields: [approvedById], references: [id])
+  
+  @@index([employeeId, effectiveDate])
+  @@map("salary_histories")
+}
+
 model PayrollRecord {
   id             Int      @id @default(autoincrement())
   employeeId     Int      @map("employee_id")
@@ -274,6 +372,7 @@ model PayrollRecord {
   laborInsurance Float    @default(0) @map("labor_insurance")
   healthInsurance Float   @default(0) @map("health_insurance")
   supplementaryInsurance Float @default(0) @map("supplementary_insurance")
+  laborPensionSelf Float  @default(0) @map("labor_pension_self") // 勞退自提金額
   incomeTax      Float    @default(0) @map("income_tax")
   totalDeductions Float   @default(0) @map("total_deductions")
   netPay         Float    @map("net_pay")
@@ -298,6 +397,10 @@ model PayrollRecord {
   // 新增：結算項目關聯
   settlementItems PayrollSettlementItem[]
 
+  // 新增：薪資異議與調整關聯
+  disputes    PayrollDispute[]
+  adjustments PayrollAdjustment[]
+
   @@unique([employeeId, payYear, payMonth])
   @@map("payroll_records")
 }
@@ -307,10 +410,14 @@ model Announcement {
   title       String
   content     String
   priority    String   @default("NORMAL") // HIGH, NORMAL, LOW
+  category    String   @default("GENERAL") // PERSONNEL, POLICY, EVENT, SYSTEM, BENEFITS, URGENT, GENERAL
   publisherId Int      @map("publisher_id")
   isPublished Boolean  @default(false) @map("is_published")
   publishedAt DateTime? @map("published_at")
   expiryDate  DateTime? @map("expiry_date")
+  
+  // 定時發布設定
+  scheduledPublishAt DateTime? @map("scheduled_publish_at") // 預定發布時間，null 表示不使用定時發布
   
   // 新增：目標部門設定（支援多部門或全部部門）
   targetDepartments String? @map("target_departments") // JSON格式存儲部門列表，null表示全部部門
@@ -354,6 +461,46 @@ model Schedule {
 
   @@unique([employeeId, workDate])
   @@map("schedules")
+}
+
+// 月份班表發布記錄
+model ScheduleMonthlyRelease {
+  id            Int       @id @default(autoincrement())
+  yearMonth     String    @map("year_month")      // 格式: 2025-01
+  department    String?                           // 部門（null = 全公司）
+  publishedById Int       @map("published_by_id")
+  publishedAt   DateTime  @map("published_at")
+  deadline      DateTime?                         // 確認截止時間（該月最後一天）
+  status        String    @default("PUBLISHED")   // DRAFT, PUBLISHED
+  version       Int       @default(1)             // 版本號（異動時遞增）
+  lastModified  DateTime  @default(now()) @map("last_modified")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  
+  publishedBy   Employee  @relation("ScheduleReleasePublisher", fields: [publishedById], references: [id])
+  confirmations ScheduleConfirmation[]
+  
+  @@unique([yearMonth, department])
+  @@map("schedule_monthly_releases")
+}
+
+// 員工班表確認記錄
+model ScheduleConfirmation {
+  id           Int       @id @default(autoincrement())
+  employeeId   Int       @map("employee_id")
+  yearMonth    String    @map("year_month")       // 格式: 2025-01
+  releaseId    Int       @map("release_id")
+  version      Int       @default(1)              // 確認時的版本號
+  confirmedAt  DateTime  @map("confirmed_at")
+  comment      String?                            // 確認時備註
+  isValid      Boolean   @default(true)           // 班表異動後變為 false
+  createdAt    DateTime  @default(now()) @map("created_at")
+  
+  employee     Employee  @relation("ScheduleConfirmEmployee", fields: [employeeId], references: [id])
+  release      ScheduleMonthlyRelease @relation(fields: [releaseId], references: [id])
+  
+  @@unique([employeeId, releaseId])
+  @@index([employeeId, yearMonth])
+  @@map("schedule_confirmations")
 }
 
 model ShiftExchangeRequest {
@@ -941,6 +1088,12 @@ model NotificationSettings {
   shiftExchangeApproval Boolean @default(true)  @map("shift_exchange_approval")
   systemAnnouncements   Boolean @default(true)  @map("system_announcements")
   
+  // Push 推播訂閱資訊
+  pushEnabled   Boolean  @default(false) @map("push_enabled")
+  pushEndpoint  String?  @map("push_endpoint")
+  pushP256dh    String?  @map("push_p256dh")
+  pushAuth      String?  @map("push_auth")
+  
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
   
@@ -980,4 +1133,711 @@ model Position {
   @@unique([departmentId, name])
   @@index([departmentId])
   @@map("positions")
+}
+
+// ==================== 離職管理模型 ====================
+
+// 離職申請記錄
+model ResignationRecord {
+  id              Int       @id @default(autoincrement())
+  employeeId      Int       @map("employee_id")
+  applicationDate DateTime  @default(now()) @map("application_date")
+  expectedDate    DateTime  @map("expected_date")      // 預計離職日
+  actualDate      DateTime? @map("actual_date")        // 實際離職日
+  reason          String                               // 離職原因詳述
+  reasonType      String    @default("VOLUNTARY") @map("reason_type") // VOLUNTARY/LAYOFF/RETIREMENT/OTHER
+  status          String    @default("PENDING")        // PENDING/APPROVED/REJECTED/IN_HANDOVER/COMPLETED
+  approvedById    Int?      @map("approved_by_id")
+  approvedAt      DateTime? @map("approved_at")
+  rejectionReason String?   @map("rejection_reason")   // 拒絕原因
+  notes           String?
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+  
+  employee        Employee @relation(fields: [employeeId], references: [id])
+  handoverItems   HandoverItem[]
+  
+  @@index([employeeId])
+  @@index([status])
+  @@map("resignation_records")
+}
+
+// 交接項目
+model HandoverItem {
+  id              Int       @id @default(autoincrement())
+  resignationId   Int       @map("resignation_id")
+  category        String                               // EQUIPMENT/DATA/PERMISSION/DOCUMENT/OTHER
+  description     String
+  assignedTo      String?   @map("assigned_to")        // 負責接收人
+  completed       Boolean   @default(false)
+  completedAt     DateTime? @map("completed_at")
+  completedBy     String?   @map("completed_by")
+  notes           String?
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+  
+  resignation     ResignationRecord @relation(fields: [resignationId], references: [id], onDelete: Cascade)
+  
+  @@index([resignationId])
+  @@index([category])
+  @@map("handover_items")
+}
+
+// 共用 SMTP 伺服器設定
+model SmtpSettings {
+  id          Int      @id @default(autoincrement())
+  smtpHost    String?  @map("smtp_host")
+  smtpPort    Int      @default(587) @map("smtp_port")
+  smtpSecure  Boolean  @default(true) @map("smtp_secure")
+  smtpUser    String?  @map("smtp_user")
+  smtpPassword String? @map("smtp_password")
+  fromEmail   String?  @map("from_email")
+  fromName    String?  @default("長福考勤系統") @map("from_name")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  
+  @@map("smtp_settings")
+}
+
+// 國定假日資料
+model Holiday {
+  id          Int      @id @default(autoincrement())
+  year        Int      // 年份
+  date        DateTime // 假日日期
+  name        String   // 假日名稱
+  description String?  // 說明
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  
+  // 補休記錄關聯
+  compensations HolidayCompensation[]
+  
+  @@unique([date])
+  @@index([year])
+  @@map("holidays")
+}
+
+// 國定假日補休記錄
+// 追蹤每位員工的國定假日休假/補休狀態
+model HolidayCompensation {
+  id               Int       @id @default(autoincrement())
+  employeeId       Int       @map("employee_id")
+  holidayId        Int       @map("holiday_id")
+  holidayDate      DateTime  @map("holiday_date")      // 國定假日原日期
+  holidayName      String    @map("holiday_name")      // 國定假日名稱
+  workedOnDate     Boolean   @default(false) @map("worked_on_date") // 原日期是否上班
+  compensationDate DateTime? @map("compensation_date") // 補休日期
+  status           String    @default("PENDING")       // NOT_REQUIRED/PENDING/TAKEN
+  year             Int                                  // 年份（用於統計）
+  notes            String?                              // 備註
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+  
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  holiday  Holiday  @relation(fields: [holidayId], references: [id], onDelete: Cascade)
+  
+  @@unique([employeeId, holidayId]) // 每位員工每個假日只有一筆記錄
+  @@index([employeeId, year])
+  @@index([status])
+  @@map("holiday_compensations")
+}
+
+// 薪資條 Email 發送設定
+model PayslipEmailSettings {
+  id              Int      @id @default(autoincrement())
+  enabled         Boolean  @default(false)
+  smtpHost        String?  @map("smtp_host")
+  smtpPort        Int?     @default(587) @map("smtp_port")
+  smtpSecure      Boolean  @default(true) @map("smtp_secure")
+  smtpUser        String?  @map("smtp_user")
+  smtpPassword    String?  @map("smtp_password")
+  fromEmail       String?  @map("from_email")
+  fromName        String?  @default("薪資系統") @map("from_name")
+  subjectTemplate String?  @default("[%YEAR%年%MONTH%月] 薪資條通知") @map("subject_template")
+  bodyTemplate    String?  @map("body_template")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+  
+  @@map("payslip_email_settings")
+}
+
+// 薪資條發送歷史
+model PayslipSendHistory {
+  id            Int      @id @default(autoincrement())
+  payrollId     Int      @map("payroll_id")
+  employeeId    Int      @map("employee_id")
+  employeeName  String   @map("employee_name")
+  employeeEmail String   @map("employee_email")
+  year          Int
+  month         Int
+  sentAt        DateTime @default(now()) @map("sent_at")
+  status        String   // SUCCESS, FAILED
+  errorMessage  String?  @map("error_message")
+  sentBy        String?  @map("sent_by")
+  
+  @@index([employeeId])
+  @@index([year, month])
+  @@index([status])
+  @@map("payslip_send_history")
+}
+
+// 眷屬加退保記錄
+model DependentEnrollmentLog {
+  id            Int       @id @default(autoincrement())
+  dependentId   Int       @map("dependent_id")
+  employeeId    Int       @map("employee_id")
+  dependentName String    @map("dependent_name")
+  employeeName  String    @map("employee_name")
+  type          String    // ENROLL（加保）, WITHDRAW（退保）
+  effectiveDate DateTime  @map("effective_date")
+  reportStatus  String    @default("PENDING") @map("report_status") // PENDING, REPORTED, COMPLETED
+  reportDate    DateTime? @map("report_date")
+  remarks       String?
+  createdBy     String    @map("created_by")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  
+  @@index([dependentId])
+  @@index([employeeId])
+  @@index([type])
+  @@index([reportStatus])
+  @@map("dependent_enrollment_logs")
+}
+
+// 眷屬異動歷史
+model DependentHistoryLog {
+  id           Int      @id @default(autoincrement())
+  dependentId  Int      @map("dependent_id")
+  dependentName String  @map("dependent_name")
+  employeeName String   @map("employee_name")
+  action       String   // CREATE, UPDATE, DELETE
+  fieldName    String?  @map("field_name")
+  oldValue     String?  @map("old_value")
+  newValue     String?  @map("new_value")
+  changedBy    String   @map("changed_by")
+  changedAt    DateTime @default(now()) @map("changed_at")
+  
+  @@index([dependentId])
+  @@index([action])
+  @@index([changedAt])
+  @@map("dependent_history_logs")
+}
+
+// 眷屬申請（員工自助申請加保/退保/變更）
+model DependentApplication {
+  id              Int       @id @default(autoincrement())
+  employeeId      Int       @map("employee_id")
+  employeeName    String    @map("employee_name")
+  applicationType String    @map("application_type") // ADD（加保）, REMOVE（退保）, UPDATE（變更）
+  status          String    @default("PENDING") // PENDING（待審核）, APPROVED（已通過）, REJECTED（已退回）
+  
+  // 眷屬資料
+  dependentId     Int?      @map("dependent_id") // 退保/變更時使用
+  dependentName   String    @map("dependent_name")
+  relationship    String
+  idNumber        String    @map("id_number")
+  birthDate       DateTime  @map("birth_date")
+  effectiveDate   DateTime  @map("effective_date") // 生效日
+  
+  // 變更資料（UPDATE 時使用）
+  changeField     String?   @map("change_field")
+  oldValue        String?   @map("old_value")
+  newValue        String?   @map("new_value")
+  
+  remarks         String?
+  
+  // 審核資訊
+  reviewedBy      String?   @map("reviewed_by")
+  reviewedAt      DateTime? @map("reviewed_at")
+  reviewNote      String?   @map("review_note")
+  
+  createdAt       DateTime  @default(now()) @map("created_at")
+  
+  attachments     DependentApplicationAttachment[]
+  
+  @@index([employeeId])
+  @@index([status])
+  @@index([applicationType])
+  @@map("dependent_applications")
+}
+
+// 眷屬申請附件
+model DependentApplicationAttachment {
+  id              Int       @id @default(autoincrement())
+  applicationId   Int       @map("application_id")
+  fileType        String    @map("file_type")     // ID_FRONT, ID_BACK, HOUSEHOLD_REGISTER, HOUSEHOLD_BOOK, OTHER
+  fileName        String    @map("file_name")     // 原始檔名
+  filePath        String    @map("file_path")     // 儲存路徑
+  fileSize        Int       @map("file_size")     // 檔案大小（bytes）
+  mimeType        String    @map("mime_type")     // MIME 類型
+  uploadedAt      DateTime  @default(now()) @map("uploaded_at")
+  
+  application     DependentApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  
+  @@index([applicationId])
+  @@map("dependent_application_attachments")
+}
+
+// 勞基法參數設定（勞保與基本工資）
+model LaborLawConfig {
+  id                    Int      @id @default(autoincrement())
+  
+  // 基本工資
+  basicWage             Int      @default(29500) @map("basic_wage")
+  
+  // 勞保設定
+  laborInsuranceRate    Float    @default(0.115) @map("labor_insurance_rate")      // 11.5%
+  laborInsuranceMax     Int      @default(45800) @map("labor_insurance_max")       // 投保薪資上限
+  laborEmployeeRate     Float    @default(0.2)   @map("labor_employee_rate")       // 員工負擔 20%
+  
+  // 生效與狀態
+  effectiveDate         DateTime @map("effective_date")
+  isActive              Boolean  @default(true) @map("is_active")
+  description           String?
+  
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+  
+  @@map("labor_law_configs")
+}
+
+
+// 假別規則設定
+model LeaveRulesConfig {
+  id                          Int      @id @default(autoincrement())
+  
+  // 育嬰留停設定
+  parentalLeaveFlexible       Boolean  @default(true)  @map("parental_leave_flexible")      // 是否可單日申請
+  parentalLeaveMaxDays        Int      @default(30)    @map("parental_leave_max_days")      // 個人上限天數
+  parentalLeaveCombinedMax    Int      @default(60)    @map("parental_leave_combined_max")  // 雙親合計上限
+  
+  // 家庭照顧假設定
+  familyCareLeaveMaxDays      Int      @default(7)     @map("family_care_leave_max_days")   // 全日假上限
+  familyCareHourlyEnabled     Boolean  @default(true)  @map("family_care_hourly_enabled")   // 是否可用事假補充
+  familyCareHourlyMaxHours    Int      @default(56)    @map("family_care_hourly_max_hours") // 事假時數上限
+  familyCareNoDeductAttendance Boolean @default(true)  @map("family_care_no_deduct")        // 不扣全勤
+  
+  // 病假設定
+  sickLeaveAnnualMax          Int      @default(30)    @map("sick_leave_annual_max")        // 年度病假上限
+  sickLeaveNoDeductDays       Int      @default(10)    @map("sick_leave_no_deduct_days")    // 免扣全勤天數
+  sickLeaveHalfPay            Boolean  @default(true)  @map("sick_leave_half_pay")          // 是否半薪
+  
+  // 特休假設定
+  annualLeaveRollover         Boolean  @default(false) @map("annual_leave_rollover")        // 是否可遞延
+  annualLeaveRolloverMax      Int      @default(0)     @map("annual_leave_rollover_max")    // 遞延上限天數
+  
+  // 補休設定
+  compLeaveRollover           Boolean  @default(false) @map("comp_leave_rollover")          // 補休是否可遞延
+  compLeaveRolloverMax        Int      @default(0)     @map("comp_leave_rollover_max")      // 補休遞延上限天數
+  compLeaveExpiryMonths       Int      @default(6)     @map("comp_leave_expiry_months")     // 補休有效月數
+  
+  // 生效與狀態
+  effectiveDate               DateTime @map("effective_date")
+  isActive                    Boolean  @default(true) @map("is_active")
+  description                 String?
+  
+  createdAt                   DateTime @default(now()) @map("created_at")
+  updatedAt                   DateTime @updatedAt @map("updated_at")
+  
+  @@map("leave_rules_configs")
+}
+
+// 登入日誌
+model LoginLog {
+  id          Int      @id @default(autoincrement())
+  userId      Int?     @map("user_id")
+  user        User?    @relation(fields: [userId], references: [id])
+  username    String                                   // 帳號名稱（即使登入失敗也保留）
+  ipAddress   String   @map("ip_address")
+  userAgent   String?  @map("user_agent")             // User-Agent 字串
+  device      String?                                  // 解析後的裝置類型
+  browser     String?                                  // 解析後的瀏覽器
+  os          String?                                  // 解析後的作業系統
+  location    String?                                  // 根據 IP 解析的地區
+  status      String                                   // SUCCESS, FAILED_PASSWORD, FAILED_LOCKED, FAILED_INACTIVE
+  failReason  String?  @map("fail_reason")
+  createdAt   DateTime @default(now()) @map("created_at")
+  
+  @@index([userId])
+  @@index([username])
+  @@index([createdAt])
+  @@map("login_logs")
+}
+
+// 年假餘額歷史（用於追蹤年假變動）
+model LeaveBalanceHistory {
+  id           Int      @id @default(autoincrement())
+  employeeId   Int      @map("employee_id")
+  employee     Employee @relation(fields: [employeeId], references: [id])
+  year         Int                                     // 年度
+  leaveType    String   @map("leave_type")            // ANNUAL, SICK, COMP, etc.
+  entitled     Float                                   // 應得天數
+  used         Float    @default(0)                   // 已使用
+  remaining    Float                                   // 剩餘
+  source       String                                  // SYSTEM_CALC, MANUAL_ADJ, ROLLOVER, USED
+  note         String?                                 // 備註
+  createdAt    DateTime @default(now()) @map("created_at")
+  
+  @@index([employeeId, year])
+  @@map("leave_balance_history")
+}
+
+// 系統通知設定
+model SystemNotificationSettings {
+  id                      Int      @id @default(autoincrement())
+  emailEnabled            Boolean  @default(false)  @map("email_enabled")
+  inAppEnabled            Boolean  @default(true)   @map("in_app_enabled")
+  leaveApprovalNotify     Boolean  @default(true)   @map("leave_approval_notify")
+  overtimeApprovalNotify  Boolean  @default(true)   @map("overtime_approval_notify")
+  shiftApprovalNotify     Boolean  @default(true)   @map("shift_approval_notify")
+  annualLeaveExpiryNotify Boolean  @default(true)   @map("annual_leave_expiry_notify")
+  annualLeaveExpiryDays   Int      @default(90)     @map("annual_leave_expiry_days")  // 開始提醒的天數
+  
+  // 分階段提醒設定 (JSON 格式: [{daysFrom: 90, daysTo: 60, intervalDays: 30}, ...])
+  reminderStages          String?  @map("reminder_stages")
+  
+  createdAt               DateTime @default(now())  @map("created_at")
+  updatedAt               DateTime @updatedAt       @map("updated_at")
+  
+  @@map("system_notification_settings")
+}
+
+// 年假提醒記錄（避免重複發送）
+model LeaveExpiryReminderLog {
+  id            Int      @id @default(autoincrement())
+  employeeId    Int      @map("employee_id")
+  annualLeaveId Int      @map("annual_leave_id")
+  year          Int                               // 年假年度
+  stage         Int                               // 提醒階段 (1, 2, 3, 4)
+  sentAt        DateTime @default(now()) @map("sent_at")
+  channel       String                            // EMAIL, IN_APP, BOTH
+  
+  @@unique([employeeId, annualLeaveId, stage])
+  @@index([employeeId])
+  @@index([annualLeaveId])
+  @@index([sentAt])
+  @@map("leave_expiry_reminder_logs")
+}
+
+// 系統內通知
+model InAppNotification {
+  id          Int      @id @default(autoincrement())
+  employeeId  Int      @map("employee_id")
+  employee    Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  type        String                              // LEAVE_APPROVED, OVERTIME_APPROVED, etc.
+  title       String                              // 通知標題
+  message     String                              // 通知內容
+  data        String?                             // JSON 格式的額外資料
+  isRead      Boolean  @default(false) @map("is_read")
+  readAt      DateTime? @map("read_at")
+  createdAt   DateTime @default(now())  @map("created_at")
+  
+  @@index([employeeId])
+  @@index([isRead])
+  @@index([createdAt])
+  @@map("in_app_notifications")
+}
+
+// 薪資異議申請
+model PayrollDispute {
+  id              Int       @id @default(autoincrement())
+  employeeId      Int       @map("employee_id")
+  payrollId       Int?      @map("payroll_id")             // 關聯薪資記錄（若有）
+  payYear         Int       @map("pay_year")               // 異議的薪資年份
+  payMonth        Int       @map("pay_month")              // 異議的薪資月份
+  type            String                                    // OVERTIME_MISSING/LEAVE_MISSING/CALCULATION_ERROR/ALLOWANCE_MISSING/DEDUCTION_ERROR/OTHER
+  description     String                                    // 異議說明
+  requestedAmount Float?    @map("requested_amount")       // 申請調整金額
+  fileUrl         String?   @map("file_url")               // 附件（證明文件）
+  status          String    @default("PENDING")            // PENDING/APPROVED/REJECTED
+  reviewedBy      Int?      @map("reviewed_by")
+  reviewedAt      DateTime? @map("reviewed_at")
+  reviewNote      String?   @map("review_note")            // 審核備註
+  adjustedAmount  Float?    @map("adjusted_amount")        // 實際核准調整金額
+  adjustInYear    Int?      @map("adjust_in_year")         // 調整計入哪年薪資
+  adjustInMonth   Int?      @map("adjust_in_month")        // 調整計入哪月薪資
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  employee        Employee  @relation(fields: [employeeId], references: [id])
+  payroll         PayrollRecord? @relation(fields: [payrollId], references: [id])
+  reviewer        Employee? @relation("DisputeReviewer", fields: [reviewedBy], references: [id])
+  adjustment      PayrollAdjustment?
+
+  @@index([employeeId])
+  @@index([payrollId])
+  @@index([status])
+  @@index([payYear, payMonth])
+  @@map("payroll_disputes")
+}
+
+// 薪資調整項目（會顯示在薪資條上）
+model PayrollAdjustment {
+  id              Int       @id @default(autoincrement())
+  payrollId       Int       @map("payroll_id")             // 計入哪個月薪資
+  disputeId       Int?      @unique @map("dispute_id")     // 關聯的異議申請（若有）
+  type            String                                    // SUPPLEMENT(補發) / DEDUCTION(扣除)
+  category        String                                    // OVERTIME/LEAVE/BONUS/ALLOWANCE/OTHER
+  description     String                                    // 顯示在薪資條上的說明
+  amount          Float                                     // 金額（正數）
+  originalYear    Int?      @map("original_year")          // 原始年份
+  originalMonth   Int?      @map("original_month")         // 原始月份
+  createdBy       Int       @map("created_by")
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  payroll         PayrollRecord @relation(fields: [payrollId], references: [id])
+  dispute         PayrollDispute? @relation(fields: [disputeId], references: [id])
+  creator         Employee  @relation("AdjustmentCreator", fields: [createdBy], references: [id])
+
+  @@index([payrollId])
+  @@index([disputeId])
+  @@map("payroll_adjustments")
+}
+
+// 天災假記錄
+model DisasterDayOff {
+  id                  Int       @id @default(autoincrement())
+  disasterDate        String    @map("disaster_date")          // 停班日期 YYYY-MM-DD
+  disasterType        String    @map("disaster_type")          // 類型: TYPHOON/EARTHQUAKE/RAIN/WIND/OTHER
+  stopWorkType        String    @map("stop_work_type")         // 停班類型: FULL/AM/PM
+  affectedScope       String    @default("ALL") @map("affected_scope") // 影響範圍: ALL/DEPARTMENTS/EMPLOYEES
+  affectedDepartments String?   @map("affected_departments")   // JSON: ["部門1", "部門2"]
+  affectedEmployeeIds String?   @map("affected_employee_ids")  // JSON: [1, 2, 3]
+  description         String?                                   // 說明備註
+  affectedCount       Int       @default(0) @map("affected_count") // 受影響人數
+  originalSchedules   String?   @map("original_schedules")     // 原始班表JSON [{employeeId, shiftType, startTime, endTime}]
+  createdBy           Int       @map("created_by")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
+
+  creator             Employee  @relation("DisasterDayOffCreator", fields: [createdBy], references: [id])
+
+  @@unique([disasterDate, affectedScope])
+  @@index([disasterDate])
+  @@index([disasterType])
+  @@map("disaster_day_offs")
+}
+
+// =====================================================
+// 審核流程管理系統
+// =====================================================
+
+// 審核流程設定
+model ApprovalWorkflow {
+  id                  Int       @id @default(autoincrement())
+  workflowType        String    @unique @map("workflow_type")
+  // SHIFT_CHANGE, SHIFT_SWAP, MISSED_CLOCK, LEAVE, OVERTIME, 
+  // PURCHASE, RESIGNATION, PAYROLL_DISPUTE, DEPENDENT_APP, ANNOUNCEMENT
+  
+  workflowName        String    @map("workflow_name")
+  approvalLevel       Int       @default(2) @map("approval_level")      // 1=一階, 2=二階, 3=三階
+  requireManager      Boolean   @default(true) @map("require_manager")  // 是否需主管審核
+  finalApprover       String    @default("ADMIN") @map("final_approver") // MANAGER, ADMIN
+  
+  // 時效設定
+  deadlineMode        String    @default("FIXED") @map("deadline_mode") // FIXED, FREEZE_BASED
+  deadlineHours       Int?      @map("deadline_hours")                  // 固定時效（小時）
+  
+  // 轉會設定（預設關閉）
+  enableForward       Boolean   @default(false) @map("enable_forward")         // 轉會給其他審核者
+  enableCC            Boolean   @default(false) @map("enable_cc")              // CC 給員工知悉/同意
+  
+  isActive            Boolean   @default(true)
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
+  
+  @@map("approval_workflows")
+}
+
+// 凍結提醒設定
+model ApprovalFreezeReminder {
+  id                    Int       @id @default(autoincrement())
+  daysBeforeFreeze1     Int       @default(3) @map("days_before_freeze_1")
+  daysBeforeFreeze2     Int       @default(1) @map("days_before_freeze_2")
+  freezeDayReminderTime String    @default("09:00") @map("freeze_day_reminder_time")
+  updatedAt             DateTime  @updatedAt @map("updated_at")
+  
+  @@map("approval_freeze_reminders")
+}
+
+// 部門主管
+model DepartmentManager {
+  id              Int       @id @default(autoincrement())
+  employeeId      Int       @map("employee_id")
+  department      String
+  isPrimary       Boolean   @default(true) @map("is_primary")
+  
+  // 權限設定
+  canApproveLeave     Boolean @default(true) @map("can_approve_leave")
+  canApproveOvertime  Boolean @default(true) @map("can_approve_overtime")
+  canApproveShift     Boolean @default(true) @map("can_approve_shift")
+  canApprovePurchase  Boolean @default(true) @map("can_approve_purchase")
+  canSchedule         Boolean @default(true) @map("can_schedule")
+  
+  isActive        Boolean   @default(true) @map("is_active")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+  
+  employee        Employee  @relation(fields: [employeeId], references: [id])
+  deputies        ManagerDeputy[]
+  
+  @@unique([employeeId, department])
+  @@index([department])
+  @@map("department_managers")
+}
+
+// 代理人設定
+model ManagerDeputy {
+  id                Int       @id @default(autoincrement())
+  managerId         Int       @map("manager_id")
+  deputyEmployeeId  Int       @map("deputy_employee_id")
+  startDate         DateTime? @map("start_date")
+  endDate           DateTime? @map("end_date")
+  isActive          Boolean   @default(true) @map("is_active")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  
+  manager           DepartmentManager @relation(fields: [managerId], references: [id], onDelete: Cascade)
+  deputyEmployee    Employee  @relation("DeputyEmployee", fields: [deputyEmployeeId], references: [id])
+  
+  @@index([managerId])
+  @@index([deputyEmployeeId])
+  @@map("manager_deputies")
+}
+
+// 審核實例
+model ApprovalInstance {
+  id              Int       @id @default(autoincrement())
+  requestType     String    @map("request_type")
+  requestId       Int       @map("request_id")
+  
+  applicantId     Int       @map("applicant_id")
+  applicantName   String    @map("applicant_name")
+  department      String?
+  
+  currentLevel    Int       @default(1) @map("current_level")
+  maxLevel        Int       @map("max_level")
+  requireManager  Boolean   @default(true) @map("require_manager")
+  
+  status          String    @default("PENDING")
+  // PENDING, LEVEL1_REVIEWING, LEVEL1_APPROVED, LEVEL2_REVIEWING, APPROVED, REJECTED
+  
+  deadlineAt      DateTime? @map("deadline_at")
+  reminderSent    Boolean   @default(false) @map("reminder_sent")
+  isEscalated     Boolean   @default(false) @map("is_escalated")
+  escalatedAt     DateTime? @map("escalated_at")
+  
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+  
+  reviews         ApprovalReview[]
+  ccs             ApprovalCC[]
+  
+  @@index([requestType, requestId])
+  @@index([status])
+  @@index([applicantId])
+  @@map("approval_instances")
+}
+
+// 審核紀錄
+model ApprovalReview {
+  id              Int       @id @default(autoincrement())
+  instanceId      Int       @map("instance_id")
+  
+  level           Int
+  reviewerId      Int       @map("reviewer_id")
+  reviewerName    String    @map("reviewer_name")
+  reviewerRole    String    @map("reviewer_role")  // MANAGER, DEPUTY, HR, ADMIN
+  isDeputy        Boolean   @default(false) @map("is_deputy")
+  
+  action          String    // APPROVE, REJECT, FORWARD
+  comment         String?
+  forwardToId     Int?      @map("forward_to_id")
+  forwardReason   String?   @map("forward_reason")
+  
+  createdAt       DateTime  @default(now()) @map("created_at")
+  
+  instance        ApprovalInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  reviewer        Employee  @relation(fields: [reviewerId], references: [id])
+  
+  @@index([instanceId])
+  @@index([reviewerId])
+  @@map("approval_reviews")
+}
+
+// 審核 CC 記錄（轉會知悉/同意）
+model ApprovalCC {
+  id              Int       @id @default(autoincrement())
+  instanceId      Int       @map("instance_id")
+  
+  // CC 來源
+  ccByEmployeeId  Int       @map("cc_by_employee_id")  // 誰發起 CC
+  ccByName        String    @map("cc_by_name")
+  
+  // CC 目標
+  ccToEmployeeId  Int       @map("cc_to_employee_id")  // 被 CC 的員工
+  ccToName        String    @map("cc_to_name")
+  
+  // CC 類型
+  ccType          String    @default("ACKNOWLEDGE") @map("cc_type")  // ACKNOWLEDGE（知悉）, AGREE（同意）
+  reason          String?                                             // CC 原因
+  
+  // 回應狀態
+  status          String    @default("PENDING") @map("status")        // PENDING, ACKNOWLEDGED, AGREED
+  respondedAt     DateTime? @map("responded_at")
+  response        String?                                             // 回應內容
+  
+  createdAt       DateTime  @default(now()) @map("created_at")
+  
+  instance        ApprovalInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  ccBy            Employee  @relation("CCBy", fields: [ccByEmployeeId], references: [id])
+  ccTo            Employee  @relation("CCTo", fields: [ccToEmployeeId], references: [id])
+  
+  @@index([instanceId])
+  @@index([ccToEmployeeId])
+  @@map("approval_ccs")
+}
+
+// 勞退自提申請
+model PensionContributionApplication {
+  id              Int       @id @default(autoincrement())
+  employeeId      Int       @map("employee_id")
+  
+  // 提繳比例資訊
+  currentRate     Float     @default(0) @map("current_rate")      // 目前提繳比例 (0-6%)
+  requestedRate   Float     @map("requested_rate")                // 申請變更比例 (0-6%)
+  
+  // 生效日期（次月1日或隔月1日）
+  effectiveDate   DateTime  @map("effective_date")
+  applicationDate DateTime  @default(now()) @map("application_date")
+  
+  // 申請資訊
+  reason          String?                                         // 申請原因
+  
+  // 審核狀態
+  status          String    @default("PENDING_HR") @map("status") 
+  // PENDING_HR（待HR審核）-> HR_APPROVED/HR_REJECTED（HR審核結果）-> PENDING_ADMIN（待管理員決核）-> APPROVED/REJECTED（最終結果）
+  
+  // HR 審核
+  hrReviewerId    Int?      @map("hr_reviewer_id")
+  hrReviewedAt    DateTime? @map("hr_reviewed_at")
+  hrOpinion       String?   @map("hr_opinion")                    // HR審核意見：AGREE/DISAGREE
+  hrNote          String?   @map("hr_note")                       // HR審核說明
+  
+  // 管理員決核
+  adminApproverId Int?      @map("admin_approver_id")
+  adminApprovedAt DateTime? @map("admin_approved_at")
+  adminNote       String?   @map("admin_note")                    // 管理員決核說明
+  
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+  
+  // 關聯
+  employee        Employee  @relation(fields: [employeeId], references: [id])
+  hrReviewer      Employee? @relation("PensionHRReviewer", fields: [hrReviewerId], references: [id])
+  adminApprover   Employee? @relation("PensionAdminApprover", fields: [adminApproverId], references: [id])
+  
+  @@index([employeeId])
+  @@index([status])
+  @@index([effectiveDate])
+  @@map("pension_contribution_applications")
 }

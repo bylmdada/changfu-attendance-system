@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { MapPin, Settings, Save, Plus, Edit2, Trash2, ToggleLeft, ToggleRight, AlertTriangle, CheckCircle, Wifi } from 'lucide-react';
+import { MapPin, Settings, Save, Plus, Edit2, Trash2, ToggleLeft, ToggleRight, AlertTriangle, CheckCircle, Wifi, X } from 'lucide-react';
 import { DEPARTMENT_OPTIONS } from '@/constants/departments';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import SystemNavbar from '@/components/SystemNavbar';
@@ -1467,9 +1467,20 @@ export default function GPSAttendanceSettings() {
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg shadow-lg max-w-md w-full mx-4 max-h-[90vh] overflow-hidden flex flex-col">
             <div className="p-6 overflow-y-auto flex-1">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">
-                {editingLocation ? '編輯位置' : '新增位置'}
-              </h3>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-gray-900">
+                  {editingLocation ? '編輯位置' : '新增位置'}
+                </h3>
+                <button
+                  onClick={() => {
+                    setShowLocationForm(false);
+                    resetLocationForm();
+                  }}
+                  className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                >
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
 
               <div className="space-y-4">
                 {/* 位置名稱 */}
@@ -1675,9 +1686,20 @@ export default function GPSAttendanceSettings() {
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg shadow-lg max-w-md w-full mx-4">
             <div className="p-6">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">
-                {editingPermission ? '編輯GPS權限' : '新增GPS權限配置'}
-              </h3>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-gray-900">
+                  {editingPermission ? '編輯GPS權限' : '新增GPS權限配置'}
+                </h3>
+                <button
+                  onClick={() => {
+                    setShowPermissionForm(false);
+                    resetPermissionForm();
+                  }}
+                  className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                >
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
 
               <div className="space-y-4">
                 {/* 配置类型 */}

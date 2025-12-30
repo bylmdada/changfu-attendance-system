@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Clock, Calendar, BarChart3, History, Timer, CheckCircle, XCircle, User, Lock, Eye, EyeOff, MapPin, Wifi, WifiOff, AlertCircle } from 'lucide-react';
+import { Clock, Calendar, BarChart3, History, Timer, CheckCircle, XCircle, User, Lock, Eye, EyeOff, MapPin, Wifi, WifiOff, AlertCircle, Fingerprint } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 
@@ -58,10 +58,12 @@ type LocationStatus = 'checking' | 'valid' | 'invalid' | 'error' | 'disabled';
 
 export default function AttendancePage() {
   const [todayStatus, setTodayStatus] = useState<TodayAttendance | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [clockLoading, setClockLoading] = useState(false);
-  const [currentTime, setCurrentTime] = useState(new Date());
+  const [currentTime, setCurrentTime] = useState<Date | null>(null); // 避免 hydration 錯誤
+  const [mounted, setMounted] = useState(false); // 追蹤是否已掛載
   const [showVerificationModal, setShowVerificationModal] = useState(false);
   const [pendingClockType, setPendingClockType] = useState<'in' | 'out' | null>(null);
   const [verificationData, setVerificationData] = useState({
@@ -87,10 +89,47 @@ export default function AttendancePage() {
   // Toast 通知狀態
   const [toast, setToast] = useState<{ type: 'success' | 'error' | 'warning'; message: string } | null>(null);
 
+  // 手機版優化狀態
+  const [gpsProgress, setGpsProgress] = useState(0);
+  const [isGpsChecking, setIsGpsChecking] = useState(false);
+  const [biometricSupported, setBiometricSupported] = useState(false);
+  const [rememberDevice, setRememberDevice] = useState(false);
+  const [savedUsername, setSavedUsername] = useState('');
+
   const showToast = (type: 'success' | 'error' | 'warning', message: string) => {
     setToast({ type, message });
     setTimeout(() => setToast(null), 5000);
   };
+
+  // 客戶端掛載後設定時間
+  useEffect(() => {
+    setMounted(true);
+    setCurrentTime(new Date());
+  }, []);
+
+  // 檢查生物識別支援和記住裝置
+  useEffect(() => {
+    // 檢查 WebAuthn 生物識別支援
+    const checkBiometric = async () => {
+      if (window.PublicKeyCredential && 
+          typeof window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable === 'function') {
+        try {
+          const available = await window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+          setBiometricSupported(available);
+        } catch {
+          setBiometricSupported(false);
+        }
+      }
+    };
+    checkBiometric();
+
+    // 載入已儲存的帳號
+    const saved = localStorage.getItem('attendance_remembered_username');
+    if (saved) {
+      setSavedUsername(saved);
+      setRememberDevice(true);
+    }
+  }, []);
 
   useEffect(() => {
     // 設定頁面標題
@@ -102,7 +141,7 @@ export default function AttendancePage() {
     return () => clearInterval(timer);
   }, []);
 
-  // GPS 相關函數
+  // GPS 相關函數 - 帶進度追蹤
   const getCurrentPosition = (): Promise<LocationData> => {
     return new Promise((resolve, reject) => {
       if (!navigator.geolocation) {
@@ -110,10 +149,26 @@ export default function AttendancePage() {
         return;
       }
 
+      // 開始進度追蹤
+      setIsGpsChecking(true);
+      setGpsProgress(0);
+      const startTime = Date.now();
+      const timeout = 15000;
+      
+      // 進度更新計時器
+      const progressInterval = setInterval(() => {
+        const elapsed = Date.now() - startTime;
+        const progress = Math.min((elapsed / timeout) * 100, 95);
+        setGpsProgress(progress);
+      }, 100);
+
       // 檢查權限狀態 (如果瀏覽器支援)
       if ('permissions' in navigator) {
         navigator.permissions.query({ name: 'geolocation' }).then((result) => {
           if (result.state === 'denied') {
+            clearInterval(progressInterval);
+            setIsGpsChecking(false);
+            setGpsProgress(0);
             reject(new Error('GPS定位權限被拒絕。請在瀏覽器設定中允許此網站使用位置資訊，然後重新整理頁面。'));
             return;
           }
@@ -124,6 +179,9 @@ export default function AttendancePage() {
 
       navigator.geolocation.getCurrentPosition(
         (position) => {
+          clearInterval(progressInterval);
+          setGpsProgress(100);
+          setIsGpsChecking(false);
           resolve({
             latitude: position.coords.latitude,
             longitude: position.coords.longitude,
@@ -131,24 +189,28 @@ export default function AttendancePage() {
           });
         },
         (error) => {
+          clearInterval(progressInterval);
+          setIsGpsChecking(false);
+          setGpsProgress(0);
+          
           let errorMessage = 'GPS定位失敗';
           switch (error.code) {
             case error.PERMISSION_DENIED:
-              errorMessage = 'GPS定位權限被拒絕。請允許瀏覽器存取您的位置資訊：\n1. 點擊瀏覽器網址列旁的位置圖示\n2. 選擇「允許」或「Always allow」\n3. 重新整理頁面後再試';
+              errorMessage = 'GPS定位權限被拒絕。請允許瀏覽器存取您的位置資訊';
               break;
             case error.POSITION_UNAVAILABLE:
-              errorMessage = 'GPS位置信息不可用。請確認：\n1. 設備的GPS功能已開啟\n2. 在室外或靠近窗戶的位置\n3. 網路連線正常';
+              errorMessage = 'GPS位置不可用。請確認GPS已開啟';
               break;
             case error.TIMEOUT:
-              errorMessage = 'GPS定位超時。請稍後再試或：\n1. 移動到訊號較好的位置\n2. 重新整理頁面\n3. 確認GPS功能正常運作';
+              errorMessage = 'GPS定位超時。請移到訊號較好的位置';
               break;
           }
           reject(new Error(errorMessage));
         },
         {
           enableHighAccuracy: true,
-          timeout: 15000, // 延長超時時間到15秒
-          maximumAge: 30000 // 縮短快取時間到30秒
+          timeout: timeout,
+          maximumAge: 30000
         }
       );
     });
@@ -464,7 +526,8 @@ export default function AttendancePage() {
     setVerificationData({ username: '', password: '' });
   };
 
-  const formatTime = (time: Date) => {
+  const formatTime = (time: Date | null) => {
+    if (!time) return '--:--:--';
     return time.toLocaleTimeString('zh-TW', { 
       hour12: false,
       hour: '2-digit',
@@ -493,10 +556,10 @@ export default function AttendancePage() {
 
   return (
     <AuthenticatedLayout>
-      <div className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
-        <div className="px-4 py-6 sm:px-0">
-          {/* 頁面標題 */}
-          <div className="mb-8">
+      <div className="max-w-7xl mx-auto py-4 md:py-6 px-4 sm:px-6 lg:px-8">
+        <div className="sm:px-0">
+          {/* 頁面標題 - 手機版隱藏 */}
+          <div className="mb-4 md:mb-8 hidden md:block">
             <h1 className="text-3xl font-bold text-gray-900 flex items-center">
               <Clock className="mr-3 h-8 w-8" />
               打卡管理
@@ -504,40 +567,50 @@ export default function AttendancePage() {
             <p className="mt-2 text-gray-600">管理您的上下班打卡和考勤記錄</p>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-6">
             {/* 打卡區域 */}
             <div className="lg:col-span-2">
-              <div className="bg-white rounded-2xl shadow-lg p-8">
-                <h2 className="text-2xl font-bold text-gray-900 mb-6 flex items-center">
-                  <Timer className="mr-2 h-6 w-6" />
+              <div className="bg-white rounded-2xl shadow-lg p-4 md:p-8">
+                <h2 className="text-lg md:text-2xl font-bold text-gray-900 mb-4 md:mb-6 flex items-center">
+                  <Timer className="mr-2 h-5 w-5 md:h-6 md:w-6" />
                   今日打卡
                 </h2>
 
-                {/* 當前時間顯示 */}
-                <div className="text-center mb-8">
-                  <div className="text-6xl font-mono font-bold text-blue-600 mb-2">
-                    {formatTime(currentTime)}
+                {/* 當前時間顯示 - 響應式縮小 */}
+                <div className="text-center mb-4 md:mb-8">
+                  <div className="text-4xl md:text-6xl font-mono font-bold text-blue-600 mb-1 md:mb-2">
+                    {mounted && currentTime ? formatTime(currentTime) : '--:--:--'}
                   </div>
-                  <div className="text-xl text-gray-600">
-                    {currentTime.toLocaleDateString('zh-TW', {
+                  {/* 手機版日期 - 簡短格式 */}
+                  <div className="text-sm text-gray-600 md:hidden">
+                    {mounted && currentTime ? currentTime.toLocaleDateString('zh-TW', {
+                      month: 'numeric',
+                      day: 'numeric',
+                      weekday: 'short'
+                    }) : '載入中...'}
+                  </div>
+                  {/* 桌面版日期 - 完整格式 */}
+                  <div className="hidden md:block text-xl text-gray-600">
+                    {mounted && currentTime ? currentTime.toLocaleDateString('zh-TW', {
                       year: 'numeric',
                       month: 'long',
                       day: 'numeric',
                       weekday: 'long'
-                    })}
+                    }) : '載入中...'}
                   </div>
                 </div>
 
                 {/* GPS 位置狀態 */}
                 {isLocationRequired && (
-                  <div className="mb-6">
+                  <div className="mb-4 md:mb-6">
                     <div className="flex items-center justify-between mb-2">
                       <span className="text-sm font-medium text-gray-700">位置驗證</span>
                       <button
                         onClick={checkLocation}
-                        className="text-xs text-blue-600 hover:text-blue-800"
+                        disabled={isGpsChecking}
+                        className="text-xs text-blue-600 hover:text-blue-800 disabled:opacity-50"
                       >
-                        重新檢查
+                        {isGpsChecking ? '定位中...' : '重新檢查'}
                       </button>
                     </div>
                     
@@ -552,19 +625,19 @@ export default function AttendancePage() {
                         {locationStatus === 'checking' && (
                           <>
                             <Wifi className="w-4 h-4 text-blue-600 animate-pulse" />
-                            <span className="text-sm text-blue-700">正在獲取位置信息...</span>
+                            <span className="text-sm text-blue-700">正在獲取位置...</span>
                           </>
                         )}
                         {locationStatus === 'valid' && (
                           <>
                             <MapPin className="w-4 h-4 text-green-600" />
-                            <span className="text-sm text-green-700">位置驗證通過，可以打卡</span>
+                            <span className="text-sm text-green-700">✓ 位置驗證通過</span>
                           </>
                         )}
                         {locationStatus === 'invalid' && (
                           <>
                             <AlertCircle className="w-4 h-4 text-red-600" />
-                            <span className="text-sm text-red-700">不在允許的打卡範圍內</span>
+                            <span className="text-sm text-red-700">不在打卡範圍內</span>
                           </>
                         )}
                         {locationStatus === 'error' && (
@@ -581,7 +654,23 @@ export default function AttendancePage() {
                         )}
                       </div>
                       
-                      {locationError && (
+                      {/* GPS 進度條 */}
+                      {isGpsChecking && (
+                        <div className="mt-2">
+                          <div className="flex items-center justify-between text-xs text-blue-600 mb-1">
+                            <span>GPS 定位中</span>
+                            <span>{Math.round(gpsProgress)}%</span>
+                          </div>
+                          <div className="w-full bg-blue-200 rounded-full h-2 overflow-hidden">
+                            <div 
+                              className="bg-blue-600 h-2 rounded-full transition-all duration-100"
+                              style={{ width: `${gpsProgress}%` }}
+                            />
+                          </div>
+                        </div>
+                      )}
+                      
+                      {locationError && !isGpsChecking && (
                         <div className="text-xs text-gray-600 mt-1">
                           {locationError}
                         </div>
@@ -596,64 +685,68 @@ export default function AttendancePage() {
                   </div>
                 )}
 
-                {/* 打卡按鈕 */}
-                <div className="grid grid-cols-2 gap-4 mb-6">
+                {/* 打卡按鈕 - 純 CSS 響應式 */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4 mb-4 md:mb-6">
                   <div className="space-y-2">
                     <button
                       onClick={() => handleClock('in')}
                       disabled={clockLoading}
-                      className={`w-full py-4 px-6 rounded-xl text-lg font-medium transition-all ${
+                      className={`w-full py-5 md:py-4 px-6 rounded-xl text-base md:text-lg font-medium transition-all ${
                         todayStatus?.hasClockIn
                           ? 'bg-green-600 text-white shadow-lg border-2 border-green-200'
-                          : 'bg-blue-600 hover:bg-blue-700 text-white shadow-lg hover:shadow-xl transform hover:-translate-y-1'
+                          : 'bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white shadow-lg hover:shadow-xl transform hover:-translate-y-1 active:translate-y-0'
                       }`}
                     >
-                      {todayStatus?.hasClockIn ? (
-                        <>
-                          <CheckCircle className="w-6 h-6 mx-auto mb-2" />
-                          已上班打卡
-                        </>
-                      ) : (
-                        <>
-                          <Clock className="w-6 h-6 mx-auto mb-2" />
-                          上班打卡
-                        </>
+                      <div className="flex items-center justify-center gap-2">
+                        {todayStatus?.hasClockIn ? (
+                          <>
+                            <CheckCircle className="w-5 h-5 md:w-6 md:h-6" />
+                            <span>已上班打卡</span>
+                          </>
+                        ) : (
+                          <>
+                            <Clock className="w-5 h-5 md:w-6 md:h-6" />
+                            <span>上班打卡</span>
+                          </>
+                        )}
+                      </div>
+                      {todayStatus?.today?.clockInTime && (
+                        <div className="text-xs opacity-80 mt-1">
+                          {formatDateTime(todayStatus.today.clockInTime)}
+                        </div>
                       )}
                     </button>
-                    {todayStatus?.today?.clockInTime && (
-                      <div className="text-center text-sm text-black bg-green-50 py-2 px-3 rounded-lg">
-                        打卡時間: {formatDateTime(todayStatus.today.clockInTime)}
-                      </div>
-                    )}
                   </div>
 
                   <div className="space-y-2">
                     <button
                       onClick={() => handleClock('out')}
                       disabled={clockLoading}
-                      className={`w-full py-4 px-6 rounded-xl text-lg font-medium transition-all ${
+                      className={`w-full py-5 md:py-4 px-6 rounded-xl text-base md:text-lg font-medium transition-all ${
                         todayStatus?.hasClockOut
-                          ? 'bg-red-600 text-white shadow-lg border-2 border-red-200'
-                          : 'bg-red-600 hover:bg-red-700 text-white shadow-lg hover:shadow-xl transform hover:-translate-y-1'
+                          ? 'bg-orange-600 text-white shadow-lg border-2 border-orange-200'
+                          : 'bg-orange-500 hover:bg-orange-600 active:bg-orange-700 text-white shadow-lg hover:shadow-xl transform hover:-translate-y-1 active:translate-y-0'
                       }`}
                     >
-                      {todayStatus?.hasClockOut ? (
-                        <>
-                          <CheckCircle className="w-6 h-6 mx-auto mb-2" />
-                          已下班打卡
-                        </>
-                      ) : (
-                        <>
-                          <XCircle className="w-6 h-6 mx-auto mb-2" />
-                          下班打卡
-                        </>
+                      <div className="flex items-center justify-center gap-2">
+                        {todayStatus?.hasClockOut ? (
+                          <>
+                            <CheckCircle className="w-5 h-5 md:w-6 md:h-6" />
+                            <span>已下班打卡</span>
+                          </>
+                        ) : (
+                          <>
+                            <XCircle className="w-5 h-5 md:w-6 md:h-6" />
+                            <span>下班打卡</span>
+                          </>
+                        )}
+                      </div>
+                      {todayStatus?.today?.clockOutTime && (
+                        <div className="text-xs opacity-80 mt-1">
+                          {formatDateTime(todayStatus.today.clockOutTime)}
+                        </div>
                       )}
                     </button>
-                    {todayStatus?.today?.clockOutTime && (
-                      <div className="text-center text-sm text-black bg-gray-50 py-2 px-3 rounded-lg">
-                        打卡時間: {formatDateTime(todayStatus.today.clockOutTime)}
-                      </div>
-                    )}
                   </div>
                 </div>
 
@@ -821,14 +914,22 @@ export default function AttendancePage() {
 
       {/* 打卡驗證對話框 */}
       {showVerificationModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-2xl p-8 max-w-md w-full mx-4 shadow-2xl">
-            <h3 className="text-2xl font-bold text-gray-900 mb-6 text-center">
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl p-6 md:p-8 max-w-md w-full shadow-2xl">
+            <h3 className="text-xl md:text-2xl font-bold text-gray-900 mb-4 md:mb-6 text-center">
               {pendingClockType === 'in' ? '上班打卡' : '下班打卡'}確認
             </h3>
             
-            <p className="text-gray-600 mb-6 text-center">
-              為確保打卡安全性，請輸入您的帳號密碼進行驗證
+            {/* 生物識別提示 */}
+            {biometricSupported && (
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4 flex items-center gap-2">
+                <Fingerprint className="w-5 h-5 text-blue-600" />
+                <span className="text-sm text-blue-700">此裝置支援指紋/Face ID</span>
+              </div>
+            )}
+            
+            <p className="text-gray-600 mb-4 md:mb-6 text-center text-sm md:text-base">
+              為確保打卡安全性，請輸入您的帳號密碼
             </p>
 
             <div className="space-y-4">
@@ -838,14 +939,14 @@ export default function AttendancePage() {
                   <User className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
                   <input
                     type="text"
-                    value={verificationData.username}
+                    value={verificationData.username || savedUsername}
                     onChange={(e) => setVerificationData({
                       ...verificationData,
                       username: e.target.value
                     })}
-                    className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
+                    className="w-full pl-10 pr-3 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black text-base"
                     placeholder="請輸入您的帳號"
-                    autoFocus
+                    autoFocus={!savedUsername}
                   />
                 </div>
               </div>
@@ -861,8 +962,9 @@ export default function AttendancePage() {
                       ...verificationData,
                       password: e.target.value
                     })}
-                    className="w-full pl-10 pr-10 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
+                    className="w-full pl-10 pr-10 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black text-base"
                     placeholder="請輸入您的密碼"
+                    autoFocus={!!savedUsername}
                     onKeyPress={(e) => {
                       if (e.key === 'Enter') {
                         handleVerificationSubmit();
@@ -881,19 +983,42 @@ export default function AttendancePage() {
                   </button>
                 </div>
               </div>
+
+              {/* 記住帳號選項 */}
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={rememberDevice}
+                  onChange={(e) => {
+                    setRememberDevice(e.target.checked);
+                    if (!e.target.checked) {
+                      localStorage.removeItem('attendance_remembered_username');
+                      setSavedUsername('');
+                    }
+                  }}
+                  className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+                />
+                <span className="text-sm text-gray-600">記住我的帳號</span>
+              </label>
             </div>
 
             <div className="flex space-x-3 mt-6">
               <button
                 onClick={handleVerificationCancel}
-                className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-2 px-4 rounded-lg transition-colors"
+                className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-3 px-4 rounded-lg transition-colors"
               >
                 取消
               </button>
               <button
-                onClick={handleVerificationSubmit}
+                onClick={() => {
+                  // 記住帳號
+                  if (rememberDevice && verificationData.username) {
+                    localStorage.setItem('attendance_remembered_username', verificationData.username);
+                  }
+                  handleVerificationSubmit();
+                }}
                 disabled={!verificationData.username || !verificationData.password || clockLoading}
-                className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-2 px-4 rounded-lg transition-colors"
+                className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-3 px-4 rounded-lg transition-colors"
               >
                 {clockLoading ? '打卡中...' : '確認打卡'}
               </button>

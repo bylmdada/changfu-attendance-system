@@ -3,6 +3,8 @@
  * 提供結構化日誌記錄功能，支援不同等級和上下文
  */
 
+import * as Sentry from '@sentry/nextjs';
+
 // 日誌等級
 export enum LogLevel {
   DEBUG = 'DEBUG',
@@ -77,7 +79,7 @@ function formatLogEntry(entry: LogEntry): string {
   return `[${entry.timestamp}] [${entry.level}] [${entry.category}] ${entry.message}${userStr}${ipStr}${durationStr}${contextStr}`;
 }
 
-// 日誌寫入（目前輸出到 console，未來可改為寫入檔案或外部服務）
+// 日誌寫入（輸出到 console 並發送到 Sentry）
 function writeLog(entry: LogEntry): void {
   const formattedLog = formatLogEntry(entry);
   
@@ -92,12 +94,35 @@ function writeLog(entry: LogEntry): void {
       break;
     case LogLevel.WARN:
       console.warn(formattedLog);
+      // 發送警告到 Sentry
+      Sentry.captureMessage(entry.message, {
+        level: 'warning',
+        tags: { category: entry.category },
+        extra: { ...entry.context, userId: entry.userId },
+      });
       break;
     case LogLevel.ERROR:
     case LogLevel.CRITICAL:
       console.error(formattedLog);
       if (entry.error?.stack) {
         console.error('Stack trace:', entry.error.stack);
+      }
+      // 發送錯誤到 Sentry
+      if (entry.error) {
+        const error = new Error(entry.error.message);
+        error.name = entry.error.name;
+        error.stack = entry.error.stack;
+        Sentry.captureException(error, {
+          level: entry.level === LogLevel.CRITICAL ? 'fatal' : 'error',
+          tags: { category: entry.category },
+          extra: { ...entry.context, userId: entry.userId, ip: entry.ip },
+        });
+      } else {
+        Sentry.captureMessage(entry.message, {
+          level: entry.level === LogLevel.CRITICAL ? 'fatal' : 'error',
+          tags: { category: entry.category },
+          extra: { ...entry.context, userId: entry.userId },
+        });
       }
       break;
   }
