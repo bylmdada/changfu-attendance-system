@@ -1302,32 +1302,18 @@ function LoginPageContent() {
 
         {/* 右側 2/3 */}
         <div className="hidden lg:flex lg:w-2/3 flex-col bg-gray-50">
-          {/* 系統登入：顯示宗旨（垂直居中） */}
+          {/* 系統登入：顯示機構分佈圖（垂直居中） */}
           {activeTab === 'login' && (
             <div className="flex-1 flex items-center justify-center p-8">
-              <div className="bg-gradient-to-br from-blue-50 via-cyan-50 to-blue-100 rounded-3xl p-10 border border-blue-200 max-w-xl w-full">
-                <div className="text-center mb-8">
-                  <h2 className="text-3xl font-bold text-blue-800 mb-3">長福會宗旨</h2>
-                  <div className="w-20 h-1 bg-gradient-to-r from-blue-400 to-cyan-400 mx-auto rounded-full" />
-                </div>
-                <div className="space-y-5">
-                  <div className="flex items-start gap-4 bg-white/70 rounded-xl p-5 shadow-sm">
-                    <span className="w-10 h-10 bg-blue-500 rounded-full flex items-center justify-center text-white text-lg font-bold flex-shrink-0">1</span>
-                    <p className="text-gray-700 text-lg font-medium pt-1">確保長期照顧機構之服務品質</p>
-                  </div>
-                  <div className="flex items-start gap-4 bg-white/70 rounded-xl p-5 shadow-sm">
-                    <span className="w-10 h-10 bg-blue-500 rounded-full flex items-center justify-center text-white text-lg font-bold flex-shrink-0">2</span>
-                    <p className="text-gray-700 text-lg font-medium pt-1">保障長期照顧工作人員之權益</p>
-                  </div>
-                  <div className="flex items-start gap-4 bg-white/70 rounded-xl p-5 shadow-sm">
-                    <span className="w-10 h-10 bg-blue-500 rounded-full flex items-center justify-center text-white text-lg font-bold flex-shrink-0">3</span>
-                    <p className="text-gray-700 text-lg font-medium pt-1">健全健康照護與長期照顧服務之資源整合</p>
-                  </div>
-                  <div className="flex items-start gap-4 bg-white/70 rounded-xl p-5 shadow-sm">
-                    <span className="w-10 h-10 bg-blue-500 rounded-full flex items-center justify-center text-white text-lg font-bold flex-shrink-0">4</span>
-                    <p className="text-gray-700 text-lg font-medium pt-1">促進長期照顧專業之發展</p>
-                  </div>
-                </div>
+              <div className="relative max-w-md w-full">
+                <Image
+                  src="/changfu-location.png"
+                  alt="長福會照護據點分佈"
+                  width={768}
+                  height={1376}
+                  className="rounded-2xl shadow-lg w-full h-auto"
+                  priority
+                />
               </div>
             </div>
           )}
