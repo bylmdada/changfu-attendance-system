@@ -116,7 +116,7 @@ sudo systemctl enable nginx
 
 ## 📦 第三部分：部署專案
 
-### 3.1 上傳專案
+### 3.1 上傳專案程式碼
 
 **方法 A：從 Git 拉取**
 ```bash
@@ -130,7 +130,27 @@ git clone YOUR_REPO_URL changfu-attendance
 scp -r ./changfu-attendance-system deploy@YOUR_IP:~/apps/changfu-attendance
 ```
 
-### 3.2 安裝依賴並建置
+### 3.2 上傳開發環境資料庫（重要！）
+
+> ⚠️ **注意**：資料庫檔案不會透過 Git 上傳，需手動複製！
+
+**在本機執行**（保留開發環境的員工帳號密碼）：
+```bash
+# 上傳開發環境資料庫到 VPS
+scp ./prisma/dev.db deploy@YOUR_VPS_IP:~/apps/changfu-attendance/prisma/prod.db
+```
+
+**資料遷移說明**：
+
+| 項目 | 透過 Git | 需手動複製 |
+|------|---------|-----------|
+| 程式碼 | ✅ | - |
+| 環境變數(.env) | ❌ | ✅ |
+| **資料庫(.db)** | ❌ | ✅ |
+| 員工帳號/密碼 | ❌ | ✅ (含在資料庫內) |
+| 考勤記錄 | ❌ | ✅ (含在資料庫內) |
+
+### 3.3 安裝依賴並建置
 
 ```bash
 cd ~/apps/changfu-attendance
@@ -158,7 +178,7 @@ npx prisma migrate deploy
 npm run build
 ```
 
-### 3.3 使用 PM2 啟動
+### 3.4 使用 PM2 啟動
 
 ```bash
 # 啟動
