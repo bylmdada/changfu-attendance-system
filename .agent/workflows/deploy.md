@@ -23,9 +23,9 @@ git add -A && git commit -m "deploy: update" && git push origin main
 ```
 
 // turbo
-2. 同步程式碼到 VPS（排除 node_modules、.next、資料庫）：
+2. 同步程式碼到 VPS（排除 node_modules、.next、資料庫、.env）：
 ```bash
-rsync -avz --exclude 'node_modules' --exclude '.next' --exclude '.git' --exclude 'prisma/*.db*' --exclude 'uploads' ./ deploy@188.166.229.128:~/apps/changfu-attendance/
+rsync -avz --exclude 'node_modules' --exclude '.next' --exclude '.git' --exclude 'prisma/*.db*' --exclude 'uploads' --exclude '.env' ./ deploy@188.166.229.128:~/apps/changfu-attendance/
 ```
 
 // turbo
