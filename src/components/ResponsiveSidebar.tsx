@@ -48,7 +48,7 @@ interface MenuItem {
   name: string;
   href?: string;
   icon: React.ElementType;
-  children?: { name: string; href: string }[];
+  children?: { name: string; href: string; roles?: string[] }[];
   roles?: string[]; // 允許的角色，空表示所有人
 }
 
@@ -85,7 +85,8 @@ const menuItems: MenuItem[] = [
       { name: '請假申請', href: '/leave-management' },
       { name: '特休假查詢', href: '/my-annual-leave' },
       { name: '年假餘額', href: '/annual-leaves' },
-      { name: '補休管理', href: '/comp-leave-management' },
+      { name: '補休查詢', href: '/my-comp-leave' },
+      { name: '補休管理', href: '/comp-leave-management', roles: ['ADMIN', 'HR'] },
     ],
   },
   {
@@ -259,7 +260,7 @@ export default function ResponsiveSidebar({ user }: SidebarProps) {
           {/* 桌面版：可折疊子選單 */}
           {!isMobile && isExpanded && (
             <div className="ml-8 mt-1 space-y-1">
-              {item.children?.map(child => (
+              {item.children?.filter(child => !child.roles || child.roles.includes(user.role)).map(child => (
                 <Link
                   key={child.href}
                   href={child.href}
@@ -277,7 +278,7 @@ export default function ResponsiveSidebar({ user }: SidebarProps) {
           {/* 手機版：展開顯示扁平子選單 */}
           {isMobile && isExpanded && (
             <div className="mt-1 space-y-1">
-              {item.children?.map(child => (
+              {item.children?.filter(child => !child.roles || child.roles.includes(user.role)).map(child => (
                 <Link
                   key={child.href}
                   href={child.href}
