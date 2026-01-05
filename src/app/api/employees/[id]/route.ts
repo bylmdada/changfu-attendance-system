@@ -201,12 +201,14 @@ export async function PUT(
           });
         }
       } else {
-        // 如果不創建帳號但已有用戶，停用用戶
-        if (existingEmployee.user) {
+        // createAccount = false 時
+        // 如果已有用戶帳號，仍然更新角色（如果有提供）
+        if (existingEmployee.user && role && ['EMPLOYEE', 'HR', 'ADMIN'].includes(role)) {
           await tx.user.update({
             where: { id: existingEmployee.user.id },
-            data: { isActive: false }
+            data: { role }
           });
+          console.log(`✅ 角色已更新: ${existingEmployee.user.username} → ${role}`);
         }
       }
 

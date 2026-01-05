@@ -123,7 +123,7 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: '請求格式錯誤' }, { status: 400 });
     }
     
-    const { employeeId, idNumber, bankCode, bankAccount } = body;
+    const { employeeId, idNumber, bankCode: _bankCode, bankAccount } = body;
 
     console.log('📥 [bank-accounts] 解析後:', { employeeId, idNumber: idNumber ? '有' : '無', bankAccount: bankAccount ? '有' : '無' });
 

@@ -7,6 +7,7 @@ export interface JWTPayload {
   employeeId: number;
   username: string;
   role: string;
+  sessionId?: string; // 會話 ID，用於單一會話登入控制
   iat?: number;
   exp?: number;
 }

@@ -40,6 +40,17 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: '用戶不存在' }, { status: 404 });
     }
 
+    // 檢查 sessionId 是否匹配（單一會話登入控制）
+    if (user.sessionId && userData.currentSessionId && user.sessionId !== userData.currentSessionId) {
+      return NextResponse.json(
+        { 
+          error: '您已在其他裝置登入，此會話已失效',
+          code: 'SESSION_INVALID' // 特殊錯誤碼供前端識別
+        },
+        { status: 401 }
+      );
+    }
+
     // 檢查是否為部門主管或代理人
     let isDepartmentManager = false;
     let isDeputyManager = false;

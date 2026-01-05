@@ -15,7 +15,10 @@ export async function GET(request: NextRequest) {
     }
 
     // 驗證 JWT token
-    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as { userId: number };
+    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as { 
+      userId: number; 
+      sessionId?: string;
+    };
 
     // 查詢用戶資料
     const user = await prisma.user.findUnique({
@@ -48,6 +51,17 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    // 檢查 sessionId 是否匹配（單一會話登入控制）
+    if (decoded.sessionId && user.currentSessionId && decoded.sessionId !== user.currentSessionId) {
+      return NextResponse.json(
+        { 
+          error: '您已在其他裝置登入，此會話已失效',
+          code: 'SESSION_INVALID' // 特殊錯誤碼供前端識別
+        },
+        { status: 401 }
+      );
+    }
+
     if (!user.employee || !user.employee.isActive) {
       return NextResponse.json(
         { error: '員工資料不存在或已停用' },
@@ -55,13 +69,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // 更新最後登入時間
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { lastLogin: new Date() }
-    });
-
-    // 返回用戶資訊
+    // 返回用戶資訊（移除更新 lastLogin 避免每次驗證都寫入資料庫）
     return NextResponse.json({
       id: user.id,
       username: user.username,

@@ -22,7 +22,8 @@ const REQUEST_TYPE_NAMES: Record<string, string> = {
   RESIGNATION: '離職申請',
   PAYROLL_DISPUTE: '薪資異議',
   DEPENDENT_APP: '眷屬申請',
-  ANNOUNCEMENT: '公告發布'
+  ANNOUNCEMENT: '公告發布',
+  PENSION_CONTRIBUTION: '勞退自提變更'
 };
 
 // 狀態名稱對照
@@ -35,7 +36,10 @@ const STATUS_NAMES: Record<string, string> = {
   LEVEL2_DISAGREED: 'HR不同意（進入決核）',
   LEVEL3_REVIEWING: '管理員決核中',
   APPROVED: '已核准',
-  REJECTED: '已退回'
+  REJECTED: '已退回',
+  // 勞退自提狀態
+  PENDING_HR: '待 HR 審核',
+  PENDING_ADMIN: '待管理員決核'
 };
 
 // GET: 取得待審核項目
@@ -155,7 +159,7 @@ export async function GET(request: NextRequest) {
       include: {
         reviews: {
           orderBy: { createdAt: 'desc' },
-          take: 5,
+          take: 10,
           include: {
             reviewer: {
               select: { employeeId: true, department: true }
@@ -164,6 +168,15 @@ export async function GET(request: NextRequest) {
         }
       },
       orderBy: { createdAt: 'asc' }
+    });
+
+    // 過濾掉當前用戶在當前階段已經審核過的項目
+    const filteredInstances = instances.filter(inst => {
+      // 檢查是否有當前用戶在當前階段的審核紀錄
+      const hasReviewedAtCurrentLevel = inst.reviews.some(
+        r => r.reviewerId === user.employeeId && r.level === inst.currentLevel
+      );
+      return !hasReviewedAtCurrentLevel;
     });
 
     const now = new Date();
@@ -280,7 +293,7 @@ export async function GET(request: NextRequest) {
 
     // 批量取得申請詳情
     const pendingWithDetails = await Promise.all(
-      instances.map(async (inst) => {
+      filteredInstances.map(async (inst) => {
         const isOverdue = inst.deadlineAt && new Date(inst.deadlineAt) < now;
         const isUrgent = inst.deadlineAt && 
           new Date(inst.deadlineAt) < new Date(now.getTime() + 24 * 60 * 60 * 1000) &&
@@ -325,18 +338,83 @@ export async function GET(request: NextRequest) {
         };
       })
     );
+
+    // 額外取得勞退自提待審核項目
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let pensionApplications: any[] = [];
+    
+    if (user.role === 'ADMIN' || user.role === 'HR') {
+      const pensionStatusFilter = user.role === 'ADMIN' 
+        ? ['PENDING_HR', 'PENDING_ADMIN'] 
+        : ['PENDING_HR'];
+      
+      const pendingPensions = await prisma.pensionContributionApplication.findMany({
+        where: {
+          status: { in: pensionStatusFilter }
+        },
+        include: {
+          employee: {
+            select: {
+              id: true,
+              employeeId: true,
+              name: true,
+              department: true,
+              position: true
+            }
+          },
+          hrReviewer: { select: { id: true, name: true } }
+        },
+        orderBy: { createdAt: 'asc' }
+      });
+
+      pensionApplications = pendingPensions.map(app => ({
+        id: app.id * -1, // 使用負數 ID 來區分勞退自提
+        requestType: 'PENSION_CONTRIBUTION',
+        requestTypeName: REQUEST_TYPE_NAMES['PENSION_CONTRIBUTION'],
+        requestId: app.id,
+        applicantName: app.employee.name,
+        department: app.employee.department || '',
+        status: app.status,
+        statusName: STATUS_NAMES[app.status] || app.status,
+        currentLevel: app.status === 'PENDING_HR' ? 1 : 2,
+        maxLevel: 2,
+        deadlineAt: undefined,
+        isOverdue: false,
+        isUrgent: false,
+        createdAt: new Date(Number(app.createdAt)).toISOString(),
+        reviews: app.hrReviewer ? [{
+          level: 1,
+          reviewerName: app.hrReviewer.name,
+          reviewerDepartment: '',
+          roleShortLabel: 'HR',
+          action: app.hrOpinion === 'AGREE' ? 'APPROVE' : 'REJECT',
+          comment: app.hrNote,
+          createdAt: app.hrReviewedAt?.toISOString() || ''
+        }] : [],
+        requestDetails: {
+          type: 'pension_contribution',
+          currentRate: app.currentRate,
+          requestedRate: app.requestedRate,
+          effectiveDate: app.effectiveDate.toISOString().split('T')[0],
+          reason: app.reason
+        }
+      }));
+    }
+
+    // 合併所有待審核項目
+    const allPending = [...pendingWithDetails, ...pensionApplications];
     
     return NextResponse.json({
       success: true,
-      pending: pendingWithDetails,
+      pending: allPending,
       stats: {
-        total: instances.length,
-        urgent: instances.filter(i => 
+        total: allPending.length,
+        urgent: filteredInstances.filter(i => 
           i.deadlineAt && 
           new Date(i.deadlineAt) < new Date(now.getTime() + 24 * 60 * 60 * 1000) &&
           new Date(i.deadlineAt) >= now
         ).length,
-        overdue: instances.filter(i => 
+        overdue: filteredInstances.filter(i => 
           i.deadlineAt && new Date(i.deadlineAt) < now
         ).length
       }

@@ -22,6 +22,8 @@ interface Employee {
   department: string;
   position: string;
   isActive: boolean;
+  employeeType?: string; // MONTHLY | HOURLY
+  laborInsuranceActive?: boolean;
   user?: {
     username: string;
     role: string;
@@ -662,6 +664,8 @@ function EmployeeModal({ employee, onClose, onSave }: {
     hourlyRate: employee?.hourlyRate?.toString() || '',
     department: employee?.department || '',
     position: employee?.position || '',
+    employeeType: employee?.employeeType || 'MONTHLY', // 月薪/計時
+    laborInsuranceActive: employee?.laborInsuranceActive ?? true, // 勞保參加
     username: employee?.user?.username || initialEmployeeId,
     password: employee ? '' : generateDefaultPassword(initialEmployeeId),
     createAccount: !employee, // 新增員工時默認創建帳號
@@ -971,6 +975,46 @@ function EmployeeModal({ employee, onClose, onSave }: {
               )}
             </div>
 
+            {/* 員工類型 */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">員工類型 *</label>
+              <select
+                value={formData.employeeType}
+                onChange={(e) => setFormData({...formData, employeeType: e.target.value})}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-black bg-white"
+                required
+              >
+                <option value="MONTHLY">月薪人員</option>
+                <option value="HOURLY">計時人員</option>
+              </select>
+              {formData.employeeType === 'HOURLY' && (
+                <p className="mt-1 text-xs text-orange-600">
+                  ⚠ 計時人員薪資將以「時薪 × 實際工時」計算
+                </p>
+              )}
+            </div>
+
+            {/* 勞保設定 */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">勞健保設定</label>
+              <div className="space-y-2">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={formData.laborInsuranceActive}
+                    onChange={(e) => setFormData({...formData, laborInsuranceActive: e.target.checked})}
+                    className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+                  />
+                  <span className="text-sm text-gray-700">參加勞保</span>
+                </label>
+                {!formData.laborInsuranceActive && (
+                  <p className="text-xs text-orange-600 ml-6">
+                    ⚠ 不參加勞保：薪資計算時將不扣勞保費
+                  </p>
+                )}
+              </div>
+            </div>
+
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">部門</label>
               <select
@@ -1144,6 +1188,8 @@ interface ParsedEmployee {
   hourlyRate: number;
   department: string;
   position: string;
+  employeeType: string; // MONTHLY | HOURLY
+  laborInsuranceActive: boolean;
 }
 
 function BatchImportModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
@@ -1177,7 +1223,7 @@ function BatchImportModal({ onClose, onSuccess }: { onClose: () => void; onSucce
   };
 
   const parseCSV = (text: string): ParsedEmployee[] => {
-    const lines = text.split('\n').filter(line => line.trim());
+    const lines = text.split('\n').filter(line => line.trim() && !line.trim().startsWith('#'));
     if (lines.length < 2) {
       throw new Error('CSV 檔案格式錯誤：至少需要標題行和一行資料');
     }
@@ -1185,18 +1231,35 @@ function BatchImportModal({ onClose, onSuccess }: { onClose: () => void; onSucce
     const headers = lines[0].split(',').map(h => h.trim());
     const expectedHeaders = ['員工編號', '姓名', '生日', '電話', '地址', '緊急聯絡人', '緊急聯絡電話', '到職日期', '底薪', '時薪', '部門', '職位'];
     
-    // 驗證標題
+    // 驗證標題（基本欄位必須存在，新欄位可選）
     const missingHeaders = expectedHeaders.filter((h, i) => headers[i] !== h);
     if (missingHeaders.length > 0) {
       throw new Error(`CSV 標題格式錯誤，缺少：${missingHeaders.join(', ')}`);
     }
 
+    // 檢查是否有新欄位
+    const hasEmployeeType = headers.includes('員工類型');
+    const hasLaborInsurance = headers.includes('參加勞保');
+
     const employees: ParsedEmployee[] = [];
     for (let i = 1; i < lines.length; i++) {
       const values = lines[i].split(',').map(v => v.trim());
-      if (values.length >= 12 && values[0]) {
+      // 允許員工編號為空（API 會自動生成），但必須有姓名
+      if (values.length >= 12 && values[1]) {
+        // 解析員工類型
+        let employeeType = 'MONTHLY';
+        if (hasEmployeeType && values[12]) {
+          employeeType = values[12].toUpperCase() === 'HOURLY' ? 'HOURLY' : 'MONTHLY';
+        }
+        
+        // 解析勞保參加狀態
+        let laborInsuranceActive = true;
+        if (hasLaborInsurance && values[13]) {
+          laborInsuranceActive = values[13] !== '否' && values[13].toLowerCase() !== 'no' && values[13] !== '0';
+        }
+
         employees.push({
-          employeeId: values[0],
+          employeeId: values[0] || '', // 允許空值，API 會自動生成
           name: values[1],
           birthday: values[2],
           phone: values[3],
@@ -1207,7 +1270,9 @@ function BatchImportModal({ onClose, onSuccess }: { onClose: () => void; onSucce
           baseSalary: parseInt(values[8]) || 0,
           hourlyRate: parseInt(values[9]) || 0,
           department: values[10],
-          position: values[11]
+          position: values[11],
+          employeeType,
+          laborInsuranceActive
         });
       }
     }
@@ -1301,6 +1366,9 @@ function BatchImportModal({ onClose, onSuccess }: { onClose: () => void; onSucce
                   <li>• 員工編號可留空（系統自動生成），或填入現有編號</li>
                   <li>• 姓名、生日、到職日期、底薪、時薪、部門、職位為必填欄位</li>
                   <li>• 日期格式：YYYY-MM-DD（例：2025-01-01）</li>
+                  <li>• <strong>員工類型</strong>：MONTHLY（月薪人員）或 HOURLY（計時人員），留空預設為月薪</li>
+                  <li>• <strong>參加勞保</strong>：填「是」或「否」，計時人員可填「否」表示不參加勞保</li>
+                  <li>• 計時人員底薪可填 0，系統將以「時薪 × 實際工時」計算薪資</li>
                   <li>• 系統將自動為每位員工創建登入帳號（帳號：員工編號，密碼：員工編號+123）</li>
                 </ul>
               </div>

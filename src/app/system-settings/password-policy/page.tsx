@@ -220,7 +220,7 @@ export default function PasswordPolicySettings() {
     try {
       const response = await fetchJSONWithCSRF('/api/system-settings/password-policy', {
         method: 'POST',
-        body: passwordPolicy
+        body: { policy: passwordPolicy }
       });
 
       if (response.ok) {

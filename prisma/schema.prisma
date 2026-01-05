@@ -24,6 +24,10 @@ model Employee {
   position         String?
   isActive         Boolean  @default(true) @map("is_active")
   managedLocation  String?  @map("managed_location")  // 據點排班員負責的據點
+  
+  // 員工類型：MONTHLY（月薪人員）、HOURLY（計時人員）
+  employeeType     String   @default("MONTHLY") @map("employee_type")
+  
   createdAt        DateTime @default(now()) @map("created_at")
   updatedAt        DateTime @updatedAt @map("updated_at")
 
@@ -31,6 +35,10 @@ model Employee {
   insuredBase          Float? @map("insured_base")
   dependents           Int?   @default(0) // 健保眷屬人數
   laborPensionSelfRate Float? @map("labor_pension_self_rate")
+  
+  // 勞保設定（個別設定，計時人員可能不參加）
+  laborInsuranceActive Boolean @default(true) @map("labor_insurance_active")
+  laborInsuranceNote   String? @map("labor_insurance_note")  // 不參加原因說明
   
   // 新增：健保投保資訊
   healthInsuranceActive Boolean @default(true) @map("health_insurance_active")
@@ -186,6 +194,9 @@ model User {
   twoFactorEnabled Boolean  @default(false) @map("two_factor_enabled")
   twoFactorSecret  String?  @map("two_factor_secret")
   backupCodes      String?  @map("backup_codes") // JSON 格式儲存
+
+  // 單一會話登入控制
+  currentSessionId String?  @map("current_session_id") // 當前有效的會話 ID
 
   employee Employee @relation(fields: [employeeId], references: [id])
   

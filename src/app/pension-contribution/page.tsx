@@ -49,7 +49,11 @@ interface User {
   id: number;
   username: string;
   role: 'ADMIN' | 'HR' | 'EMPLOYEE';
-  employeeId: number;
+  employeeId?: number;
+  employee?: {
+    id: number;
+    name: string;
+  };
 }
 
 const STATUS_LABELS: Record<string, { label: string; color: string; icon: React.ReactNode }> = {
@@ -75,18 +79,28 @@ export default function PensionContributionPage() {
   
   // 審核表單
   const [reviewingApp, setReviewingApp] = useState<Application | null>(null);
-  const [reviewOpinion, setReviewOpinion] = useState('');
+  const [_reviewOpinion, _setReviewOpinion] = useState('');
   const [reviewNote, setReviewNote] = useState('');
 
   // 取得用戶資訊
   useEffect(() => {
-    fetch('/api/auth/verify')
-      .then(res => res.json())
-      .then(data => {
-        if (data.user) setUser(data.user);
-        else setLoading(false); // 未登入時停止載入
-      })
-      .catch(() => setLoading(false));
+    const fetchUser = async () => {
+      try {
+        const res = await fetch('/api/auth/me', { credentials: 'include' });
+        const data = await res.json();
+        // 處理兩種可能的格式
+        if (data.user) {
+          setUser(data.user);
+        } else if (data.id) {
+          setUser(data);
+        } else {
+          setLoading(false);
+        }
+      } catch {
+        setLoading(false);
+      }
+    };
+    fetchUser();
   }, []);
 
   const isAdminOrHR = user?.role === 'ADMIN' || user?.role === 'HR';
@@ -138,13 +152,13 @@ export default function PensionContributionPage() {
     setSubmitting(true);
     try {
       const csrfRes = await fetch('/api/csrf-token');
-      const { token } = await csrfRes.json();
+      const { csrfToken } = await csrfRes.json();
 
       const res = await fetch('/api/pension-contribution', {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
-          'X-CSRF-Token': token
+          'X-CSRF-Token': csrfToken
         },
         body: JSON.stringify({ requestedRate, reason })
       });
@@ -171,13 +185,13 @@ export default function PensionContributionPage() {
     
     try {
       const csrfRes = await fetch('/api/csrf-token');
-      const { token } = await csrfRes.json();
+      const { csrfToken } = await csrfRes.json();
 
       const res = await fetch(`/api/pension-contribution/${reviewingApp.id}`, {
         method: 'PUT',
         headers: { 
           'Content-Type': 'application/json',
-          'X-CSRF-Token': token
+          'X-CSRF-Token': csrfToken
         },
         body: JSON.stringify({ opinion, note: reviewNote })
       });
@@ -202,13 +216,13 @@ export default function PensionContributionPage() {
     
     try {
       const csrfRes = await fetch('/api/csrf-token');
-      const { token } = await csrfRes.json();
+      const { csrfToken } = await csrfRes.json();
 
       const res = await fetch(`/api/pension-contribution/${reviewingApp.id}`, {
         method: 'PUT',
         headers: { 
           'Content-Type': 'application/json',
-          'X-CSRF-Token': token
+          'X-CSRF-Token': csrfToken
         },
         body: JSON.stringify({ action, note: reviewNote })
       });
@@ -423,9 +437,27 @@ export default function PensionContributionPage() {
                 <p className="text-sm text-blue-800">
                   新月提繳金額：<strong>${Math.round((currentInfo?.insuredBase || 0) * requestedRate / 100).toLocaleString()}</strong>
                 </p>
-                <p className="text-xs text-blue-600 mt-1">
-                  {new Date().getDate() <= 25 ? '次月' : '隔月'}1日生效
-                </p>
+                <div className="mt-2 pt-2 border-t border-blue-200">
+                  <p className="text-sm font-medium text-blue-800 mb-1">
+                    📅 預計生效日期：<strong>
+                      {(() => {
+                        const today = new Date();
+                        const day = today.getDate();
+                        const year = today.getFullYear();
+                        const month = today.getMonth();
+                        const effectiveDate = day <= 25 
+                          ? new Date(year, month + 1, 1)
+                          : new Date(year, month + 2, 1);
+                        return effectiveDate.toLocaleDateString('zh-TW', { year: 'numeric', month: 'long', day: 'numeric' });
+                      })()}
+                    </strong>
+                  </p>
+                  <p className="text-xs text-blue-600">
+                    {new Date().getDate() <= 25 
+                      ? `📌 每月 25 日（含）前申請，次月 1 日生效` 
+                      : `📌 每月 25 日後申請，隔月 1 日生效（確保 HR 有足夠作業時間）`}
+                  </p>
+                </div>
               </div>
 
               <div className="mb-4">

@@ -210,25 +210,31 @@ export default function EmployeePayrollPage() {
   };
 
   useEffect(() => {
-    // 取得登入者資訊（用於顯示歡迎字樣）
-    fetch('/api/auth/me', { credentials: 'include' })
-      .then(async (res) => {
-        if (!res.ok) return;
-        const data = await res.json();
-        setUser(data.user || data);
-      })
-      .catch(() => {});
+    const fetchData = async () => {
+      try {
+        // 取得登入者資訊（用於顯示歡迎字樣）
+        const userRes = await fetch('/api/auth/me', { credentials: 'include' });
+        if (userRes.ok) {
+          const userData = await userRes.json();
+          setUser(userData.user || userData);
+        }
 
-    const now = new Date();
-    const year = now.getFullYear();
-    fetch(`/api/payroll?year=${year}`, { credentials: 'include' })
-      .then(async (res) => {
-        if (!res.ok) throw new Error(`${res.status}`);
-        const data = await res.json();
-        setRecords(data.payrollRecords || []);
-      })
-      .catch((e) => setError(`載入失敗: ${e.message}`))
-      .finally(() => setLoading(false));
+        // 取得薪資記錄
+        const now = new Date();
+        const year = now.getFullYear();
+        const payrollRes = await fetch(`/api/payroll?year=${year}`, { credentials: 'include' });
+        if (!payrollRes.ok) {
+          throw new Error(`${payrollRes.status}`);
+        }
+        const payrollData = await payrollRes.json();
+        setRecords(payrollData.payrollRecords || []);
+      } catch (e) {
+        setError(`載入失敗: ${e instanceof Error ? e.message : '未知錯誤'}`);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchData();
   }, []);
 
   const filtered = useMemo(() => {

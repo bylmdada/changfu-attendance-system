@@ -25,12 +25,15 @@ export async function GET(request: NextRequest) {
 
     // CSV 範本內容（使用 BOM 確保 Excel 正確識別 UTF-8）
     const BOM = '\uFEFF';
-    const headers = '員工編號,姓名,生日,電話,地址,緊急聯絡人,緊急聯絡電話,到職日期,底薪,時薪,部門,職位';
-    const exampleRow1 = '202501001,王小明,1990-01-15,0912345678,台北市信義區信義路100號,王大明,0911111111,2025-01-01,32000,200,照顧服務部,照顧服務員';
-    const exampleRow2 = ',李小華,1985-06-20,0923456789,新北市板橋區文化路50號,李大華,0922222222,2025-01-01,35000,220,居家服務部,居服督導員';
-    const noteRow = '# 說明：員工編號留空則系統自動生成';
+    const headers = '員工編號,姓名,生日,電話,地址,緊急聯絡人,緊急聯絡電話,到職日期,底薪,時薪,部門,職位,員工類型,參加勞保';
+    const exampleRow1 = '202501001,王小明,1990-01-15,0912345678,台北市信義區信義路100號,王大明,0911111111,2025-01-01,32000,133,照顧服務部,照顧服務員,MONTHLY,是';
+    const exampleRow2 = ',李小華,1985-06-20,0923456789,新北市板橋區文化路50號,李大華,0922222222,2025-01-01,0,200,居家服務部,居服員,HOURLY,否';
+    const noteRow1 = '# 說明：員工編號留空則系統自動生成';
+    const noteRow2 = '# 員工類型：MONTHLY（月薪人員）、HOURLY（計時人員）';
+    const noteRow3 = '# 參加勞保：是/否（計時人員可填「否」表示不參加）';
+    const noteRow4 = '# 計時人員底薪可填0，系統將以「時薪×實際工時」計算薪資';
     
-    const csvContent = BOM + [headers, exampleRow1, exampleRow2, noteRow].join('\n');
+    const csvContent = BOM + [headers, exampleRow1, exampleRow2, noteRow1, noteRow2, noteRow3, noteRow4].join('\n');
 
     // 返回 CSV 檔案
     return new NextResponse(csvContent, {

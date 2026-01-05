@@ -178,6 +178,8 @@ export async function POST(request: NextRequest) {
       hourlyRate,
       department,
       position,
+      employeeType,
+      laborInsuranceActive,
       username,
       password,
       createAccount
@@ -219,7 +221,9 @@ export async function POST(request: NextRequest) {
           baseSalary: parseFloat(baseSalary),
           hourlyRate: parseFloat(hourlyRate),
           department,
-          position
+          position,
+          employeeType: employeeType || 'MONTHLY',
+          laborInsuranceActive: laborInsuranceActive !== false
         }
       });
 
