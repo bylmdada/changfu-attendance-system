@@ -907,7 +907,7 @@ export default function DashboardPage() {
               </a>
 
               <a href="/my-comp-leave" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
-                <Timer className="h-8 w-8 text-cyan-600 mb-2 group-hover:scale-110 transition-transform" />
+                <Timer className="h-8 w-8 text-emerald-600 mb-2 group-hover:scale-110 transition-transform" />
                 <h3 className="font-medium text-gray-900">補休查詢</h3>
                 <p className="text-sm text-gray-500">查看個人補休餘額與異動</p>
               </a>
