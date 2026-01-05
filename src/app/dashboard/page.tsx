@@ -800,7 +800,7 @@ export default function DashboardPage() {
                         </dt>
                         <dd className="text-lg font-bold text-gray-900 flex gap-1">
                           <a 
-                            href="/annual-leaves" 
+                            href="/my-annual-leave" 
                             className="hover:text-green-600 hover:underline transition-colors"
                             title="點擊查看特休"
                           >
@@ -808,7 +808,7 @@ export default function DashboardPage() {
                           </a>
                           <span>｜</span>
                           <a 
-                            href="/leave-management" 
+                            href="/my-comp-leave" 
                             className="hover:text-green-600 hover:underline transition-colors"
                             title="點擊查看補休"
                           >
@@ -904,6 +904,12 @@ export default function DashboardPage() {
                 <p className="text-sm text-gray-500">
                   {(user?.role === 'ADMIN' || user?.role === 'HR') ? '查看全部員工特休狀況' : '查看個人特休假餘額'}
                 </p>
+              </a>
+
+              <a href="/my-comp-leave" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
+                <Timer className="h-8 w-8 text-cyan-600 mb-2 group-hover:scale-110 transition-transform" />
+                <h3 className="font-medium text-gray-900">補休查詢</h3>
+                <p className="text-sm text-gray-500">查看個人補休餘額與異動</p>
               </a>
 
               <a href="/pension-contribution" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
