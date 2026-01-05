@@ -890,6 +890,14 @@ export default function DashboardPage() {
                 </a>
               )}
 
+              {(user?.role === 'ADMIN' || user?.role === 'HR') && (
+                <a href="/comp-leave-management" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
+                  <Timer className="h-8 w-8 text-cyan-600 mb-2 group-hover:scale-110 transition-transform" />
+                  <h3 className="font-medium text-gray-900">補休管理</h3>
+                  <p className="text-sm text-gray-500">補休餘額匯入、調整與查詢</p>
+                </a>
+              )}
+
               <a href="/my-annual-leave" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
                 <Calendar className="h-8 w-8 text-teal-600 mb-2 group-hover:scale-110 transition-transform" />
                 <h3 className="font-medium text-gray-900">特休假查詢</h3>
