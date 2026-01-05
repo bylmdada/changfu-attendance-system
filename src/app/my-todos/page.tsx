@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { 
   ClipboardList, 
   Bell, 
@@ -8,8 +8,7 @@ import {
   Eye,
   MessageSquare,
   Calendar,
-  User,
-  AlertCircle
+  User
 } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
@@ -46,11 +45,7 @@ export default function MyTodosPage() {
   const [processing, setProcessing] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  useEffect(() => {
-    loadCCs();
-  }, [filter]);
-
-  const loadCCs = async () => {
+  const loadCCs = useCallback(async () => {
     try {
       const res = await fetch(`/api/approval-cc?status=${filter}`, { credentials: 'include' });
       if (res.ok) {
@@ -63,7 +58,11 @@ export default function MyTodosPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [filter]);
+
+  useEffect(() => {
+    loadCCs();
+  }, [filter, loadCCs]);
 
   const handleRespond = async (action: 'ACKNOWLEDGE' | 'AGREE') => {
     if (!selectedCC) return;

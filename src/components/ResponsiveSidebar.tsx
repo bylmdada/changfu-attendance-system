@@ -85,6 +85,7 @@ const menuItems: MenuItem[] = [
       { name: '請假申請', href: '/leave-management' },
       { name: '特休假查詢', href: '/my-annual-leave' },
       { name: '年假餘額', href: '/annual-leaves' },
+      { name: '補休管理', href: '/comp-leave-management' },
     ],
   },
   {

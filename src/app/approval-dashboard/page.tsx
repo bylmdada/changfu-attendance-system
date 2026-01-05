@@ -63,6 +63,10 @@ interface PendingItem {
     content?: string;
     priority?: string;
     category?: string;
+    // 勞退自提
+    currentRate?: number;
+    requestedRate?: number;
+    effectiveDate?: string;
     // 共用
     reason?: string | null;
   } | null;
@@ -75,7 +79,7 @@ interface Stats {
 }
 
 export default function ApprovalDashboardPage() {
-  const router = useRouter();
+  const _router = useRouter();
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState<PendingItem[]>([]);
   const [stats, setStats] = useState<Stats>({ total: 0, urgent: 0, overdue: 0 });
@@ -202,14 +206,28 @@ export default function ApprovalDashboardPage() {
     setMessage(null);
     
     try {
-      const response = await fetchJSONWithCSRF('/api/approval-instances', {
-        method: 'POST',
-        body: {
-          instanceId: selectedItem.id,
-          action,
-          comment: reviewComment
-        }
-      });
+      let response;
+      
+      // 勞退自提使用專屬 API
+      if (selectedItem.requestType === 'PENSION_CONTRIBUTION') {
+        response = await fetchJSONWithCSRF(`/api/pension-contribution/${selectedItem.requestId}`, {
+          method: 'PATCH',
+          body: {
+            action: action === 'APPROVE' ? 'APPROVE' : 'REJECT',
+            note: reviewComment
+          }
+        });
+      } else {
+        // 其他申請使用通用審核 API
+        response = await fetchJSONWithCSRF('/api/approval-instances', {
+          method: 'POST',
+          body: {
+            instanceId: selectedItem.id,
+            action,
+            comment: reviewComment
+          }
+        });
+      }
       
       if (response.ok) {
         setMessage({ 
@@ -241,7 +259,8 @@ export default function ApprovalDashboardPage() {
       RESIGNATION: `/resignation-management?id=${item.requestId}`,
       PAYROLL_DISPUTE: `/payroll-disputes?id=${item.requestId}`,
       DEPENDENT_APP: `/health-insurance-dependents?id=${item.requestId}`,
-      ANNOUNCEMENT: `/announcements?id=${item.requestId}`
+      ANNOUNCEMENT: `/announcements?id=${item.requestId}`,
+      PENSION_CONTRIBUTION: `/pension-contribution`
     };
     return links[item.requestType] || '#';
   };
@@ -341,7 +360,7 @@ export default function ApprovalDashboardPage() {
               <select
                 value={filterDepartment}
                 onChange={(e) => setFilterDepartment(e.target.value)}
-                className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-900 bg-white"
               >
                 <option value="">全部部門</option>
                 {departments.map(d => (
@@ -555,6 +574,30 @@ export default function ApprovalDashboardPage() {
                           <div>
                             <span className="text-gray-500">內容：</span>
                             <p className="text-gray-900 mt-1">{selectedItem.requestDetails.content}</p>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* 勞退自提 */}
+                    {selectedItem.requestDetails.type === 'pension_contribution' && (
+                      <div className="space-y-2 text-sm">
+                        <div className="flex items-center">
+                          <span className="text-gray-500 w-24">目前比例：</span>
+                          <span className="font-medium text-gray-900">{selectedItem.requestDetails.currentRate}%</span>
+                        </div>
+                        <div className="flex items-center">
+                          <span className="text-gray-500 w-24">申請比例：</span>
+                          <span className="font-medium text-blue-600">{selectedItem.requestDetails.requestedRate}% ✨</span>
+                        </div>
+                        <div className="flex items-center">
+                          <span className="text-gray-500 w-24">生效日期：</span>
+                          <span className="font-medium text-gray-900">{selectedItem.requestDetails.effectiveDate}</span>
+                        </div>
+                        {selectedItem.requestDetails.reason && (
+                          <div className="flex items-start">
+                            <span className="text-gray-500 w-24 flex-shrink-0">申請原因：</span>
+                            <span className="text-gray-900">{selectedItem.requestDetails.reason}</span>
                           </div>
                         )}
                       </div>

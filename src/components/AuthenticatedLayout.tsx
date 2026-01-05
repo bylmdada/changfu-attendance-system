@@ -53,6 +53,11 @@ export default function AuthenticatedLayout({
           setUser(userData);
         }
       } else {
+        // 檢查是否為被其他裝置踢出
+        const errorData = await response.json().catch(() => ({}));
+        if (errorData.code === 'SESSION_INVALID') {
+          alert('您已在其他裝置登入，此會話已失效。請重新登入。');
+        }
         router.push('/login');
       }
     } catch (error) {

@@ -76,6 +76,45 @@ export async function PUT(
       });
     }
 
+    // Admin 可直接審核 PENDING_HR 狀態（跳過 HR）
+    if (isAdmin && application.status === 'PENDING_HR') {
+      if (!['APPROVE', 'REJECT'].includes(action)) {
+        return NextResponse.json({ error: '請選擇核准或駁回' }, { status: 400 });
+      }
+
+      const finalStatus = action === 'APPROVE' ? 'APPROVED' : 'REJECTED';
+
+      await prisma.$transaction(async (tx) => {
+        await tx.pensionContributionApplication.update({
+          where: { id: applicationId },
+          data: {
+            status: finalStatus,
+            adminApproverId: user.employeeId,
+            adminApprovedAt: new Date(),
+            adminNote: note || null,
+            // 標記跳過 HR 審核
+            hrNote: '(管理員直接審核，跳過 HR 階段)'
+          }
+        });
+
+        if (action === 'APPROVE') {
+          await tx.employee.update({
+            where: { id: application.employeeId },
+            data: {
+              laborPensionSelfRate: application.requestedRate
+            }
+          });
+        }
+      });
+
+      return NextResponse.json({
+        success: true,
+        message: action === 'APPROVE' 
+          ? `已直接核准，新比例 ${application.requestedRate}% 將於 ${application.effectiveDate.toISOString().split('T')[0]} 生效`
+          : '已直接駁回申請'
+      });
+    }
+
     // Admin 決核邏輯
     if (isAdmin && application.status === 'PENDING_ADMIN') {
       if (!['APPROVE', 'REJECT'].includes(action)) {

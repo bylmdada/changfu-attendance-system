@@ -69,6 +69,9 @@ export interface EmployeePayrollInfo {
   dependents?: number; // 眷屬人數（用於健保計算）
   insuredBase?: number; // 投保薪資（用於勞健保計算）
   laborPensionSelfRate?: number; // 勞退自提比例（0-6%）
+  employeeType?: string; // MONTHLY（月薪人員）| HOURLY（計時人員）
+  laborInsuranceActive?: boolean; // 是否參加勞保（預設 true）
+  healthInsuranceActive?: boolean; // 是否參加健保（預設 true）
 }
 
 // 考勤記錄（用於薪資計算）
@@ -162,8 +165,18 @@ export function calculateMonthlyPayroll(
   // 計算總工時
   const totalOvertimeHours = Object.values(overtimeBreakdown).reduce((sum, hours) => sum + hours, 0);
 
-  // 計算基本薪資和總薪資
-  const basePay = employee.baseSalary;
+  // 計算基本薪資
+  // 月薪人員：固定月薪
+  // 計時人員：時薪 × 實際工時
+  let basePay: number;
+  if (employee.employeeType === 'HOURLY') {
+    // 計時人員：時薪 × (正常工時 + 加班工時)
+    basePay = Math.round(hourlyWage * regularHours);
+  } else {
+    // 月薪人員：固定月薪
+    basePay = employee.baseSalary;
+  }
+  
   const grossPay = basePay + totalOvertimePay;
 
   // 計算扣除項目
@@ -207,9 +220,13 @@ function calculateDeductions(employee: EmployeePayrollInfo, grossPay: number): P
   const insuredSalary = employee.insuredBase || grossPay;
   
   // 勞保費計算（員工負擔20%）
-  const laborInsuranceRate = 0.115; // 11.5%總費率
-  const employeeLaborRate = 0.2; // 員工負擔20%
-  const laborInsurance = Math.round(insuredSalary * laborInsuranceRate * employeeLaborRate);
+  // 如果員工不參加勞保，則不扣除
+  let laborInsurance = 0;
+  if (employee.laborInsuranceActive !== false) {
+    const laborInsuranceRate = 0.115; // 11.5%總費率
+    const employeeLaborRate = 0.2; // 員工負擔20%
+    laborInsurance = Math.round(insuredSalary * laborInsuranceRate * employeeLaborRate);
+  }
 
   // 健保費計算（員工負擔30%，眷屬加計）
   const healthInsuranceRate = 0.0517; // 5.17%

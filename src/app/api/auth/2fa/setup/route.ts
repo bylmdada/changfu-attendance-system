@@ -9,7 +9,7 @@ import { verifyToken } from '@/lib/auth';
 import { generateTOTPSecret, generateQRCode, generateBackupCodes } from '@/lib/totp';
 import { encrypt } from '@/lib/encryption';
 
-export async function POST(request: NextRequest) {
+export async function POST(_request: NextRequest) {
   try {
     const cookieStore = await cookies();
     const token = cookieStore.get('auth-token')?.value;

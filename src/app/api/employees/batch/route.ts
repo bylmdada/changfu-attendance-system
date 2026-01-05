@@ -18,6 +18,8 @@ interface EmployeeData {
   hourlyRate: number;
   department: string;
   position: string;
+  employeeType?: string; // MONTHLY | HOURLY
+  laborInsuranceActive?: boolean;
 }
 
 interface ImportResult {
@@ -166,6 +168,8 @@ export async function POST(request: NextRequest) {
             hourlyRate: Number(emp.hourlyRate),
             department: emp.department,
             position: emp.position,
+            employeeType: emp.employeeType === 'HOURLY' ? 'HOURLY' : 'MONTHLY',
+            laborInsuranceActive: emp.laborInsuranceActive !== false,
             isActive: true,
             user: {
               create: {

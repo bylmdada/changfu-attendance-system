@@ -213,6 +213,12 @@ export default function SystemSettingsPage() {
           path: '/system-settings/approval-workflows',
           description: '設定各類申請的審核層級、時效與部門主管',
           icon: Settings
+        },
+        {
+          name: '班表確認機制',
+          path: '/system-settings/schedule-confirm',
+          description: '設定班表確認與未確認阻止打卡功能',
+          icon: Calendar
         }
       ]
     },

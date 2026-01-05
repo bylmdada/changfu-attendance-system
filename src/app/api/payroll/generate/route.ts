@@ -218,7 +218,10 @@ export async function POST(request: NextRequest) {
           position: employee.position || '',
           dependents: employee.dependents || 0,
           insuredBase: employee.insuredBase || undefined,
-          laborPensionSelfRate: employee.laborPensionSelfRate || 0
+          laborPensionSelfRate: employee.laborPensionSelfRate || 0,
+          employeeType: employee.employeeType || 'MONTHLY',
+          laborInsuranceActive: employee.laborInsuranceActive !== false,
+          healthInsuranceActive: employee.healthInsuranceActive !== false
         };
 
         // 使用薪資計算器

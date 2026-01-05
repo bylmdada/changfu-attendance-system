@@ -8,6 +8,7 @@ import { logSecurityEvent, SecurityEventType } from '@/lib/security-monitoring';
 import { validateRequest, AuthSchemas } from '@/lib/validation';
 import { Prisma } from '@prisma/client';
 import { logLogin, LOGIN_STATUS } from '@/lib/login-logger';
+import { randomUUID } from 'crypto';
 
 function buildEmployeeSelect(): Prisma.EmployeeSelect {
   const employeeModel = Prisma.dmmf.datamodel.models.find(m => m.name === 'Employee');
@@ -192,16 +193,24 @@ export async function POST(request: NextRequest) {
       additionalData: { role: user.role }
     });
 
+    // 生成唯一的 sessionId，用於單一會話登入控制
+    const sessionId = randomUUID();
+
     const token = generateToken({
       userId: user.id,
       employeeId: user.employeeId, // 這是Employee表的id，用於關聯調班等功能
       username: user.username,
-      role: user.role
+      role: user.role,
+      sessionId // 將 sessionId 放入 Token
     });
 
+    // 更新用戶最後登入時間和當前會話 ID（舊會話自動失效）
     await prisma.user.update({
       where: { id: user.id },
-      data: { lastLogin: new Date() }
+      data: { 
+        lastLogin: new Date(),
+        currentSessionId: sessionId // 儲存當前有效的會話 ID
+      }
     });
 
     const response = NextResponse.json({
@@ -216,10 +225,14 @@ export async function POST(request: NextRequest) {
     });
 
     // 改進的Cookie安全設定
+    const isProduction = process.env.NODE_ENV === 'production';
+    const isHttps = request.headers.get('x-forwarded-proto') === 'https' || 
+                    request.url.startsWith('https://');
+    
     response.cookies.set('auth-token', token, {
       httpOnly: true,
-      secure: true, // 始終使用HTTPS
-      sameSite: 'strict',
+      secure: isProduction && isHttps, // 只有在HTTPS時才設定secure
+      sameSite: 'lax', // 改為 lax 以支援正常導航
       maxAge: 8 * 60 * 60, // 8 hours in seconds
       path: '/'
     });

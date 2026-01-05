@@ -48,7 +48,7 @@ export async function GET(request: NextRequest) {
     // HR/Admin 查看待審核列表
     if (mode === 'pending' && isAdminOrHR) {
       const statusFilter = user.role === 'ADMIN' 
-        ? ['PENDING_ADMIN'] // Admin 看待決核的
+        ? ['PENDING_HR', 'PENDING_ADMIN'] // Admin 可看到並直接審核所有待處理的
         : ['PENDING_HR'];    // HR 看待審核的
       
       const pendingApplications = await prisma.pensionContributionApplication.findMany({

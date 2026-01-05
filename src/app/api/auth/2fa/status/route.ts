@@ -7,7 +7,7 @@ import { cookies } from 'next/headers';
 import { prisma } from '@/lib/database';
 import { verifyToken } from '@/lib/auth';
 
-export async function GET(request: NextRequest) {
+export async function GET(_request: NextRequest) {
   try {
     const cookieStore = await cookies();
     const token = cookieStore.get('auth-token')?.value;

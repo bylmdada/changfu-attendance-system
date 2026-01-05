@@ -505,6 +505,38 @@ export default function PasswordManagement() {
     setShowResetModal(true);
   };
 
+  // 切換帳號狀態（啟用/停用）
+  const toggleAccountStatus = async (userId: number, currentStatus: boolean) => {
+    const newStatus = !currentStatus;
+    const action = newStatus ? '啟用' : '停用';
+    
+    if (!confirm(`確定要${action}此帳號嗎？`)) {
+      return;
+    }
+
+    try {
+      const response = await fetchJSONWithCSRF('/api/users/status', {
+        method: 'PATCH',
+        body: { userId, isActive: newStatus }
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        showToast('success', data.message);
+        // 更新本地狀態
+        setUsers(users.map(u => 
+          u.id === userId ? { ...u, isActive: newStatus } : u
+        ));
+      } else {
+        const data = await response.json();
+        showToast('error', data.error || `${action}失敗`);
+      }
+    } catch (error) {
+      console.error('切換帳號狀態失敗:', error);
+      showToast('error', '系統錯誤');
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -526,6 +558,96 @@ export default function PasswordManagement() {
             <h1 className="text-3xl font-bold text-gray-900">密碼管理</h1>
           </div>
           <p className="text-gray-600">管理員工帳號密碼，確保系統安全</p>
+        </div>
+
+        {/* 密碼設定政策說明 */}
+        <div className="mb-8 bg-blue-50 border border-blue-200 rounded-lg p-6">
+          <div className="flex items-center mb-4">
+            <Shield className="w-6 h-6 text-blue-600 mr-2" />
+            <h2 className="text-lg font-semibold text-blue-900">密碼設定政策</h2>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+            <div className="space-y-2">
+              <h3 className="font-medium text-blue-800">基本要求</h3>
+              <ul className="space-y-1 text-blue-700">
+                <li className="flex items-center">
+                  <span className="w-2 h-2 bg-blue-500 rounded-full mr-2"></span>
+                  最少 {passwordPolicy?.minLength || 8} 個字元
+                </li>
+                {passwordPolicy?.requireUppercase && (
+                  <li className="flex items-center">
+                    <span className="w-2 h-2 bg-blue-500 rounded-full mr-2"></span>
+                    至少包含 1 個大寫字母 (A-Z)
+                  </li>
+                )}
+                {passwordPolicy?.requireLowercase && (
+                  <li className="flex items-center">
+                    <span className="w-2 h-2 bg-blue-500 rounded-full mr-2"></span>
+                    至少包含 1 個小寫字母 (a-z)
+                  </li>
+                )}
+                {passwordPolicy?.requireNumbers && (
+                  <li className="flex items-center">
+                    <span className="w-2 h-2 bg-blue-500 rounded-full mr-2"></span>
+                    至少包含 1 個數字 (0-9)
+                  </li>
+                )}
+                {passwordPolicy?.requireSpecialChars && (
+                  <li className="flex items-center">
+                    <span className="w-2 h-2 bg-blue-500 rounded-full mr-2"></span>
+                    至少包含 1 個特殊符號 ({passwordPolicy?.allowedSpecialChars || '!@#$%^&*'})
+                  </li>
+                )}
+              </ul>
+            </div>
+            <div className="space-y-2">
+              <h3 className="font-medium text-blue-800">安全規定</h3>
+              <ul className="space-y-1 text-blue-700">
+                {passwordPolicy?.preventSequentialChars && (
+                  <li className="flex items-center">
+                    <span className="w-2 h-2 bg-orange-500 rounded-full mr-2"></span>
+                    禁止使用連續字元 (如: 123, abc)
+                  </li>
+                )}
+                {passwordPolicy?.preventBirthdate && (
+                  <li className="flex items-center">
+                    <span className="w-2 h-2 bg-orange-500 rounded-full mr-2"></span>
+                    禁止使用生日相關數字
+                  </li>
+                )}
+                {passwordPolicy?.preventCommonPasswords && (
+                  <li className="flex items-center">
+                    <span className="w-2 h-2 bg-orange-500 rounded-full mr-2"></span>
+                    禁止使用常見密碼
+                  </li>
+                )}
+                {passwordPolicy?.preventPasswordReuse && (
+                  <li className="flex items-center">
+                    <span className="w-2 h-2 bg-orange-500 rounded-full mr-2"></span>
+                    不可重複使用最近 {passwordPolicy?.passwordHistoryCount || 3} 次密碼
+                  </li>
+                )}
+                {passwordPolicy?.expirationMonths && passwordPolicy.expirationMonths > 0 && (
+                  <li className="flex items-center">
+                    <span className="w-2 h-2 bg-purple-500 rounded-full mr-2"></span>
+                    密碼有效期限：{passwordPolicy.expirationMonths} 個月
+                  </li>
+                )}
+                {passwordPolicy?.lockoutAfterFailedAttempts && (
+                  <li className="flex items-center">
+                    <span className="w-2 h-2 bg-red-500 rounded-full mr-2"></span>
+                    連續 {passwordPolicy?.maxFailedAttempts || 5} 次錯誤將鎖定 {passwordPolicy?.lockoutDurationMinutes || 30} 分鐘
+                  </li>
+                )}
+              </ul>
+            </div>
+          </div>
+          {/* 預設政策（當 policy 未載入時顯示） */}
+          {!passwordPolicy && (
+            <div className="mt-4 text-sm text-blue-600">
+              <p>預設政策：最少 8 字元，包含大小寫字母、數字</p>
+            </div>
+          )}
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
@@ -802,13 +924,25 @@ export default function PasswordManagement() {
                         </div>
                       </div>
                     </div>
-                    <button
-                      onClick={() => openResetModal(user.id)}
-                      disabled={!user.isActive}
-                      className="px-3 py-2 bg-red-600 hover:bg-red-700 text-white text-sm rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      重置密碼
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => toggleAccountStatus(user.id, user.isActive)}
+                        className={`px-3 py-2 text-sm rounded-lg transition-colors ${
+                          user.isActive 
+                            ? 'bg-orange-100 text-orange-700 hover:bg-orange-200' 
+                            : 'bg-green-100 text-green-700 hover:bg-green-200'
+                        }`}
+                      >
+                        {user.isActive ? '停用帳號' : '啟用帳號'}
+                      </button>
+                      <button
+                        onClick={() => openResetModal(user.id)}
+                        disabled={!user.isActive}
+                        className="px-3 py-2 bg-red-600 hover:bg-red-700 text-white text-sm rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        重置密碼
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>

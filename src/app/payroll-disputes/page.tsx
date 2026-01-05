@@ -13,7 +13,6 @@ import {
   ChevronDown,
   ChevronUp,
   X,
-  Calendar,
   Eye
 } from 'lucide-react';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
