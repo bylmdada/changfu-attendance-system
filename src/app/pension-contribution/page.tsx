@@ -316,7 +316,7 @@ export default function PensionContributionPage() {
             {/* HR/Admin 待審核列表 */}
             {isAdminOrHR && pendingApplications.length > 0 && (
               <div className="bg-white rounded-xl border shadow-sm p-6">
-                <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
+              <h2 className="text-lg font-semibold mb-4 flex items-center gap-2 text-gray-900">
                   <Users className="w-5 h-5 text-orange-600" />
                   待審核申請 ({pendingApplications.length})
                 </h2>
