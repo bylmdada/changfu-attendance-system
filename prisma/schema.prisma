@@ -559,12 +559,29 @@ model ShiftExchangeRequest {
   originalWorkDate String   @map("original_work_date") // 申請者原班別日期
   targetWorkDate   String   @map("target_work_date")   // 目標班別日期
   requestReason    String   @map("request_reason")
-  status           String   @default("PENDING") // PENDING, APPROVED, REJECTED
+  status           String   @default("PENDING") // PENDING, APPROVED, REJECTED, CANCELLED, VOIDED
   adminRemarks     String?  @map("admin_remarks")
   approvedBy       Int?     @map("approved_by")
   approvedAt       DateTime? @map("approved_at")
   createdAt        DateTime @default(now()) @map("created_at")
   updatedAt        DateTime @updatedAt @map("updated_at")
+
+  // 撤銷申請相關欄位
+  cancellationStatus        String?   @map("cancellation_status")  // PENDING_HR/PENDING_ADMIN/APPROVED/REJECTED
+  cancellationReason        String?   @map("cancellation_reason")
+  cancellationRequestedAt   DateTime? @map("cancellation_requested_at")
+  cancellationHRReviewerId  Int?      @map("cancellation_hr_reviewer_id")
+  cancellationHROpinion     String?   @map("cancellation_hr_opinion")
+  cancellationHRNote        String?   @map("cancellation_hr_note")
+  cancellationHRReviewedAt  DateTime? @map("cancellation_hr_reviewed_at")
+  cancellationAdminApproverId Int?    @map("cancellation_admin_approver_id")
+  cancellationAdminNote     String?   @map("cancellation_admin_note")
+  cancellationApprovedAt    DateTime? @map("cancellation_approved_at")
+
+  // 直接作廢相關欄位
+  voidedBy         Int?      @map("voided_by")
+  voidedAt         DateTime? @map("voided_at")
+  voidReason       String?   @map("void_reason")
 
   requester      Employee @relation("ShiftExchangeRequester", fields: [requesterId], references: [id])
   targetEmployee Employee @relation("ShiftExchangeTarget", fields: [targetEmployeeId], references: [id])
@@ -862,12 +879,29 @@ model MissedClockRequest {
   clockType     String   @map("clock_type") // 'CLOCK_IN' 或 'CLOCK_OUT'
   requestedTime String   @map("requested_time") // 申請的打卡時間 (HH:MM)
   reason        String   // 申請原因
-  status        String   @default("PENDING") // 'PENDING', 'APPROVED', 'REJECTED'
+  status        String   @default("PENDING") // 'PENDING', 'APPROVED', 'REJECTED', 'CANCELLED', 'VOIDED'
   approvedBy    Int?     @map("approved_by") // 審核者ID
   approvedAt    DateTime? @map("approved_at") // 審核時間
   rejectReason  String?  @map("reject_reason") // 拒絕原因
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")
+
+  // 撤銷申請相關欄位
+  cancellationStatus        String?   @map("cancellation_status")  // PENDING_HR/PENDING_ADMIN/APPROVED/REJECTED
+  cancellationReason        String?   @map("cancellation_reason")
+  cancellationRequestedAt   DateTime? @map("cancellation_requested_at")
+  cancellationHRReviewerId  Int?      @map("cancellation_hr_reviewer_id")
+  cancellationHROpinion     String?   @map("cancellation_hr_opinion")
+  cancellationHRNote        String?   @map("cancellation_hr_note")
+  cancellationHRReviewedAt  DateTime? @map("cancellation_hr_reviewed_at")
+  cancellationAdminApproverId Int?    @map("cancellation_admin_approver_id")
+  cancellationAdminNote     String?   @map("cancellation_admin_note")
+  cancellationApprovedAt    DateTime? @map("cancellation_approved_at")
+
+  // 直接作廢相關欄位
+  voidedBy         Int?      @map("voided_by")
+  voidedAt         DateTime? @map("voided_at")
+  voidReason       String?   @map("void_reason")
 
   // 關聯
   employee      Employee @relation(fields: [employeeId], references: [id])
