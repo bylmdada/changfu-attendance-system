@@ -758,6 +758,54 @@ export default function ShiftExchangePage() {
     }
   };
 
+  // 員工申請撤銷
+  const handleCancelRequest = async (id: number, reason: string) => {
+    try {
+      const res = await fetchJSONWithCSRF(`/api/shift-exchange-requests/${id}/cancel`, {
+        method: 'POST',
+        body: { reason }
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast('error', data.error || '撤銷申請失敗');
+        return;
+      }
+      showToast('success', data.message || '撤銷申請已送出');
+      // 重新載入列表
+      const listRes = await fetch('/api/shift-exchanges', { credentials: 'include', headers: getAuthHeaders() });
+      if (listRes.ok) {
+        const latestList = await listRes.json();
+        setShiftExchanges(latestList);
+      }
+    } catch {
+      showToast('error', '撤銷申請失敗，請稍後再試');
+    }
+  };
+
+  // 管理員作廢
+  const handleVoidRequest = async (id: number, reason: string) => {
+    try {
+      const res = await fetchJSONWithCSRF(`/api/shift-exchange-requests/${id}/void`, {
+        method: 'POST',
+        body: { reason }
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast('error', data.error || '作廢失敗');
+        return;
+      }
+      showToast('success', data.message || '已作廢');
+      // 重新載入列表
+      const listRes = await fetch('/api/shift-exchanges', { credentials: 'include', headers: getAuthHeaders() });
+      if (listRes.ok) {
+        const latestList = await listRes.json();
+        setShiftExchanges(latestList);
+      }
+    } catch {
+      showToast('error', '作廢失敗，請稍後再試');
+    }
+  };
+
   const canManage = user?.role === 'ADMIN' || user?.role === 'HR';
 
   if (loading) {
@@ -1144,6 +1192,18 @@ export default function ShiftExchangePage() {
                             >拒絕</button>
                           </div>
                         )}
+                        {/* 管理員作廢 */}
+                        {canManage && r.status === 'APPROVED' && (
+                          <button
+                            onClick={() => {
+                              const reason = prompt('請輸入作廢原因：');
+                              if (reason && reason.trim()) {
+                                handleVoidRequest(r.id, reason.trim());
+                              }
+                            }}
+                            className="px-3 py-1 bg-red-600 text-white text-sm rounded-md hover:bg-red-700 transition-colors"
+                          >作廢</button>
+                        )}
                         {/* 員工操作：編輯/刪除（僅自己且 PENDING），否則僅可檢視 */}
                         {!canManage && (
                           isOwner ? (
@@ -1162,6 +1222,18 @@ export default function ShiftExchangePage() {
                                   <Trash2 className="w-4 h-4" /> 刪除
                                 </button>
                               </div>
+                            ) : r.status === 'APPROVED' ? (
+                              <button
+                                onClick={() => {
+                                  const reason = prompt('請輸入撤銷原因：');
+                                  if (reason && reason.trim()) {
+                                    handleCancelRequest(r.id, reason.trim());
+                                  }
+                                }}
+                                className="inline-flex items-center gap-1 px-3 py-1 bg-orange-100 text-orange-800 rounded-full hover:bg-orange-200 transition-colors"
+                              >
+                                <X className="w-4 h-4" /> 申請撤銷
+                              </button>
                             ) : (
                               <span className="text-gray-400">僅可檢視</span>
                             )
