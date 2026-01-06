@@ -332,8 +332,8 @@ export default function PensionContributionPage() {
                     >
                       <div className="flex items-center justify-between">
                         <div>
-                          <p className="font-medium">{app.employee?.name}</p>
-                          <p className="text-sm text-gray-500">
+                          <p className="font-medium text-gray-900">{app.employee?.name}</p>
+                          <p className="text-sm text-gray-600">
                             {app.employee?.department} · {app.employee?.position}
                           </p>
                         </div>
@@ -341,7 +341,7 @@ export default function PensionContributionPage() {
                           <p className="font-bold text-blue-600">
                             {app.currentRate}% → {app.requestedRate}%
                           </p>
-                          <p className="text-sm text-gray-500">生效日: {app.effectiveDate}</p>
+                          <p className="text-sm text-gray-600">生效日: {app.effectiveDate}</p>
                         </div>
                       </div>
                       {app.status === 'PENDING_ADMIN' && app.hrOpinion && (
