@@ -392,6 +392,44 @@ export default function OvertimeManagementPage() {
     setDeleteConfirm(null);
   };
 
+  // 員工申請撤銷
+  const handleCancelRequest = async (id: number, reason: string) => {
+    try {
+      const res = await fetchJSONWithCSRF(`/api/overtime-requests/${id}/cancel`, {
+        method: 'POST',
+        body: { reason }
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast('error', data.error || '撤銷申請失敗');
+        return;
+      }
+      showToast('success', data.message || '撤銷申請已送出');
+      fetchOvertimeRequests();
+    } catch {
+      showToast('error', '撤銷申請失敗，請稍後再試');
+    }
+  };
+
+  // 管理員作廢
+  const handleVoidRequest = async (id: number, reason: string) => {
+    try {
+      const res = await fetchJSONWithCSRF(`/api/overtime-requests/${id}/void`, {
+        method: 'POST',
+        body: { reason }
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast('error', data.error || '作廢失敗');
+        return;
+      }
+      showToast('success', data.message || '已作廢');
+      fetchOvertimeRequests();
+    } catch {
+      showToast('error', '作廢失敗，請稍後再試');
+    }
+  };
+
   // 展開/收合審核進度並取得真實資料
   const handleToggleApproval = async (requestId: number) => {
     if (expandedId === requestId) {
@@ -782,6 +820,34 @@ export default function OvertimeManagementPage() {
                         >
                           <Trash2 className="w-4 h-4 mr-1" /> 刪除
                         </button>
+                        {/* 員工申請撤銷 */}
+                        {request.status === 'APPROVED' && currentUser?.employeeId === request.employeeId && (
+                          <button
+                            onClick={() => {
+                              const reason = prompt('請輸入撤銷原因：');
+                              if (reason && reason.trim()) {
+                                handleCancelRequest(request.id, reason.trim());
+                              }
+                            }}
+                            className="inline-flex items-center px-3 py-1 bg-orange-100 text-orange-800 rounded-full hover:bg-orange-200 transition-colors"
+                          >
+                            <X className="w-4 h-4 mr-1" /> 申請撤銷
+                          </button>
+                        )}
+                        {/* 管理員作廢 */}
+                        {request.status === 'APPROVED' && isAdmin && (
+                          <button
+                            onClick={() => {
+                              const reason = prompt('請輸入作廢原因：');
+                              if (reason && reason.trim()) {
+                                handleVoidRequest(request.id, reason.trim());
+                              }
+                            }}
+                            className="inline-flex items-center px-3 py-1 bg-red-100 text-red-800 rounded-full hover:bg-red-200 transition-colors"
+                          >
+                            <X className="w-4 h-4 mr-1" /> 作廢
+                          </button>
+                        )}
                         {/* 查看審核進度按鈕 */}
                         <button
                           onClick={() => handleToggleApproval(request.id)}
