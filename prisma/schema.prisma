@@ -263,10 +263,27 @@ model LeaveRequest {
   endDate         DateTime      @map("end_date")
   totalDays       Float         @map("total_days")
   reason          String?
-  status          String        @default("PENDING")
+  status          String        @default("PENDING")  // PENDING/APPROVED/REJECTED/CANCELLED/VOIDED
   approvedBy      Int?          @map("approved_by")
   approvedAt      DateTime?     @map("approved_at")
   createdAt       DateTime      @default(now()) @map("created_at")
+
+  // 撤銷申請相關欄位
+  cancellationStatus        String?   @map("cancellation_status")  // PENDING_HR/PENDING_ADMIN/APPROVED/REJECTED
+  cancellationReason        String?   @map("cancellation_reason")
+  cancellationRequestedAt   DateTime? @map("cancellation_requested_at")
+  cancellationHRReviewerId  Int?      @map("cancellation_hr_reviewer_id")
+  cancellationHROpinion     String?   @map("cancellation_hr_opinion")  // AGREE/DISAGREE
+  cancellationHRNote        String?   @map("cancellation_hr_note")
+  cancellationHRReviewedAt  DateTime? @map("cancellation_hr_reviewed_at")
+  cancellationAdminApproverId Int?    @map("cancellation_admin_approver_id")
+  cancellationAdminNote     String?   @map("cancellation_admin_note")
+  cancellationApprovedAt    DateTime? @map("cancellation_approved_at")
+
+  // 直接作廢相關欄位
+  voidedBy        Int?          @map("voided_by")
+  voidedAt        DateTime?     @map("voided_at")
+  voidReason      String?       @map("void_reason")
 
   employee Employee @relation(fields: [employeeId], references: [id])
   approver Employee? @relation("LeaveRequestApprover", fields: [approvedBy], references: [id])
@@ -283,7 +300,7 @@ model OvertimeRequest {
   totalHours       Float         @map("total_hours")
   reason           String
   workContent      String?       @map("work_content")
-  status           String        @default("PENDING")
+  status           String        @default("PENDING")  // PENDING/APPROVED/REJECTED/CANCELLED/VOIDED
   compensationType String        @default("COMP_LEAVE") @map("compensation_type") // 補償方式：COMP_LEAVE(補休) 或 OVERTIME_PAY(加班費)
   
   // 加班費相關欄位
@@ -294,6 +311,27 @@ model OvertimeRequest {
   approvedBy       Int?          @map("approved_by")
   approvedAt       DateTime?     @map("approved_at")
   createdAt        DateTime      @default(now()) @map("created_at")
+
+  // 撤銷申請相關欄位
+  cancellationStatus        String?   @map("cancellation_status")  // PENDING_HR/PENDING_ADMIN/APPROVED/REJECTED
+  cancellationReason        String?   @map("cancellation_reason")
+  cancellationRequestedAt   DateTime? @map("cancellation_requested_at")
+  cancellationHRReviewerId  Int?      @map("cancellation_hr_reviewer_id")
+  cancellationHROpinion     String?   @map("cancellation_hr_opinion")  // AGREE/DISAGREE
+  cancellationHRNote        String?   @map("cancellation_hr_note")
+  cancellationHRReviewedAt  DateTime? @map("cancellation_hr_reviewed_at")
+  cancellationAdminApproverId Int?    @map("cancellation_admin_approver_id")
+  cancellationAdminNote     String?   @map("cancellation_admin_note")
+  cancellationApprovedAt    DateTime? @map("cancellation_approved_at")
+
+  // 直接作廢相關欄位
+  voidedBy         Int?          @map("voided_by")
+  voidedAt         DateTime?     @map("voided_at")
+  voidReason       String?       @map("void_reason")
+
+  // 補休回沖記錄
+  compLeaveReversed Boolean      @default(false) @map("comp_leave_reversed")
+  compLeaveReversedAt DateTime?  @map("comp_leave_reversed_at")
 
   employee Employee @relation(fields: [employeeId], references: [id])
   approver Employee? @relation("OvertimeRequestApprover", fields: [approvedBy], references: [id])

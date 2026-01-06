@@ -719,6 +719,44 @@ export default function LeaveManagementPage() {
     }
   };
 
+  // 員工申請撤銷
+  const handleCancelRequest = async (id: number, reason: string) => {
+    try {
+      const res = await fetchJSONWithCSRF(`/api/leave-requests/${id}/cancel`, {
+        method: 'POST',
+        body: { reason }
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast('error', data.error || '撤銷申請失敗');
+        return;
+      }
+      showToast('success', data.message || '撤銷申請已送出');
+      fetchLeaveRequests();
+    } catch {
+      showToast('error', '撤銷申請失敗，請稍後再試');
+    }
+  };
+
+  // 管理員作廢
+  const handleVoidRequest = async (id: number, reason: string) => {
+    try {
+      const res = await fetchJSONWithCSRF(`/api/leave-requests/${id}/void`, {
+        method: 'POST',
+        body: { reason }
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast('error', data.error || '作廢失敗');
+        return;
+      }
+      showToast('success', data.message || '已作廢');
+      fetchLeaveRequests();
+    } catch {
+      showToast('error', '作廢失敗，請稍後再試');
+    }
+  };
+
   const resetForm = () => {
     setNewRequest({ leaveType: '', startDate: '', endDate: '', startHour: '', startMinute: '', endHour: '', endMinute: '', leaveReason: '', reason: '', attachments: [] });
   };
@@ -1096,9 +1134,35 @@ export default function LeaveManagementPage() {
                                 <Trash2 className="w-4 h-4" /> 刪除
                               </button>
                             </div>
+                          ) : request.status === 'APPROVED' ? (
+                            <button
+                              onClick={() => {
+                                const reason = prompt('請輸入撤銷原因：');
+                                if (reason && reason.trim()) {
+                                  handleCancelRequest(request.id, reason.trim());
+                                }
+                              }}
+                              className="inline-flex items-center gap-1 text-orange-600 hover:text-orange-800"
+                            >
+                              <X className="w-4 h-4" /> 申請撤銷
+                            </button>
                           ) : (
                             <span className="text-gray-400">僅可檢視</span>
                           )
+                        )}
+                        {/* 管理員作廢已核准申請 */}
+                        {isAdmin && request.status === 'APPROVED' && (
+                          <button
+                            onClick={() => {
+                              const reason = prompt('請輸入作廢原因：');
+                              if (reason && reason.trim()) {
+                                handleVoidRequest(request.id, reason.trim());
+                              }
+                            }}
+                            className="inline-flex items-center gap-1 text-red-600 hover:text-red-800 ml-2"
+                          >
+                            <X className="w-4 h-4" /> 作廢
+                          </button>
                         )}
                         {/* 查看審核進度按鈕 */}
                         <button
