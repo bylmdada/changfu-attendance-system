@@ -263,13 +263,19 @@ model LeaveRequest {
   endDate         DateTime      @map("end_date")
   totalDays       Float         @map("total_days")
   reason          String?
-  status          String        @default("PENDING")  // PENDING/APPROVED/REJECTED/CANCELLED/VOIDED
+  status          String        @default("PENDING")  // PENDING/PENDING_ADMIN/APPROVED/REJECTED/CANCELLED/VOIDED
   approvedBy      Int?          @map("approved_by")
   approvedAt      DateTime?     @map("approved_at")
   createdAt       DateTime      @default(now()) @map("created_at")
 
+  // 主管審核欄位（二階審核）
+  managerReviewerId  Int?       @map("manager_reviewer_id")
+  managerOpinion     String?    @map("manager_opinion")  // AGREE/DISAGREE
+  managerNote        String?    @map("manager_note")
+  managerReviewedAt  DateTime?  @map("manager_reviewed_at")
+
   // 撤銷申請相關欄位
-  cancellationStatus        String?   @map("cancellation_status")  // PENDING_HR/PENDING_ADMIN/APPROVED/REJECTED
+  cancellationStatus        String?   @map("cancellation_status")  // PENDING_MANAGER/PENDING_ADMIN/APPROVED/REJECTED
   cancellationReason        String?   @map("cancellation_reason")
   cancellationRequestedAt   DateTime? @map("cancellation_requested_at")
   cancellationHRReviewerId  Int?      @map("cancellation_hr_reviewer_id")
@@ -300,7 +306,7 @@ model OvertimeRequest {
   totalHours       Float         @map("total_hours")
   reason           String
   workContent      String?       @map("work_content")
-  status           String        @default("PENDING")  // PENDING/APPROVED/REJECTED/CANCELLED/VOIDED
+  status           String        @default("PENDING")  // PENDING/PENDING_ADMIN/APPROVED/REJECTED/CANCELLED/VOIDED
   compensationType String        @default("COMP_LEAVE") @map("compensation_type") // 補償方式：COMP_LEAVE(補休) 或 OVERTIME_PAY(加班費)
   
   // 加班費相關欄位
@@ -312,8 +318,14 @@ model OvertimeRequest {
   approvedAt       DateTime?     @map("approved_at")
   createdAt        DateTime      @default(now()) @map("created_at")
 
+  // 主管審核欄位（二階審核）
+  managerReviewerId  Int?        @map("manager_reviewer_id")
+  managerOpinion     String?     @map("manager_opinion")  // AGREE/DISAGREE
+  managerNote        String?     @map("manager_note")
+  managerReviewedAt  DateTime?   @map("manager_reviewed_at")
+
   // 撤銷申請相關欄位
-  cancellationStatus        String?   @map("cancellation_status")  // PENDING_HR/PENDING_ADMIN/APPROVED/REJECTED
+  cancellationStatus        String?   @map("cancellation_status")  // PENDING_MANAGER/PENDING_ADMIN/APPROVED/REJECTED
   cancellationReason        String?   @map("cancellation_reason")
   cancellationRequestedAt   DateTime? @map("cancellation_requested_at")
   cancellationHRReviewerId  Int?      @map("cancellation_hr_reviewer_id")
@@ -559,15 +571,21 @@ model ShiftExchangeRequest {
   originalWorkDate String   @map("original_work_date") // 申請者原班別日期
   targetWorkDate   String   @map("target_work_date")   // 目標班別日期
   requestReason    String   @map("request_reason")
-  status           String   @default("PENDING") // PENDING, APPROVED, REJECTED, CANCELLED, VOIDED
+  status           String   @default("PENDING") // PENDING, PENDING_ADMIN, APPROVED, REJECTED, CANCELLED, VOIDED
   adminRemarks     String?  @map("admin_remarks")
   approvedBy       Int?     @map("approved_by")
   approvedAt       DateTime? @map("approved_at")
   createdAt        DateTime @default(now()) @map("created_at")
   updatedAt        DateTime @updatedAt @map("updated_at")
 
+  // 主管審核欄位（二階審核）
+  managerReviewerId  Int?       @map("manager_reviewer_id")
+  managerOpinion     String?    @map("manager_opinion")  // AGREE/DISAGREE
+  managerNote        String?    @map("manager_note")
+  managerReviewedAt  DateTime?  @map("manager_reviewed_at")
+
   // 撤銷申請相關欄位
-  cancellationStatus        String?   @map("cancellation_status")  // PENDING_HR/PENDING_ADMIN/APPROVED/REJECTED
+  cancellationStatus        String?   @map("cancellation_status")  // PENDING_MANAGER/PENDING_ADMIN/APPROVED/REJECTED
   cancellationReason        String?   @map("cancellation_reason")
   cancellationRequestedAt   DateTime? @map("cancellation_requested_at")
   cancellationHRReviewerId  Int?      @map("cancellation_hr_reviewer_id")
@@ -879,15 +897,21 @@ model MissedClockRequest {
   clockType     String   @map("clock_type") // 'CLOCK_IN' 或 'CLOCK_OUT'
   requestedTime String   @map("requested_time") // 申請的打卡時間 (HH:MM)
   reason        String   // 申請原因
-  status        String   @default("PENDING") // 'PENDING', 'APPROVED', 'REJECTED', 'CANCELLED', 'VOIDED'
+  status        String   @default("PENDING") // 'PENDING', 'PENDING_ADMIN', 'APPROVED', 'REJECTED', 'CANCELLED', 'VOIDED'
   approvedBy    Int?     @map("approved_by") // 審核者ID
   approvedAt    DateTime? @map("approved_at") // 審核時間
   rejectReason  String?  @map("reject_reason") // 拒絕原因
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")
 
+  // 主管審核欄位（二階審核）
+  managerReviewerId  Int?       @map("manager_reviewer_id")
+  managerOpinion     String?    @map("manager_opinion")  // AGREE/DISAGREE
+  managerNote        String?    @map("manager_note")
+  managerReviewedAt  DateTime?  @map("manager_reviewed_at")
+
   // 撤銷申請相關欄位
-  cancellationStatus        String?   @map("cancellation_status")  // PENDING_HR/PENDING_ADMIN/APPROVED/REJECTED
+  cancellationStatus        String?   @map("cancellation_status")  // PENDING_MANAGER/PENDING_ADMIN/APPROVED/REJECTED
   cancellationReason        String?   @map("cancellation_reason")
   cancellationRequestedAt   DateTime? @map("cancellation_requested_at")
   cancellationHRReviewerId  Int?      @map("cancellation_hr_reviewer_id")
