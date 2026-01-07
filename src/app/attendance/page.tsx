@@ -546,6 +546,38 @@ export default function AttendancePage() {
     });
   };
 
+  // 智能建議打卡類型
+  const getSuggestedClockType = (): 'in' | 'out' | null => {
+    if (!currentTime || !todayStatus) return null;
+    
+    const hour = currentTime.getHours();
+    const hasClockIn = todayStatus.hasClockIn;
+    const hasClockOut = todayStatus.hasClockOut;
+    
+    // 如果都已打卡，不建議任何按鈕
+    if (hasClockIn && hasClockOut) return null;
+    
+    // 如果還沒上班打卡
+    if (!hasClockIn) {
+      // 早上 5:00 - 14:00 建議上班打卡
+      if (hour >= 5 && hour < 14) return 'in';
+      // 14:00 之後還沒打上班卡，仍建議上班打卡
+      return 'in';
+    }
+    
+    // 如果已打上班卡但還沒打下班卡
+    if (hasClockIn && !hasClockOut) {
+      // 下午 12:00 之後建議下班打卡
+      if (hour >= 12) return 'out';
+      // 12:00 之前不特別建議（可能還在工作中）
+      return null;
+    }
+    
+    return null;
+  };
+
+  const suggestedType = getSuggestedClockType();
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -685,16 +717,26 @@ export default function AttendancePage() {
                   </div>
                 )}
 
-                {/* 打卡按鈕 - 純 CSS 響應式 */}
+                {/* 打卡按鈕 - 純 CSS 響應式 + 智能建議 */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4 mb-4 md:mb-6">
-                  <div className="space-y-2">
+                  <div className="space-y-2 relative">
+                    {/* 智能建議標籤 - 上班 */}
+                    {suggestedType === 'in' && !todayStatus?.hasClockIn && (
+                      <div className="absolute -top-2 left-1/2 transform -translate-x-1/2 z-10">
+                        <span className="bg-yellow-400 text-yellow-900 text-xs font-bold px-3 py-1 rounded-full shadow-md animate-bounce">
+                          👆 建議
+                        </span>
+                      </div>
+                    )}
                     <button
                       onClick={() => handleClock('in')}
                       disabled={clockLoading}
                       className={`w-full py-5 md:py-4 px-6 rounded-xl text-base md:text-lg font-medium transition-all ${
                         todayStatus?.hasClockIn
                           ? 'bg-green-600 text-white shadow-lg border-2 border-green-200'
-                          : 'bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white shadow-lg hover:shadow-xl transform hover:-translate-y-1 active:translate-y-0'
+                          : suggestedType === 'in'
+                            ? 'bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white shadow-lg hover:shadow-xl transform hover:-translate-y-1 active:translate-y-0 ring-4 ring-yellow-400 ring-opacity-75 animate-pulse'
+                            : 'bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white shadow-lg hover:shadow-xl transform hover:-translate-y-1 active:translate-y-0'
                       }`}
                     >
                       <div className="flex items-center justify-center gap-2">
@@ -718,14 +760,24 @@ export default function AttendancePage() {
                     </button>
                   </div>
 
-                  <div className="space-y-2">
+                  <div className="space-y-2 relative">
+                    {/* 智能建議標籤 - 下班 */}
+                    {suggestedType === 'out' && !todayStatus?.hasClockOut && (
+                      <div className="absolute -top-2 left-1/2 transform -translate-x-1/2 z-10">
+                        <span className="bg-yellow-400 text-yellow-900 text-xs font-bold px-3 py-1 rounded-full shadow-md animate-bounce">
+                          👆 建議
+                        </span>
+                      </div>
+                    )}
                     <button
                       onClick={() => handleClock('out')}
                       disabled={clockLoading}
                       className={`w-full py-5 md:py-4 px-6 rounded-xl text-base md:text-lg font-medium transition-all ${
                         todayStatus?.hasClockOut
                           ? 'bg-orange-600 text-white shadow-lg border-2 border-orange-200'
-                          : 'bg-orange-500 hover:bg-orange-600 active:bg-orange-700 text-white shadow-lg hover:shadow-xl transform hover:-translate-y-1 active:translate-y-0'
+                          : suggestedType === 'out'
+                            ? 'bg-orange-500 hover:bg-orange-600 active:bg-orange-700 text-white shadow-lg hover:shadow-xl transform hover:-translate-y-1 active:translate-y-0 ring-4 ring-yellow-400 ring-opacity-75 animate-pulse'
+                            : 'bg-orange-500 hover:bg-orange-600 active:bg-orange-700 text-white shadow-lg hover:shadow-xl transform hover:-translate-y-1 active:translate-y-0'
                       }`}
                     >
                       <div className="flex items-center justify-center gap-2">

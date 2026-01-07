@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { verifyToken } from '@/lib/auth';
 import { notifyLeaveApproval } from '@/lib/email';
+import { notifyHRAfterManagerReview } from '@/lib/hr-notification';
+import { getApprovalWorkflow } from '@/lib/approval-workflow';
 
 // 窄化型別，避免直接耦合
 interface PrismaWithSchedule {
@@ -59,6 +61,12 @@ export async function PATCH(
           return NextResponse.json({ error: '請選擇同意或不同意' }, { status: 400 });
         }
 
+        // 取得主管資訊
+        const manager = await prisma.employee.findUnique({
+          where: { id: decoded.employeeId },
+          select: { name: true }
+        });
+
         await prisma.leaveRequest.update({
           where: { id: leaveRequestId },
           data: {
@@ -70,7 +78,19 @@ export async function PATCH(
           }
         });
 
-        // TODO: 發送 CC 通知給 HR
+        // 檢查是否需要 CC 通知 HR
+        const workflow = await getApprovalWorkflow('LEAVE');
+        if (workflow?.enableCC) {
+          await notifyHRAfterManagerReview({
+            requestType: 'LEAVE',
+            requestId: leaveRequestId,
+            employeeName: existing.employee.name,
+            employeeDepartment: existing.employee.department || '未指定',
+            managerName: manager?.name || '主管',
+            managerOpinion: opinion,
+            managerNote: body.note
+          });
+        }
 
         return NextResponse.json({
           success: true,

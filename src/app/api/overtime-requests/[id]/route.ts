@@ -3,6 +3,8 @@ import { prisma } from '@/lib/database';
 import { verifyToken } from '@/lib/auth';
 import { notifyOvertimeApproval } from '@/lib/email';
 import { calculateOvertimePayForRequest, OvertimeType } from '@/lib/salary-utils';
+import { notifyHRAfterManagerReview } from '@/lib/hr-notification';
+import { getApprovalWorkflow } from '@/lib/approval-workflow';
 
 // 審核或編輯加班申請
 export async function PATCH(
@@ -46,6 +48,12 @@ export async function PATCH(
           return NextResponse.json({ error: '請選擇同意或不同意' }, { status: 400 });
         }
 
+        // 取得主管資訊
+        const manager = await prisma.employee.findUnique({
+          where: { id: decoded.employeeId },
+          select: { name: true }
+        });
+
         await prisma.overtimeRequest.update({
           where: { id: overtimeRequestId },
           data: {
@@ -57,7 +65,19 @@ export async function PATCH(
           }
         });
 
-        // TODO: 發送 CC 通知給 HR
+        // 檢查是否需要 CC 通知 HR
+        const workflow = await getApprovalWorkflow('OVERTIME');
+        if (workflow?.enableCC) {
+          await notifyHRAfterManagerReview({
+            requestType: 'OVERTIME',
+            requestId: overtimeRequestId,
+            employeeName: existing.employee.name,
+            employeeDepartment: existing.employee.department || '未指定',
+            managerName: manager?.name || '主管',
+            managerOpinion: opinion,
+            managerNote: body.note
+          });
+        }
 
         return NextResponse.json({
           success: true,
