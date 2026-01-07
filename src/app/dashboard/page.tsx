@@ -980,7 +980,7 @@ export default function DashboardPage() {
               </a>
 
               {(user?.role === 'ADMIN' || user?.role === 'HR') && (
-                <a href="/system-settings/health-insurance-dependents" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
+                <a href="/health-insurance-dependents" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
                   <Users className="h-8 w-8 text-pink-600 mb-2 group-hover:scale-110 transition-transform" />
                   <h3 className="font-medium text-gray-900">健保眷屬管理</h3>
                   <p className="text-sm text-gray-500">員工眷屬與申請審核</p>
