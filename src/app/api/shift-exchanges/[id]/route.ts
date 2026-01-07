@@ -11,7 +11,7 @@ interface ShiftExchangeLite {
   originalWorkDate: string;
   targetWorkDate: string;
   requestReason: string;
-  status: 'PENDING' | 'APPROVED' | 'REJECTED';
+  status: 'PENDING' | 'PENDING_ADMIN' | 'APPROVED' | 'REJECTED' | 'CANCELLED' | 'VOIDED';
   adminRemarks?: string | null;
   approvedBy?: number | null;
   approvedAt?: string | null;
@@ -63,7 +63,7 @@ export async function PATCH(
     }
 
     const body = await request.json();
-    const { action: rawAction, remarks, status } = body as { action?: string; remarks?: string; status?: string };
+    const { action: rawAction, remarks, status, opinion } = body as { action?: string; remarks?: string; status?: string; opinion?: string };
 
     // 兼容舊前端：若傳入 status，映射為 action（僅管理員/HR才能審核）
     let action = rawAction as 'approve' | 'reject' | undefined;
@@ -91,98 +91,131 @@ export async function PATCH(
       return NextResponse.json({ error: '調班申請不存在' }, { status: 404 });
     }
 
-    // 如果是審核流程
-    if (action) {
-      if (user.role !== 'ADMIN' && user.role !== 'HR') {
-        return NextResponse.json({ error: '權限不足' }, { status: 403 });
-      }
-      if (current.status !== 'PENDING') {
-        return NextResponse.json({ error: '此申請已被處理' }, { status: 400 });
-      }
-
-      // 核准時檢查凍結狀態
-      if (action === 'approve') {
-        const originalDateObj = new Date(current.originalWorkDate);
-        const freezeCheck = await checkAttendanceFreeze(originalDateObj);
-        if (freezeCheck.isFrozen) {
-          const freezeDateStr = freezeCheck.freezeInfo?.freezeDate.toLocaleString('zh-TW');
-          return NextResponse.json({
-            error: `該月份已被凍結，無法核准調班申請。凍結時間：${freezeDateStr}，操作者：${freezeCheck.freezeInfo?.creator.name}`
-          }, { status: 403 });
+    // 如果是審核流程（二階審核：主管→Admin）
+    if (action || opinion) {
+      // 主管審核（提供意見，轉交 Admin）
+      if (user.role === 'MANAGER' && current.status === 'PENDING' && opinion) {
+        if (!['AGREE', 'DISAGREE'].includes(opinion)) {
+          return NextResponse.json({ error: '請選擇同意或不同意' }, { status: 400 });
         }
 
-        // 互調班時也檢查目標日期
-        if (current.originalWorkDate !== current.targetWorkDate) {
-          const targetDateObj = new Date(current.targetWorkDate);
-          const targetFreezeCheck = await checkAttendanceFreeze(targetDateObj);
-          if (targetFreezeCheck.isFrozen) {
-            const freezeDateStr = targetFreezeCheck.freezeInfo?.freezeDate.toLocaleString('zh-TW');
-            return NextResponse.json({
-              error: `目標月份已被凍結，無法核准調班申請。凍結時間：${freezeDateStr}，操作者：${targetFreezeCheck.freezeInfo?.creator.name}`
-            }, { status: 403 });
+        const updatedRequest = await db.shiftExchangeRequest.update({
+          where: { id: requestId },
+          data: {
+            status: 'PENDING_ADMIN',
+            managerReviewerId: user.employeeId,
+            managerOpinion: opinion,
+            managerNote: remarks || null,
+            managerReviewedAt: new Date()
+          },
+          include: {
+            requester: { select: { id: true, employeeId: true, name: true, position: true, department: true } },
+            targetEmployee: { select: { id: true, employeeId: true, name: true, position: true, department: true } },
+            approver: { select: { id: true, employeeId: true, name: true, position: true } }
           }
-        }
-      }
+        });
 
-      const now = new Date();
-      const newStatus = action === 'approve' ? 'APPROVED' : 'REJECTED';
-
-      const updatedRequest = await db.shiftExchangeRequest.update({
-        where: { id: requestId },
-        data: {
-          status: newStatus,
-          approvedBy: user.employeeId,
-          approvedAt: now,
-          adminRemarks: remarks || null
-        },
-        include: {
-          requester: { select: { id: true, employeeId: true, name: true, position: true, department: true } },
-          targetEmployee: { select: { id: true, employeeId: true, name: true, position: true, department: true } },
-          approver: { select: { id: true, employeeId: true, name: true, position: true } }
-        }
-      });
-
-      // 現有的排班調整邏輯（自調與互換）保持不變
-      if (action === 'approve') {
-        if (!db.$transaction || !db.schedule) {
-          return NextResponse.json(updatedRequest);
-        }
-        // 嘗試解析是否為自調班
-        let parsed: SelfChangePayload | null = null;
-        try { parsed = JSON.parse(current.requestReason) as SelfChangePayload; } catch {}
-        const isSelfChange = parsed && parsed.type === 'SELF_CHANGE';
-
-        await db.$transaction(async (tx) => {
-          if (isSelfChange) {
-            const date = current.originalWorkDate;
-            const newShift: string = parsed?.new || 'A';
-            const t = getTemplateByShift(newShift);
-            const original = await tx.schedule!.findFirst({
-              where: { employeeId: current.requesterId, workDate: date }
-            });
-            if (original) {
-              await tx.schedule!.update({
-                where: { id: original.id },
-                data: { shiftType: newShift, startTime: t.startTime, endTime: t.endTime }
-              });
-            }
-            return;
-          }
-
-          const [originalSchedule, targetSchedule] = await Promise.all([
-            tx.schedule!.findFirst({ where: { employeeId: current.requesterId, workDate: current.originalWorkDate } }),
-            tx.schedule!.findFirst({ where: { employeeId: current.targetEmployeeId, workDate: current.targetWorkDate } })
-          ]);
-
-          if (originalSchedule && targetSchedule) {
-            const temp = { shiftType: originalSchedule.shiftType, startTime: originalSchedule.startTime, endTime: originalSchedule.endTime };
-            await tx.schedule!.update({ where: { id: originalSchedule.id }, data: { shiftType: targetSchedule.shiftType, startTime: targetSchedule.startTime, endTime: targetSchedule.endTime } });
-            await tx.schedule!.update({ where: { id: targetSchedule.id }, data: { shiftType: temp.shiftType, startTime: temp.startTime, endTime: temp.endTime } });
-          }
+        return NextResponse.json({
+          success: true,
+          message: '主管審核完成，已轉交管理員決核',
+          request: updatedRequest
         });
       }
 
-      return NextResponse.json(updatedRequest);
+      // Admin 最終決核
+      if (user.role === 'ADMIN') {
+        // Admin 可以審核 PENDING 或 PENDING_ADMIN 狀態
+        if (current.status !== 'PENDING' && current.status !== 'PENDING_ADMIN') {
+          return NextResponse.json({ error: '此申請已被處理' }, { status: 400 });
+        }
+
+        // 核准時檢查凍結狀態
+        if (action === 'approve') {
+          const originalDateObj = new Date(current.originalWorkDate);
+          const freezeCheck = await checkAttendanceFreeze(originalDateObj);
+          if (freezeCheck.isFrozen) {
+            const freezeDateStr = freezeCheck.freezeInfo?.freezeDate.toLocaleString('zh-TW');
+            return NextResponse.json({
+              error: `該月份已被凍結，無法核准調班申請。凍結時間：${freezeDateStr}，操作者：${freezeCheck.freezeInfo?.creator.name}`
+            }, { status: 403 });
+          }
+
+          // 互調班時也檢查目標日期
+          if (current.originalWorkDate !== current.targetWorkDate) {
+            const targetDateObj = new Date(current.targetWorkDate);
+            const targetFreezeCheck = await checkAttendanceFreeze(targetDateObj);
+            if (targetFreezeCheck.isFrozen) {
+              const freezeDateStr = targetFreezeCheck.freezeInfo?.freezeDate.toLocaleString('zh-TW');
+              return NextResponse.json({
+                error: `目標月份已被凍結，無法核准調班申請。凍結時間：${freezeDateStr}，操作者：${targetFreezeCheck.freezeInfo?.creator.name}`
+              }, { status: 403 });
+            }
+          }
+        }
+
+        const now = new Date();
+        const newStatus = action === 'approve' ? 'APPROVED' : 'REJECTED';
+
+        const updatedRequest = await db.shiftExchangeRequest.update({
+          where: { id: requestId },
+          data: {
+            status: newStatus,
+            approvedBy: user.employeeId,
+            approvedAt: now,
+            adminRemarks: remarks || null
+          },
+          include: {
+            requester: { select: { id: true, employeeId: true, name: true, position: true, department: true } },
+            targetEmployee: { select: { id: true, employeeId: true, name: true, position: true, department: true } },
+            approver: { select: { id: true, employeeId: true, name: true, position: true } }
+          }
+        });
+
+        // 現有的排班調整邏輯（自調與互換）保持不變
+        if (action === 'approve') {
+          if (!db.$transaction || !db.schedule) {
+            return NextResponse.json(updatedRequest);
+          }
+          // 嘗試解析是否為自調班
+          let parsed: SelfChangePayload | null = null;
+          try { parsed = JSON.parse(current.requestReason) as SelfChangePayload; } catch {}
+          const isSelfChange = parsed && parsed.type === 'SELF_CHANGE';
+
+          await db.$transaction(async (tx) => {
+            if (isSelfChange) {
+              const date = current.originalWorkDate;
+              const newShift: string = parsed?.new || 'A';
+              const t = getTemplateByShift(newShift);
+              const original = await tx.schedule!.findFirst({
+                where: { employeeId: current.requesterId, workDate: date }
+              });
+              if (original) {
+                await tx.schedule!.update({
+                  where: { id: original.id },
+                  data: { shiftType: newShift, startTime: t.startTime, endTime: t.endTime }
+                });
+              }
+              return;
+            }
+
+            const [originalSchedule, targetSchedule] = await Promise.all([
+              tx.schedule!.findFirst({ where: { employeeId: current.requesterId, workDate: current.originalWorkDate } }),
+              tx.schedule!.findFirst({ where: { employeeId: current.targetEmployeeId, workDate: current.targetWorkDate } })
+            ]);
+
+            if (originalSchedule && targetSchedule) {
+              const temp = { shiftType: originalSchedule.shiftType, startTime: originalSchedule.startTime, endTime: originalSchedule.endTime };
+              await tx.schedule!.update({ where: { id: originalSchedule.id }, data: { shiftType: targetSchedule.shiftType, startTime: targetSchedule.startTime, endTime: targetSchedule.endTime } });
+              await tx.schedule!.update({ where: { id: targetSchedule.id }, data: { shiftType: temp.shiftType, startTime: temp.startTime, endTime: temp.endTime } });
+            }
+          });
+        }
+
+        return NextResponse.json(updatedRequest);
+      }
+
+      // HR 不能直接審核
+      return NextResponse.json({ error: '無權限執行此操作，調班需由主管審核後由管理員決核' }, { status: 403 });
     }
 
     // 否則視為編輯：僅申請者本人或管理員/HR，且僅限 PENDING
