@@ -50,72 +50,99 @@ export async function PATCH(
 
     const body = await request.json();
 
-    // 若傳入 status，視為審核（僅 ADMIN/HR）
-    if (typeof body.status === 'string') {
-      if (decoded.role !== 'ADMIN' && decoded.role !== 'HR') {
-        return NextResponse.json({ error: '無權限執行此操作' }, { status: 403 });
+    // 若傳入 status 或 opinion，視為審核
+    if (typeof body.status === 'string' || typeof body.opinion === 'string') {
+      // 主管審核（提供意見，轉交 Admin）
+      if (decoded.role === 'MANAGER' && existing.status === 'PENDING') {
+        const opinion = body.opinion as 'AGREE' | 'DISAGREE';
+        if (!['AGREE', 'DISAGREE'].includes(opinion)) {
+          return NextResponse.json({ error: '請選擇同意或不同意' }, { status: 400 });
+        }
+
+        await prisma.leaveRequest.update({
+          where: { id: leaveRequestId },
+          data: {
+            status: 'PENDING_ADMIN',
+            managerReviewerId: decoded.employeeId,
+            managerOpinion: opinion,
+            managerNote: body.note || null,
+            managerReviewedAt: new Date()
+          }
+        });
+
+        // TODO: 發送 CC 通知給 HR
+
+        return NextResponse.json({
+          success: true,
+          message: '主管審核完成，已轉交管理員決核'
+        });
       }
 
-      const status = body.status as 'APPROVED' | 'REJECTED';
-      if (!['APPROVED', 'REJECTED'].includes(status)) {
-        return NextResponse.json({ error: '無效的審核狀態' }, { status: 400 });
-      }
+      // Admin 最終決核
+      if (decoded.role === 'ADMIN') {
+        const status = body.status as 'APPROVED' | 'REJECTED';
+        if (!['APPROVED', 'REJECTED'].includes(status)) {
+          return NextResponse.json({ error: '無效的審核狀態' }, { status: 400 });
+        }
 
-      if (existing.status !== 'PENDING') {
-        return NextResponse.json({ error: '該請假申請已經被審核過' }, { status: 400 });
-      }
+        // Admin 可以審核 PENDING 或 PENDING_ADMIN 狀態
+        if (existing.status !== 'PENDING' && existing.status !== 'PENDING_ADMIN') {
+          return NextResponse.json({ error: '該請假申請已經被審核過' }, { status: 400 });
+        }
 
-      const updatedLeaveRequest = await prisma.leaveRequest.update({
-        where: { id: leaveRequestId },
-        data: {
-          status,
-          approvedBy: decoded.employeeId,
-          approvedAt: new Date()
-        },
-        include: {
-          employee: {
-            select: { id: true, employeeId: true, name: true, department: true, position: true }
+        const updatedLeaveRequest = await prisma.leaveRequest.update({
+          where: { id: leaveRequestId },
+          data: {
+            status,
+            approvedBy: decoded.employeeId,
+            approvedAt: new Date()
+          },
+          include: {
+            employee: {
+              select: { id: true, employeeId: true, name: true, department: true, position: true }
+            }
+          }
+        });
+
+        // 若批准，更新班表為請假（FDL）
+        if (status === 'APPROVED' && db.schedule) {
+          const empId = existing.employeeId;
+          const start = new Date(existing.startDate);
+          const end = new Date(existing.endDate);
+          for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+            const ymd = toYmd(d);
+            await db.schedule.updateMany({
+              where: { employeeId: empId, workDate: ymd },
+              data: { shiftType: 'FDL', startTime: '', endTime: '' }
+            });
           }
         }
-      });
 
-      // 若批准，更新班表為請假（FDL）
-      if (status === 'APPROVED' && db.schedule) {
-        const empId = existing.employeeId;
-        // 以天為單位更新
-        const start = new Date(existing.startDate);
-        const end = new Date(existing.endDate);
-        for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-          const ymd = toYmd(d);
-          await db.schedule.updateMany({
-            where: { employeeId: empId, workDate: ymd },
-            data: { shiftType: 'FDL', startTime: '', endTime: '' }
+        // 發送審核結果通知
+        try {
+          await notifyLeaveApproval({
+            employeeId: existing.employeeId,
+            employeeName: existing.employee.name,
+            employeeEmail: existing.employee.email || undefined,
+            approved: status === 'APPROVED',
+            leaveType: existing.leaveType,
+            startDate: existing.startDate.toISOString().split('T')[0],
+            endDate: existing.endDate.toISOString().split('T')[0],
+            reason: body.rejectionReason,
           });
+        } catch (notifyError) {
+          console.error('發送通知失敗:', notifyError);
         }
-      }
 
-      // 發送審核結果通知
-      try {
-        await notifyLeaveApproval({
-          employeeId: existing.employeeId,
-          employeeName: existing.employee.name,
-          employeeEmail: existing.employee.email || undefined,
-          approved: status === 'APPROVED',
-          leaveType: existing.leaveType,
-          startDate: existing.startDate.toISOString().split('T')[0],
-          endDate: existing.endDate.toISOString().split('T')[0],
-          reason: body.rejectionReason,
+        return NextResponse.json({
+          success: true,
+          leaveRequest: updatedLeaveRequest,
+          message: status === 'APPROVED' ? '請假申請已批准' : '請假申請已拒絕'
         });
-      } catch (notifyError) {
-        console.error('發送通知失敗:', notifyError);
-        // 不阻止審核完成
       }
 
-      return NextResponse.json({
-        success: true,
-        leaveRequest: updatedLeaveRequest,
-        message: status === 'APPROVED' ? '請假申請已批准' : '請假申請已拒絕'
-      });
+      // HR 不能直接審核，但可以查看
+      return NextResponse.json({ error: '無權限執行此操作，請假需由主管審核後由管理員決核' }, { status: 403 });
     }
 
     // 否則視為「編輯」：申請人自己或管理員/HR可在待審核狀態下修改

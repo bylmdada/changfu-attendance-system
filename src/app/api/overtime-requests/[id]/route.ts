@@ -37,116 +37,141 @@ export async function PATCH(
 
     const body = await request.json();
 
-    // 若傳入 status，走審核流程（只有管理員和HR可以審核）
-    if (typeof body.status === 'string') {
-      if (decoded.role !== 'ADMIN' && decoded.role !== 'HR') {
-        return NextResponse.json({ error: '無權限執行此操作' }, { status: 403 });
-      }
-
-      const { status } = body as { status: 'APPROVED' | 'REJECTED' };
-
-      if (!['APPROVED', 'REJECTED'].includes(status)) {
-        return NextResponse.json({ error: '無效的審核狀態' }, { status: 400 });
-      }
-
-      if (existing.status !== 'PENDING') {
-        return NextResponse.json({ error: '該加班申請已經被審核過' }, { status: 400 });
-      }
-
-      // 如果選擇加班費，計算加班費金額
-      let overtimePay: number | null = null;
-      let hourlyRateUsed: number | null = null;
-      let overtimeType: OvertimeType = 'WEEKDAY';
-
-      if (status === 'APPROVED' && existing.compensationType === 'OVERTIME_PAY') {
-        // 取得加班類型（從請求中獲取，或預設為平日加班）
-        overtimeType = (body.overtimeType as OvertimeType) || 'WEEKDAY';
-        
-        // 計算加班費
-        const payResult = await calculateOvertimePayForRequest(
-          existing.employeeId,
-          existing.overtimeDate,
-          existing.totalHours,
-          overtimeType
-        );
-
-        if (payResult.success) {
-          overtimePay = payResult.overtimePay || null;
-          hourlyRateUsed = payResult.hourlyRate || null;
-        } else {
-          console.error('計算加班費失敗:', payResult.error);
+    // 若傳入 status 或 opinion，視為審核
+    if (typeof body.status === 'string' || typeof body.opinion === 'string') {
+      // 主管審核（提供意見，轉交 Admin）
+      if (decoded.role === 'MANAGER' && existing.status === 'PENDING') {
+        const opinion = body.opinion as 'AGREE' | 'DISAGREE';
+        if (!['AGREE', 'DISAGREE'].includes(opinion)) {
+          return NextResponse.json({ error: '請選擇同意或不同意' }, { status: 400 });
         }
-      }
 
-      const updatedOvertimeRequest = await prisma.overtimeRequest.update({
-        where: { id: overtimeRequestId },
-        data: {
-          status,
-          approvedBy: decoded.employeeId,
-          approvedAt: new Date(),
-          overtimeType: overtimeType || undefined,
-          overtimePay: overtimePay || undefined,
-          hourlyRateUsed: hourlyRateUsed || undefined
-        },
-        include: {
-          employee: {
-            select: { id: true, employeeId: true, name: true, department: true, position: true }
-          }
-        }
-      });
-
-      // 審核通過時，累積補休時數
-      if (status === 'APPROVED' && existing.compensationType === 'COMP_LEAVE') {
-        const overtimeDate = new Date(existing.overtimeDate);
-        const yearMonth = `${overtimeDate.getFullYear()}-${String(overtimeDate.getMonth() + 1).padStart(2, '0')}`;
-        
-        // 建立補休交易記錄
-        await prisma.compLeaveTransaction.create({
+        await prisma.overtimeRequest.update({
+          where: { id: overtimeRequestId },
           data: {
-            employeeId: existing.employeeId,
-            transactionType: 'EARN',
-            hours: existing.totalHours,
-            referenceId: overtimeRequestId,
-            referenceType: 'OVERTIME',
-            yearMonth,
-            description: `加班審核通過 - ${existing.reason}`,
-            isFrozen: false
+            status: 'PENDING_ADMIN',
+            managerReviewerId: decoded.employeeId,
+            managerOpinion: opinion,
+            managerNote: body.note || null,
+            managerReviewedAt: new Date()
           }
         });
 
-        // 更新待確認餘額
-        await prisma.compLeaveBalance.upsert({
-          where: { employeeId: existing.employeeId },
-          update: {
-            pendingEarn: { increment: existing.totalHours }
+        // TODO: 發送 CC 通知給 HR
+
+        return NextResponse.json({
+          success: true,
+          message: '主管審核完成，已轉交管理員決核'
+        });
+      }
+
+      // Admin 最終決核
+      if (decoded.role === 'ADMIN') {
+        const { status } = body as { status: 'APPROVED' | 'REJECTED' };
+
+        if (!['APPROVED', 'REJECTED'].includes(status)) {
+          return NextResponse.json({ error: '無效的審核狀態' }, { status: 400 });
+        }
+
+        // Admin 可以審核 PENDING 或 PENDING_ADMIN 狀態
+        if (existing.status !== 'PENDING' && existing.status !== 'PENDING_ADMIN') {
+          return NextResponse.json({ error: '該加班申請已經被審核過' }, { status: 400 });
+        }
+
+        // 如果選擇加班費，計算加班費金額
+        let overtimePay: number | null = null;
+        let hourlyRateUsed: number | null = null;
+        let overtimeType: OvertimeType = 'WEEKDAY';
+
+        if (status === 'APPROVED' && existing.compensationType === 'OVERTIME_PAY') {
+          overtimeType = (body.overtimeType as OvertimeType) || 'WEEKDAY';
+          
+          const payResult = await calculateOvertimePayForRequest(
+            existing.employeeId,
+            existing.overtimeDate,
+            existing.totalHours,
+            overtimeType
+          );
+
+          if (payResult.success) {
+            overtimePay = payResult.overtimePay || null;
+            hourlyRateUsed = payResult.hourlyRate || null;
+          } else {
+            console.error('計算加班費失敗:', payResult.error);
+          }
+        }
+
+        const updatedOvertimeRequest = await prisma.overtimeRequest.update({
+          where: { id: overtimeRequestId },
+          data: {
+            status,
+            approvedBy: decoded.employeeId,
+            approvedAt: new Date(),
+            overtimeType: overtimeType || undefined,
+            overtimePay: overtimePay || undefined,
+            hourlyRateUsed: hourlyRateUsed || undefined
           },
-          create: {
-            employeeId: existing.employeeId,
-            pendingEarn: existing.totalHours
+          include: {
+            employee: {
+              select: { id: true, employeeId: true, name: true, department: true, position: true }
+            }
           }
         });
-      }
 
-      // 發送審核結果通知
-      try {
-        await notifyOvertimeApproval({
-          employeeId: existing.employeeId,
-          employeeName: existing.employee.name,
-          employeeEmail: existing.employee.email || undefined,
-          approved: status === 'APPROVED',
-          overtimeDate: existing.overtimeDate.toISOString().split('T')[0],
-          hours: existing.totalHours,
-          reason: body.rejectionReason,
+        // 審核通過時，累積補休時數
+        if (status === 'APPROVED' && existing.compensationType === 'COMP_LEAVE') {
+          const overtimeDate = new Date(existing.overtimeDate);
+          const yearMonth = `${overtimeDate.getFullYear()}-${String(overtimeDate.getMonth() + 1).padStart(2, '0')}`;
+          
+          await prisma.compLeaveTransaction.create({
+            data: {
+              employeeId: existing.employeeId,
+              transactionType: 'EARN',
+              hours: existing.totalHours,
+              referenceId: overtimeRequestId,
+              referenceType: 'OVERTIME',
+              yearMonth,
+              description: `加班審核通過 - ${existing.reason}`,
+              isFrozen: false
+            }
+          });
+
+          await prisma.compLeaveBalance.upsert({
+            where: { employeeId: existing.employeeId },
+            update: {
+              pendingEarn: { increment: existing.totalHours }
+            },
+            create: {
+              employeeId: existing.employeeId,
+              pendingEarn: existing.totalHours
+            }
+          });
+        }
+
+        // 發送審核結果通知
+        try {
+          await notifyOvertimeApproval({
+            employeeId: existing.employeeId,
+            employeeName: existing.employee.name,
+            employeeEmail: existing.employee.email || undefined,
+            approved: status === 'APPROVED',
+            overtimeDate: existing.overtimeDate.toISOString().split('T')[0],
+            hours: existing.totalHours,
+            reason: body.rejectionReason,
+          });
+        } catch (notifyError) {
+          console.error('發送通知失敗:', notifyError);
+        }
+
+        return NextResponse.json({
+          success: true,
+          overtimeRequest: updatedOvertimeRequest,
+          message: status === 'APPROVED' ? '加班申請已批准' : '加班申請已拒絕'
         });
-      } catch (notifyError) {
-        console.error('發送通知失敗:', notifyError);
       }
 
-      return NextResponse.json({
-        success: true,
-        overtimeRequest: updatedOvertimeRequest,
-        message: status === 'APPROVED' ? '加班申請已批准' : '加班申請已拒絕'
-      });
+      // HR 不能直接審核
+      return NextResponse.json({ error: '無權限執行此操作，加班需由主管審核後由管理員決核' }, { status: 403 });
     }
 
     // 否則視為「編輯」：申請人自己或管理員/HR可在待審核狀態下修改

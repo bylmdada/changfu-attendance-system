@@ -119,7 +119,7 @@ export async function POST(
     await prisma.overtimeRequest.update({
       where: { id: overtimeId },
       data: {
-        cancellationStatus: 'PENDING_HR',
+        cancellationStatus: 'PENDING_MANAGER',
         cancellationReason: reason.trim(),
         cancellationRequestedAt: new Date()
       }
@@ -127,7 +127,7 @@ export async function POST(
 
     return NextResponse.json({
       success: true,
-      message: '撤銷申請已送出，請等待 HR 審核'
+      message: '撤銷申請已送出，請等待部門主管審核'
     });
   } catch (error) {
     console.error('撤銷加班申請失敗:', error);
@@ -135,7 +135,7 @@ export async function POST(
   }
 }
 
-// PUT: HR/Admin 審核撤銷申請
+// PUT: 主管/Admin 審核撤銷申請
 export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -159,8 +159,8 @@ export async function PUT(
     }
 
     const decoded = verifyToken(token);
-    if (!decoded || !['ADMIN', 'HR'].includes(decoded.role)) {
-      return NextResponse.json({ error: '需要 HR 或管理員權限' }, { status: 403 });
+    if (!decoded || !['ADMIN', 'HR', 'MANAGER'].includes(decoded.role)) {
+      return NextResponse.json({ error: '需要主管或管理員權限' }, { status: 403 });
     }
 
     const { id } = await params;
@@ -181,8 +181,8 @@ export async function PUT(
       return NextResponse.json({ error: '此申請沒有撤銷請求' }, { status: 400 });
     }
 
-    // HR 審核
-    if (decoded.role === 'HR' && overtimeRequest.cancellationStatus === 'PENDING_HR') {
+    // 主管/HR 審核（提供意見）
+    if ((decoded.role === 'MANAGER' || decoded.role === 'HR') && overtimeRequest.cancellationStatus === 'PENDING_MANAGER') {
       if (!['AGREE', 'DISAGREE'].includes(opinion)) {
         return NextResponse.json({ error: '請選擇同意或不同意' }, { status: 400 });
       }
@@ -200,14 +200,14 @@ export async function PUT(
 
       return NextResponse.json({
         success: true,
-        message: 'HR 審核完成，已轉交管理員決核'
+        message: '主管審核完成，已轉交管理員決核'
       });
     }
 
     // Admin 決核
     if (decoded.role === 'ADMIN' && 
         (overtimeRequest.cancellationStatus === 'PENDING_ADMIN' || 
-         overtimeRequest.cancellationStatus === 'PENDING_HR')) {
+         overtimeRequest.cancellationStatus === 'PENDING_MANAGER')) {
       if (!['APPROVE', 'REJECT'].includes(action)) {
         return NextResponse.json({ error: '請選擇核准或駁回' }, { status: 400 });
       }
