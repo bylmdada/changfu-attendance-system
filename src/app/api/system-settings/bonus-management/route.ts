@@ -149,8 +149,10 @@ export async function POST(request: NextRequest) {
       defaultAmount: defaultAmount ? parseFloat(defaultAmount) : null,
       calculationFormula,
       eligibilityRules: eligibilityRules ? JSON.stringify(eligibilityRules) : undefined,
-      paymentSchedule: paymentSchedule || undefined
-    };    let result;
+      paymentSchedule: paymentSchedule ? JSON.stringify(paymentSchedule) : undefined
+    };
+
+    let result;
     if (id) {
       // 更新現有獎金類型
       result = await prisma.bonusConfiguration.update({
@@ -164,12 +166,26 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    // 安全地解析 JSON 欄位
+    const parseJsonField = (field: unknown) => {
+      if (!field) return {};
+      if (typeof field === 'object') return field;
+      if (typeof field === 'string') {
+        try {
+          return JSON.parse(field);
+        } catch {
+          return {};
+        }
+      }
+      return {};
+    };
+
     return NextResponse.json({
       success: true,
       bonusType: {
         ...result,
-        eligibilityRules: result.eligibilityRules ? JSON.parse(result.eligibilityRules as string) : {},
-        paymentSchedule: result.paymentSchedule ? JSON.parse(result.paymentSchedule as string) : {}
+        eligibilityRules: parseJsonField(result.eligibilityRules),
+        paymentSchedule: parseJsonField(result.paymentSchedule)
       }
     });
 

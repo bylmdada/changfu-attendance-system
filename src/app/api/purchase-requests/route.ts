@@ -269,6 +269,38 @@ export async function PUT(request: NextRequest) {
       }
     });
 
+    // 同步更新審核實例和審核記錄
+    const approvalInstance = await prisma.approvalInstance.findFirst({
+      where: {
+        requestType: 'PURCHASE',
+        requestId: id
+      }
+    });
+
+    if (approvalInstance) {
+      // 建立審核記錄
+      await prisma.approvalReview.create({
+        data: {
+          instanceId: approvalInstance.id,
+          level: approvalInstance.currentLevel,
+          reviewerId: user.employee.id,
+          reviewerName: user.employee.name,
+          reviewerRole: user.role === 'ADMIN' ? '管理員' : user.role === 'HR' ? '人資' : '審核者',
+          action: status === 'APPROVED' ? 'APPROVE' : 'REJECT',
+          comment: rejectReason || null
+        }
+      });
+
+      // 更新實例狀態
+      await prisma.approvalInstance.update({
+        where: { id: approvalInstance.id },
+        data: {
+          status: status === 'APPROVED' ? 'APPROVED' : 'REJECTED',
+          currentLevel: approvalInstance.maxLevel
+        }
+      });
+    }
+
     return NextResponse.json({ 
       message: status === 'APPROVED' ? '已核准' : '已駁回',
       purchaseRequest 

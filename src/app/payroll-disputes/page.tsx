@@ -135,6 +135,7 @@ export default function PayrollDisputesPage() {
     maxLevel: number;
     status: string;
     reviews: ApprovalReviewRecord[];
+    labels?: Record<number, { name: string; role: string }>;
   } | null>(null);
 
   const isAdmin = currentUser?.role === 'ADMIN' || currentUser?.role === 'HR';
@@ -308,17 +309,29 @@ export default function PayrollDisputesPage() {
     setApprovalData(null);
     
     try {
-      const response = await fetch(`/api/approval-reviews?requestType=PAYROLL_DISPUTE&requestId=${disputeId}`, {
-        credentials: 'include'
-      });
+      const [reviewsRes, workflowRes] = await Promise.all([
+        fetch(`/api/approval-reviews?requestType=PAYROLL_DISPUTE&requestId=${disputeId}`, {
+          credentials: 'include'
+        }),
+        fetch(`/api/approval-workflow-config?type=PAYROLL_DISPUTE`, {
+          credentials: 'include'
+        })
+      ]);
       
-      if (response.ok) {
-        const data = await response.json();
+      let labels: Record<number, { name: string; role: string }> | undefined;
+      if (workflowRes.ok) {
+        const workflowData = await workflowRes.json();
+        labels = workflowData.labels;
+      }
+      
+      if (reviewsRes.ok) {
+        const data = await reviewsRes.json();
         setApprovalData({
           currentLevel: data.currentLevel,
-          maxLevel: data.maxLevel,
+          maxLevel: labels ? Object.keys(labels).length : data.maxLevel,
           status: data.status,
-          reviews: data.reviews
+          reviews: data.reviews,
+          labels
         });
       }
     } catch (error) {
@@ -577,6 +590,7 @@ export default function PayrollDisputesPage() {
                               maxLevel={approvalData.maxLevel}
                               status={approvalData.status}
                               reviews={approvalData.reviews}
+                              customLabels={approvalData.labels}
                             />
                           ) : (
                             <div className="text-center py-4 text-gray-500">

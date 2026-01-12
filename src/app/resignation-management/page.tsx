@@ -93,6 +93,7 @@ export default function ResignationManagementPage() {
     maxLevel: number;
     status: string;
     reviews: ApprovalReviewRecord[];
+    labels?: Record<number, { name: string; role: string }>;
   } | null>(null);
 
 
@@ -253,17 +254,29 @@ export default function ResignationManagementPage() {
     setApprovalData(null);
     
     try {
-      const response = await fetch(`/api/approval-reviews?requestType=RESIGNATION&requestId=${recordId}`, {
-        credentials: 'include'
-      });
+      const [reviewsRes, workflowRes] = await Promise.all([
+        fetch(`/api/approval-reviews?requestType=RESIGNATION&requestId=${recordId}`, {
+          credentials: 'include'
+        }),
+        fetch(`/api/approval-workflow-config?type=RESIGNATION`, {
+          credentials: 'include'
+        })
+      ]);
       
-      if (response.ok) {
-        const data = await response.json();
+      let labels: Record<number, { name: string; role: string }> | undefined;
+      if (workflowRes.ok) {
+        const workflowData = await workflowRes.json();
+        labels = workflowData.labels;
+      }
+      
+      if (reviewsRes.ok) {
+        const data = await reviewsRes.json();
         setApprovalData({
           currentLevel: data.currentLevel,
-          maxLevel: data.maxLevel,
+          maxLevel: labels ? Object.keys(labels).length : data.maxLevel,
           status: data.status,
-          reviews: data.reviews
+          reviews: data.reviews,
+          labels
         });
       }
     } catch (error) {
@@ -571,6 +584,7 @@ export default function ResignationManagementPage() {
                             maxLevel={approvalData.maxLevel}
                             status={approvalData.status}
                             reviews={approvalData.reviews}
+                            customLabels={approvalData.labels}
                           />
                         ) : (
                           <div className="text-center py-4 text-gray-500">

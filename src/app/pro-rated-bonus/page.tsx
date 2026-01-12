@@ -9,7 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Calculator, Users, FileText, AlertCircle, CheckCircle, Clock, Download, Settings } from 'lucide-react';
-import SystemNavbar from '@/components/SystemNavbar';
+import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 
 interface Employee {
   id: number;
@@ -339,10 +339,8 @@ export default function ProRatedBonusPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <SystemNavbar user={currentUser} backUrl="/dashboard" backLabel="儀表板" />
-      
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <AuthenticatedLayout>
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* 標題和操作按鈕 */}
         <div className="mb-6">
           <div className="flex justify-between items-center">
@@ -699,7 +697,7 @@ export default function ProRatedBonusPage() {
           </CardContent>
         </Card>
       )}
-      </main>
-    </div>
+      </div>
+    </AuthenticatedLayout>
   );
 }
