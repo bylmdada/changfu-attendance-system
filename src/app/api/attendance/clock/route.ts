@@ -188,10 +188,50 @@ export async function POST(request: NextRequest) {
         }
       });
 
+      // 檢查是否需要填寫提早上班原因
+      let reasonPromptData = null;
+      try {
+        const reasonPromptSetting = await prisma.systemSettings.findUnique({
+          where: { key: 'clock_reason_prompt' }
+        });
+        const settings = reasonPromptSetting ? JSON.parse(reasonPromptSetting.value) : { enabled: false };
+        
+        if (settings.enabled) {
+          const todayStr = todayStart.toISOString().split('T')[0];
+          const todaySchedule = await prisma.schedule.findFirst({
+            where: {
+              employeeId: user.employee.id,
+              workDate: todayStr,
+              shiftType: { not: 'OFF' }
+            }
+          });
+
+          if (todaySchedule?.startTime) {
+            const scheduledStart = new Date(todaySchedule.startTime);
+            const clockInTime = new Date(currentTime);
+            const diffMinutes = (scheduledStart.getTime() - clockInTime.getTime()) / (1000 * 60);
+
+            // 如果提早超過閾值
+            if (diffMinutes >= settings.earlyClockInThreshold) {
+              reasonPromptData = {
+                type: 'EARLY_IN',
+                minutesDiff: Math.floor(diffMinutes),
+                scheduledTime: scheduledStart.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' }),
+                recordId: attendance.id
+              };
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('檢查提早打卡設定失敗:', e);
+      }
+
       return NextResponse.json({ 
         message: '上班打卡成功',
         clockInTime: currentTime,
-        attendance: attendance
+        attendance: attendance,
+        requiresReason: !!reasonPromptData,
+        reasonPrompt: reasonPromptData
       });
 
     } else if (type === 'out') {
@@ -257,13 +297,58 @@ export async function POST(request: NextRequest) {
 
       const workHours = (attendance.regularHours || 0) + (attendance.overtimeHours || 0);
 
+      // 檢查是否需要填寫延後下班原因
+      let reasonPromptData = null;
+      try {
+        const reasonPromptSetting = await prisma.systemSettings.findUnique({
+          where: { key: 'clock_reason_prompt' }
+        });
+        const settings = reasonPromptSetting ? JSON.parse(reasonPromptSetting.value) : { enabled: false };
+        
+        if (settings.enabled) {
+          // 查詢今天的班表
+          const todayStr = todayStart.toISOString().split('T')[0];
+          const todaySchedule = await prisma.schedule.findFirst({
+            where: {
+              employeeId: user.employee.id,
+              workDate: todayStr,
+              shiftType: { not: 'OFF' }
+            }
+          });
+
+          if (todaySchedule?.endTime) {
+            // 解析班表下班時間 (格式: "HH:mm")
+            const [endHour, endMinute] = todaySchedule.endTime.split(':').map(Number);
+            const scheduledEnd = new Date(todayStart);
+            scheduledEnd.setHours(endHour, endMinute, 0, 0);
+            
+            const clockOutTime = new Date(currentTime);
+            const diffMinutes = (clockOutTime.getTime() - scheduledEnd.getTime()) / (1000 * 60);
+
+            // 如果延後超過閾值
+            if (diffMinutes >= settings.lateClockOutThreshold) {
+              reasonPromptData = {
+                type: 'LATE_OUT',
+                minutesDiff: Math.floor(diffMinutes),
+                scheduledTime: todaySchedule.endTime,
+                recordId: attendance.id
+              };
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('檢查延後打卡設定失敗:', e);
+      }
+
       return NextResponse.json({ 
         message: '下班打卡成功',
         clockOutTime: currentTime,
         workHours: parseFloat(workHours.toFixed(2)),
         regularHours: attendance.regularHours,
         overtimeHours: attendance.overtimeHours,
-        attendance: attendance
+        attendance: attendance,
+        requiresReason: !!reasonPromptData,
+        reasonPrompt: reasonPromptData
       });
     }
 

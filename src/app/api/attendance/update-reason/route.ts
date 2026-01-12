@@ -6,15 +6,18 @@ import { getUserFromRequest, verifyPassword } from '@/lib/auth';
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { attendanceId, lateClockOutReason, username, password } = body;
+    const { attendanceId, lateClockOutReason, clockOutReason: newClockOutReason, username, password } = body;
+    
+    // 支援新舊欄位名稱
+    const reason = newClockOutReason || lateClockOutReason;
 
     // 驗證參數
     if (!attendanceId) {
       return NextResponse.json({ error: '缺少考勤記錄ID' }, { status: 400 });
     }
 
-    if (!lateClockOutReason || !['PERSONAL', 'WORK'].includes(lateClockOutReason)) {
-      return NextResponse.json({ error: '請選擇有效的原因（PERSONAL 或 WORK）' }, { status: 400 });
+    if (!reason || !['PERSONAL', 'BUSINESS', 'WORK'].includes(reason)) {
+      return NextResponse.json({ error: '請選擇有效的原因' }, { status: 400 });
     }
 
     // 查找考勤記錄
@@ -57,10 +60,11 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '無權限修改此記錄' }, { status: 403 });
     }
 
-    // 更新超時原因
+    // 更新超時原因 - 使用新欄位名稱
+    const finalReason = reason === 'WORK' ? 'BUSINESS' : reason; // 將舊的 WORK 轉換為 BUSINESS
     const updatedAttendance = await prisma.attendanceRecord.update({
       where: { id: attendanceId },
-      data: { lateClockOutReason }
+      data: { clockOutReason: finalReason }
     });
 
     console.log('✅ 超時下班原因已更新:', updatedAttendance);

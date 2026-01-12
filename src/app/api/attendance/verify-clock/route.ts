@@ -259,7 +259,7 @@ export async function POST(request: NextRequest) {
       }
 
       // 取得前端傳來的超時原因（如果有）
-      const lateClockOutReason = body.lateClockOutReason || null;
+      const clockOutReason = body.lateClockOutReason || body.clockOutReason || null;
 
       let attendance;
 
@@ -298,7 +298,7 @@ export async function POST(request: NextRequest) {
             clockOutTime: currentTime,
             regularHours: parseFloat(regularHours.toFixed(2)),
             overtimeHours: parseFloat(overtimeHours.toFixed(2)),
-            lateClockOutReason: lateClockOutReason,
+            clockOutReason: clockOutReason,
             ...locationData
           }
         });
@@ -335,7 +335,7 @@ export async function POST(request: NextRequest) {
             status: 'PRESENT',
             regularHours: 0,
             overtimeHours: 0,
-            lateClockOutReason: lateClockOutReason,
+            clockOutReason: clockOutReason,
             ...locationData
           }
         });

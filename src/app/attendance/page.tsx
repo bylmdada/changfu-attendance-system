@@ -96,6 +96,23 @@ export default function AttendancePage() {
   const [rememberDevice, setRememberDevice] = useState(false);
   const [savedUsername, setSavedUsername] = useState('');
 
+  // WebAuthn / Face ID 狀態
+  const [hasWebAuthnCredential, setHasWebAuthnCredential] = useState(false);
+
+  // 提早/延後打卡原因彈窗狀態
+  const [showReasonModal, setShowReasonModal] = useState(false);
+  const [reasonPromptData, setReasonPromptData] = useState<{
+    type: 'EARLY_IN' | 'LATE_OUT';
+    minutesDiff: number;
+    scheduledTime: string;
+    recordId: number;
+  } | null>(null);
+  const [showOvertimeForm, setShowOvertimeForm] = useState(false);
+  const [quickOvertimeReason, setQuickOvertimeReason] = useState('');
+  const [submittingReason, setSubmittingReason] = useState(false);
+  const [webauthnLoading, setWebauthnLoading] = useState(false);
+  const [loggedInUsername, setLoggedInUsername] = useState('');
+
   const showToast = (type: 'success' | 'error' | 'warning', message: string) => {
     setToast({ type, message });
     setTimeout(() => setToast(null), 5000);
@@ -130,6 +147,124 @@ export default function AttendancePage() {
       setRememberDevice(true);
     }
   }, []);
+
+  // 檢查使用者是否已註冊 WebAuthn 憑證
+  const checkWebAuthnCredential = async (username: string) => {
+    if (!biometricSupported || !username) {
+      setHasWebAuthnCredential(false);
+      return;
+    }
+    try {
+      const response = await fetch('/api/webauthn/check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username }),
+        credentials: 'include'
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setHasWebAuthnCredential(data.hasCredentials || false);
+      } else {
+        setHasWebAuthnCredential(false);
+      }
+    } catch (error) {
+      console.error('檢查 WebAuthn 憑證失敗:', error);
+      setHasWebAuthnCredential(false);
+    }
+  };
+
+  // Face ID / 指紋打卡處理
+  const handleBiometricClock = async (clockType: 'in' | 'out') => {
+    const username = verificationData.username || savedUsername || loggedInUsername;
+    if (!username) {
+      showToast('error', '請先輸入帳號');
+      return;
+    }
+
+    setWebauthnLoading(true);
+    try {
+      // 1. 取得驗證選項
+      const optionsRes = await fetch('/api/webauthn/auth-options', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username }),
+        credentials: 'include'
+      });
+
+      if (!optionsRes.ok) {
+        const errorData = await optionsRes.json();
+        throw new Error(errorData.error || '取得驗證選項失敗');
+      }
+
+      const options = await optionsRes.json();
+
+      // 2. 呼叫 WebAuthn API 進行生物識別驗證
+      const credential = await navigator.credentials.get({
+        publicKey: {
+          challenge: Uint8Array.from(atob(options.challenge.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0)),
+          allowCredentials: options.allowCredentials.map((cred: { id: string; type: string; transports?: string[] }) => ({
+            id: Uint8Array.from(atob(cred.id.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0)),
+            type: cred.type,
+            transports: cred.transports
+          })),
+          timeout: options.timeout,
+          userVerification: options.userVerification,
+          rpId: options.rpId
+        }
+      }) as PublicKeyCredential;
+
+      if (!credential) {
+        throw new Error('生物識別驗證被取消');
+      }
+
+      const response = credential.response as AuthenticatorAssertionResponse;
+
+      // 3. 驗證並打卡
+      const verifyRes = await fetch('/api/webauthn/auth-verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          credential: {
+            id: credential.id,
+            rawId: btoa(String.fromCharCode(...new Uint8Array(credential.rawId))),
+            type: credential.type,
+            response: {
+              clientDataJSON: btoa(String.fromCharCode(...new Uint8Array(response.clientDataJSON))),
+              authenticatorData: btoa(String.fromCharCode(...new Uint8Array(response.authenticatorData))),
+              signature: btoa(String.fromCharCode(...new Uint8Array(response.signature))),
+              userHandle: response.userHandle ? btoa(String.fromCharCode(...new Uint8Array(response.userHandle))) : null
+            }
+          },
+          clockType: clockType
+        }),
+        credentials: 'include'
+      });
+
+      const result = await verifyRes.json();
+
+      if (verifyRes.ok && result.success) {
+        showToast('success', result.message || `${clockType === 'in' ? '上班' : '下班'}打卡成功！`);
+        setShowVerificationModal(false);
+        setPendingClockType(null);
+        loadTodayStatus();
+      } else {
+        throw new Error(result.error || '打卡失敗');
+      }
+    } catch (error) {
+      console.error('Face ID 打卡失敗:', error);
+      if (error instanceof Error) {
+        if (error.name === 'NotAllowedError') {
+          showToast('warning', '生物識別驗證被取消，請使用密碼打卡');
+        } else {
+          showToast('error', error.message);
+        }
+      } else {
+        showToast('error', 'Face ID 驗證失敗，請使用密碼打卡');
+      }
+    } finally {
+      setWebauthnLoading(false);
+    }
+  };
 
   useEffect(() => {
     // 設定頁面標題
@@ -377,6 +512,12 @@ export default function AttendancePage() {
       const userData = await authResponse.json();
       console.log('✅ 用戶已登入:', userData.user?.username);
       setUser(userData.user);
+      
+      // 保存登入的使用者名稱並檢查 WebAuthn 憑證
+      if (userData.user?.username) {
+        setLoggedInUsername(userData.user.username);
+        checkWebAuthnCredential(userData.user.username);
+      }
 
       const response = await fetch('/api/attendance/clock', {
         credentials: 'include', // 確保包含 cookies
@@ -507,6 +648,12 @@ export default function AttendancePage() {
       if (response.ok) {
         showToast('success', data.message);
         loadTodayStatus();
+        
+        // 檢查是否需要填寫提早/延後打卡原因
+        if (data.requiresReason && data.reasonPrompt) {
+          setReasonPromptData(data.reasonPrompt);
+          setShowReasonModal(true);
+        }
       } else {
         showToast('error', data.error || '打卡失敗');
       }
@@ -524,6 +671,74 @@ export default function AttendancePage() {
     setShowVerificationModal(false);
     setPendingClockType(null);
     setVerificationData({ username: '', password: '' });
+  };
+
+  // 處理提早/延後打卡原因選擇
+  const handleReasonSubmit = async (reason: 'PERSONAL' | 'BUSINESS', createOvertime = false) => {
+    if (!reasonPromptData) return;
+    
+    setSubmittingReason(true);
+    try {
+      const requestData: {
+        recordId: number;
+        clockType: 'in' | 'out';
+        reason: string;
+        newOvertimeRequest?: {
+          startTime: string;
+          endTime: string;
+          hours: number;
+          overtimeReason: string;
+        };
+      } = {
+        recordId: reasonPromptData.recordId,
+        clockType: reasonPromptData.type === 'EARLY_IN' ? 'in' : 'out',
+        reason
+      };
+
+      // 如果選擇公務且要快速申請加班
+      if (reason === 'BUSINESS' && createOvertime && quickOvertimeReason.trim()) {
+        const now = new Date();
+        requestData.newOvertimeRequest = {
+          startTime: reasonPromptData.type === 'EARLY_IN' 
+            ? now.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false })
+            : reasonPromptData.scheduledTime,
+          endTime: reasonPromptData.type === 'EARLY_IN'
+            ? reasonPromptData.scheduledTime
+            : now.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false }),
+          hours: reasonPromptData.minutesDiff / 60,
+          overtimeReason: quickOvertimeReason
+        };
+      }
+
+      const response = await fetchJSONWithCSRF('/api/attendance/clock-reason', {
+        method: 'POST',
+        body: requestData
+      });
+
+      const data = await response.json();
+      if (response.ok) {
+        showToast('success', data.message);
+        if (data.overtimeId) {
+          showToast('success', '加班申請已提交，待主管審核');
+        }
+      } else {
+        showToast('error', data.error || '記錄原因失敗');
+      }
+    } catch (error) {
+      console.error('提交打卡原因失敗:', error);
+      showToast('error', '系統錯誤');
+    } finally {
+      setSubmittingReason(false);
+      setShowReasonModal(false);
+      setShowOvertimeForm(false);
+      setQuickOvertimeReason('');
+      setReasonPromptData(null);
+    }
+  };
+
+  const handleReasonCancel = () => {
+    // 用戶跳過原因選擇，預設記錄為非公務
+    handleReasonSubmit('PERSONAL');
   };
 
   const formatTime = (time: Date | null) => {
@@ -920,16 +1135,41 @@ export default function AttendancePage() {
               {pendingClockType === 'in' ? '上班打卡' : '下班打卡'}確認
             </h3>
             
-            {/* 生物識別提示 */}
-            {biometricSupported && (
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4 flex items-center gap-2">
-                <Fingerprint className="w-5 h-5 text-blue-600" />
-                <span className="text-sm text-blue-700">此裝置支援指紋/Face ID</span>
+            {/* 生物識別提示與按鈕 */}
+            {biometricSupported && hasWebAuthnCredential && (
+              <div className="mb-4">
+                <button
+                  onClick={() => pendingClockType && handleBiometricClock(pendingClockType)}
+                  disabled={webauthnLoading || clockLoading}
+                  className="w-full bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-4 px-4 rounded-xl transition-all flex items-center justify-center gap-3 shadow-lg"
+                >
+                  <Fingerprint className="w-6 h-6" />
+                  <span className="text-lg">{webauthnLoading ? '驗證中...' : 'Face ID / 指紋打卡'}</span>
+                </button>
+                <div className="text-center text-sm text-gray-500 mt-2">
+                  或使用帳號密碼
+                </div>
+              </div>
+            )}
+            
+            {/* 尚未設定生物識別的提示 */}
+            {biometricSupported && !hasWebAuthnCredential && (
+              <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 mb-4">
+                <div className="flex items-center gap-2">
+                  <Fingerprint className="w-5 h-5 text-yellow-600" />
+                  <span className="text-sm text-yellow-700">此裝置支援 Face ID / 指紋</span>
+                </div>
+                <a 
+                  href="/personal-settings" 
+                  className="text-sm text-blue-600 hover:text-blue-800 underline mt-1 block"
+                >
+                  前往設定生物識別，下次快速打卡 →
+                </a>
               </div>
             )}
             
             <p className="text-gray-600 mb-4 md:mb-6 text-center text-sm md:text-base">
-              為確保打卡安全性，請輸入您的帳號密碼
+              {hasWebAuthnCredential ? '或輸入帳號密碼打卡' : '請輸入您的帳號密碼'}
             </p>
 
             <div className="space-y-4">
@@ -1023,6 +1263,130 @@ export default function AttendancePage() {
                 {clockLoading ? '打卡中...' : '確認打卡'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* 提早/延後打卡原因選擇彈窗 */}
+      {showReasonModal && reasonPromptData && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl p-6 max-w-md w-full shadow-xl">
+            {!showOvertimeForm ? (
+              // 步驟1: 選擇原因
+              <>
+                <h3 className="text-lg font-semibold text-gray-900 mb-2 flex items-center">
+                  <Clock className="w-5 h-5 mr-2 text-blue-600" />
+                  {reasonPromptData.type === 'EARLY_IN' ? '提早上班' : '延後下班'}提示
+                </h3>
+                <p className="text-sm text-gray-600 mb-4">
+                  您的打卡時間比班表時間
+                  {reasonPromptData.type === 'EARLY_IN' ? '提早' : '延後'}了 
+                  <span className="font-semibold text-blue-600 mx-1">{reasonPromptData.minutesDiff}</span>
+                  分鐘
+                  {reasonPromptData.scheduledTime && ` (班表時間：${reasonPromptData.scheduledTime})`}
+                  ，請選擇原因：
+                </p>
+                <div className="space-y-3">
+                  <button
+                    onClick={() => handleReasonSubmit('PERSONAL')}
+                    disabled={submittingReason}
+                    className="w-full py-3 px-4 bg-gray-100 hover:bg-gray-200 text-gray-800 font-medium rounded-lg transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+                  >
+                    <User className="w-5 h-5" />
+                    非公務（預設）
+                  </button>
+                  <button
+                    onClick={() => setShowOvertimeForm(true)}
+                    disabled={submittingReason}
+                    className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+                  >
+                    <Clock className="w-5 h-5" />
+                    公務
+                  </button>
+                </div>
+                <div className="mt-4 text-center">
+                  <button
+                    onClick={handleReasonCancel}
+                    disabled={submittingReason}
+                    className="text-sm text-gray-500 hover:text-gray-700"
+                  >
+                    {submittingReason ? '處理中...' : '跳過'}
+                  </button>
+                </div>
+              </>
+            ) : (
+              // 步驟2: 公務 - 可選填加班申請
+              <>
+                <h3 className="text-lg font-semibold text-gray-900 mb-2">
+                  加班申請（選填）
+                </h3>
+                <p className="text-sm text-gray-600 mb-4">
+                  如需申請加班費或補休，請填寫加班事由：
+                </p>
+                
+                <div className="space-y-4 mb-4">
+                  <div className="grid grid-cols-2 gap-3 text-sm">
+                    <div className="bg-gray-50 p-3 rounded">
+                      <div className="text-gray-500">
+                        {reasonPromptData.type === 'EARLY_IN' ? '提早開始' : '加班開始'}
+                      </div>
+                      <div className="font-medium text-gray-900">
+                        {reasonPromptData.type === 'EARLY_IN' 
+                          ? new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })
+                          : reasonPromptData.scheduledTime}
+                      </div>
+                    </div>
+                    <div className="bg-gray-50 p-3 rounded">
+                      <div className="text-gray-500">
+                        {reasonPromptData.type === 'EARLY_IN' ? '班表上班' : '實際下班'}
+                      </div>
+                      <div className="font-medium text-gray-900">
+                        {reasonPromptData.type === 'EARLY_IN'
+                          ? reasonPromptData.scheduledTime
+                          : new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })}
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      加班事由
+                    </label>
+                    <textarea
+                      value={quickOvertimeReason}
+                      onChange={(e) => setQuickOvertimeReason(e.target.value)}
+                      placeholder="請輸入加班事由..."
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
+                      rows={3}
+                    />
+                  </div>
+                </div>
+                
+                <div className="space-y-2">
+                  <button
+                    onClick={() => handleReasonSubmit('BUSINESS', true)}
+                    disabled={submittingReason || !quickOvertimeReason.trim()}
+                    className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {submittingReason ? '提交中...' : '提交加班申請'}
+                  </button>
+                  <button
+                    onClick={() => handleReasonSubmit('BUSINESS', false)}
+                    disabled={submittingReason}
+                    className="w-full py-2 px-4 text-gray-600 hover:text-gray-800 text-sm transition-colors"
+                  >
+                    僅記錄公務，稍後申請加班
+                  </button>
+                  <button
+                    onClick={() => setShowOvertimeForm(false)}
+                    disabled={submittingReason}
+                    className="w-full py-2 px-4 text-gray-400 hover:text-gray-600 text-sm transition-colors"
+                  >
+                    返回
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
