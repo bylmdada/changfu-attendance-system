@@ -82,7 +82,7 @@ export default function SystemNavbar({ user, backUrl, backLabel }: SystemNavbarP
                 priority
               />
               <span className="ml-3 font-bold text-xl text-gray-900 hidden sm:block">長福會考勤系統</span>
-              <span className="ml-2 font-bold text-lg text-gray-900 sm:hidden">考勤系統</span>
+              <span className="ml-2 font-bold text-lg text-gray-900 sm:hidden">長福會考勤系統</span>
             </a>
           </div>
           

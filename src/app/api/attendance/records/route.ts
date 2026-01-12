@@ -40,18 +40,36 @@ export async function GET(request: NextRequest) {
 
     // 構建查詢條件
     const where: Record<string, unknown> = {};
+    const department = searchParams.get('department');
     
     // 非管理員只能查看自己的記錄
     if (user.role !== 'ADMIN' && user.role !== 'HR') {
       where.employeeId = user.employeeId;
-    } else if (search) {
-      // 管理員可以搜尋其他員工
-      where.employee = {
-        OR: [
-          { name: { contains: search } },
-          { employeeId: { contains: search } }
-        ]
-      };
+    } else {
+      // 管理員可以搜尋和篩選
+      const employeeConditions: Record<string, unknown>[] = [];
+      
+      // 搜尋條件
+      if (search) {
+        employeeConditions.push({
+          OR: [
+            { name: { contains: search } },
+            { employeeId: { contains: search } }
+          ]
+        });
+      }
+      
+      // 部門篩選
+      if (department) {
+        employeeConditions.push({ department: department });
+      }
+      
+      // 組合條件
+      if (employeeConditions.length > 0) {
+        where.employee = employeeConditions.length === 1 
+          ? employeeConditions[0] 
+          : { AND: employeeConditions };
+      }
     }
 
     // 日期篩選
@@ -232,6 +250,9 @@ export async function GET(request: NextRequest) {
         }
       }
       
+      // 判斷是否為管理員/HR（可查看GPS資訊）
+      const isAdmin = user.role === 'ADMIN' || user.role === 'HR';
+      
       return {
         id: record.id,
         employeeId: record.employeeId,
@@ -245,7 +266,18 @@ export async function GET(request: NextRequest) {
         employee: record.employee,
         // 新增：班表資訊
         scheduledStart: schedule?.startTime || null,
-        scheduledEnd: schedule?.endTime || null
+        scheduledEnd: schedule?.endTime || null,
+        // 新增：GPS 資訊（僅管理員/HR 可查看）
+        ...(isAdmin ? {
+          clockInLatitude: record.clockInLatitude,
+          clockInLongitude: record.clockInLongitude,
+          clockInAccuracy: record.clockInAccuracy,
+          clockInAddress: record.clockInAddress,
+          clockOutLatitude: record.clockOutLatitude,
+          clockOutLongitude: record.clockOutLongitude,
+          clockOutAccuracy: record.clockOutAccuracy,
+          clockOutAddress: record.clockOutAddress
+        } : {})
       };
     });
 

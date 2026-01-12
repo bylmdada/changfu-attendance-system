@@ -14,12 +14,19 @@ export interface ApprovalReviewRecord {
   reviewedAt?: string;      // 審核時間
 }
 
+// 層級標籤類型（可動態傳入）
+export interface LevelLabel {
+  name: string;  // 例如 '一階', '二階'
+  role: string;  // 例如 '部門主管', '管理員決核'
+}
+
 interface ApprovalProgressProps {
   currentLevel: number;     // 當前審核層級
-  maxLevel: number;         // 最大層級 (2 或 3)
+  maxLevel: number;         // 最大層級 (1, 2 或 3)
   status: string;           // 整體狀態
   reviews: ApprovalReviewRecord[];  // 審核歷程
   showHistoryTable?: boolean;  // 是否顯示歷程表格
+  customLabels?: Record<number, LevelLabel>;  // 動態層級標籤（從 API 讀取）
 }
 
 // 角色標籤映射（簡稱，與員工清單格式統一）
@@ -30,11 +37,10 @@ const ROLE_LABELS: Record<string, string> = {
   ADMIN: '管理員'
 };
 
-// 層級標籤
-const LEVEL_LABELS: Record<number, { name: string; role: string }> = {
+// 預設層級標籤（二階審核流程：主管→管理員）
+const DEFAULT_LEVEL_LABELS: Record<number, LevelLabel> = {
   1: { name: '一階', role: '部門主管' },
-  2: { name: '二階', role: 'HR會簽' },
-  3: { name: '三階', role: '管理員決核' }
+  2: { name: '二階', role: '管理員決核' }
 };
 
 // 狀態色彩
@@ -58,8 +64,12 @@ export default function ApprovalProgress({
   maxLevel,
   status,
   reviews,
-  showHistoryTable = true
+  showHistoryTable = true,
+  customLabels
 }: ApprovalProgressProps) {
+  // 使用動態標籤或預設標籤
+  const LEVEL_LABELS = customLabels || DEFAULT_LEVEL_LABELS;
+  
   // 格式化時間
   const formatDateTime = (dateString?: string) => {
     if (!dateString) return '-';
@@ -178,11 +188,11 @@ export default function ApprovalProgress({
       if (review) {
         allLevels.push(review);
       } else {
+        // 二階審核流程：level 1=主管, level 2=管理員
         allLevels.push({
           level,
           reviewerName: '-',
-          reviewerRole: LEVEL_LABELS[level]?.role === 'HR會簽' ? 'HR' : 
-                        LEVEL_LABELS[level]?.role === '管理員決核' ? 'ADMIN' : 'MANAGER',
+          reviewerRole: level === 1 ? 'MANAGER' : 'ADMIN',
           status: 'PENDING'
         });
       }

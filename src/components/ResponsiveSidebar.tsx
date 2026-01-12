@@ -128,6 +128,11 @@ const menuItems: MenuItem[] = [
     href: '/password-management',
     icon: Shield,
   },
+  {
+    name: '個人設定',
+    href: '/personal-settings',
+    icon: Settings,
+  },
   
   // ===== 人事異動（所有員工可申請） =====
   {

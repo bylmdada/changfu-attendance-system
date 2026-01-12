@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { 
   History, Calendar, Clock, Download, 
-  ChevronLeft, ChevronRight, Filter, BarChart3
+  ChevronLeft, ChevronRight, Filter, BarChart3, MapPin
 } from 'lucide-react';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 
@@ -25,6 +25,15 @@ interface AttendanceRecord {
     department: string;
     position: string;
   };
+  // GPS 資訊（僅管理員/HR 可見）
+  clockInLatitude?: number;
+  clockInLongitude?: number;
+  clockInAccuracy?: number;
+  clockInAddress?: string;
+  clockOutLatitude?: number;
+  clockOutLongitude?: number;
+  clockOutAccuracy?: number;
+  clockOutAddress?: string;
 }
 
 interface User {
@@ -75,8 +84,12 @@ export default function AttendanceRecordsPage() {
     endDate: '',
     search: '',
     overtimeHours: '',
-    status: ''
+    status: '',
+    department: ''  // 新增：部門篩選
   });
+  
+  // 部門列表（管理員/HR 用）
+  const [departments, setDepartments] = useState<{ id: number; name: string }[]>([]);
 
   // 排序狀態
   const [sortConfig, setSortConfig] = useState<{ field: 'date' | 'clockIn' | 'clockOut' | 'regular' | 'overtime' | 'status'; direction: 'asc' | 'desc' }>({ field: 'date', direction: 'desc' });
@@ -126,6 +139,21 @@ export default function AttendanceRecordsPage() {
         
         const userData = await authResponse.json();
         setUser(userData.user);
+        
+        // 如果是管理員/HR，獲取部門列表
+        if (userData.user.role === 'ADMIN' || userData.user.role === 'HR') {
+          try {
+            const deptResponse = await fetch('/api/departments', {
+              credentials: 'include'
+            });
+            if (deptResponse.ok) {
+              const deptData = await deptResponse.json();
+              setDepartments(deptData.departments || []);
+            }
+          } catch (err) {
+            console.error('獲取部門列表失敗:', err);
+          }
+        }
       } catch (error) {
         console.error('獲取用戶信息失敗:', error);
         setLoading(false);
@@ -158,6 +186,7 @@ export default function AttendanceRecordsPage() {
         if (filters.search) params.append('search', filters.search);
         if (filters.overtimeHours) params.append('overtimeHours', filters.overtimeHours);
         if (filters.status) params.append('status', filters.status);
+        if (filters.department) params.append('department', filters.department);
         
         console.log('🌐 發送請求到:', `/api/attendance/records?${params.toString()}`);
         console.log('📝 請求參數詳情:', Object.fromEntries(params));
@@ -198,7 +227,7 @@ export default function AttendanceRecordsPage() {
 
     fetchRecords();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user, pagination.current, filters.startDate, filters.endDate, filters.search, filters.overtimeHours, filters.status]);
+  }, [user, pagination.current, filters.startDate, filters.endDate, filters.search, filters.overtimeHours, filters.status, filters.department]);
 
   const formatDate = (dateString: string) => {
     const date = new Date(dateString);
@@ -236,18 +265,56 @@ export default function AttendanceRecordsPage() {
   };
 
   const exportToCSV = () => {
-    const csvData = records.map(record => ({
-      '日期': formatDate(record.workDate),
-      '上班時間': formatTime(record.clockInTime),
-      '下班時間': formatTime(record.clockOutTime),
-      '正常工時': record.regularHours,
-      '加班工時': record.overtimeHours,
-      '狀態': record.status
-    }));
+    const isAdmin = user && (user.role === 'ADMIN' || user.role === 'HR');
+    
+    const csvData = records.map(record => {
+      // 基本資料
+      const baseData: Record<string, string | number> = {
+        '員工姓名': record.employee?.name || '-',
+        '員工編號': record.employee?.employeeId || '-',
+        '部門': record.employee?.department || '-',
+        '職位': record.employee?.position || '-',
+        '日期': formatDate(record.workDate),
+        '星期': formatWeekday(record.workDate).replace(/[()]/g, ''),
+        '上班時間': formatTime(record.clockInTime),
+        '下班時間': formatTime(record.clockOutTime),
+        '正常工時': record.regularHours,
+        '加班工時': record.overtimeHours,
+        '狀態': record.status
+      };
+      
+      // 管理員/HR 可匯出 GPS 資訊
+      if (isAdmin) {
+        baseData['上班打卡緯度'] = record.clockInLatitude || '-';
+        baseData['上班打卡經度'] = record.clockInLongitude || '-';
+        baseData['上班打卡精確度(m)'] = record.clockInAccuracy || '-';
+        baseData['上班打卡地址'] = record.clockInAddress || '-';
+        baseData['下班打卡緯度'] = record.clockOutLatitude || '-';
+        baseData['下班打卡經度'] = record.clockOutLongitude || '-';
+        baseData['下班打卡精確度(m)'] = record.clockOutAccuracy || '-';
+        baseData['下班打卡地址'] = record.clockOutAddress || '-';
+      }
+      
+      return baseData;
+    });
+
+    if (csvData.length === 0) {
+      alert('沒有資料可匯出');
+      return;
+    }
+
+    // 處理 CSV 內容中的逗號和換行符號
+    const escapeCSV = (value: string | number) => {
+      const str = String(value);
+      if (str.includes(',') || str.includes('\n') || str.includes('"')) {
+        return `"${str.replace(/"/g, '""')}"`;
+      }
+      return str;
+    };
 
     const csvContent = [
       Object.keys(csvData[0]).join(','),
-      ...csvData.map(row => Object.values(row).join(','))
+      ...csvData.map(row => Object.values(row).map(escapeCSV).join(','))
     ].join('\n');
 
     const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -376,6 +443,23 @@ export default function AttendanceRecordsPage() {
                   </select>
                 </div>
 
+                {/* 部門篩選（僅管理員/HR 可見）*/}
+                {user && (user.role === 'ADMIN' || user.role === 'HR') && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">部門</label>
+                    <select
+                      value={filters.department}
+                      onChange={(e) => setFilters({...filters, department: e.target.value})}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-black focus:ring-2 focus:ring-blue-500"
+                    >
+                      <option value="">全部部門</option>
+                      {departments.map(dept => (
+                        <option key={dept.id} value={dept.name}>{dept.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
                 <div className="flex items-end space-x-2">
                   <button
                     onClick={handleDateFilter}
@@ -427,6 +511,12 @@ export default function AttendanceRecordsPage() {
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('status')}>
                           狀態 {sortConfig.field === 'status' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
                         </th>
+                        {/* GPS 欄位（管理員/HR 可見）*/}
+                        {user && (user.role === 'ADMIN' || user.role === 'HR') && (
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            <MapPin className="w-4 h-4 inline mr-1" />打卡位置
+                          </th>
+                        )}
                       </tr>
                     </thead>
                     <tbody className="bg-white divide-y divide-gray-200">
@@ -475,6 +565,69 @@ export default function AttendanceRecordsPage() {
                               {record.status}
                             </span>
                           </td>
+                          {/* GPS 資訊（管理員/HR 可見）*/}
+                          {user && (user.role === 'ADMIN' || user.role === 'HR') && (
+                            <td className="px-6 py-4 text-xs">
+                              {/* 上班打卡位置 */}
+                              {record.clockInLatitude && record.clockInLongitude ? (
+                                <div className="mb-1">
+                                  <span className="text-green-600 font-medium">上班：</span>
+                                  <a
+                                    href={`https://www.google.com/maps?q=${record.clockInLatitude},${record.clockInLongitude}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="ml-1 text-blue-600 hover:underline"
+                                  >
+                                    📍 查看地圖
+                                  </a>
+                                  {record.clockInAccuracy && (
+                                    <span className="ml-1 text-gray-400">
+                                      (±{Math.round(record.clockInAccuracy)}m)
+                                    </span>
+                                  )}
+                                  {record.clockInAddress && (
+                                    <div className="text-gray-500 truncate max-w-[200px]" title={record.clockInAddress}>
+                                      {record.clockInAddress}
+                                    </div>
+                                  )}
+                                </div>
+                              ) : record.clockInTime ? (
+                                <div className="text-gray-400 mb-1">上班：無GPS</div>
+                              ) : null}
+                              
+                              {/* 下班打卡位置 */}
+                              {record.clockOutLatitude && record.clockOutLongitude ? (
+                                <div>
+                                  <span className="text-orange-600 font-medium">下班：</span>
+                                  <a
+                                    href={`https://www.google.com/maps?q=${record.clockOutLatitude},${record.clockOutLongitude}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="ml-1 text-blue-600 hover:underline"
+                                  >
+                                    📍 查看地圖
+                                  </a>
+                                  {record.clockOutAccuracy && (
+                                    <span className="ml-1 text-gray-400">
+                                      (±{Math.round(record.clockOutAccuracy)}m)
+                                    </span>
+                                  )}
+                                  {record.clockOutAddress && (
+                                    <div className="text-gray-500 truncate max-w-[200px]" title={record.clockOutAddress}>
+                                      {record.clockOutAddress}
+                                    </div>
+                                  )}
+                                </div>
+                              ) : record.clockOutTime ? (
+                                <div className="text-gray-400">下班：無GPS</div>
+                              ) : null}
+                              
+                              {/* 完全無打卡記錄 */}
+                              {!record.clockInTime && !record.clockOutTime && (
+                                <span className="text-gray-400">-</span>
+                              )}
+                            </td>
+                          )}
                         </tr>
                       ))}
                     </tbody>

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Image from 'next/image';
-import { Users, Clock, Calendar, DollarSign, LogOut, Timer, BarChart3, UserPlus, FileText, Key, Megaphone, X, AlertTriangle, ShoppingCart, Heart, Cloud, Wallet } from 'lucide-react';
+import { Users, Clock, Calendar, DollarSign, LogOut, Timer, BarChart3, UserPlus, FileText, Key, Megaphone, X, AlertTriangle, ShoppingCart, Heart, Cloud, Wallet, Settings } from 'lucide-react';
 import ResponsiveSidebar from '@/components/ResponsiveSidebar';
 
 interface Announcement {
@@ -208,12 +208,13 @@ export default function DashboardPage() {
       // 管理員可以看到更多統計
       if (user?.role === 'ADMIN' || user?.role === 'HR') {
         // 載入總員工數
-        const employeeResponse = await fetch('/api/employees', {
+        const employeeResponse = await fetch('/api/employees?limit=1', {
           credentials: 'include'
         });
         if (employeeResponse.ok) {
           const employeeData = await employeeResponse.json();
-          totalEmp = employeeData.employees?.length || 0;
+          // 使用分頁中的 total 來獲取正確的總數
+          totalEmp = employeeData.pagination?.total || employeeData.employees?.length || 0;
         }
 
         // 載入今日出勤數據
@@ -425,7 +426,7 @@ export default function DashboardPage() {
                 priority
               />
               <span className="ml-3 font-bold text-xl text-gray-900 hidden sm:block">長福會考勤系統</span>
-              <span className="ml-2 font-bold text-lg text-gray-900 sm:hidden">考勤系統</span>
+              <span className="ml-2 font-bold text-lg text-gray-900 sm:hidden">長福會考勤系統</span>
             </div>
             <div className="flex items-center space-x-2 sm:space-x-4">
               <div className="hidden md:block text-gray-700 font-medium text-base">
@@ -1025,6 +1026,12 @@ export default function DashboardPage() {
                 <Key className="h-8 w-8 text-red-600 mb-2 group-hover:scale-110 transition-transform" />
                 <h3 className="font-medium text-gray-900">密碼管理</h3>
                 <p className="text-sm text-gray-500">修改密碼、重置員工密碼</p>
+              </a>
+
+              <a href="/personal-settings" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
+                <Settings className="h-8 w-8 text-purple-600 mb-2 group-hover:scale-110 transition-transform" />
+                <h3 className="font-medium text-gray-900">個人設定</h3>
+                <p className="text-sm text-gray-500">帳號資訊、Face ID 設定</p>
               </a>
 
               {(user?.role === 'ADMIN' || user?.role === 'HR') && (

@@ -439,17 +439,17 @@ export default function EmployeesPage() {
                         <button
                           onClick={() => setFilters(prev => ({ ...prev, page: pagination.page - 1 }))}
                           disabled={pagination.page <= 1}
-                          className="px-3 py-1 border border-gray-300 rounded text-sm disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
+                          className="px-3 py-1 border border-gray-300 rounded text-sm text-gray-700 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
                         >
                           上一頁
                         </button>
-                        <span className="px-3 py-1 text-sm">
+                        <span className="px-3 py-1 text-sm text-gray-700 bg-blue-50 border border-blue-200 rounded">
                           第 {pagination.page} 頁，共 {pagination.pages} 頁
                         </span>
                         <button
                           onClick={() => setFilters(prev => ({ ...prev, page: pagination.page + 1 }))}
                           disabled={pagination.page >= pagination.pages}
-                          className="px-3 py-1 border border-gray-300 rounded text-sm disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
+                          className="px-3 py-1 border border-gray-300 rounded text-sm text-gray-700 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
                         >
                           下一頁
                         </button>

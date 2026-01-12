@@ -113,6 +113,7 @@ export default function OvertimeManagementPage() {
     maxLevel: number;
     status: string;
     reviews: ApprovalReviewRecord[];
+    labels?: Record<number, { name: string; role: string }>;
   } | null>(null);
 
 
@@ -442,17 +443,30 @@ export default function OvertimeManagementPage() {
     setApprovalData(null);
     
     try {
-      const response = await fetch(`/api/approval-reviews?requestType=OVERTIME&requestId=${requestId}`, {
-        credentials: 'include'
-      });
+      // 同時獲取審核歷程和工作流程設定
+      const [reviewsRes, workflowRes] = await Promise.all([
+        fetch(`/api/approval-reviews?requestType=OVERTIME&requestId=${requestId}`, {
+          credentials: 'include'
+        }),
+        fetch(`/api/approval-workflow-config?type=OVERTIME`, {
+          credentials: 'include'
+        })
+      ]);
       
-      if (response.ok) {
-        const data = await response.json();
+      let labels: Record<number, { name: string; role: string }> | undefined;
+      if (workflowRes.ok) {
+        const workflowData = await workflowRes.json();
+        labels = workflowData.labels;
+      }
+      
+      if (reviewsRes.ok) {
+        const data = await reviewsRes.json();
         setApprovalData({
           currentLevel: data.currentLevel,
-          maxLevel: data.maxLevel,
+          maxLevel: labels ? Object.keys(labels).length : data.maxLevel,
           status: data.status,
-          reviews: data.reviews
+          reviews: data.reviews,
+          labels
         });
       }
     } catch (error) {
@@ -637,14 +651,14 @@ export default function OvertimeManagementPage() {
               <button
                 onClick={exportToCSV}
                 disabled={sortedRequests.length === 0}
-                className="px-3 py-1.5 text-sm bg-gray-600 text-white rounded hover:bg-gray-700 disabled:opacity-50"
+                className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 font-medium shadow-sm"
               >
                 匯出 CSV
               </button>
               <button
                 onClick={exportToExcel}
                 disabled={sortedRequests.length === 0}
-                className="px-3 py-1.5 text-sm bg-emerald-600 text-white rounded hover:bg-emerald-700 disabled:opacity-50"
+                className="px-3 py-1.5 text-sm bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50 font-medium shadow-sm"
               >
                 匯出 Excel
               </button>
@@ -870,6 +884,7 @@ export default function OvertimeManagementPage() {
                             maxLevel={approvalData.maxLevel}
                             status={approvalData.status}
                             reviews={approvalData.reviews}
+                            customLabels={approvalData.labels}
                           />
                         ) : (
                           <div className="text-center py-4 text-gray-500">

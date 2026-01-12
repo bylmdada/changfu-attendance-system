@@ -1,14 +1,9 @@
-const CACHE_NAME = 'changfu-attendance-v1';
+const CACHE_NAME = 'changfu-attendance-v2';
 const OFFLINE_URL = '/offline.html';
 
-// 需要快取的靜態資源
+// 需要快取的靜態資源（只快取確定存在的檔案）
 const STATIC_CACHE = [
-  '/',
-  '/login',
-  '/quick-clock',
-  '/manifest.json',
-  '/icons/icon-192x192.png',
-  '/icons/icon-512x512.png'
+  '/manifest.json'
 ];
 
 // 安裝事件 - 快取靜態資源
@@ -17,7 +12,12 @@ self.addEventListener('install', (event) => {
     caches.open(CACHE_NAME)
       .then((cache) => {
         console.log('快取靜態資源');
-        return cache.addAll(STATIC_CACHE);
+        // 逐個快取，忽略失敗的項目
+        return Promise.allSettled(
+          STATIC_CACHE.map(url => 
+            cache.add(url).catch(err => console.warn('快取失敗:', url, err))
+          )
+        );
       })
       .then(() => {
         return self.skipWaiting();

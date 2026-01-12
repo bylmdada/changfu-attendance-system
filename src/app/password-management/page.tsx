@@ -316,7 +316,8 @@ export default function PasswordManagement() {
 
   const fetchUsers = async () => {
     try {
-      const response = await fetch('/api/employees', {
+      // 請求所有員工（設定較大的 limit）
+      const response = await fetch('/api/employees?limit=1000', {
         credentials: 'include'
       });
 
@@ -627,7 +628,7 @@ export default function PasswordManagement() {
                     不可重複使用最近 {passwordPolicy?.passwordHistoryCount || 3} 次密碼
                   </li>
                 )}
-                {passwordPolicy?.expirationMonths && passwordPolicy.expirationMonths > 0 && (
+                {passwordPolicy?.expirationMonths !== undefined && passwordPolicy.expirationMonths > 0 && (
                   <li className="flex items-center">
                     <span className="w-2 h-2 bg-purple-500 rounded-full mr-2"></span>
                     密碼有效期限：{passwordPolicy.expirationMonths} 個月
