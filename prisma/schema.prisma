@@ -372,7 +372,13 @@ model AttendanceRecord {
   
   regularHours  Float?           @map("regular_hours")
   overtimeHours Float?           @map("overtime_hours")
-  lateClockOutReason String?     @map("late_clock_out_reason") // 'PERSONAL' | 'WORK' - 超時下班原因
+  
+  // 提早上班/延後下班原因記錄
+  clockInReason     String?      @map("clock_in_reason")     // 'PERSONAL' | 'BUSINESS' - 提早上班原因
+  clockOutReason    String?      @map("clock_out_reason")    // 'PERSONAL' | 'BUSINESS' - 延後下班原因
+  clockInOvertimeId Int?         @map("clock_in_overtime_id")  // 關聯的加班申請 ID (提早上班)
+  clockOutOvertimeId Int?        @map("clock_out_overtime_id") // 關聯的加班申請 ID (延後下班)
+  
   status        String           @default("PRESENT")
   notes         String?
   createdAt     DateTime         @default(now()) @map("created_at")
