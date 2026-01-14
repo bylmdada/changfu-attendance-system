@@ -1,8 +1,9 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import { Clock, Save, AlertCircle, CheckCircle } from 'lucide-react';
-import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import SystemNavbar from '@/components/SystemNavbar';
 
 interface Settings {
   enabled: boolean;
@@ -12,7 +13,22 @@ interface Settings {
   excludeApprovedOvertime: boolean;
 }
 
+interface User {
+  id: number;
+  username: string;
+  role: string;
+  employee: {
+    id: number;
+    employeeId: string;
+    name: string;
+    department: string;
+    position: string;
+  };
+}
+
 export default function ClockReasonPromptSettingsPage() {
+  const router = useRouter();
+  const [user, setUser] = useState<User | null>(null);
   const [settings, setSettings] = useState<Settings>({
     enabled: false,
     earlyClockInThreshold: 5,
@@ -25,8 +41,28 @@ export default function ClockReasonPromptSettingsPage() {
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   useEffect(() => {
+    const fetchUser = async () => {
+      try {
+        const response = await fetch('/api/auth/me', { credentials: 'include' });
+        if (response.ok) {
+          const userData = await response.json();
+          const currentUser = userData.user || userData;
+          if (currentUser.role !== 'ADMIN') {
+            router.push('/dashboard');
+            return;
+          }
+          setUser(currentUser);
+        } else {
+          router.push('/login');
+        }
+      } catch (error) {
+        console.error('驗證失敗:', error);
+        router.push('/login');
+      }
+    };
+    fetchUser();
     loadSettings();
-  }, []);
+  }, [router]);
 
   const loadSettings = async () => {
     try {
@@ -67,18 +103,17 @@ export default function ClockReasonPromptSettingsPage() {
     }
   };
 
-  if (loading) {
+  if (loading || !user) {
     return (
-      <AuthenticatedLayout>
-        <div className="flex items-center justify-center h-64">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-        </div>
-      </AuthenticatedLayout>
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+      </div>
     );
   }
 
   return (
-    <AuthenticatedLayout>
+    <div className="min-h-screen bg-gray-50">
+      <SystemNavbar user={user} />
       <div className="max-w-4xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
         {/* 頁面標題 */}
         <div className="mb-8">
@@ -231,6 +266,6 @@ export default function ClockReasonPromptSettingsPage() {
           </div>
         </div>
       </div>
-    </AuthenticatedLayout>
+    </div>
   );
 }

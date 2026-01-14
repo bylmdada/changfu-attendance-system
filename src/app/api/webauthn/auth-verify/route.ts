@@ -110,10 +110,14 @@ export async function POST(request: Request) {
 
     // 驗證計數器（防重放攻擊）
     const receivedCounter = authData.readUInt32BE(33);
-    if (receivedCounter <= storedCredential.counter) {
-      console.warn('計數器異常:', { received: receivedCounter, stored: storedCredential.counter });
-      // 開發環境警告但不阻止
-      if (process.env.NODE_ENV === 'production') {
+    const storedCounter = storedCredential.counter || 0;
+    
+    // 只有當計數器明顯倒退（不是相等或輕微問題）時才阻止
+    // 有些驗證器在取消/重試時不會增加計數器
+    if (receivedCounter < storedCounter && receivedCounter !== 0) {
+      console.warn('計數器異常:', { received: receivedCounter, stored: storedCounter });
+      // 只在生產環境且計數器明顯異常時阻止
+      if (process.env.NODE_ENV === 'production' && (storedCounter - receivedCounter) > 5) {
         return NextResponse.json({ error: '可能的重放攻擊' }, { status: 400 });
       }
     }
