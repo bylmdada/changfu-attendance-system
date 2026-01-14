@@ -196,7 +196,8 @@ export default function AttendancePage() {
         throw new Error(errorData.error || '取得驗證選項失敗');
       }
 
-      const options = await optionsRes.json();
+      const data = await optionsRes.json();
+      const options = data.options;
 
       // 2. 呼叫 WebAuthn API 進行生物識別驗證
       const credential = await navigator.credentials.get({
@@ -265,6 +266,14 @@ export default function AttendancePage() {
       setWebauthnLoading(false);
     }
   };
+
+  // 當 biometricSupported 和 loggedInUsername 都準備好時重新檢查憑證
+  useEffect(() => {
+    if (biometricSupported && loggedInUsername) {
+      console.log('🔑 重新檢查 WebAuthn 憑證:', loggedInUsername);
+      checkWebAuthnCredential(loggedInUsername);
+    }
+  }, [biometricSupported, loggedInUsername]);
 
   useEffect(() => {
     // 設定頁面標題
@@ -616,13 +625,14 @@ export default function AttendancePage() {
     
     try {
       // 準備打卡數據，包含GPS位置信息
+      const effectiveUsername = verificationData.username || savedUsername;
       const clockData: {
         username: string;
         password: string;
         clockType: 'in' | 'out';
         location?: LocationData;
       } = {
-        username: verificationData.username,
+        username: effectiveUsername,
         password: verificationData.password,
         clockType: pendingClockType
       };
@@ -1257,7 +1267,7 @@ export default function AttendancePage() {
                   }
                   handleVerificationSubmit();
                 }}
-                disabled={!verificationData.username || !verificationData.password || clockLoading}
+                disabled={!(verificationData.username || savedUsername) || !verificationData.password || clockLoading}
                 className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-3 px-4 rounded-lg transition-colors"
               >
                 {clockLoading ? '打卡中...' : '確認打卡'}

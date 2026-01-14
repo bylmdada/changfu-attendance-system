@@ -149,6 +149,12 @@ export default function SystemSettingsPage() {
           icon: Clock
         },
         {
+          name: '提早/延後打卡提示',
+          path: '/system-settings/clock-reason-prompt',
+          description: '設定員工提早上班或延後下班時的原因提示',
+          icon: Clock
+        },
+        {
           name: '郵件伺服器設定',
           path: '/system-settings/smtp',
           description: '設定系統共用的 SMTP 郵件發送伺服器',
