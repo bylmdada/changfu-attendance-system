@@ -183,6 +183,24 @@ export default function AttendancePage() {
 
     setWebauthnLoading(true);
     try {
+      // 0. 先進行 GPS 位置驗證（如需要）
+      if (isLocationRequired) {
+        const locationValid = await checkLocation();
+        if (!locationValid) {
+          showToast('error', `打卡失敗：${locationError}`);
+          setWebauthnLoading(false);
+          return;
+        }
+      }
+
+      // 0.1 檢查 WiFi 驗證（如需要）
+      if (wifiVerificationRequired && availableWifiSsids.length > 0 && !selectedWifiSsid) {
+        // 需要先選擇 WiFi
+        showToast('warning', '請先確認您已連接到公司 WiFi');
+        setWebauthnLoading(false);
+        return;
+      }
+
       // 1. 取得驗證選項
       const optionsRes = await fetch('/api/webauthn/auth-options', {
         method: 'POST',
