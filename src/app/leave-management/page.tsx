@@ -60,7 +60,6 @@ const LEAVE_TYPES = {
   MARRIAGE: '婚假',
   UNPAID_LEAVE: '留職停薪',
   OCCUPATIONAL_INJURY: '公傷假',
-  PRENATAL_CHECKUP_EXTENDED: '產檢假',
   MATERNITY: '產假',
   BREASTFEEDING: '哺乳假',
   PATERNITY_CHECKUP: '陪產檢及陪產假',
@@ -1437,7 +1436,7 @@ export default function LeaveManagementPage() {
               </div>
 
               {/* 檔案上傳 */}
-              {newRequest.leaveType && ['SICK', 'BEREAVEMENT', 'PRENATAL_CHECKUP', 'PRENATAL_CHECKUP_EXTENDED', 'MARRIAGE', 'OCCUPATIONAL_INJURY', 'MATERNITY', 'BREASTFEEDING', 'PATERNITY_CHECKUP', 'MISCARRIAGE', 'OFFICIAL', 'MILITARY_SERVICE'].includes(newRequest.leaveType) && (
+              {newRequest.leaveType && ['SICK', 'BEREAVEMENT', 'PRENATAL_CHECKUP', 'MARRIAGE', 'OCCUPATIONAL_INJURY', 'MATERNITY', 'BREASTFEEDING', 'PATERNITY_CHECKUP', 'MISCARRIAGE', 'OFFICIAL', 'MILITARY_SERVICE'].includes(newRequest.leaveType) && (
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     佐證文件 {['SICK', 'BEREAVEMENT', 'OCCUPATIONAL_INJURY', 'MATERNITY', 'MISCARRIAGE'].includes(newRequest.leaveType) ? '*' : ''}
