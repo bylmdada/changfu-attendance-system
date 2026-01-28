@@ -299,7 +299,8 @@ export default function ScheduleManagementPage() {
 
   const fetchEmployees = async () => {
     try {
-      const response = await fetch('/api/employees', {
+      // 獲取所有員工（排班需要完整員工列表，不使用分頁）
+      const response = await fetch('/api/employees?limit=1000', {
         credentials: 'include'
       });
       if (response.ok) {
