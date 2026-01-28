@@ -572,32 +572,7 @@ export default function AttendancePage() {
   };
 
   const handleClock = async (type: 'in' | 'out') => {
-    // 檢查是否需要 WiFi 驗證
-    if (wifiVerificationRequired && availableWifiSsids.length > 0) {
-      // 如果是「僅 WiFi」模式，跳過 GPS 驗證
-      if (wifiOnlyMode) {
-        // 顯示 WiFi 選擇器
-        setShowWifiSelector(true);
-        setPendingClockType(type);
-        return;
-      }
-      
-      // 如果是「GPS + WiFi」模式，先檢查 GPS
-      if (isLocationRequired) {
-        const locationValid = await checkLocation();
-        if (!locationValid) {
-          showToast('error', `打卡失敗：${locationError}`);
-          return;
-        }
-      }
-      
-      // GPS 通過後，顯示 WiFi 選擇器
-      setShowWifiSelector(true);
-      setPendingClockType(type);
-      return;
-    }
-
-    // 沒有 WiFi 驗證需求，僅做 GPS 驗證
+    // 先進行 GPS 驗證（如果需要）
     if (isLocationRequired) {
       const locationValid = await checkLocation();
       if (!locationValid) {
@@ -606,7 +581,43 @@ export default function AttendancePage() {
       }
     }
 
-    // 顯示驗證對話框
+    // 檢查員工所在位置是否需要 WiFi 驗證
+    // 只有當該位置啟用 WiFi 驗證時才要求
+    let requireWifiForThisLocation = false;
+    let locationWifiSsids: string[] = [];
+    let locationWifiOnly = false;
+
+    if (currentLocation && allowedLocations.length > 0) {
+      // 找到員工所在的允許位置
+      const locationCheck = isWithinAllowedRange(currentLocation.latitude, currentLocation.longitude);
+      if (locationCheck.isValid && locationCheck.nearestLocation) {
+        const matchedLocation = locationCheck.nearestLocation;
+        // 檢查該位置是否啟用 WiFi 驗證
+        if (matchedLocation.wifiEnabled && matchedLocation.wifiSsidList) {
+          requireWifiForThisLocation = true;
+          locationWifiOnly = matchedLocation.wifiOnly || false;
+          // 解析該位置的 WiFi SSID 列表
+          locationWifiSsids = matchedLocation.wifiSsidList
+            .split('\n')
+            .map((s: string) => s.trim())
+            .filter((s: string) => s.length > 0);
+        }
+      }
+    }
+
+    // 如果該位置需要 WiFi 驗證
+    if (requireWifiForThisLocation && locationWifiSsids.length > 0) {
+      // 更新可用的 WiFi SSID（只顯示該位置的 SSID）
+      setAvailableWifiSsids(locationWifiSsids);
+      setWifiOnlyMode(locationWifiOnly);
+      
+      // 顯示 WiFi 選擇器
+      setShowWifiSelector(true);
+      setPendingClockType(type);
+      return;
+    }
+
+    // 不需要 WiFi 驗證，直接顯示驗證對話框
     setPendingClockType(type);
     setShowVerificationModal(true);
   };
