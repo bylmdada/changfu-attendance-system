@@ -151,6 +151,8 @@ sudo systemctl reload nginx
 sudo certbot --nginx -d your-domain.com
 ```
 
+> **注意**：如果您使用 **Cloudflare** 進行 DNS 管理並希望使用 Cloudflare SSL (Full/Strict 模式)，請參考 [Cloudflare 部署指南](./CLOUDFLARE_DEPLOYMENT_GUIDE.md)。
+
 ---
 
 ## 四、防火牆設定
