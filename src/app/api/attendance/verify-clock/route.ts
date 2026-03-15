@@ -56,7 +56,9 @@ export async function POST(request: NextRequest) {
     
     if (restrictionSettings.enabled) {
       const checkTime = new Date();
-      const currentHour = checkTime.getHours();
+      // 使用台灣時區 (UTC+8) 取得當前小時，避免伺服器 UTC 時區造成誤判
+      const taiwanHour = new Date(checkTime.toLocaleString('en-US', { timeZone: 'Asia/Taipei' })).getHours();
+      const currentHour = taiwanHour;
       const startHour = restrictionSettings.restrictedStartHour;
       const endHour = restrictionSettings.restrictedEndHour;
       
@@ -71,7 +73,7 @@ export async function POST(request: NextRequest) {
       }
       
       if (isRestrictedTime) {
-        console.log('⛔ 時段限制拒絕打卡:', username, '時間:', checkTime.toLocaleTimeString('zh-TW'));
+        console.log('⛔ 時段限制拒絕打卡:', username, '台灣時間:', taiwanHour, '時 UTC時間:', checkTime.toISOString());
         return NextResponse.json({
           error: `${restrictionSettings.message}（${String(startHour).padStart(2, '0')}:00-${String(endHour).padStart(2, '0')}:00）`,
           restrictedUntil: `${String(endHour).padStart(2, '0')}:00`
