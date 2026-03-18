@@ -25,6 +25,30 @@ npm run dev
 - **Backend**: Next.js API Routes
 - **Database**: SQLite (Prisma ORM)
 
+## AI 代碼審查 (Codex Review)
+
+本專案整合 [codex-review](https://github.com/BenedictKing/codex-review) 進行 AI 輔助代碼審查與自動產生 CHANGELOG。
+
+### 安裝 Codex Review
+
+```bash
+npx skills add -g BenedictKing/codex-review
+```
+
+### 使用方式
+
+在 Claude Code 中執行：
+
+```
+/codex-review
+```
+
+### 最佳實踐
+
+- 保持 `CHANGELOG.md` 在專案根目錄
+- 使用 [Conventional Commits](https://www.conventionalcommits.org/) 格式撰寫 commit 訊息（如 `feat:`, `fix:`, `docs:`）
+- 大規模重構前先執行代碼審查
+
 ## License
 
 本專案採用 [MIT License](LICENSE) 授權。
