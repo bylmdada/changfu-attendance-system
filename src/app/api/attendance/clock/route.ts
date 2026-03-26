@@ -131,10 +131,11 @@ export async function POST(request: NextRequest) {
       }, { status: 403 });
     }
 
-    // 獲取今日日期和當前時間
+    // 獲取今日日期和當前時間（使用台灣時區）
     const now = new Date();
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+    const taiwanNow = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
+    const todayStart = new Date(Date.UTC(taiwanNow.getFullYear(), taiwanNow.getMonth(), taiwanNow.getDate()) - 8 * 60 * 60 * 1000);
+    const todayEnd = new Date(todayStart.getTime() + 24 * 60 * 60 * 1000);
     const currentTime = now.toISOString();
 
     // 獲取今日已有的考勤記錄

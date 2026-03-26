@@ -60,9 +60,10 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // 計算今日打卡狀況
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    // 計算今日打卡狀況（使用台灣時區）
+    const todayNow = new Date();
+    const taiwanToday = new Date(todayNow.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
+    const today = new Date(Date.UTC(taiwanToday.getFullYear(), taiwanToday.getMonth(), taiwanToday.getDate()) - 8 * 60 * 60 * 1000);
     const todayRecords = await prisma.attendanceRecord.findMany({
       where: {
         workDate: today
@@ -170,7 +171,7 @@ export async function GET(request: NextRequest) {
           pendingApprovals: pendingLeaves + pendingOvertimes
         },
         today: {
-          date: new Date().toISOString().split('T')[0],
+          date: `${taiwanToday.getFullYear()}-${String(taiwanToday.getMonth() + 1).padStart(2, '0')}-${String(taiwanToday.getDate()).padStart(2, '0')}`,
           clockedIn: clockedInToday,
           clockedOut: clockedOutToday,
           notClockedIn: totalEmployees - clockedInToday
