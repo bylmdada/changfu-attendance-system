@@ -3,6 +3,7 @@ import { prisma } from '@/lib/database';
 import { verifyToken } from '@/lib/auth';
 import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
 import { checkRateLimit } from '@/lib/rate-limit';
+import { toTaiwanDateStr } from '@/lib/timezone';
 import { validateCSRF } from '@/lib/csrf';
 import { createApprovalForRequest } from '@/lib/approval-helper';
 
@@ -106,11 +107,7 @@ export async function GET(request: NextRequest) {
     const overtimeRequests = await Promise.all(
       overtimeRequestsRaw.map(async (req) => {
         if (!db.schedule) return { ...req, scheduleShiftType: null, scheduleStartTime: null, scheduleEndTime: null, scheduleShiftLabel: null };
-        const d = new Date(req.overtimeDate);
-        const yyyy = d.getFullYear();
-        const mm = String(d.getMonth() + 1).padStart(2, '0');
-        const dd = String(d.getDate()).padStart(2, '0');
-        const ymd = `${yyyy}-${mm}-${dd}`; // 我們 Schedule 使用字串 YYYY-MM-DD
+        const ymd = toTaiwanDateStr(new Date(req.overtimeDate)); // 我們 Schedule 使用字串 YYYY-MM-DD
         const schedule = await db.schedule.findFirst({
           where: { employeeId: req.employeeId, workDate: ymd },
           select: { shiftType: true, startTime: true, endTime: true }
@@ -259,8 +256,9 @@ export async function POST(request: NextRequest) {
     if (limits.enabled) {
       // 計算當月已核准的加班時數
       const overtimeDateObj = new Date(finalOvertimeDate);
-      const monthStart = new Date(overtimeDateObj.getFullYear(), overtimeDateObj.getMonth(), 1);
-      const monthEnd = new Date(overtimeDateObj.getFullYear(), overtimeDateObj.getMonth() + 1, 0, 23, 59, 59);
+      const twDate = new Date(overtimeDateObj.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
+      const monthStart = new Date(Date.UTC(twDate.getFullYear(), twDate.getMonth(), 1) - 8 * 60 * 60 * 1000);
+      const monthEnd = new Date(Date.UTC(twDate.getFullYear(), twDate.getMonth() + 1, 1) - 8 * 60 * 60 * 1000);
 
       const monthlyApproved = await prisma.overtimeRequest.findMany({
         where: {

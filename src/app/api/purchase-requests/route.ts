@@ -5,10 +5,11 @@ import { prisma } from '@/lib/database';
 import { verifyToken } from '@/lib/auth';
 import { cookies } from 'next/headers';
 import { createApprovalForRequest } from '@/lib/approval-helper';
+import { getTaiwanNow } from '@/lib/timezone';
 
 // 生成請購單號
 async function generateRequestNumber(): Promise<string> {
-  const now = new Date();
+  const now = getTaiwanNow();
   const year = now.getFullYear();
   const month = String(now.getMonth() + 1).padStart(2, '0');
   const prefix = `PR-${year}${month}`;

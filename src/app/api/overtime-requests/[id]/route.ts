@@ -3,6 +3,7 @@ import { prisma } from '@/lib/database';
 import { verifyToken } from '@/lib/auth';
 import { notifyOvertimeApproval } from '@/lib/email';
 import { calculateOvertimePayForRequest, OvertimeType } from '@/lib/salary-utils';
+import { toTaiwanDateStr, getTaiwanYearMonth } from '@/lib/timezone';
 import { notifyHRAfterManagerReview } from '@/lib/hr-notification';
 import { getApprovalWorkflow } from '@/lib/approval-workflow';
 
@@ -140,8 +141,7 @@ export async function PATCH(
 
         // 審核通過時，累積補休時數
         if (status === 'APPROVED' && existing.compensationType === 'COMP_LEAVE') {
-          const overtimeDate = new Date(existing.overtimeDate);
-          const yearMonth = `${overtimeDate.getFullYear()}-${String(overtimeDate.getMonth() + 1).padStart(2, '0')}`;
+          const yearMonth = getTaiwanYearMonth(new Date(existing.overtimeDate));
           
           await prisma.compLeaveTransaction.create({
             data: {
@@ -175,7 +175,7 @@ export async function PATCH(
             employeeName: existing.employee.name,
             employeeEmail: existing.employee.email || undefined,
             approved: status === 'APPROVED',
-            overtimeDate: existing.overtimeDate.toISOString().split('T')[0],
+            overtimeDate: toTaiwanDateStr(existing.overtimeDate),
             hours: existing.totalHours,
             reason: body.rejectionReason,
           });

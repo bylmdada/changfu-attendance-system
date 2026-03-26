@@ -3,6 +3,7 @@ import { prisma } from '@/lib/database';
 import { verifyToken } from '@/lib/auth';
 import { notifyLeaveApproval } from '@/lib/email';
 import { notifyHRAfterManagerReview } from '@/lib/hr-notification';
+import { toTaiwanDateStr } from '@/lib/timezone';
 import { getApprovalWorkflow } from '@/lib/approval-workflow';
 
 // 窄化型別，避免直接耦合
@@ -14,9 +15,11 @@ interface PrismaWithSchedule {
 const db = prisma as unknown as PrismaWithSchedule;
 
 function toYmd(d: Date) {
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
+  // 使用台灣時區轉換日期
+  const tw = new Date(d.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
+  const yyyy = tw.getFullYear();
+  const mm = String(tw.getMonth() + 1).padStart(2, '0');
+  const dd = String(tw.getDate()).padStart(2, '0');
   return `${yyyy}-${mm}-${dd}`;
 }
 
@@ -146,8 +149,8 @@ export async function PATCH(
             employeeEmail: existing.employee.email || undefined,
             approved: status === 'APPROVED',
             leaveType: existing.leaveType,
-            startDate: existing.startDate.toISOString().split('T')[0],
-            endDate: existing.endDate.toISOString().split('T')[0],
+            startDate: toTaiwanDateStr(existing.startDate),
+            endDate: toTaiwanDateStr(existing.endDate),
             reason: body.rejectionReason,
           });
         } catch (notifyError) {

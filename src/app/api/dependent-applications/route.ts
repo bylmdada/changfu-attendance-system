@@ -7,6 +7,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
+import { toTaiwanDateStr } from '@/lib/timezone';
 import { validateCSRF } from '@/lib/csrf';
 
 export async function GET(request: NextRequest) {
@@ -65,8 +66,8 @@ export async function GET(request: NextRequest) {
         dependentName: a.dependentName,
         relationship: a.relationship,
         idNumber: a.idNumber,
-        birthDate: a.birthDate.toISOString().split('T')[0],
-        effectiveDate: a.effectiveDate.toISOString().split('T')[0],
+        birthDate: toTaiwanDateStr(a.birthDate),
+        effectiveDate: toTaiwanDateStr(a.effectiveDate),
         changeField: a.changeField,
         oldValue: a.oldValue,
         newValue: a.newValue,
