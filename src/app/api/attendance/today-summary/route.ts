@@ -34,7 +34,8 @@ export async function GET(request: NextRequest) {
     }
 
     const today = new Date();
-    const todayStr = today.toISOString().split('T')[0];
+    const taiwanToday = new Date(today.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
+    const todayStr = `${taiwanToday.getFullYear()}-${String(taiwanToday.getMonth() + 1).padStart(2, '0')}-${String(taiwanToday.getDate()).padStart(2, '0')}`;
 
     // 查詢今日考勤記錄
     const todayRecord = await prisma.attendanceRecord.findFirst({

@@ -3,6 +3,12 @@ import { prisma } from '@/lib/database';
 import { verifyToken } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 
+// 取得台灣時區的今日起始時間（UTC）
+function getTaiwanTodayStart(now: Date): Date {
+  const tw = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
+  return new Date(Date.UTC(tw.getFullYear(), tw.getMonth(), tw.getDate()) - 8 * 60 * 60 * 1000);
+}
+
 // 計算兩點間距離（公尺）
 function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371000; // 地球半徑（公尺）
@@ -80,7 +86,7 @@ export async function POST(request: NextRequest) {
           employeeId,
           clockType: 'START',
           createdAt: {
-            gte: new Date(now.getFullYear(), now.getMonth(), now.getDate())
+            gte: getTaiwanTodayStart(now)
           }
         },
         orderBy: { createdAt: 'desc' }
@@ -134,7 +140,7 @@ export async function POST(request: NextRequest) {
           employeeId,
           clockType: 'START',
           createdAt: {
-            gte: new Date(now.getFullYear(), now.getMonth(), now.getDate()),
+            gte: getTaiwanTodayStart(now),
             lt: now
           }
         },
@@ -152,7 +158,7 @@ export async function POST(request: NextRequest) {
           overtimeRequest = await prisma.overtimeRequest.create({
             data: {
               employeeId,
-              overtimeDate: new Date(now.getFullYear(), now.getMonth(), now.getDate()),
+              overtimeDate: getTaiwanTodayStart(now),
               startTime: startTime.toTimeString().slice(0, 5),
               endTime: endTime.toTimeString().slice(0, 5),
               totalHours,

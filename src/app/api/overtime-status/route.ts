@@ -25,9 +25,10 @@ export async function GET(request: NextRequest) {
 
     const employeeId = decoded.employeeId;
     const now = new Date();
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+    const taiwanNow = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
+    const todayStart = new Date(Date.UTC(taiwanNow.getFullYear(), taiwanNow.getMonth(), taiwanNow.getDate()) - 8 * 60 * 60 * 1000);
+    const monthStart = new Date(Date.UTC(taiwanNow.getFullYear(), taiwanNow.getMonth(), 1) - 8 * 60 * 60 * 1000);
+    const monthEnd = new Date(Date.UTC(taiwanNow.getFullYear(), taiwanNow.getMonth() + 1, 1) - 8 * 60 * 60 * 1000);
 
     // 檢查今日是否有進行中的加班
     const todayRecords = await prisma.overtimeClockRecord.findMany({
