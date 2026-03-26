@@ -5,6 +5,7 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { checkRateLimit } from '@/lib/rate-limit';
+import { toTaiwanDateStr } from '@/lib/timezone';
 
 /**
  * 勞退自提管理 API
@@ -14,16 +15,18 @@ import { checkRateLimit } from '@/lib/rate-limit';
 
 // 計算生效日期（25日前申請次月生效，25日後申請隔月生效）
 function calculateEffectiveDate(applicationDate: Date): Date {
-  const day = applicationDate.getDate();
-  const year = applicationDate.getFullYear();
-  const month = applicationDate.getMonth();
-  
+  // 使用台灣時區判斷日期
+  const tw = new Date(applicationDate.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
+  const day = tw.getDate();
+  const year = tw.getFullYear();
+  const month = tw.getMonth();
+
   if (day <= 25) {
     // 25日前申請，次月1日生效
-    return new Date(year, month + 1, 1);
+    return new Date(Date.UTC(year, month + 1, 1) - 8 * 60 * 60 * 1000);
   } else {
     // 25日後申請，隔月1日生效
-    return new Date(year, month + 2, 1);
+    return new Date(Date.UTC(year, month + 2, 1) - 8 * 60 * 60 * 1000);
   }
 }
 
@@ -80,7 +83,7 @@ export async function GET(request: NextRequest) {
           employee: app.employee,
           currentRate: app.currentRate,
           requestedRate: app.requestedRate,
-          effectiveDate: app.effectiveDate.toISOString().split('T')[0],
+          effectiveDate: toTaiwanDateStr(app.effectiveDate),
           reason: app.reason,
           status: app.status,
           hrReviewer: app.hrReviewer,
@@ -137,7 +140,7 @@ export async function GET(request: NextRequest) {
         id: app.id,
         currentRate: app.currentRate,
         requestedRate: app.requestedRate,
-        effectiveDate: app.effectiveDate.toISOString().split('T')[0],
+        effectiveDate: toTaiwanDateStr(app.effectiveDate),
         reason: app.reason,
         status: app.status,
         hrOpinion: app.hrOpinion,
@@ -236,7 +239,7 @@ export async function POST(request: NextRequest) {
         id: application.id,
         currentRate,
         requestedRate,
-        effectiveDate: effectiveDate.toISOString().split('T')[0],
+        effectiveDate: toTaiwanDateStr(effectiveDate),
         status: application.status
       }
     }, { status: 201 });

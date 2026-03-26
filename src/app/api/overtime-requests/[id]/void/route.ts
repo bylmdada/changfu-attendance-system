@@ -3,6 +3,7 @@ import { prisma } from '@/lib/database';
 import { verifyToken } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { getTaiwanYearMonth } from '@/lib/timezone';
 
 // 回沖補休時數
 async function reverseCompLeave(employeeId: number, hours: number, overtimeRequestId: number) {
@@ -24,8 +25,7 @@ async function reverseCompLeave(employeeId: number, hours: number, overtimeReque
       }
     });
 
-    const now = new Date();
-    const yearMonth = `${now.getFullYear()}-${(now.getMonth() + 1).toString().padStart(2, '0')}`;
+    const yearMonth = getTaiwanYearMonth();
     
     await prisma.compLeaveTransaction.create({
       data: {

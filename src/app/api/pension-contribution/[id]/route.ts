@@ -3,6 +3,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
+import { toTaiwanDateStr } from '@/lib/timezone';
 import { validateCSRF } from '@/lib/csrf';
 
 /**
@@ -110,7 +111,7 @@ export async function PUT(
       return NextResponse.json({
         success: true,
         message: action === 'APPROVE' 
-          ? `已直接核准，新比例 ${application.requestedRate}% 將於 ${application.effectiveDate.toISOString().split('T')[0]} 生效`
+          ? `已直接核准，新比例 ${application.requestedRate}% 將於 ${toTaiwanDateStr(application.effectiveDate)} 生效`
           : '已直接駁回申請'
       });
     }
@@ -149,7 +150,7 @@ export async function PUT(
       return NextResponse.json({
         success: true,
         message: action === 'APPROVE' 
-          ? `已核准，新比例 ${application.requestedRate}% 將於 ${application.effectiveDate.toISOString().split('T')[0]} 生效`
+          ? `已核准，新比例 ${application.requestedRate}% 將於 ${toTaiwanDateStr(application.effectiveDate)} 生效`
           : '已駁回申請'
       });
     }
@@ -275,7 +276,7 @@ export async function GET(
         requestedRate: application.requestedRate,
         currentAmount: Math.round(insuredBase * application.currentRate / 100),
         requestedAmount: Math.round(insuredBase * application.requestedRate / 100),
-        effectiveDate: application.effectiveDate.toISOString().split('T')[0],
+        effectiveDate: toTaiwanDateStr(application.effectiveDate),
         reason: application.reason,
         status: application.status,
         hrReviewer: application.hrReviewer,
