@@ -43,10 +43,11 @@ export async function GET(request: NextRequest) {
 
     console.log('👥 員工資料:', { id: user.employee.id, name: user.employee.name });
 
-    // 獲取今日日期
-    const today = new Date();
-    const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-    const todayEnd = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+    // 獲取今日日期（使用台灣時區）
+    const now = new Date();
+    const taiwanDate = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
+    const todayStart = new Date(Date.UTC(taiwanDate.getFullYear(), taiwanDate.getMonth(), taiwanDate.getDate()) - 8 * 60 * 60 * 1000);
+    const todayEnd = new Date(todayStart.getTime() + 24 * 60 * 60 * 1000);
     
     console.log('📅 今日日期範圍:', { start: todayStart, end: todayEnd });
 

@@ -20,10 +20,11 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '找不到員工資料' }, { status: 404 });
     }
 
-    // 獲取今日日期
+    // 獲取今日日期（使用台灣時區）
     const now = new Date();
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+    const taiwanDate = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
+    const todayStart = new Date(Date.UTC(taiwanDate.getFullYear(), taiwanDate.getMonth(), taiwanDate.getDate()) - 8 * 60 * 60 * 1000);
+    const todayEnd = new Date(todayStart.getTime() + 24 * 60 * 60 * 1000);
 
     // 查找今日打卡記錄
     const todayAttendance = await prisma.attendanceRecord.findFirst({
@@ -36,8 +37,8 @@ export async function POST(request: NextRequest) {
       }
     });
 
-    // 查詢今日排班
-    const todayStr = now.toISOString().split('T')[0];
+    // 查詢今日排班（使用台灣日期）
+    const todayStr = `${taiwanDate.getFullYear()}-${String(taiwanDate.getMonth() + 1).padStart(2, '0')}-${String(taiwanDate.getDate()).padStart(2, '0')}`;
     const todaySchedule = await prisma.schedule.findFirst({
       where: {
         employeeId: user.employee.id,
@@ -46,8 +47,8 @@ export async function POST(request: NextRequest) {
     });
 
     // 查詢當月異常記錄（遲到、早退、缺上班、缺下班）
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    const monthStart = new Date(Date.UTC(taiwanDate.getFullYear(), taiwanDate.getMonth(), 1) - 8 * 60 * 60 * 1000);
+    const monthEnd = new Date(Date.UTC(taiwanDate.getFullYear(), taiwanDate.getMonth() + 1, 1) - 8 * 60 * 60 * 1000);
     
     // 取得當月所有考勤記錄
     const monthlyAttendance = await prisma.attendanceRecord.findMany({

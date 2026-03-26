@@ -149,10 +149,11 @@ export async function POST(request: NextRequest) {
     console.log('✅ 用戶驗證成功:', username, '員工ID:', user.employee.id);
     clearFailedAttempts(username);
 
-    // 獲取今日日期和當前時間
+    // 獲取今日日期和當前時間（使用台灣時區）
     const now = new Date();
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+    const taiwanDate = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
+    const todayStart = new Date(Date.UTC(taiwanDate.getFullYear(), taiwanDate.getMonth(), taiwanDate.getDate()) - 8 * 60 * 60 * 1000);
+    const todayEnd = new Date(todayStart.getTime() + 24 * 60 * 60 * 1000);
     const currentTime = now.toISOString();
 
     // 📝 班表確認檢查（只對上班打卡檢查）
