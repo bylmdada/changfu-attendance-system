@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { Clock, Calendar, BarChart3, History, Timer, CheckCircle, XCircle, User, Lock, Eye, EyeOff, MapPin, Wifi, WifiOff, AlertCircle, Fingerprint } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import { isMobileClockingDevice, MOBILE_CLOCKING_REQUIRED_MESSAGE } from '@/lib/device-detection';
 
 interface AttendanceRecord {
   id: number;
@@ -56,6 +57,12 @@ interface AllowedLocation {
 
 type LocationStatus = 'checking' | 'valid' | 'invalid' | 'error' | 'disabled';
 
+interface LocationCheckResult {
+  isValid: boolean;
+  error?: string;
+  location?: LocationData;
+}
+
 export default function AttendancePage() {
   const [todayStatus, setTodayStatus] = useState<TodayAttendance | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -84,7 +91,7 @@ export default function AttendancePage() {
   const [availableWifiSsids, setAvailableWifiSsids] = useState<string[]>([]);
   const [selectedWifiSsid, setSelectedWifiSsid] = useState<string>('');
   const [wifiVerificationRequired, setWifiVerificationRequired] = useState(false);
-  const [wifiOnlyMode, setWifiOnlyMode] = useState(false);
+  const [, setWifiOnlyMode] = useState(false);
 
   // Toast 通知狀態
   const [toast, setToast] = useState<{ type: 'success' | 'error' | 'warning'; message: string } | null>(null);
@@ -112,6 +119,7 @@ export default function AttendancePage() {
   const [submittingReason, setSubmittingReason] = useState(false);
   const [webauthnLoading, setWebauthnLoading] = useState(false);
   const [loggedInUsername, setLoggedInUsername] = useState('');
+  const [isMobileClocking, setIsMobileClocking] = useState<boolean | null>(null);
 
   const showToast = (type: 'success' | 'error' | 'warning', message: string) => {
     setToast({ type, message });
@@ -175,6 +183,11 @@ export default function AttendancePage() {
 
   // Face ID / 指紋打卡處理
   const handleBiometricClock = async (clockType: 'in' | 'out') => {
+    if (isMobileClocking !== true) {
+      showToast('warning', MOBILE_CLOCKING_REQUIRED_MESSAGE);
+      return;
+    }
+
     const username = verificationData.username || savedUsername || loggedInUsername;
     if (!username) {
       showToast('error', '請先輸入帳號');
@@ -183,14 +196,17 @@ export default function AttendancePage() {
 
     setWebauthnLoading(true);
     try {
+      let verifiedLocation = currentLocation ?? undefined;
+
       // 0. 先進行 GPS 位置驗證（如需要）
       if (isLocationRequired) {
-        const locationValid = await checkLocation();
-        if (!locationValid) {
-          showToast('error', `打卡失敗：${locationError}`);
-          setWebauthnLoading(false);
+        const locationCheck = await checkLocation();
+        if (!locationCheck.isValid) {
+          showToast('error', `打卡失敗：${locationCheck.error || 'GPS定位失敗'}`);
           return;
         }
+
+        verifiedLocation = locationCheck.location ?? verifiedLocation;
       }
 
       // 0.1 檢查 WiFi 驗證（如需要）
@@ -254,7 +270,8 @@ export default function AttendancePage() {
               userHandle: response.userHandle ? btoa(String.fromCharCode(...new Uint8Array(response.userHandle))) : null
             }
           },
-          clockType: clockType
+          clockType: clockType,
+          location: verifiedLocation
         }),
         credentials: 'include'
       });
@@ -301,6 +318,10 @@ export default function AttendancePage() {
     loadAllowedLocations();
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
     return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    setIsMobileClocking(isMobileClockingDevice(navigator.userAgent));
   }, []);
 
   // GPS 相關函數 - 帶進度追蹤
@@ -458,7 +479,7 @@ export default function AttendancePage() {
     }
   };
 
-  const checkLocation = async (): Promise<boolean> => {
+  const checkLocation = async (): Promise<LocationCheckResult> => {
     try {
       // 獲取GPS設定
       const gpsSettingsResponse = await fetch('/api/system-settings/gps-attendance');
@@ -477,7 +498,7 @@ export default function AttendancePage() {
       if (!gpsSettings.enabled) {
         setLocationStatus('disabled');
         setIsLocationRequired(false);
-        return true;
+        return { isValid: true, location: currentLocation ?? undefined };
       }
 
       setIsLocationRequired(true);
@@ -488,16 +509,10 @@ export default function AttendancePage() {
       
       // 檢查GPS精確度
       if (position.accuracy > gpsSettings.requiredAccuracy) {
+        const error = `GPS精確度不足（${Math.round(position.accuracy)}m > ${gpsSettings.requiredAccuracy}m），請移動到GPS訊號較好的位置`;
         setLocationStatus('invalid');
-        setLocationError(`GPS精確度不足（${Math.round(position.accuracy)}m > ${gpsSettings.requiredAccuracy}m），請移動到GPS訊號較好的位置`);
-        return false;
-      }
-
-      // 檢查地址資訊
-      if (gpsSettings.requireAddressInfo && !position.address) {
-        setLocationStatus('invalid');
-        setLocationError('無法取得位置地址資訊，請稍後再試');
-        return false;
+        setLocationError(error);
+        return { isValid: false, error, location: position };
       }
 
       setCurrentLocation(position);
@@ -506,18 +521,20 @@ export default function AttendancePage() {
       
       if (locationCheck.isValid) {
         setLocationStatus('valid');
-        return true;
+        return { isValid: true, location: position };
       } else {
-        setLocationStatus('invalid');
         const distance = locationCheck.distance ? Math.round(locationCheck.distance) : 0;
         const nearestName = locationCheck.nearestLocation?.name || '允許地點';
-        setLocationError(`您不在允許的打卡範圍內。距離最近的${nearestName}約${distance}米`);
-        return false;
+        const error = `您不在允許的打卡範圍內。距離最近的${nearestName}約${distance}米`;
+        setLocationStatus('invalid');
+        setLocationError(error);
+        return { isValid: false, error, location: position };
       }
     } catch (error) {
+      const message = error instanceof Error ? error.message : 'GPS定位失敗';
       setLocationStatus('error');
-      setLocationError(error instanceof Error ? error.message : 'GPS定位失敗');
-      return false;
+      setLocationError(message);
+      return { isValid: false, error: message };
     }
   };
 
@@ -572,13 +589,22 @@ export default function AttendancePage() {
   };
 
   const handleClock = async (type: 'in' | 'out') => {
+    if (isMobileClocking !== true) {
+      showToast('warning', MOBILE_CLOCKING_REQUIRED_MESSAGE);
+      return;
+    }
+
+    let verifiedLocation = currentLocation ?? undefined;
+
     // 先進行 GPS 驗證（如果需要）
     if (isLocationRequired) {
-      const locationValid = await checkLocation();
-      if (!locationValid) {
-        showToast('error', `打卡失敗：${locationError}`);
+      const locationCheck = await checkLocation();
+      if (!locationCheck.isValid) {
+        showToast('error', `打卡失敗：${locationCheck.error || 'GPS定位失敗'}`);
         return;
       }
+
+      verifiedLocation = locationCheck.location ?? verifiedLocation;
     }
 
     // 檢查員工所在位置是否需要 WiFi 驗證
@@ -587,9 +613,9 @@ export default function AttendancePage() {
     let locationWifiSsids: string[] = [];
     let locationWifiOnly = false;
 
-    if (currentLocation && allowedLocations.length > 0) {
+    if (verifiedLocation && allowedLocations.length > 0) {
       // 找到員工所在的允許位置
-      const locationCheck = isWithinAllowedRange(currentLocation.latitude, currentLocation.longitude);
+      const locationCheck = isWithinAllowedRange(verifiedLocation.latitude, verifiedLocation.longitude);
       if (locationCheck.isValid && locationCheck.nearestLocation) {
         const matchedLocation = locationCheck.nearestLocation;
         // 檢查該位置是否啟用 WiFi 驗證
@@ -653,6 +679,18 @@ export default function AttendancePage() {
     setShowVerificationModal(false);
     
     try {
+      let verifiedLocation = currentLocation ?? undefined;
+
+      if (isLocationRequired && !verifiedLocation) {
+        const locationCheck = await checkLocation();
+        if (!locationCheck.isValid) {
+          showToast('error', locationCheck.error || 'GPS定位失敗');
+          return;
+        }
+
+        verifiedLocation = locationCheck.location;
+      }
+
       // 準備打卡數據，包含GPS位置信息
       const effectiveUsername = verificationData.username || savedUsername;
       const clockData: {
@@ -667,12 +705,12 @@ export default function AttendancePage() {
       };
 
       // 如果有GPS位置數據，加入到請求中
-      if (currentLocation) {
+      if (verifiedLocation) {
         clockData.location = {
-          latitude: currentLocation.latitude,
-          longitude: currentLocation.longitude,
-          accuracy: currentLocation.accuracy,
-          address: currentLocation.address
+          latitude: verifiedLocation.latitude,
+          longitude: verifiedLocation.longitude,
+          accuracy: verifiedLocation.accuracy,
+          address: verifiedLocation.address
         };
       }
 
@@ -830,6 +868,12 @@ export default function AttendancePage() {
                   今日打卡
                 </h2>
 
+                {isMobileClocking === false && (
+                  <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+                    {MOBILE_CLOCKING_REQUIRED_MESSAGE}
+                  </div>
+                )}
+
                 {/* 當前時間顯示 - 響應式縮小 */}
                 <div className="text-center mb-4 md:mb-8">
                   <div className="text-4xl md:text-6xl font-mono font-bold text-blue-600 mb-1 md:mb-2">
@@ -944,7 +988,7 @@ export default function AttendancePage() {
                   <div className="space-y-2">
                     <button
                       onClick={() => handleClock('in')}
-                      disabled={clockLoading}
+                      disabled={clockLoading || isMobileClocking !== true}
                       className={`w-full py-5 md:py-4 px-6 rounded-xl text-base md:text-lg font-medium transition-all ${
                         todayStatus?.hasClockIn
                           ? 'bg-green-600 text-white shadow-lg border-2 border-green-200'
@@ -975,7 +1019,7 @@ export default function AttendancePage() {
                   <div className="space-y-2">
                     <button
                       onClick={() => handleClock('out')}
-                      disabled={clockLoading}
+                      disabled={clockLoading || isMobileClocking !== true}
                       className={`w-full py-5 md:py-4 px-6 rounded-xl text-base md:text-lg font-medium transition-all ${
                         todayStatus?.hasClockOut
                           ? 'bg-orange-600 text-white shadow-lg border-2 border-orange-200'
@@ -1175,12 +1219,12 @@ export default function AttendancePage() {
             </h3>
             
             {/* 生物識別提示與按鈕 */}
-            {biometricSupported && hasWebAuthnCredential && (
+            {isMobileClocking === true && biometricSupported && hasWebAuthnCredential && (
               <div className="mb-4">
                 <button
                   onClick={() => pendingClockType && handleBiometricClock(pendingClockType)}
                   disabled={webauthnLoading || clockLoading}
-                  className="w-full bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-4 px-4 rounded-xl transition-all flex items-center justify-center gap-3 shadow-lg"
+                  className="w-full bg-linear-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-4 px-4 rounded-xl transition-all flex items-center justify-center gap-3 shadow-lg"
                 >
                   <Fingerprint className="w-6 h-6" />
                   <span className="text-lg">{webauthnLoading ? '驗證中...' : 'Face ID / 指紋打卡'}</span>
@@ -1192,7 +1236,7 @@ export default function AttendancePage() {
             )}
             
             {/* 尚未設定生物識別的提示 */}
-            {biometricSupported && !hasWebAuthnCredential && (
+            {isMobileClocking === true && biometricSupported && !hasWebAuthnCredential && (
               <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 mb-4">
                 <div className="flex items-center gap-2">
                   <Fingerprint className="w-5 h-5 text-yellow-600" />
