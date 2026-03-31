@@ -4,6 +4,7 @@ import { prisma } from '@/lib/database';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { canEmployeeClockIn } from '@/lib/schedule-confirm-service';
+import { isMobileClockingDevice, MOBILE_CLOCKING_REQUIRED_MESSAGE } from '@/lib/device-detection';
 
 // GET - 獲取今日打卡狀態
 export async function GET(request: NextRequest) {
@@ -82,6 +83,10 @@ export async function GET(request: NextRequest) {
 // POST - 智能打卡
 export async function POST(request: NextRequest) {
   try {
+    if (!isMobileClockingDevice(request.headers.get('user-agent'))) {
+      return NextResponse.json({ error: MOBILE_CLOCKING_REQUIRED_MESSAGE }, { status: 403 });
+    }
+
     // Rate limiting
     const rateLimitResult = await checkRateLimit(request, '/api/attendance/clock');
     if (!rateLimitResult.allowed) {

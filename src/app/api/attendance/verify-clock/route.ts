@@ -3,6 +3,7 @@ import { prisma } from '@/lib/database';
 import { verifyPassword } from '@/lib/auth';
 import { checkClockRateLimit, recordFailedClockAttempt, clearFailedAttempts, getClientIP } from '@/lib/rate-limit';
 import { canEmployeeClockIn } from '@/lib/schedule-confirm-service';
+import { isMobileClockingDevice, MOBILE_CLOCKING_REQUIRED_MESSAGE } from '@/lib/device-detection';
 
 // 導入GPS設定
 async function getGPSSettings() {
@@ -27,6 +28,10 @@ async function getGPSSettings() {
 
 export async function POST(request: NextRequest) {
   try {
+    if (!isMobileClockingDevice(request.headers.get('user-agent'))) {
+      return NextResponse.json({ error: MOBILE_CLOCKING_REQUIRED_MESSAGE }, { status: 403 });
+    }
+
     const body = await request.json();
     const { username, password, location } = body;
     // 支援兩種參數名：type (前端快速打卡) 和 clockType (原有系統)
@@ -108,14 +113,6 @@ export async function POST(request: NextRequest) {
         if (location.accuracy > gpsSettings.requiredAccuracy) {
           return NextResponse.json({ 
             error: `GPS精確度不足（${location.accuracy}m > ${gpsSettings.requiredAccuracy}m），請移動到GPS訊號較好的位置` 
-          }, { status: 400 });
-        }
-
-        // 檢查是否需要地址資訊 - 快速打卡時可以跳過地址檢查
-        if (gpsSettings.requireAddressInfo && !location.address && body.clockType) {
-          // 只有非快速打卡時才要求地址資訊
-          return NextResponse.json({ 
-            error: '無法取得位置地址資訊，請稍後再試' 
           }, { status: 400 });
         }
       }

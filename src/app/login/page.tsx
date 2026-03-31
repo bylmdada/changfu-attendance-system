@@ -1,12 +1,26 @@
 'use client';
 
-import { useState, useEffect, Suspense } from 'react';
+import { useState, useEffect, useCallback, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Eye, EyeOff, Lock, User, Clock, MapPin, AlertCircle } from 'lucide-react';
 import Image from 'next/image';
+import { isMobileClockingDevice, MOBILE_CLOCKING_REQUIRED_MESSAGE } from '@/lib/device-detection';
 
 // GPS位置狀態類型
 type LocationStatus = 'checking' | 'valid' | 'invalid' | 'error' | 'disabled';
+
+interface ClockLocationPayload {
+  latitude: number;
+  longitude: number;
+  accuracy: number;
+  address?: string;
+}
+
+interface LocationRefreshResult {
+  status: LocationStatus;
+  error?: string;
+  location?: ClockLocationPayload;
+}
 
 // 員工打卡狀態介面
 interface AttendanceRecord {
@@ -118,9 +132,14 @@ function QuickClockForm({
   const [faceIdLoading, setFaceIdLoading] = useState(false);
   const [showFaceIdSetup, setShowFaceIdSetup] = useState(false);
   const [biometricSupported, setBiometricSupported] = useState(false);
+  const [isMobileClocking, setIsMobileClocking] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    setIsMobileClocking(isMobileClockingDevice(navigator.userAgent));
+  }, []);
 
   // 計算兩點之間距離（公尺）
-  const calculateDistance = (lat1: number, lng1: number, lat2: number, lng2: number): number => {
+  const calculateDistance = useCallback((lat1: number, lng1: number, lat2: number, lng2: number): number => {
     const R = 6371000;
     const dLat = (lat2 - lat1) * Math.PI / 180;
     const dLng = (lng2 - lng1) * Math.PI / 180;
@@ -129,7 +148,120 @@ function QuickClockForm({
       Math.sin(dLng / 2) * Math.sin(dLng / 2);
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     return R * c;
-  };
+  }, []);
+
+  const buildLocationPayload = useCallback((position: GeolocationPosition): ClockLocationPayload => ({
+    latitude: position.coords.latitude,
+    longitude: position.coords.longitude,
+    accuracy: position.coords.accuracy
+  }), []);
+
+  const validateLocationPosition = useCallback((position: GeolocationPosition): { status: 'valid' | 'invalid'; error: string } => {
+    if (position.coords.accuracy > gpsSettings.requiredAccuracy) {
+      return {
+        status: 'invalid',
+        error: `GPS精確度不足 (±${Math.round(position.coords.accuracy)}公尺)`
+      };
+    }
+
+    if (allowedLocations.length === 0) {
+      return { status: 'valid', error: '' };
+    }
+
+    const { latitude, longitude } = position.coords;
+    let isWithinRange = false;
+    let nearestLocation = '';
+    let minDistance = Infinity;
+
+    for (const loc of allowedLocations) {
+      if (!loc.isActive) continue;
+      const distance = calculateDistance(latitude, longitude, loc.latitude, loc.longitude);
+      if (distance <= loc.radius) {
+        isWithinRange = true;
+        break;
+      }
+      if (distance < minDistance) {
+        minDistance = distance;
+        nearestLocation = loc.name;
+      }
+    }
+
+    if (isWithinRange) {
+      return { status: 'valid', error: '' };
+    }
+
+    return {
+      status: 'invalid',
+      error: `不在允許的打卡範圍內。距離${nearestLocation}約${Math.round(minDistance)}公尺`
+    };
+  }, [allowedLocations, calculateDistance, gpsSettings.requiredAccuracy]);
+
+  const requestCurrentPosition = useCallback((): Promise<GeolocationPosition> => {
+    return new Promise((resolve, reject) => {
+      if (!navigator.geolocation) {
+        reject(new Error('瀏覽器不支援GPS定位'));
+        return;
+      }
+
+      navigator.geolocation.getCurrentPosition(
+        resolve,
+        (error) => {
+          switch (error.code) {
+            case error.PERMISSION_DENIED:
+              reject(new Error('GPS權限被拒絕'));
+              break;
+            case error.POSITION_UNAVAILABLE:
+              reject(new Error('無法取得位置資訊'));
+              break;
+            case error.TIMEOUT:
+              reject(new Error('GPS定位超時'));
+              break;
+            default:
+              reject(new Error('GPS定位失敗'));
+              break;
+          }
+        },
+        {
+          enableHighAccuracy: true,
+          timeout: 10000,
+          maximumAge: 60000
+        }
+      );
+    });
+  }, []);
+
+  const refreshLocationStatus = useCallback(async (): Promise<LocationRefreshResult> => {
+    if (!gpsSettings.enabled) {
+      setLocationStatus('disabled');
+      setLocationError('');
+      return { status: 'disabled' };
+    }
+
+    setLocationStatus('checking');
+    setLocationError('');
+
+    try {
+      const position = await requestCurrentPosition();
+      const location = buildLocationPayload(position);
+      const validation = validateLocationPosition(position);
+
+      setCurrentLocation(position);
+      setLocationStatus(validation.status);
+      setLocationError(validation.error);
+
+      return {
+        status: validation.status,
+        error: validation.error || undefined,
+        location
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'GPS定位失敗';
+      setCurrentLocation(null);
+      setLocationStatus('error');
+      setLocationError(message);
+      return { status: 'error', error: message };
+    }
+  }, [buildLocationPayload, gpsSettings.enabled, requestCurrentPosition, validateLocationPosition]);
 
   // 載入已儲存的員編（自動填入）
   useEffect(() => {
@@ -178,89 +310,12 @@ function QuickClockForm({
   useEffect(() => {
     if (!gpsSettings.enabled) {
       setLocationStatus('disabled');
+      setLocationError('');
       return;
     }
 
-    const checkLocation = () => {
-      if (!navigator.geolocation) {
-        setLocationStatus('error');
-        setLocationError('瀏覽器不支援GPS定位');
-        return;
-      }
-
-      setLocationStatus('checking');
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
-          setCurrentLocation(position);
-          
-          // 檢查 1: GPS 精確度
-          if (position.coords.accuracy > gpsSettings.requiredAccuracy) {
-            setLocationStatus('invalid');
-            setLocationError(`GPS精確度不足 (±${Math.round(position.coords.accuracy)}公尺)`);
-            return;
-          }
-          
-          // 檢查 2: 是否在允許的打卡位置範圍內
-          if (allowedLocations.length === 0) {
-            // 如果沒有設定允許位置，則僅檢查精確度
-            setLocationStatus('valid');
-            setLocationError('');
-            return;
-          }
-          
-          const { latitude, longitude } = position.coords;
-          let isWithinRange = false;
-          let nearestLocation = '';
-          let minDistance = Infinity;
-          
-          for (const loc of allowedLocations) {
-            if (!loc.isActive) continue;
-            const distance = calculateDistance(latitude, longitude, loc.latitude, loc.longitude);
-            if (distance <= loc.radius) {
-              isWithinRange = true;
-              break;
-            }
-            if (distance < minDistance) {
-              minDistance = distance;
-              nearestLocation = loc.name;
-            }
-          }
-          
-          if (isWithinRange) {
-            setLocationStatus('valid');
-            setLocationError('');
-          } else {
-            setLocationStatus('invalid');
-            setLocationError(`不在允許的打卡範圍內。距離${nearestLocation}約${Math.round(minDistance)}公尺`);
-          }
-        },
-        (error) => {
-          setLocationStatus('error');
-          switch (error.code) {
-            case error.PERMISSION_DENIED:
-              setLocationError('GPS權限被拒絕');
-              break;
-            case error.POSITION_UNAVAILABLE:
-              setLocationError('無法取得位置資訊');
-              break;
-            case error.TIMEOUT:
-              setLocationError('GPS定位超時');
-              break;
-            default:
-              setLocationError('GPS定位失敗');
-              break;
-          }
-        },
-        {
-          enableHighAccuracy: true,
-          timeout: 10000,
-          maximumAge: 60000
-        }
-      );
-    };
-
-    checkLocation();
-  }, [gpsSettings, allowedLocations]);
+    void refreshLocationStatus();
+  }, [gpsSettings, allowedLocations, refreshLocationStatus]);
 
   // 檢查員工今日打卡狀態
   const checkEmployeeStatus = async (username: string) => {
@@ -364,6 +419,11 @@ function QuickClockForm({
 
   // Face ID 打卡
   const handleFaceIdClock = async (type: 'in' | 'out') => {
+    if (isMobileClocking !== true) {
+      onError(MOBILE_CLOCKING_REQUIRED_MESSAGE);
+      return;
+    }
+
     if (!biometricSupported) {
       onError('此裝置不支援 Face ID / 指紋');
       return;
@@ -373,6 +433,17 @@ function QuickClockForm({
     onError('');
 
     try {
+      let locationPayload: ClockLocationPayload | undefined;
+
+      if (gpsSettings.enabled) {
+        const locationResult = await refreshLocationStatus();
+        locationPayload = locationResult.location;
+
+        if (locationResult.status === 'invalid' || (locationResult.status === 'error' && !gpsSettings.allowOfflineMode)) {
+          throw new Error(locationResult.error || 'GPS位置驗證失敗');
+        }
+      }
+
       // 1. 獲取驗證選項
       const optionsRes = await fetch('/api/webauthn/auth-options', {
         method: 'POST',
@@ -422,7 +493,8 @@ function QuickClockForm({
             },
             type: credential.type
           },
-          clockType: type
+          clockType: type,
+          location: locationPayload
         })
       });
 
@@ -445,6 +517,11 @@ function QuickClockForm({
 
   // 設定 Face ID
   const handleSetupFaceId = async () => {
+    if (isMobileClocking !== true) {
+      onError(MOBILE_CLOCKING_REQUIRED_MESSAGE);
+      return;
+    }
+
     if (!biometricSupported) {
       onError('此裝置不支援 Face ID / 指紋');
       return;
@@ -537,13 +614,8 @@ function QuickClockForm({
   };
 
   const handleQuickClock = async (type: 'in' | 'out') => {
-    // 快速打卡模式：只有在GPS明確無效且不允許離線時才阻止
-    const shouldBlockForGPS = gpsSettings.enabled && 
-                              !gpsSettings.allowOfflineMode && 
-                              locationStatus === 'invalid';
-    
-    if (shouldBlockForGPS) {
-      onError('GPS位置驗證失敗，無法打卡。請移動到GPS訊號較好的位置。');
+    if (isMobileClocking !== true) {
+      onError(MOBILE_CLOCKING_REQUIRED_MESSAGE);
       return;
     }
 
@@ -552,15 +624,28 @@ function QuickClockForm({
     onError('');
 
     try {
+      let locationPayload: ClockLocationPayload | undefined;
+
+      if (gpsSettings.enabled) {
+        const locationResult = await refreshLocationStatus();
+        locationPayload = locationResult.location;
+
+        if (locationResult.status === 'invalid') {
+          onError(locationResult.error || 'GPS位置驗證失敗，無法打卡。');
+          return;
+        }
+
+        if (locationResult.status === 'error' && !gpsSettings.allowOfflineMode) {
+          onError(locationResult.error || 'GPS位置驗證失敗，無法打卡。');
+          return;
+        }
+      }
+
       const requestData: {
         username: string;
         password: string;
         type: string;
-        location?: {
-          latitude: number;
-          longitude: number;
-          accuracy: number;
-        };
+        location?: ClockLocationPayload;
       } = {
         username: clockData.username,
         password: clockData.password,
@@ -568,12 +653,8 @@ function QuickClockForm({
       };
 
       // 如果GPS啟用且有有效位置，添加位置資訊
-      if (gpsSettings.enabled && currentLocation) {
-        requestData.location = {
-          latitude: currentLocation.coords.latitude,
-          longitude: currentLocation.coords.longitude,
-          accuracy: currentLocation.coords.accuracy
-        };
+      if (gpsSettings.enabled && locationPayload) {
+        requestData.location = locationPayload;
       }
 
       const response = await fetch('/api/attendance/verify-clock', {
@@ -816,6 +897,12 @@ function QuickClockForm({
         </div>
       )}
 
+      {isMobileClocking === false && (
+        <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+          {MOBILE_CLOCKING_REQUIRED_MESSAGE}
+        </div>
+      )}
+
       {/* 打卡表單 - 只有員編密碼 */}
       <div className="space-y-4">
         <div>
@@ -883,7 +970,7 @@ function QuickClockForm({
       <div className="grid grid-cols-2 gap-3 mt-4">
         <button
           onClick={() => handleQuickClock('in')}
-          disabled={clockLoading || (!clockData.username || !clockData.password) || (attendanceStatus?.hasClockIn)}
+          disabled={clockLoading || isMobileClocking !== true || (!clockData.username || !clockData.password) || (attendanceStatus?.hasClockIn)}
           className={`py-2.5 px-3 text-sm font-medium rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 ${
             attendanceStatus?.hasClockIn 
               ? 'bg-green-100 text-green-700 border border-green-300' 
@@ -899,7 +986,7 @@ function QuickClockForm({
         
         <button
           onClick={() => handleQuickClock('out')}
-          disabled={clockLoading || (!clockData.username || !clockData.password) || (attendanceStatus?.hasClockOut)}
+          disabled={clockLoading || isMobileClocking !== true || (!clockData.username || !clockData.password) || (attendanceStatus?.hasClockOut)}
           className={`py-2.5 px-3 text-sm font-medium rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 ${
             attendanceStatus?.hasClockOut 
               ? 'bg-orange-100 text-orange-700 border border-orange-300' 
@@ -924,11 +1011,11 @@ function QuickClockForm({
               <div className="grid grid-cols-2 gap-2">
                 <button
                   onClick={() => handleFaceIdClock('in')}
-                  disabled={faceIdLoading || attendanceStatus?.hasClockIn}
+                  disabled={faceIdLoading || isMobileClocking !== true || attendanceStatus?.hasClockIn}
                   className={`py-3 px-3 text-sm font-medium rounded-xl transition-colors flex items-center justify-center gap-2 ${
                     attendanceStatus?.hasClockIn
                       ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                      : 'bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 text-white shadow-lg'
+                      : 'bg-linear-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 text-white shadow-lg'
                   }`}
                 >
                   <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -939,11 +1026,11 @@ function QuickClockForm({
                 </button>
                 <button
                   onClick={() => handleFaceIdClock('out')}
-                  disabled={faceIdLoading || attendanceStatus?.hasClockOut}
+                  disabled={faceIdLoading || isMobileClocking !== true || attendanceStatus?.hasClockOut}
                   className={`py-3 px-3 text-sm font-medium rounded-xl transition-colors flex items-center justify-center gap-2 ${
                     attendanceStatus?.hasClockOut
                       ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                      : 'bg-gradient-to-r from-orange-400 to-pink-500 hover:from-orange-500 hover:to-pink-600 text-white shadow-lg'
+                      : 'bg-linear-to-r from-orange-400 to-pink-500 hover:from-orange-500 hover:to-pink-600 text-white shadow-lg'
                   }`}
                 >
                   <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -996,6 +1083,7 @@ function QuickClockForm({
 
 function LoginPageContent() {
   const searchParams = useSearchParams();
+  const [isMobileClocking, setIsMobileClocking] = useState<boolean | null>(null);
   const [activeTab, setActiveTab] = useState<'login' | 'quickClock'>('login');
   const [formData, setFormData] = useState({
     username: '',
@@ -1031,6 +1119,10 @@ function LoginPageContent() {
   useEffect(() => {
     // 設定頁面標題
     document.title = '登入 - 長福會考勤系統';
+  }, []);
+
+  useEffect(() => {
+    setIsMobileClocking(isMobileClockingDevice(navigator.userAgent));
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -1153,7 +1245,7 @@ function LoginPageContent() {
               {/* 錯誤訊息 */}
               {error && (
                 <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm flex items-center gap-2">
-                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                  <AlertCircle className="w-4 h-4 shrink-0" />
                   {error}
                 </div>
               )}
@@ -1258,25 +1350,33 @@ function LoginPageContent() {
               {/* 快速打卡：員編密碼 */}
               {activeTab === 'quickClock' && (
                 <>
-                  {/* 手機版時鐘 - 只在手機上顯示 */}
-                  <div className="lg:hidden text-center bg-gradient-to-br from-blue-50 to-cyan-50 rounded-xl p-4 border border-blue-100 mb-4">
-                    <div className="text-3xl font-mono font-bold bg-gradient-to-r from-blue-600 to-cyan-600 bg-clip-text text-transparent">
-                      {currentTime.toLocaleTimeString('zh-TW', { 
-                        hour: '2-digit', 
-                        minute: '2-digit', 
-                        second: '2-digit',
-                        hour12: false 
-                      })}
+                  {isMobileClocking === false ? (
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+                      {MOBILE_CLOCKING_REQUIRED_MESSAGE}
                     </div>
-                    <div className="text-xs text-gray-600 mt-1">
-                      {currentTime.toLocaleDateString('zh-TW', {
-                        month: 'numeric',
-                        day: 'numeric',
-                        weekday: 'short'
-                      })}
-                    </div>
-                  </div>
-                  <QuickClockForm onError={setError} onStatusChange={setQuickClockStatus} />
+                  ) : (
+                    <>
+                      {/* 手機版時鐘 - 只在手機上顯示 */}
+                      <div className="lg:hidden text-center bg-gradient-to-br from-blue-50 to-cyan-50 rounded-xl p-4 border border-blue-100 mb-4">
+                        <div className="text-3xl font-mono font-bold bg-gradient-to-r from-blue-600 to-cyan-600 bg-clip-text text-transparent">
+                          {currentTime.toLocaleTimeString('zh-TW', { 
+                            hour: '2-digit', 
+                            minute: '2-digit', 
+                            second: '2-digit',
+                            hour12: false 
+                          })}
+                        </div>
+                        <div className="text-xs text-gray-600 mt-1">
+                          {currentTime.toLocaleDateString('zh-TW', {
+                            month: 'numeric',
+                            day: 'numeric',
+                            weekday: 'short'
+                          })}
+                        </div>
+                      </div>
+                      <QuickClockForm onError={setError} onStatusChange={setQuickClockStatus} />
+                    </>
+                  )}
                 </>
               )}
 
@@ -1322,6 +1422,16 @@ function LoginPageContent() {
           {activeTab === 'quickClock' && (
             <div className="flex-1 p-8 overflow-y-auto">
               <div className="max-w-md mx-auto space-y-6">
+                {isMobileClocking === false && (
+                  <div className="rounded-2xl border border-amber-200 bg-amber-50 p-6 text-amber-900">
+                    <div className="flex items-center gap-2 text-sm font-semibold mb-2">
+                      <AlertCircle className="w-4 h-4" />
+                      打卡裝置限制
+                    </div>
+                    <p className="text-sm leading-6">{MOBILE_CLOCKING_REQUIRED_MESSAGE}</p>
+                  </div>
+                )}
+
                 {/* 系統時間卡片 */}
                 <div className="text-center bg-gradient-to-br from-blue-50 to-cyan-50 rounded-2xl p-6 border border-blue-100">
                   <div className="inline-flex items-center gap-2 px-3 py-1 bg-blue-100 rounded-full text-blue-700 text-xs font-medium mb-3">
