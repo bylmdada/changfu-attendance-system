@@ -10,78 +10,98 @@ description: 部署到 DigitalOcean VPS（Cloudflare SSL + Namecheap 網域）
 - **路徑**: ~/apps/changfu-attendance
 - **SSL**: Cloudflare
 - **網域**: Namecheap.me
+- **Node**: 透過 nvm 管理（SSH 需先 source ~/.nvm/nvm.sh）
+- **程序管理**: PM2（程序名稱: attendance）
+- **VPS RAM**: 1GB（不建議在 VPS 上 build）
 
 ---
 
-## 快速部署（一鍵執行）
+## 一鍵部署（預設流程）
+
+依序執行以下 4 個步驟，每步驟完成後再執行下一步。
 
 // turbo
-1. 提交並推送程式碼到 GitHub：
+### Step 1: 本機 Build
 ```bash
-cd /Users/feng/changfu-attendance-system
-git add -A && git commit -m "deploy: update" && git push origin main
+cd /Users/feng/changfu-attendance-system && npm run build
 ```
 
 // turbo
-2. 同步程式碼到 VPS（排除 node_modules、.next、資料庫、.env）：
+### Step 2: 同步程式碼到 VPS
+排除 node_modules、.next、.git、資料庫、uploads、.env：
 ```bash
-rsync -avz --exclude 'node_modules' --exclude '.next' --exclude '.git' --exclude 'prisma/*.db*' --exclude 'uploads' --exclude '.env' ./ deploy@188.166.229.128:~/apps/changfu-attendance/
+cd /Users/feng/changfu-attendance-system && rsync -avz --exclude 'node_modules' --exclude '.next' --exclude '.git' --exclude 'prisma/*.db*' --exclude 'uploads' --exclude '.env' ./ deploy@188.166.229.128:~/apps/changfu-attendance/
 ```
 
 // turbo
-3. 同步已建置的 .next 資料夾（VPS 記憶體不足時）：
+### Step 3: 同步已建置的 .next 資料夾
+VPS 記憶體不足，直接同步本機 build 產物：
 ```bash
-rsync -avz --delete .next/ deploy@188.166.229.128:~/apps/changfu-attendance/.next/
+cd /Users/feng/changfu-attendance-system && rsync -avz --delete .next/ deploy@188.166.229.128:~/apps/changfu-attendance/.next/
 ```
 
 // turbo
-4. 重啟 PM2 應用程式：
+### Step 4: 重啟 PM2 並確認狀態
 ```bash
-ssh deploy@188.166.229.128 "source ~/.nvm/nvm.sh && pm2 restart attendance && pm2 status"
+ssh deploy@188.166.229.128 "source ~/.nvm/nvm.sh && pm2 restart attendance && sleep 5 && pm2 status && echo '=== 最近日誌 ===' && pm2 logs attendance --lines 10 --nostream"
 ```
 
 ---
 
-## 完整部署（含 npm install 和 build）
+## 完整部署（含 npm install）
 
-如果有新增套件或需要重新 build：
+當有新增/更新套件時，需在 VPS 上執行 npm install：
 
 // turbo
-1. SSH 到 VPS 並執行完整部署：
+### SSH 到 VPS 執行 npm install + 重啟
 ```bash
-ssh deploy@188.166.229.128 "source ~/.nvm/nvm.sh && cd ~/apps/changfu-attendance && npm install && NODE_OPTIONS='--max-old-space-size=1024' npm run build && pm2 restart attendance"
+ssh deploy@188.166.229.128 "source ~/.nvm/nvm.sh && cd ~/apps/changfu-attendance && npm install --production && pm2 restart attendance && pm2 status"
 ```
 
-> ⚠️ **注意**: VPS 只有 1GB RAM，build 可能 OOM。建議使用上方的「同步 .next」方式。
+> ⚠️ **注意**: 不要在 VPS 上執行 `npm run build`，1GB RAM 會 OOM。一律在本機 build 後 rsync .next/。
+
+---
+
+## 資料庫操作（謹慎使用）
+
+// turbo
+### 上傳本地資料庫到 VPS（會覆蓋線上資料）
+```bash
+scp /Users/feng/changfu-attendance-system/prisma/dev.db deploy@188.166.229.128:~/apps/changfu-attendance/prisma/prod.db
+```
+
+// turbo
+### 從 VPS 下載資料庫備份
+```bash
+scp deploy@188.166.229.128:~/apps/changfu-attendance/prisma/prod.db /Users/feng/changfu-attendance-system/backups/prod_$(date +%Y%m%d).db
+```
+
+// turbo
+### 在 VPS 上執行 Prisma 遷移
+```bash
+ssh deploy@188.166.229.128 "source ~/.nvm/nvm.sh && cd ~/apps/changfu-attendance && npx prisma migrate deploy"
+```
 
 ---
 
 ## 查看狀態與日誌
 
 // turbo
-- 查看應用狀態：
+### 查看應用狀態
 ```bash
 ssh deploy@188.166.229.128 "source ~/.nvm/nvm.sh && pm2 status"
 ```
 
 // turbo
-- 查看即時日誌：
+### 查看即時日誌（最近 50 行）
 ```bash
-ssh deploy@188.166.229.128 "source ~/.nvm/nvm.sh && pm2 logs attendance --lines 50"
+ssh deploy@188.166.229.128 "source ~/.nvm/nvm.sh && pm2 logs attendance --lines 50 --nostream"
 ```
 
----
-
-## 資料庫同步（謹慎使用）
-
-將本地資料庫上傳到 VPS（會覆蓋線上資料）：
+// turbo
+### 查看錯誤日誌
 ```bash
-scp ./prisma/dev.db deploy@188.166.229.128:~/apps/changfu-attendance/prisma/prod.db
-```
-
-從 VPS 下載資料庫到本地備份：
-```bash
-scp deploy@188.166.229.128:~/apps/changfu-attendance/prisma/prod.db ./backups/prod_$(date +%Y%m%d).db
+ssh deploy@188.166.229.128 "source ~/.nvm/nvm.sh && pm2 logs attendance --err --lines 30 --nostream"
 ```
 
 ---
@@ -89,11 +109,18 @@ scp deploy@188.166.229.128:~/apps/changfu-attendance/prisma/prod.db ./backups/pr
 ## 問題排解
 
 ### Build OOM (記憶體不足)
-- 使用本地 `npm run build`，然後 rsync `.next/` 資料夾
+- 一律在本機 `npm run build`，然後 rsync `.next/` 資料夾到 VPS
 
 ### npm command not found
-- SSH 需要先執行 `source ~/.nvm/nvm.sh`
+- SSH 指令需先執行 `source ~/.nvm/nvm.sh`
 
-### 無法連線
+### Failed to find Server Action
+- 部署後舊版瀏覽器快取導致，使用者刷新頁面即可解決
+
+### 無法連線 VPS
 - 確認 IP: 188.166.229.128
+- 確認使用 deploy 用戶
 - 確認 SSH key 已設定
+
+### PM2 程序不存在
+- 首次設定：`ssh deploy@188.166.229.128 "source ~/.nvm/nvm.sh && cd ~/apps/changfu-attendance && pm2 start npm --name attendance -- start && pm2 save"`
