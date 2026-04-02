@@ -2,57 +2,8 @@ import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { cookies } from 'next/headers';
 import crypto from 'crypto';
+import { getActiveAllowedLocations, getGPSSettingsFromDB, type ClockLocationPayload, validateGpsClockLocation } from '@/lib/gps-attendance';
 import { isMobileClockingDevice, MOBILE_CLOCKING_REQUIRED_MESSAGE } from '@/lib/device-detection';
-
-interface ClockLocationPayload {
-  latitude: number;
-  longitude: number;
-  accuracy: number;
-  address?: string;
-}
-
-interface GPSSettings {
-  enabled: boolean;
-  requiredAccuracy: number;
-  allowOfflineMode: boolean;
-  offlineGracePeriod: number;
-  maxDistanceVariance: number;
-  verificationTimeout: number;
-  enableLocationHistory: boolean;
-  requireAddressInfo: boolean;
-}
-
-const GPS_SETTINGS_KEY = 'gps_settings';
-
-const defaultGPSSettings: GPSSettings = {
-  enabled: true,
-  requiredAccuracy: 50,
-  allowOfflineMode: false,
-  offlineGracePeriod: 5,
-  maxDistanceVariance: 20,
-  verificationTimeout: 30,
-  enableLocationHistory: true,
-  requireAddressInfo: true
-};
-
-async function getGPSSettings(): Promise<GPSSettings> {
-  try {
-    const setting = await prisma.systemSettings.findUnique({
-      where: { key: GPS_SETTINGS_KEY }
-    });
-
-    if (setting) {
-      return {
-        ...defaultGPSSettings,
-        ...JSON.parse(setting.value)
-      };
-    }
-  } catch (error) {
-    console.error('讀取 GPS 設定失敗:', error);
-  }
-
-  return { ...defaultGPSSettings };
-}
 
 // Base64URL 解碼
 function base64urlToBuffer(base64url: string): Buffer {
@@ -211,18 +162,22 @@ export async function POST(request: Request) {
 
     // 如果需要打卡
     if (clockType === 'in' || clockType === 'out') {
-      const gpsSettings = await getGPSSettings();
+      const gpsSettings = await getGPSSettingsFromDB();
+      const allowedLocations = gpsSettings.enabled ? await getActiveAllowedLocations() : [];
+      const gpsValidation = validateGpsClockLocation({
+        gpsSettings,
+        location,
+        allowedLocations,
+      });
 
-      if (gpsSettings.enabled) {
-        if (!location && !gpsSettings.allowOfflineMode) {
-          return NextResponse.json({ error: 'GPS定位失敗，請確保GPS功能已開啟且允許定位權限' }, { status: 400 });
-        }
-
-        if (location && location.accuracy > gpsSettings.requiredAccuracy) {
-          return NextResponse.json({ 
-            error: `GPS精確度不足（${location.accuracy}m > ${gpsSettings.requiredAccuracy}m），請移動到GPS訊號較好的位置` 
-          }, { status: 400 });
-        }
+      if (!gpsValidation.ok) {
+        return NextResponse.json(
+          {
+            error: gpsValidation.error,
+            code: gpsValidation.code,
+          },
+          { status: 400 }
+        );
       }
 
       const today = new Date();
