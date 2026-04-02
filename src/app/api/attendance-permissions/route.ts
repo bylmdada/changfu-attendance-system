@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import jwt from 'jsonwebtoken';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { getUserFromRequest } from '@/lib/auth';
 
 interface AttendancePermissionData {
   employeeId: number;
@@ -12,15 +12,6 @@ interface AttendancePermissionData {
     shiftExchanges: string[];
     scheduleManagement: string[];
   };
-}
-
-// 驗證 JWT Token
-function verifyToken(token: string) {
-  try {
-    return jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret');
-  } catch {
-    return null;
-  }
 }
 
 interface DecodedToken {
@@ -39,15 +30,11 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
 
-    // 驗證用戶權限
-    const token = request.cookies.get('token')?.value || 
-                  request.headers.get('Authorization')?.replace('Bearer ', '');
-    
-    if (!token) {
+    const decoded = await getUserFromRequest(request) as DecodedToken | null;
+    if (!decoded) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = verifyToken(token) as DecodedToken | null;
     if (!decoded || decoded.role !== 'ADMIN') {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
@@ -95,15 +82,11 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'CSRF token validation failed' }, { status: 403 });
     }
 
-    // 驗證用戶權限
-    const token = request.cookies.get('token')?.value || 
-                  request.headers.get('Authorization')?.replace('Bearer ', '');
-    
-    if (!token) {
+    const decoded = await getUserFromRequest(request) as DecodedToken | null;
+    if (!decoded) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = verifyToken(token) as DecodedToken | null;
     if (!decoded || decoded.role !== 'ADMIN') {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }

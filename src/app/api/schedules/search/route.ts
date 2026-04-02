@@ -36,7 +36,7 @@ async function getManageableLocations(user: { role: string; employeeId?: number 
 
 export async function GET(request: NextRequest) {
   try {
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }

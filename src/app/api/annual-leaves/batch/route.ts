@@ -2,7 +2,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { verifyToken } from '@/lib/auth';
+import { getUserFromToken } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 
@@ -75,7 +75,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = verifyToken(token);
+    const decoded = await getUserFromToken(token);
     if (!decoded) {
       return NextResponse.json({ error: '無效的認證令牌' }, { status: 401 });
     }
@@ -233,7 +233,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = verifyToken(token);
+    const decoded = await getUserFromToken(token);
     if (!decoded) {
       return NextResponse.json({ error: '無效的認證令牌' }, { status: 401 });
     }

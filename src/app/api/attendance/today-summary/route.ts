@@ -11,7 +11,7 @@ export async function GET(request: NextRequest) {
       hasAuthToken: !!authToken
     });
 
-    const userPayload = getUserFromRequest(request);
+    const userPayload = await getUserFromRequest(request);
     console.log('📊 [today-summary] 身份驗證:', userPayload ? '成功' : '失敗', userPayload ? { userId: userPayload.userId, role: userPayload.role } : null);
     
     if (!userPayload) {

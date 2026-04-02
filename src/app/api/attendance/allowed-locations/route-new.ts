@@ -1,20 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-
-// 簡化的用戶驗證
-function getUserFromRequest(request: NextRequest) {
-  const authHeader = request.headers.get('authorization');
-  if (authHeader === 'Bearer admin-token') {
-    return { id: 1, role: 'ADMIN' };
-  }
-  return null;
-}
+import { getUserFromRequest } from '@/lib/auth';
 
 // GET - 獲取所有允許位置
 export async function GET(request: NextRequest) {
   try {
     // 檢查管理員權限
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user || user.role !== 'ADMIN') {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
@@ -54,7 +46,7 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     // 檢查管理員權限
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user || user.role !== 'ADMIN') {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
@@ -120,7 +112,7 @@ export async function POST(request: NextRequest) {
 export async function PUT(request: NextRequest) {
   try {
     // 檢查管理員權限
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user || user.role !== 'ADMIN') {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
@@ -178,7 +170,7 @@ export async function PUT(request: NextRequest) {
 export async function DELETE(request: NextRequest) {
   try {
     // 檢查管理員權限
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user || user.role !== 'ADMIN') {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }

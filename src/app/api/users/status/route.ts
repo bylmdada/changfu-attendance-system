@@ -13,7 +13,7 @@ export async function PATCH(request: NextRequest) {
     }
 
     // 權限檢查
-    const currentUser = getUserFromRequest(request);
+    const currentUser = await getUserFromRequest(request);
     if (!currentUser || currentUser.role !== 'ADMIN') {
       return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
     }

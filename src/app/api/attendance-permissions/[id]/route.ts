@@ -1,19 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import jwt from 'jsonwebtoken';
+import { getUserFromRequest } from '@/lib/auth';
 
 interface DecodedToken {
   role: string;
   employeeId?: number;
-}
-
-// 驗證 JWT Token
-function verifyToken(token: string) {
-  try {
-    return jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret');
-  } catch {
-    return null;
-  }
 }
 
 // PATCH - 更新權限設定
@@ -28,15 +19,11 @@ export async function PATCH(
       return NextResponse.json({ error: '無效的權限ID' }, { status: 400 });
     }
 
-    // 驗證用戶權限
-    const token = request.cookies.get('token')?.value || 
-                  request.headers.get('Authorization')?.replace('Bearer ', '');
-    
-    if (!token) {
+    const decoded = await getUserFromRequest(request) as DecodedToken | null;
+    if (!decoded) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = verifyToken(token) as DecodedToken | null;
     if (!decoded || decoded.role !== 'ADMIN') {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
@@ -99,15 +86,11 @@ export async function DELETE(
       return NextResponse.json({ error: '無效的權限ID' }, { status: 400 });
     }
 
-    // 驗證用戶權限
-    const token = request.cookies.get('token')?.value || 
-                  request.headers.get('Authorization')?.replace('Bearer ', '');
-    
-    if (!token) {
+    const decoded = await getUserFromRequest(request) as DecodedToken | null;
+    if (!decoded) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = verifyToken(token) as DecodedToken | null;
     if (!decoded || decoded.role !== 'ADMIN') {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }

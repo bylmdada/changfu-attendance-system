@@ -100,7 +100,7 @@ export async function POST(request: NextRequest) {
     console.log('🚀 開始處理套用模版請求');
     
     // 權限檢查
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: '請先登入' }, { status: 401 });
     }

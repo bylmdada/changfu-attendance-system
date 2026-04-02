@@ -177,7 +177,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
 
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user || user.role !== 'ADMIN') {
       return NextResponse.json({ error: '需要管理員權限查看威脅分析' }, { status: 403 });
     }

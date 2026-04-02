@@ -12,7 +12,7 @@ import { validateCSRF } from '@/lib/csrf';
 // GET - 取得全勤獎金設定
 export async function GET(request: NextRequest) {
   try {
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     
     if (!user || (user.role !== 'ADMIN' && user.role !== 'HR')) {
       return NextResponse.json({ error: '需要管理員或HR權限' }, { status: 403 });
@@ -49,7 +49,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'CSRF驗證失敗' }, { status: 403 });
     }
 
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     
     if (!user || user.role !== 'ADMIN') {
       return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });

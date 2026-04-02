@@ -134,7 +134,7 @@ async function getUserManagedDepartments(user: { role: string; employeeId: numbe
 // GET - 獲取排程模板列表（依權限過濾）
 export async function GET(request: NextRequest) {
   try {
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
@@ -169,7 +169,7 @@ export async function GET(request: NextRequest) {
 // POST - 建立新的週模版
 export async function POST(request: NextRequest) {
   try {
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }

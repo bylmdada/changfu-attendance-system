@@ -17,7 +17,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'CSRF驗證失敗' }, { status: 403 });
     }
 
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user || !['ADMIN', 'MANAGER'].includes(user.role)) {
       return NextResponse.json({ error: '需要主管或管理員權限' }, { status: 403 });
     }

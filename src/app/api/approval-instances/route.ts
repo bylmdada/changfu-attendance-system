@@ -10,6 +10,7 @@ import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { updateRequestStatus, WorkflowType } from '@/lib/approval-helper';
 import { notifyApplicant, notifyReviewers } from '@/lib/approval-notifications';
+import { ensureApprovalReviewAllowed } from '@/lib/approval-service';
 
 // 申請類型名稱對照
 const REQUEST_TYPE_NAMES: Record<string, string> = {
@@ -45,7 +46,7 @@ const STATUS_NAMES: Record<string, string> = {
 // GET: 取得待審核項目
 export async function GET(request: NextRequest) {
   try {
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
@@ -434,7 +435,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'CSRF 驗證失敗' }, { status: 403 });
     }
 
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
@@ -458,6 +459,8 @@ export async function POST(request: NextRequest) {
     if (!instance) {
       return NextResponse.json({ error: '找不到審核項目' }, { status: 404 });
     }
+
+    await ensureApprovalReviewAllowed(prisma, instance, user.employeeId);
 
     // 驗證權限
     let reviewerRole = 'ADMIN';
@@ -488,19 +491,6 @@ export async function POST(request: NextRequest) {
     const employee = await prisma.employee.findUnique({
       where: { id: user.employeeId },
       select: { name: true }
-    });
-
-    // 建立審核紀錄
-    await prisma.approvalReview.create({
-      data: {
-        instanceId,
-        level: instance.currentLevel,
-        reviewerId: user.employeeId,
-        reviewerName: employee?.name || user.username,
-        reviewerRole,
-        action,
-        comment: comment || null
-      }
     });
 
     // 更新審核實例
@@ -538,11 +528,35 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    await prisma.approvalInstance.update({
-      where: { id: instanceId },
-      data: {
-        status: newStatus,
-        currentLevel: newLevel
+    await prisma.$transaction(async (tx) => {
+      await ensureApprovalReviewAllowed(tx, instance, user.employeeId);
+
+      await tx.approvalReview.create({
+        data: {
+          instanceId,
+          level: instance.currentLevel,
+          reviewerId: user.employeeId,
+          reviewerName: employee?.name || user.username,
+          reviewerRole,
+          action,
+          comment: comment || null
+        }
+      });
+
+      const updatedCount = await tx.approvalInstance.updateMany({
+        where: {
+          id: instanceId,
+          currentLevel: instance.currentLevel,
+          status: instance.status
+        },
+        data: {
+          status: newStatus,
+          currentLevel: newLevel
+        }
+      });
+
+      if (updatedCount.count !== 1) {
+        throw new Error('審核狀態已變更，請重新整理後再試');
       }
     });
 
@@ -590,6 +604,16 @@ export async function POST(request: NextRequest) {
     });
 
   } catch (error) {
+    if (error instanceof Error) {
+      if (error.message.includes('此審核已完成')) {
+        return NextResponse.json({ error: error.message }, { status: 409 });
+      }
+
+      if (error.message.includes('請勿重複送出') || error.message.includes('審核狀態已變更')) {
+        return NextResponse.json({ error: error.message }, { status: 409 });
+      }
+    }
+
     console.error('審核失敗:', error);
     return NextResponse.json({ error: '系統錯誤' }, { status: 500 });
   }

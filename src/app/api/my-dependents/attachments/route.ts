@@ -27,7 +27,7 @@ const FILE_TYPES = {
 // 上傳附件
 export async function POST(request: NextRequest) {
   try {
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
@@ -126,7 +126,7 @@ export async function POST(request: NextRequest) {
 // 取得申請的附件列表
 export async function GET(request: NextRequest) {
   try {
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
@@ -178,7 +178,7 @@ export async function GET(request: NextRequest) {
 // 刪除附件
 export async function DELETE(request: NextRequest) {
   try {
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }

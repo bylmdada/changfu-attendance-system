@@ -17,7 +17,7 @@ export async function GET(request: NextRequest) {
     }
     
     // 獲取當前用戶
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user) {
       console.log('[debug] 用戶未授權');
       return NextResponse.json({ error: '未授權' }, { status: 401 });

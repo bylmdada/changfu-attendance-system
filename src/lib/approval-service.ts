@@ -4,6 +4,7 @@
  */
 
 import { prisma } from '@/lib/database';
+import { Prisma } from '@prisma/client';
 
 // 審核流程類型
 export type WorkflowType = 
@@ -29,6 +30,39 @@ export type ApprovalStatus =
   | 'LEVEL3_REVIEWING'  // 三階審核中（管理員決核）
   | 'APPROVED'          // 已通過
   | 'REJECTED';         // 已退回
+
+type ReviewableApprovalInstance = {
+  id: number;
+  currentLevel: number;
+  status: string;
+};
+
+export function isTerminalApprovalStatus(status: string): boolean {
+  return status === 'APPROVED' || status === 'REJECTED';
+}
+
+export async function ensureApprovalReviewAllowed(
+  tx: Prisma.TransactionClient | typeof prisma,
+  instance: ReviewableApprovalInstance,
+  reviewerId: number
+): Promise<void> {
+  if (isTerminalApprovalStatus(instance.status)) {
+    throw new Error('此審核已完成，無法再次審核');
+  }
+
+  const existingReview = await tx.approvalReview.findFirst({
+    where: {
+      instanceId: instance.id,
+      reviewerId,
+      level: instance.currentLevel
+    },
+    select: { id: true }
+  });
+
+  if (existingReview) {
+    throw new Error('您已完成此關卡審核，請勿重複送出');
+  }
+}
 
 interface CreateApprovalParams {
   requestType: WorkflowType;
@@ -202,22 +236,8 @@ export async function performReview(params: ReviewParams) {
   if (!instance) {
     throw new Error('找不到審核實例');
   }
-  
-  // 建立審核紀錄
-  await prisma.approvalReview.create({
-    data: {
-      instanceId,
-      level: instance.currentLevel,
-      reviewerId,
-      reviewerName,
-      reviewerRole,
-      isDeputy,
-      action,
-      comment,
-      forwardToId,
-      forwardReason
-    }
-  });
+
+  await ensureApprovalReviewAllowed(prisma, instance, reviewerId);
   
   // 更新審核實例狀態
   let newStatus: ApprovalStatus;
@@ -258,13 +278,48 @@ export async function performReview(params: ReviewParams) {
     newStatus = instance.status as ApprovalStatus;
   }
   
-  const updatedInstance = await prisma.approvalInstance.update({
-    where: { id: instanceId },
-    data: {
-      status: newStatus,
-      currentLevel: newLevel
+  const updatedInstance = await prisma.$transaction(async (tx) => {
+    await ensureApprovalReviewAllowed(tx, instance, reviewerId);
+
+    await tx.approvalReview.create({
+      data: {
+        instanceId,
+        level: instance.currentLevel,
+        reviewerId,
+        reviewerName,
+        reviewerRole,
+        isDeputy,
+        action,
+        comment,
+        forwardToId,
+        forwardReason
+      }
+    });
+
+    const updatedCount = await tx.approvalInstance.updateMany({
+      where: {
+        id: instanceId,
+        currentLevel: instance.currentLevel,
+        status: instance.status
+      },
+      data: {
+        status: newStatus,
+        currentLevel: newLevel
+      }
+    });
+
+    if (updatedCount.count !== 1) {
+      throw new Error('審核狀態已變更，請重新整理後再試');
     }
+
+    return tx.approvalInstance.findUnique({
+      where: { id: instanceId }
+    });
   });
+
+  if (!updatedInstance) {
+    throw new Error('找不到更新後的審核實例');
+  }
   
   return updatedInstance;
 }

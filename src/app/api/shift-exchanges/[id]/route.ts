@@ -57,7 +57,7 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
@@ -275,7 +275,7 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user) return NextResponse.json({ error: '未授權' }, { status: 401 });
 
     if (!db.shiftExchangeRequest) return NextResponse.json({ error: '功能暫不可用' }, { status: 503 });

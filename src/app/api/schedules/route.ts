@@ -65,7 +65,7 @@ export async function GET(request: NextRequest) {
     }
 
     // Authentication check
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
     }
@@ -179,7 +179,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 權限檢查：部門主管或授權員工可新增可管理部門的排程
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
     }
@@ -311,7 +311,7 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: 'CSRF token validation failed' }, { status: 403 });
     }
 
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
     }
@@ -386,7 +386,7 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
 
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
     }
