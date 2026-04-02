@@ -13,7 +13,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
 
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: '未登入' }, { status: 401 });
     }
@@ -159,7 +159,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'CSRF token validation failed' }, { status: 403 });
     }
 
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user || user.role !== 'ADMIN') {
       return NextResponse.json({ error: '無權限' }, { status: 403 });
     }

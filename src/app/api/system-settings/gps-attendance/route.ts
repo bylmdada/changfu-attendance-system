@@ -110,7 +110,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 3. 管理員權限驗證
-    const userAuth = getUserFromRequest(request);
+    const userAuth = await getUserFromRequest(request);
     if (!userAuth || userAuth.role !== 'ADMIN') {
       return NextResponse.json(
         { success: false, message: '需要管理員權限' },
@@ -186,7 +186,7 @@ export async function PUT(request: NextRequest) {
     }
 
     // 管理員權限驗證
-    const userAuth = getUserFromRequest(request);
+    const userAuth = await getUserFromRequest(request);
     if (!userAuth || userAuth.role !== 'ADMIN') {
       return NextResponse.json(
         { success: false, message: '需要管理員權限' },
@@ -230,7 +230,7 @@ export async function PATCH(request: NextRequest) {
     }
 
     // 管理員權限驗證
-    const userAuth = getUserFromRequest(request);
+    const userAuth = await getUserFromRequest(request);
     if (!userAuth || userAuth.role !== 'ADMIN') {
       return NextResponse.json(
         { success: false, message: '需要管理員權限' },

@@ -20,7 +20,7 @@ export async function GET(request: NextRequest) {
     });
 
     // 使用統一的身份驗證方式
-    const userAuth = getUserFromRequest(request);
+    const userAuth = await getUserFromRequest(request);
     console.log('🔐 身份驗證結果:', userAuth ? '成功' : '失敗');
     
     if (!userAuth) {
@@ -109,7 +109,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 使用統一的身份驗證方式
-    const userAuth = getUserFromRequest(request);
+    const userAuth = await getUserFromRequest(request);
     
     if (!userAuth) {
       return NextResponse.json({ error: '未登入' }, { status: 401 });

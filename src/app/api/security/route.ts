@@ -19,7 +19,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
 
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     
     // 只有管理員可以查看安全監控
     if (!user || user.role !== 'ADMIN') {
@@ -64,7 +64,7 @@ export async function GET(request: NextRequest) {
 // 安全管理操作
 export async function POST(request: NextRequest) {
   try {
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     
     // 只有管理員可以執行安全管理操作
     if (!user || user.role !== 'ADMIN') {

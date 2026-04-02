@@ -7,7 +7,7 @@ import { checkRateLimit } from '@/lib/rate-limit';
 // GET - 取得目前生效的法規參數設定（勞保與基本工資）
 export async function GET(request: NextRequest) {
   try {
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
@@ -69,7 +69,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 權限檢查
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
@@ -129,7 +129,7 @@ export async function POST(request: NextRequest) {
 // DELETE - 取得歷史設定記錄
 export async function DELETE(request: NextRequest) {
   try {
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user || user.role !== 'ADMIN') {
       return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
     }

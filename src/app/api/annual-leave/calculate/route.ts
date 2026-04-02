@@ -6,7 +6,7 @@ import {
   getEmployeeAnnualLeave 
 } from '@/lib/annual-leave-calculator';
 import { prisma } from '@/lib/database';
-import { verifyToken } from '@/lib/auth';
+import { getUserFromToken } from '@/lib/auth';
 
 /**
  * GET - 查詢員工年假詳情或列表
@@ -19,7 +19,7 @@ export async function GET(request: NextRequest) {
     if (!token) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
-    const user = verifyToken(token);
+    const user = await getUserFromToken(token);
     if (!user) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
@@ -148,7 +148,7 @@ export async function POST(request: NextRequest) {
     if (!token) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
-    const user = verifyToken(token);
+    const user = await getUserFromToken(token);
     if (!user) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }

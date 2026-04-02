@@ -6,7 +6,7 @@ import { sendNotification } from '@/lib/realtime-notifications';
 // POST: 執行定時發布檢查（可由 cron job 或手動觸發）
 export async function POST(request: NextRequest) {
   try {
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
@@ -83,7 +83,7 @@ export async function POST(request: NextRequest) {
 // GET: 取得待發布的定時公告
 export async function GET(request: NextRequest) {
   try {
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }

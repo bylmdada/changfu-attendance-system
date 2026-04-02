@@ -21,7 +21,7 @@ const DEFAULT_SETTINGS: ClockReasonPromptSettings = {
 // GET - 取得設定
 export async function GET(request: NextRequest) {
   try {
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
@@ -44,7 +44,7 @@ export async function GET(request: NextRequest) {
 // PUT - 更新設定
 export async function PUT(request: NextRequest) {
   try {
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user || user.role !== 'ADMIN') {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }

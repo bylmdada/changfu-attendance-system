@@ -20,7 +20,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Admin authorization required for setup operations
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user || user.role !== 'ADMIN') {
       return NextResponse.json({ error: 'Admin access required for setup operations' }, { status: 403 });
     }

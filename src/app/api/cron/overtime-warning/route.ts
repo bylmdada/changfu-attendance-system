@@ -6,7 +6,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { verifyToken } from '@/lib/auth';
+import { getUserFromToken } from '@/lib/auth';
 import { runOvertimeWarningCheck, OVERTIME_THRESHOLDS } from '@/lib/overtime-warning';
 import { systemLogger } from '@/lib/logger';
 
@@ -34,7 +34,7 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
       }
 
-      const decoded = verifyToken(token);
+      const decoded = await getUserFromToken(token);
       if (!decoded || !['ADMIN', 'HR'].includes(decoded.role)) {
         return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
       }
@@ -89,7 +89,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = verifyToken(token);
+    const decoded = await getUserFromToken(token);
     if (!decoded || !['ADMIN', 'HR'].includes(decoded.role)) {
       return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
     }

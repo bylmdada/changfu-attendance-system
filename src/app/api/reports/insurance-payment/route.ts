@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { prisma } from '@/lib/database';
-import { verifyToken } from '@/lib/auth';
+import { getUserFromToken } from '@/lib/auth';
 
 /**
  * 勞健保費率查表
@@ -42,7 +42,7 @@ export async function GET(request: NextRequest) {
     if (!token) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
-    const user = verifyToken(token);
+    const user = await getUserFromToken(token);
     if (!user || (user.role !== 'ADMIN' && user.role !== 'HR')) {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }

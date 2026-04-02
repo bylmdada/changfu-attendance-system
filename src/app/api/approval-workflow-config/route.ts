@@ -25,7 +25,7 @@ const getLevelLabels = (approvalLevel: number, requireManager: boolean) => {
 // GET: 取得指定類型的審核流程設定
 export async function GET(request: NextRequest) {
   try {
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { getUserFromRequest, verifyToken } from '@/lib/auth';
+import { getUserFromRequest, getUserFromToken } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 
@@ -12,7 +12,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
 
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
@@ -98,7 +98,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'CSRF驗證失敗' }, { status: 403 });
     }
 
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
@@ -227,7 +227,7 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = verifyToken(token);
+    const decoded = await getUserFromToken(token);
     if (!decoded || (decoded.role !== 'ADMIN' && decoded.role !== 'HR')) {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
@@ -341,7 +341,7 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
 
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }

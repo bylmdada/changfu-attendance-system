@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { verifyToken } from '@/lib/auth';
+import { getUserFromToken } from '@/lib/auth';
 import { calculateAllDeductions } from '@/lib/tax-calculator';
 import { calculatePerfectAttendanceBonus } from '@/lib/perfect-attendance';
 import { Prisma } from '@prisma/client';
@@ -14,7 +14,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = verifyToken(token);
+    const decoded = await getUserFromToken(token);
     if (!decoded || (decoded.role !== 'ADMIN' && decoded.role !== 'HR')) {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
@@ -50,7 +50,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = verifyToken(token);
+    const decoded = await getUserFromToken(token);
     if (!decoded || (decoded.role !== 'ADMIN' && decoded.role !== 'HR')) {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }

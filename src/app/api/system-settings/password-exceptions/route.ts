@@ -79,7 +79,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 3. 管理員權限驗證
-    const userAuth = getUserFromRequest(request);
+    const userAuth = await getUserFromRequest(request);
     if (!userAuth || userAuth.role !== 'ADMIN') {
       return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
     }

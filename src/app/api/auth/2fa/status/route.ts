@@ -5,7 +5,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { prisma } from '@/lib/database';
-import { verifyToken } from '@/lib/auth';
+import { getUserFromToken } from '@/lib/auth';
 
 export async function GET(_request: NextRequest) {
   try {
@@ -16,7 +16,7 @@ export async function GET(_request: NextRequest) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
     
-    const user = verifyToken(token);
+    const user = await getUserFromToken(token);
     if (!user) {
       return NextResponse.json({ error: '無效的 Token' }, { status: 401 });
     }

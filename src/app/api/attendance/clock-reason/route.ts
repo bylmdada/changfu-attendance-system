@@ -5,7 +5,7 @@ import { getUserFromRequest } from '@/lib/auth';
 // POST - 提交打卡原因
 export async function POST(request: NextRequest) {
   try {
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }

@@ -38,7 +38,7 @@ export async function PUT(
     }
 
     // 3. 管理員權限驗證
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user || user.role !== 'ADMIN') {
       return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
     }
@@ -250,7 +250,7 @@ export async function DELETE(
       return NextResponse.json({ error: 'CSRF驗證失敗，請重新操作' }, { status: 403 });
     }
 
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user || user.role !== 'ADMIN') {
       return NextResponse.json({ error: '無權限' }, { status: 403 });
     }
@@ -314,7 +314,7 @@ export async function GET(
       );
     }
 
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user || user.role !== 'ADMIN') {
       return NextResponse.json({ error: '無權限' }, { status: 403 });
     }

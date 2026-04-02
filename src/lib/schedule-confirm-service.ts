@@ -272,20 +272,12 @@ export async function invalidateConfirmation(
       return { invalidated: false, message: '尚無發布記錄' };
     }
 
-    // 更新發布記錄版本（這會使所有舊版確認記錄失效）
-    await prisma.scheduleMonthlyRelease.update({
-      where: { id: release.id },
-      data: {
-        version: { increment: 1 },
-        publishedAt: new Date()
-      }
-    });
-
-    // 同時標記該員工的確認記錄為無效
+    // 僅失效受影響員工的確認狀態，避免連帶使其他員工必須重新確認。
     const updated = await prisma.scheduleConfirmation.updateMany({
       where: {
         employeeId,
         yearMonth,
+        releaseId: release.id,
         isValid: true
       },
       data: {

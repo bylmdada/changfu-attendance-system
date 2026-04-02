@@ -2,7 +2,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { verifyToken } from '@/lib/auth';
+import { getUserFromToken } from '@/lib/auth';
 import { cookies } from 'next/headers';
 import { createApprovalForRequest } from '@/lib/approval-helper';
 import { getTaiwanNow } from '@/lib/timezone';
@@ -45,7 +45,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: '未登入' }, { status: 401 });
     }
 
-    const decoded = verifyToken(token);
+    const decoded = await getUserFromToken(token);
     if (!decoded) {
       return NextResponse.json({ error: '無效的 token' }, { status: 401 });
     }
@@ -122,7 +122,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '未登入' }, { status: 401 });
     }
 
-    const decoded = verifyToken(token);
+    const decoded = await getUserFromToken(token);
     if (!decoded) {
       return NextResponse.json({ error: '無效的 token' }, { status: 401 });
     }
@@ -205,7 +205,7 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: '未登入' }, { status: 401 });
     }
 
-    const decoded = verifyToken(token);
+    const decoded = await getUserFromToken(token);
     if (!decoded) {
       return NextResponse.json({ error: '無效的 token' }, { status: 401 });
     }
@@ -322,7 +322,7 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: '未登入' }, { status: 401 });
     }
 
-    const decoded = verifyToken(token);
+    const decoded = await getUserFromToken(token);
     if (!decoded) {
       return NextResponse.json({ error: '無效的 token' }, { status: 401 });
     }

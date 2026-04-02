@@ -1,6 +1,7 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { NextRequest } from 'next/server';
+import { prisma } from '@/lib/database';
 
 export interface JWTPayload {
   userId: number;
@@ -69,6 +70,31 @@ export function verifyToken(token: string): JWTPayload | null {
   }
 }
 
+async function validateSessionPayload(payload: JWTPayload): Promise<JWTPayload | null> {
+  if (!payload.sessionId) {
+    return null;
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id: payload.userId },
+    select: {
+      id: true,
+      isActive: true,
+      currentSessionId: true
+    }
+  });
+
+  if (!user || !user.isActive) {
+    return null;
+  }
+
+  if (!user.currentSessionId || user.currentSessionId !== payload.sessionId) {
+    return null;
+  }
+
+  return payload;
+}
+
 function parseCookieHeader(cookieHeader: string | null | undefined): Record<string, string> {
   const map: Record<string, string> = {};
   if (!cookieHeader) return map;
@@ -83,7 +109,7 @@ function parseCookieHeader(cookieHeader: string | null | undefined): Record<stri
   return map;
 }
 
-export function getUserFromRequest(request: NextRequest | Request): JWTPayload | null {
+export function extractTokenFromRequest(request: NextRequest | Request): string | null {
   try {
     const headers = 'headers' in request ? (request as Request).headers : (request as NextRequest).headers;
     const authHeader = headers.get('authorization');
@@ -94,7 +120,6 @@ export function getUserFromRequest(request: NextRequest | Request): JWTPayload |
     let token: string | undefined = bearer;
 
     if (!token) {
-      // Try cookies via NextRequest API
       const candidate: unknown = request as unknown;
       if (
         typeof candidate === 'object' &&
@@ -109,14 +134,31 @@ export function getUserFromRequest(request: NextRequest | Request): JWTPayload |
     }
 
     if (!token) {
-      // Fallback: parse Cookie header
       const cookieHeader = headers.get('cookie');
       const cookies = parseCookieHeader(cookieHeader || undefined);
       token = cookies['token'] || cookies['auth-token'];
     }
 
+    return token || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function getUserFromToken(token: string): Promise<JWTPayload | null> {
+  const payload = verifyToken(token);
+  if (!payload) {
+    return null;
+  }
+
+  return validateSessionPayload(payload);
+}
+
+export async function getUserFromRequest(request: NextRequest | Request): Promise<JWTPayload | null> {
+  try {
+    const token = extractTokenFromRequest(request);
     if (!token) return null;
-    return verifyToken(token);
+    return getUserFromToken(token);
   } catch {
     return null;
   }

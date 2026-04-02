@@ -34,7 +34,7 @@ export async function POST(request: NextRequest) {
     let isAuthorized = false;
     
     // 模式1: Cookie 認證 (已登入用戶)
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (user) {
       if (user.role === 'ADMIN' || attendance.employeeId === user.employeeId) {
         isAuthorized = true;

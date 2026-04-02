@@ -7,7 +7,7 @@ import { checkRateLimit } from '@/lib/rate-limit';
 // GET - 取得目前生效的假別規則設定
 export async function GET(request: NextRequest) {
   try {
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
@@ -86,7 +86,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 權限檢查
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }

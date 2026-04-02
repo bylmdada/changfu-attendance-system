@@ -106,7 +106,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
 
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user) {
       console.log('❌ [GET] 未授權訪問');
       return NextResponse.json({ error: '未授權' }, { status: 401 });
@@ -205,7 +205,7 @@ export async function POST(request: NextRequest) {
     console.error('✅ [STEP 1] 開始處理 POST 請求');
     
     // 用戶身份驗證
-    const user = getUserFromRequest(request);
+    const user = await getUserFromRequest(request);
     if (!user) {
       console.error('❌ [STEP 2] 用戶未授權 - 無法獲取用戶信息');
       return NextResponse.json({ error: '未授權' }, { status: 401 });

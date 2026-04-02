@@ -110,7 +110,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 3. 身份驗證
-    const userAuth = getUserFromRequest(request);
+    const userAuth = await getUserFromRequest(request);
     if (!userAuth) {
       return NextResponse.json({ error: '未登入' }, { status: 401 });
     }

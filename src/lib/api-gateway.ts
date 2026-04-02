@@ -126,7 +126,7 @@ class APIGateway {
 
       // 4. 身份驗證
       if (config.auth?.required) {
-        const user = getUserFromRequest(request);
+        const user = await getUserFromRequest(request);
         if (!user) {
           return this.createErrorResponse('Authentication required', 401);
         }

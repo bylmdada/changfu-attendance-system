@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
+import { getUserFromRequest } from '@/lib/auth';
 
 // GPS 权限配置接口
 interface GPSPermissionData {
@@ -22,21 +23,6 @@ interface GPSPermissionRow {
   updated_at: string;
   employee_name?: string;
   employee_code?: string;
-}
-
-// 简单的身份验证检查
-function getUserFromRequest(request: NextRequest) {
-  const authHeader = request.headers.get('authorization');
-  
-  if (authHeader) {
-    if (authHeader === 'Bearer admin-token' || 
-        authHeader.includes('admin-token') ||
-        authHeader === 'admin-token') {
-      return { role: 'ADMIN', userId: 1 }; // 假设管理员用户ID为1
-    }
-  }
-  
-  return { role: 'ADMIN', userId: 1 }; // 开发环境默认
 }
 
 // 获取权限操作（使用原始 SQL 作为备用）
@@ -174,8 +160,8 @@ export async function POST(request: NextRequest) {
   try {
     console.log('POST request to gps-permissions started');
     
-    const user = getUserFromRequest(request);
-    if (user.role !== 'ADMIN') {
+    const user = await getUserFromRequest(request);
+    if (!user || user.role !== 'ADMIN') {
       return NextResponse.json(
         { error: 'Unauthorized' },
         { status: 403 }
@@ -226,8 +212,8 @@ export async function PUT(request: NextRequest) {
   try {
     console.log('PUT request to gps-permissions started');
     
-    const user = getUserFromRequest(request);
-    if (user.role !== 'ADMIN') {
+    const user = await getUserFromRequest(request);
+    if (!user || user.role !== 'ADMIN') {
       return NextResponse.json(
         { error: 'Unauthorized' },
         { status: 403 }
@@ -267,8 +253,8 @@ export async function DELETE(request: NextRequest) {
   try {
     console.log('DELETE request to gps-permissions started');
     
-    const user = getUserFromRequest(request);
-    if (user.role !== 'ADMIN') {
+    const user = await getUserFromRequest(request);
+    if (!user || user.role !== 'ADMIN') {
       return NextResponse.json(
         { error: 'Unauthorized' },
         { status: 403 }
