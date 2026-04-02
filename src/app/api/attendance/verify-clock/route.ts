@@ -3,28 +3,8 @@ import { prisma } from '@/lib/database';
 import { verifyPassword } from '@/lib/auth';
 import { checkClockRateLimit, recordFailedClockAttempt, clearFailedAttempts, getClientIP } from '@/lib/rate-limit';
 import { canEmployeeClockIn } from '@/lib/schedule-confirm-service';
+import { getActiveAllowedLocations, getGPSSettingsFromDB, validateGpsClockLocation } from '@/lib/gps-attendance';
 import { isMobileClockingDevice, MOBILE_CLOCKING_REQUIRED_MESSAGE } from '@/lib/device-detection';
-
-// 導入GPS設定
-async function getGPSSettings() {
-  try {
-    const response = await fetch(`${process.env.NEXTAUTH_URL || 'http://localhost:3000'}/api/system-settings/gps-attendance`);
-    if (response.ok) {
-      const data = await response.json();
-      return data.settings;
-    }
-  } catch (error) {
-    console.error('獲取GPS設定失敗:', error);
-  }
-  
-  // 預設設定
-  return {
-    enabled: true,
-    requiredAccuracy: 50,
-    allowOfflineMode: false,
-    requireAddressInfo: true
-  };
-}
 
 export async function POST(request: NextRequest) {
   try {
@@ -98,24 +78,22 @@ export async function POST(request: NextRequest) {
     console.log('🔐 開始打卡驗證，用戶:', username, '類型:', clockType, 'IP:', clientIP);
 
     // 獲取GPS設定
-    const gpsSettings = await getGPSSettings();
+    const gpsSettings = await getGPSSettingsFromDB();
+    const allowedLocations = gpsSettings.enabled ? await getActiveAllowedLocations() : [];
+    const gpsValidation = validateGpsClockLocation({
+      gpsSettings,
+      location,
+      allowedLocations,
+    });
 
-    // GPS驗證
-    if (gpsSettings.enabled) {
-      if (!location && !gpsSettings.allowOfflineMode) {
-        return NextResponse.json({ 
-          error: 'GPS定位失敗，請確保GPS功能已開啟且允許定位權限' 
-        }, { status: 400 });
-      }
-
-      if (location) {
-        // 檢查GPS精確度
-        if (location.accuracy > gpsSettings.requiredAccuracy) {
-          return NextResponse.json({ 
-            error: `GPS精確度不足（${location.accuracy}m > ${gpsSettings.requiredAccuracy}m），請移動到GPS訊號較好的位置` 
-          }, { status: 400 });
-        }
-      }
+    if (!gpsValidation.ok) {
+      return NextResponse.json(
+        {
+          error: gpsValidation.error,
+          code: gpsValidation.code,
+        },
+        { status: 400 }
+      );
     }
 
     // 查找用戶

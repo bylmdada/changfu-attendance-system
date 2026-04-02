@@ -8,6 +8,16 @@ import { isMobileClockingDevice, MOBILE_CLOCKING_REQUIRED_MESSAGE } from '@/lib/
 
 // GPS位置狀態類型
 type LocationStatus = 'checking' | 'valid' | 'invalid' | 'error' | 'disabled';
+type LocationIssueCode =
+  | 'accuracy'
+  | 'range'
+  | 'location_required'
+  | 'permission_denied'
+  | 'position_unavailable'
+  | 'timeout'
+  | 'gps_failed'
+  | 'unknown'
+  | null;
 
 interface ClockLocationPayload {
   latitude: number;
@@ -20,6 +30,7 @@ interface LocationRefreshResult {
   status: LocationStatus;
   error?: string;
   location?: ClockLocationPayload;
+  issueCode?: LocationIssueCode;
 }
 
 // 員工打卡狀態介面
@@ -74,8 +85,25 @@ interface QuickClockStatus {
   attendanceStatus: EmployeeAttendanceStatus | null;
   locationStatus: LocationStatus;
   locationError: string;
+  locationIssueCode: LocationIssueCode;
   gpsEnabled: boolean;
   accuracy: number | null;
+}
+
+function getLocationStatusText(status: LocationStatus, issueCode: LocationIssueCode): string {
+  if (status === 'valid') return '位置驗證通過，可以打卡';
+  if (status === 'checking') return '正在檢查GPS位置...';
+  if (status === 'disabled') return 'GPS已停用';
+  if (status === 'error') return 'GPS定位失敗';
+
+  switch (issueCode) {
+    case 'accuracy':
+      return 'GPS精度不足，請移動到訊號較好的位置';
+    case 'range':
+      return '不在允許的打卡範圍內';
+    default:
+      return 'GPS位置驗證失敗';
+  }
 }
 
 // 快速打卡組件
@@ -112,20 +140,12 @@ function QuickClockForm({
   const [currentLocation, setCurrentLocation] = useState<GeolocationPosition | null>(null);
   const [locationStatus, setLocationStatus] = useState<LocationStatus>('checking');
   const [locationError, setLocationError] = useState('');
+  const [locationIssueCode, setLocationIssueCode] = useState<LocationIssueCode>(null);
   const [gpsSettings, setGpsSettings] = useState({
     enabled: true,
     requiredAccuracy: 50,
     allowOfflineMode: false
   });
-  // 允許的打卡位置列表
-  const [allowedLocations, setAllowedLocations] = useState<{
-    id: number;
-    name: string;
-    latitude: number;
-    longitude: number;
-    radius: number;
-    isActive: boolean;
-  }[]>([]);
 
   // Face ID / 指紋相關狀態
   const [hasFaceId, setHasFaceId] = useState(false);
@@ -138,63 +158,11 @@ function QuickClockForm({
     setIsMobileClocking(isMobileClockingDevice(navigator.userAgent));
   }, []);
 
-  // 計算兩點之間距離（公尺）
-  const calculateDistance = useCallback((lat1: number, lng1: number, lat2: number, lng2: number): number => {
-    const R = 6371000;
-    const dLat = (lat2 - lat1) * Math.PI / 180;
-    const dLng = (lng2 - lng1) * Math.PI / 180;
-    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-      Math.sin(dLng / 2) * Math.sin(dLng / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
-  }, []);
-
   const buildLocationPayload = useCallback((position: GeolocationPosition): ClockLocationPayload => ({
     latitude: position.coords.latitude,
     longitude: position.coords.longitude,
     accuracy: position.coords.accuracy
   }), []);
-
-  const validateLocationPosition = useCallback((position: GeolocationPosition): { status: 'valid' | 'invalid'; error: string } => {
-    if (position.coords.accuracy > gpsSettings.requiredAccuracy) {
-      return {
-        status: 'invalid',
-        error: `GPS精確度不足 (±${Math.round(position.coords.accuracy)}公尺)`
-      };
-    }
-
-    if (allowedLocations.length === 0) {
-      return { status: 'valid', error: '' };
-    }
-
-    const { latitude, longitude } = position.coords;
-    let isWithinRange = false;
-    let nearestLocation = '';
-    let minDistance = Infinity;
-
-    for (const loc of allowedLocations) {
-      if (!loc.isActive) continue;
-      const distance = calculateDistance(latitude, longitude, loc.latitude, loc.longitude);
-      if (distance <= loc.radius) {
-        isWithinRange = true;
-        break;
-      }
-      if (distance < minDistance) {
-        minDistance = distance;
-        nearestLocation = loc.name;
-      }
-    }
-
-    if (isWithinRange) {
-      return { status: 'valid', error: '' };
-    }
-
-    return {
-      status: 'invalid',
-      error: `不在允許的打卡範圍內。距離${nearestLocation}約${Math.round(minDistance)}公尺`
-    };
-  }, [allowedLocations, calculateDistance, gpsSettings.requiredAccuracy]);
 
   const requestCurrentPosition = useCallback((): Promise<GeolocationPosition> => {
     return new Promise((resolve, reject) => {
@@ -230,38 +198,80 @@ function QuickClockForm({
     });
   }, []);
 
+  const mapLocationErrorToIssueCode = useCallback((message: string): LocationIssueCode => {
+    if (message.includes('權限')) return 'permission_denied';
+    if (message.includes('超時')) return 'timeout';
+    if (message.includes('無法取得位置')) return 'position_unavailable';
+    if (message.includes('不支援')) return 'gps_failed';
+    return 'unknown';
+  }, []);
+
+  const validateLocationWithServer = useCallback(async (location: ClockLocationPayload): Promise<{
+    status: LocationStatus;
+    error: string;
+    issueCode: LocationIssueCode;
+  }> => {
+    const response = await fetch('/api/attendance/location-validation', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ location })
+    });
+
+    const data = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      return {
+        status: (data?.status as LocationStatus | undefined) || 'error',
+        error: data?.error || 'GPS驗證服務異常，請稍後再試',
+        issueCode: (data?.issueCode as LocationIssueCode | undefined) || 'unknown'
+      };
+    }
+
+    return {
+      status: (data?.status as LocationStatus | undefined) || 'error',
+      error: data?.error || '',
+      issueCode: (data?.issueCode as LocationIssueCode | undefined) || null
+    };
+  }, []);
+
   const refreshLocationStatus = useCallback(async (): Promise<LocationRefreshResult> => {
     if (!gpsSettings.enabled) {
       setLocationStatus('disabled');
       setLocationError('');
-      return { status: 'disabled' };
+      setLocationIssueCode(null);
+      return { status: 'disabled', issueCode: null };
     }
 
     setLocationStatus('checking');
     setLocationError('');
+    setLocationIssueCode(null);
 
     try {
       const position = await requestCurrentPosition();
       const location = buildLocationPayload(position);
-      const validation = validateLocationPosition(position);
+      const validation = await validateLocationWithServer(location);
 
       setCurrentLocation(position);
       setLocationStatus(validation.status);
       setLocationError(validation.error);
+      setLocationIssueCode(validation.issueCode);
 
       return {
         status: validation.status,
         error: validation.error || undefined,
-        location
+        location,
+        issueCode: validation.issueCode
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'GPS定位失敗';
+      const issueCode = mapLocationErrorToIssueCode(message);
       setCurrentLocation(null);
       setLocationStatus('error');
       setLocationError(message);
-      return { status: 'error', error: message };
+      setLocationIssueCode(issueCode);
+      return { status: 'error', error: message, issueCode };
     }
-  }, [buildLocationPayload, gpsSettings.enabled, requestCurrentPosition, validateLocationPosition]);
+  }, [buildLocationPayload, gpsSettings.enabled, mapLocationErrorToIssueCode, requestCurrentPosition, validateLocationWithServer]);
 
   // 載入已儲存的員編（自動填入）
   useEffect(() => {
@@ -288,22 +298,7 @@ function QuickClockForm({
       }
     };
 
-    const loadAllowedLocations = async () => {
-      try {
-        const response = await fetch('/api/attendance/allowed-locations');
-        if (response.ok) {
-          const data = await response.json();
-          if (data.locations) {
-            setAllowedLocations(data.locations);
-          }
-        }
-      } catch (error) {
-        console.error('載入允許位置失敗:', error);
-      }
-    };
-
     loadGPSSettings();
-    loadAllowedLocations();
   }, []);
 
   // GPS位置檢查
@@ -311,11 +306,12 @@ function QuickClockForm({
     if (!gpsSettings.enabled) {
       setLocationStatus('disabled');
       setLocationError('');
+      setLocationIssueCode(null);
       return;
     }
 
     void refreshLocationStatus();
-  }, [gpsSettings, allowedLocations, refreshLocationStatus]);
+  }, [gpsSettings, refreshLocationStatus]);
 
   // 檢查員工今日打卡狀態
   const checkEmployeeStatus = async (username: string) => {
@@ -370,11 +366,12 @@ function QuickClockForm({
         attendanceStatus,
         locationStatus,
         locationError,
+        locationIssueCode,
         gpsEnabled: gpsSettings.enabled,
         accuracy: currentLocation ? currentLocation.coords.accuracy : null
       });
     }
-  }, [attendanceStatus, locationStatus, locationError, gpsSettings.enabled, currentLocation, onStatusChange]);
+  }, [attendanceStatus, locationStatus, locationError, locationIssueCode, gpsSettings.enabled, currentLocation, onStatusChange]);
 
   // 檢查 Face ID 支援和已設定狀態
   useEffect(() => {
@@ -1531,11 +1528,7 @@ function LoginPageContent() {
                         : quickClockStatus.locationStatus === 'error' || quickClockStatus.locationStatus === 'invalid' ? 'text-red-700' 
                         : 'text-gray-700'
                       }`}>
-                        {quickClockStatus.locationStatus === 'valid' && '位置驗證通過，可以打卡'}
-                        {quickClockStatus.locationStatus === 'checking' && '正在檢查GPS位置...'}
-                        {quickClockStatus.locationStatus === 'invalid' && '不在允許的打卡範圍內'}
-                        {quickClockStatus.locationStatus === 'error' && 'GPS定位失敗'}
-                        {quickClockStatus.locationStatus === 'disabled' && 'GPS已停用'}
+                        {getLocationStatusText(quickClockStatus.locationStatus, quickClockStatus.locationIssueCode)}
                       </span>
                     </div>
                     {quickClockStatus.accuracy && quickClockStatus.locationStatus === 'valid' && (
