@@ -18,6 +18,31 @@ export interface ClockLocationPayload {
   address?: string | null;
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+export function isClockLocationPayload(value: unknown): value is ClockLocationPayload {
+  if (!isPlainObject(value)) {
+    return false;
+  }
+
+  return (
+    typeof value.latitude === 'number' &&
+    Number.isFinite(value.latitude) &&
+    value.latitude >= -90 &&
+    value.latitude <= 90 &&
+    typeof value.longitude === 'number' &&
+    Number.isFinite(value.longitude) &&
+    value.longitude >= -180 &&
+    value.longitude <= 180 &&
+    typeof value.accuracy === 'number' &&
+    Number.isFinite(value.accuracy) &&
+    value.accuracy >= 0 &&
+    (value.address === undefined || value.address === null || typeof value.address === 'string')
+  );
+}
+
 export interface AllowedLocationLite {
   id: number;
   name: string;

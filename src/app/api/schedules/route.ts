@@ -4,55 +4,16 @@ import { validateCSRF } from '@/lib/csrf';
 import { getUserFromRequest } from '@/lib/auth';
 import { prisma } from '@/lib/database';
 import { invalidateConfirmation } from '@/lib/schedule-confirm-service';
+import {
+  canManageScheduleEmployee,
+  getManageableDepartments,
+  hasFullScheduleManagementAccess
+} from '@/lib/schedule-management-permissions';
+import { parseIntegerQueryParam } from '@/lib/query-params';
+import { safeParseJSON } from '@/lib/validation';
 
-// 計算用戶可管理的據點列表
-async function getManageableLocations(user: { role: string; employeeId?: number }): Promise<string[]> {
-  // ADMIN/HR 可管理全部，返回空陣列代表不限
-  if (user.role === 'ADMIN' || user.role === 'HR') {
-    return [];
-  }
-  
-  if (!user.employeeId) return [];
-  
-  const locations: string[] = [];
-  
-  // 1. 部門主管：可管理自己部門
-  const managerRecord = await prisma.departmentManager.findFirst({
-    where: { employeeId: user.employeeId, isActive: true }
-  });
-  if (managerRecord) {
-    locations.push(managerRecord.department);
-  }
-  
-  // 2. 授權員工：可管理 scheduleManagement 中的據點
-  const permRecord = await prisma.attendancePermission.findUnique({
-    where: { employeeId: user.employeeId }
-  });
-  if (permRecord?.permissions) {
-    const permissions = permRecord.permissions as { scheduleManagement?: string[] };
-    if (Array.isArray(permissions.scheduleManagement)) {
-      locations.push(...permissions.scheduleManagement);
-    }
-  }
-  
-  return [...new Set(locations)]; // 去重
-}
-
-// 檢查員工是否在可管理範圍內
-async function canManageEmployee(user: { role: string; employeeId?: number }, targetEmployeeId: number): Promise<boolean> {
-  if (user.role === 'ADMIN' || user.role === 'HR') return true;
-  
-  const manageableLocations = await getManageableLocations(user);
-  if (manageableLocations.length === 0 && user.role !== 'ADMIN' && user.role !== 'HR') return false;
-  
-  // 查詢目標員工的部門
-  const targetEmployee = await prisma.employee.findUnique({
-    where: { id: targetEmployeeId },
-    select: { department: true }
-  });
-  
-  if (!targetEmployee?.department) return false;
-  return manageableLocations.includes(targetEmployee.department);
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 // GET: 取得排程列表
@@ -74,6 +35,8 @@ export async function GET(request: NextRequest) {
     const date = searchParams.get('date');
     const startDate = searchParams.get('startDate');
     const endDate = searchParams.get('endDate');
+    const year = searchParams.get('year');
+    const month = searchParams.get('month');
     const department = searchParams.get('department');
     const employeeId = searchParams.get('employeeId');
 
@@ -83,6 +46,19 @@ export async function GET(request: NextRequest) {
     // 日期篩選
     if (date) {
       where.workDate = date;
+    } else if (year && month) {
+      const yearResult = parseIntegerQueryParam(year, { min: 1900, max: 9999 });
+      const monthResult = parseIntegerQueryParam(month, { min: 1, max: 12 });
+      if (!yearResult.isValid || yearResult.value === null || !monthResult.isValid || monthResult.value === null) {
+        return NextResponse.json({ success: false, error: 'year/month 格式錯誤' }, { status: 400 });
+      }
+      const monthNumber = monthResult.value;
+      const paddedMonth = String(monthNumber).padStart(2, '0');
+      const lastDay = new Date(yearResult.value, monthNumber, 0).getDate();
+      where.workDate = {
+        gte: `${yearResult.value}-${paddedMonth}-01`,
+        lte: `${yearResult.value}-${paddedMonth}-${String(lastDay).padStart(2, '0')}`
+      };
     } else if (startDate || endDate) {
       where.workDate = {};
       if (startDate) {
@@ -93,26 +69,36 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    const employeeWhere: Record<string, unknown> = {};
+
     // 部門篩選
     if (department) {
-      where.employee = { department };
+      employeeWhere.department = department;
     }
 
     // 員工篩選
     if (employeeId) {
-      where.employeeId = parseInt(employeeId);
+      const employeeIdResult = parseIntegerQueryParam(employeeId, { min: 1, max: 99999999 });
+      if (!employeeIdResult.isValid || employeeIdResult.value === null) {
+        return NextResponse.json({ success: false, error: 'employeeId 格式錯誤' }, { status: 400 });
+      }
+      where.employeeId = employeeIdResult.value;
     }
 
     // 權限檢查：部門主管或授權員工可查看可管理的部門
-    const isFullAdmin = user.role === 'ADMIN' || user.role === 'HR';
-    const manageableLocations = await getManageableLocations(user);
+    const isFullAdmin = hasFullScheduleManagementAccess(user);
+    const manageableDepartments = await getManageableDepartments(user);
     
     // 非管理員且無管理權限，只能查看自己的班表
-    if (!isFullAdmin && manageableLocations.length === 0) {
+    if (!isFullAdmin && manageableDepartments.length === 0) {
       where.employeeId = user.employeeId;
-    } else if (!isFullAdmin && manageableLocations.length > 0) {
+    } else if (!isFullAdmin && manageableDepartments.length > 0) {
       // 有管理權限，可查看可管理部門的員工
-      where.employee = { department: { in: manageableLocations } };
+      employeeWhere.department = { in: manageableDepartments };
+    }
+
+    if (Object.keys(employeeWhere).length > 0) {
+      where.employee = { is: employeeWhere };
     }
 
     // 查詢班表
@@ -184,8 +170,30 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
     }
 
-    const body = await request.json();
-    const { employeeId, date, workDate, startTime, endTime, shiftType = 'normal' } = body;
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { success: false, error: parseResult.error === 'empty_body' ? '請提供有效的排程資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const body = parseResult.data;
+    if (!isPlainObject(body)) {
+      return NextResponse.json(
+        { success: false, error: '請提供有效的排程資料' },
+        { status: 400 }
+      );
+    }
+
+    const employeeId = typeof body.employeeId === 'string' || typeof body.employeeId === 'number'
+      ? body.employeeId
+      : undefined;
+    const date = typeof body.date === 'string' ? body.date : undefined;
+    const workDate = typeof body.workDate === 'string' ? body.workDate : undefined;
+    const startTime = typeof body.startTime === 'string' ? body.startTime : undefined;
+    const endTime = typeof body.endTime === 'string' ? body.endTime : undefined;
+    const shiftType = typeof body.shiftType === 'string' ? body.shiftType : 'normal';
     const scheduleDate = date || workDate; // 支援 date 和 workDate 兩種欄位名
 
     // 休假類型不需要時間
@@ -207,12 +215,15 @@ export async function POST(request: NextRequest) {
     }
 
     // 查找員工 - 支援數字 id 或字串格式的 id 或員工編號
-    const numericId = typeof employeeId === 'number' ? employeeId : parseInt(employeeId);
+    const rawNumericEmployeeId = typeof employeeId === 'number' ? String(employeeId) : typeof employeeId === 'string' ? employeeId : null;
+    const numericEmployeeIdResult = rawNumericEmployeeId !== null
+      ? parseIntegerQueryParam(rawNumericEmployeeId, { min: 1, max: 99999999 })
+      : { value: null, isValid: false };
     const employee = await prisma.employee.findFirst({
       where: {
         OR: [
           // 用數據庫 id 查詢（當 employeeId 是數字或數字字串時）
-          { id: !isNaN(numericId) ? numericId : undefined },
+          { id: numericEmployeeIdResult.isValid ? numericEmployeeIdResult.value ?? undefined : undefined },
           // 用員工編號查詢（當 employeeId 是字串時）
           { employeeId: typeof employeeId === 'string' ? employeeId : undefined }
         ]
@@ -244,7 +255,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 權限檢查：確認有權限管理該員工
-    const canManage = await canManageEmployee(user, employee.id);
+    const canManage = await canManageScheduleEmployee(user, employee.id);
     if (!canManage) {
       return NextResponse.json({ error: '無權限管理該員工的排程' }, { status: 403 });
     }
@@ -271,7 +282,7 @@ export async function POST(request: NextRequest) {
     });
 
     // 觸發班表確認失效（新增班表後需重新確認）
-    const yearMonth = date.substring(0, 7); // 取得 YYYY-MM
+    const yearMonth = scheduleDate.substring(0, 7); // 取得 YYYY-MM
     await invalidateConfirmation(employee.id, yearMonth);
 
     return NextResponse.json({
@@ -316,8 +327,26 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
     }
 
-    const body = await request.json();
-    const { id, startTime, endTime, shiftType } = body;
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { success: false, error: parseResult.error === 'empty_body' ? '請提供有效的排程資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const body = parseResult.data;
+    if (!isPlainObject(body)) {
+      return NextResponse.json(
+        { success: false, error: '請提供有效的排程資料' },
+        { status: 400 }
+      );
+    }
+
+    const id = typeof body.id === 'string' || typeof body.id === 'number' ? body.id : undefined;
+    const startTime = typeof body.startTime === 'string' ? body.startTime : undefined;
+    const endTime = typeof body.endTime === 'string' ? body.endTime : undefined;
+    const shiftType = typeof body.shiftType === 'string' ? body.shiftType : undefined;
 
     if (!id) {
       return NextResponse.json(
@@ -326,9 +355,18 @@ export async function PUT(request: NextRequest) {
       );
     }
 
+    const scheduleIdResult = parseIntegerQueryParam(String(id), { min: 1, max: 99999999 });
+    if (!scheduleIdResult.isValid || scheduleIdResult.value === null) {
+      return NextResponse.json(
+        { success: false, error: '排程ID格式錯誤' },
+        { status: 400 }
+      );
+    }
+    const scheduleId = scheduleIdResult.value;
+
     // 查詢現有排程以檢查權限
     const existingSchedule = await prisma.schedule.findUnique({
-      where: { id },
+      where: { id: scheduleId },
       include: { employee: { select: { id: true, department: true } } }
     });
 
@@ -337,13 +375,13 @@ export async function PUT(request: NextRequest) {
     }
 
     // 權限檢查
-    const canManage = await canManageEmployee(user, existingSchedule.employeeId);
+    const canManage = await canManageScheduleEmployee(user, existingSchedule.employeeId);
     if (!canManage) {
       return NextResponse.json({ error: '無權限管理該員工的排程' }, { status: 403 });
     }
 
     const updatedSchedule = await prisma.schedule.update({
-      where: { id },
+      where: { id: scheduleId },
       data: {
         ...(startTime && { startTime }),
         ...(endTime && { endTime }),
@@ -386,6 +424,11 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
 
+    const csrfResult = await validateCSRF(request);
+    if (!csrfResult.valid) {
+      return NextResponse.json({ error: 'CSRF token validation failed' }, { status: 403 });
+    }
+
     const user = await getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
@@ -401,9 +444,18 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
+    const scheduleIdResult = parseIntegerQueryParam(id, { min: 1, max: 99999999 });
+    if (!scheduleIdResult.isValid || scheduleIdResult.value === null) {
+      return NextResponse.json(
+        { success: false, error: '排程ID格式錯誤' },
+        { status: 400 }
+      );
+    }
+    const scheduleId = scheduleIdResult.value;
+
     // 先查詢要刪除的排程資訊
     const scheduleToDelete = await prisma.schedule.findUnique({
-      where: { id: parseInt(id) },
+      where: { id: scheduleId },
       include: { employee: { select: { id: true, department: true } } }
     });
 
@@ -415,13 +467,13 @@ export async function DELETE(request: NextRequest) {
     }
 
     // 權限檢查
-    const canManage = await canManageEmployee(user, scheduleToDelete.employeeId);
+    const canManage = await canManageScheduleEmployee(user, scheduleToDelete.employeeId);
     if (!canManage) {
       return NextResponse.json({ error: '無權限刪除該員工的排程' }, { status: 403 });
     }
 
     await prisma.schedule.delete({
-      where: { id: parseInt(id) }
+      where: { id: scheduleId }
     });
 
     // 觸發班表確認失效

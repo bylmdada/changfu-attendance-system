@@ -9,6 +9,12 @@ import {
   cleanupSecurityData
 } from '@/lib/security-monitoring';
 import { checkRateLimit } from '@/lib/rate-limit';
+import { validateCSRF } from '@/lib/csrf';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
 
 // 獲取安全統計
 export async function GET(request: NextRequest) {
@@ -70,8 +76,21 @@ export async function POST(request: NextRequest) {
     if (!user || user.role !== 'ADMIN') {
       return NextResponse.json({ error: '無權限執行此操作' }, { status: 403 });
     }
+
+    const csrfResult = await validateCSRF(request);
+    if (!csrfResult.valid) {
+      return NextResponse.json({ error: 'CSRF驗證失敗，請重新操作' }, { status: 403 });
+    }
     
-    const { action, ip, reason } = await request.json();
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json({ error: '無效的 JSON 格式' }, { status: 400 });
+    }
+
+    const body = parseResult.data;
+    const action = isPlainObject(body) && typeof body.action === 'string' ? body.action : undefined;
+    const ip = isPlainObject(body) && typeof body.ip === 'string' ? body.ip : undefined;
+    const reason = isPlainObject(body) && typeof body.reason === 'string' ? body.reason : undefined;
     
     switch (action) {
       case 'block-ip':

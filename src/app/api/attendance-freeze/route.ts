@@ -1,21 +1,66 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
+import { validateCSRF } from '@/lib/csrf';
 import { calculateAllDeductions } from '@/lib/tax-calculator';
 import { calculatePerfectAttendanceBonus } from '@/lib/perfect-attendance';
 import { Prisma } from '@prisma/client';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parseStrictInteger(
+  value: unknown,
+  { min, max }: { min: number; max: number }
+) {
+  if (typeof value === 'number') {
+    if (!Number.isInteger(value) || value < min || value > max) {
+      return { value: null, isValid: false };
+    }
+
+    return { value, isValid: true };
+  }
+
+  if (typeof value !== 'string') {
+    return { value: null, isValid: false };
+  }
+
+  const trimmedValue = value.trim();
+  if (!/^\d+$/.test(trimmedValue)) {
+    return { value: null, isValid: false };
+  }
+
+  const parsed = Number(trimmedValue);
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+    return { value: null, isValid: false };
+  }
+
+  return { value: parsed, isValid: true };
+}
+
+function parseFreezeDateValue(value: unknown) {
+  if (typeof value !== 'string' && typeof value !== 'number') {
+    return { value: null, isValid: false };
+  }
+
+  const parsedDate = new Date(value);
+  if (Number.isNaN(parsedDate.getTime())) {
+    return { value: null, isValid: false };
+  }
+
+  return { value: parsedDate, isValid: true };
+}
 
 export async function GET(request: NextRequest) {
   try {
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-
-    if (!token) {
+    const decoded = await getUserFromRequest(request);
+    if (!decoded) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded || (decoded.role !== 'ADMIN' && decoded.role !== 'HR')) {
+    if (decoded.role !== 'ADMIN' && decoded.role !== 'HR') {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
 
@@ -43,30 +88,61 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-
-    if (!token) {
+    const decoded = await getUserFromRequest(request);
+    if (!decoded) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded || (decoded.role !== 'ADMIN' && decoded.role !== 'HR')) {
+    if (decoded.role !== 'ADMIN' && decoded.role !== 'HR') {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
 
-    const body = await request.json();
+    const csrfResult = await validateCSRF(request);
+    if (!csrfResult.valid) {
+      return NextResponse.json({ error: 'CSRF驗證失敗，請重新操作' }, { status: 403 });
+    }
+
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的凍結設定資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const body = parseResult.data;
+    if (!isPlainObject(body)) {
+      return NextResponse.json({ error: '請提供有效的凍結設定資料' }, { status: 400 });
+    }
+
     const { freezeDate, targetMonth, targetYear, description, autoCalculatePayroll } = body;
 
     if (!freezeDate || !targetMonth || !targetYear) {
       return NextResponse.json({ error: '缺少必要參數' }, { status: 400 });
     }
 
+    const targetMonthResult = parseStrictInteger(targetMonth, { min: 1, max: 12 });
+    const targetYearResult = parseStrictInteger(targetYear, { min: 2000, max: 2100 });
+    if (!targetMonthResult.isValid || !targetYearResult.isValid || targetMonthResult.value === null || targetYearResult.value === null) {
+      return NextResponse.json({ error: '目標月份或年份格式不正確' }, { status: 400 });
+    }
+
+    const freezeDateResult = parseFreezeDateValue(freezeDate);
+    if (!freezeDateResult.isValid || freezeDateResult.value === null) {
+      return NextResponse.json({ error: '凍結日期格式不正確' }, { status: 400 });
+    }
+
+    const targetMonthValue = targetMonthResult.value;
+    const targetYearValue = targetYearResult.value;
+    const freezeDateValue = freezeDateResult.value;
+    const descriptionValue = typeof description === 'string' ? description : null;
+    const shouldAutoCalculatePayroll = autoCalculatePayroll === true;
+
     // 檢查是否已經存在相同的凍結設定
     const existingFreeze = await prisma.attendanceFreeze.findFirst({
       where: {
-        targetMonth,
-        targetYear,
+        targetMonth: targetMonthValue,
+        targetYear: targetYearValue,
         isActive: true
       }
     });
@@ -77,10 +153,10 @@ export async function POST(request: NextRequest) {
 
     const freeze = await prisma.attendanceFreeze.create({
       data: {
-        freezeDate: new Date(freezeDate),
-        targetMonth: parseInt(targetMonth),
-        targetYear: parseInt(targetYear),
-        description,
+        freezeDate: freezeDateValue,
+        targetMonth: targetMonthValue,
+        targetYear: targetYearValue,
+        description: descriptionValue,
         createdBy: decoded.employeeId
       },
       include: {
@@ -96,7 +172,7 @@ export async function POST(request: NextRequest) {
 
     // 處理薪資
     let payrollMessage = '';
-    let payrollResults = { success: 0, failed: 0, skipped: 0 };
+    const payrollResults = { success: 0, failed: 0, skipped: 0 };
     
     try {
       // 取得所有在職員工
@@ -107,8 +183,8 @@ export async function POST(request: NextRequest) {
       // 檢查是否已有該月薪資記錄
       const existingPayrolls = await prisma.payrollRecord.findMany({
         where: {
-          payYear: parseInt(targetYear),
-          payMonth: parseInt(targetMonth)
+          payYear: targetYearValue,
+          payMonth: targetMonthValue
         },
         select: { employeeId: true }
       });
@@ -121,11 +197,11 @@ export async function POST(request: NextRequest) {
 
       payrollResults.skipped = existingPayrolls.length;
 
-      if (autoCalculatePayroll && employeesNeedPayroll.length > 0) {
+      if (shouldAutoCalculatePayroll && employeesNeedPayroll.length > 0) {
         // 自動計算薪資
         for (const employee of employeesNeedPayroll) {
           try {
-            await calculateAndCreatePayroll(employee, parseInt(targetYear), parseInt(targetMonth));
+            await calculateAndCreatePayroll(employee, targetYearValue, targetMonthValue);
             payrollResults.success++;
           } catch (calcError) {
             console.error(`計算員工 ${employee.name} 薪資失敗:`, calcError);
@@ -133,13 +209,13 @@ export async function POST(request: NextRequest) {
           }
         }
 
-        payrollMessage = `已凍結 ${targetYear}年${targetMonth}月考勤，並自動計算薪資。成功: ${payrollResults.success} 筆，失敗: ${payrollResults.failed} 筆，已存在: ${payrollResults.skipped} 筆。`;
+        payrollMessage = `已凍結 ${targetYearValue}年${targetMonthValue}月考勤，並自動計算薪資。成功: ${payrollResults.success} 筆，失敗: ${payrollResults.failed} 筆，已存在: ${payrollResults.skipped} 筆。`;
       } else if (employeesNeedPayroll.length > 0) {
-        payrollMessage = `已凍結 ${targetYear}年${targetMonth}月考勤。尚有 ${employeesNeedPayroll.length} 位員工未產生薪資，請前往薪資管理頁面執行薪資結算。`;
+        payrollMessage = `已凍結 ${targetYearValue}年${targetMonthValue}月考勤。尚有 ${employeesNeedPayroll.length} 位員工未產生薪資，請前往薪資管理頁面執行薪資結算。`;
       } else if (existingPayrolls.length > 0) {
-        payrollMessage = `已凍結 ${targetYear}年${targetMonth}月考勤。該月已有 ${existingPayrolls.length} 筆薪資記錄。`;
+        payrollMessage = `已凍結 ${targetYearValue}年${targetMonthValue}月考勤。該月已有 ${existingPayrolls.length} 筆薪資記錄。`;
       } else {
-        payrollMessage = `已凍結 ${targetYear}年${targetMonth}月考勤。請前往薪資管理頁面執行薪資結算。`;
+        payrollMessage = `已凍結 ${targetYearValue}年${targetMonthValue}月考勤。請前往薪資管理頁面執行薪資結算。`;
       }
     } catch (payrollError) {
       console.error('處理薪資狀態失敗:', payrollError);
@@ -149,7 +225,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ 
       freeze,
       message: payrollMessage,
-      autoPayrollTriggered: autoCalculatePayroll || false,
+      autoPayrollTriggered: shouldAutoCalculatePayroll,
       payrollResults
     });
   } catch (error) {

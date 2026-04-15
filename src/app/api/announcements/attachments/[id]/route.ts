@@ -1,9 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
+import { validateCSRF } from '@/lib/csrf';
 import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { existsSync } from 'fs';
+import { canUserAccessAnnouncement } from '@/lib/announcement-utils';
+import { parseIntegerQueryParam } from '@/lib/query-params';
+
+function parseAttachmentId(rawId: string): number | null {
+  const parsed = parseIntegerQueryParam(rawId, { min: 1 });
+  return parsed.isValid ? parsed.value : null;
+}
 
 // 下載附件
 export async function GET(
@@ -11,20 +19,16 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const decoded = await getUserFromRequest(request);
+    if (!decoded) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded) {
-      return NextResponse.json({ error: '無效的認證令牌' }, { status: 401 });
-    }
-
     const { id } = await params;
-    const attachmentId = parseInt(id);
+    const attachmentId = parseAttachmentId(id);
+    if (attachmentId === null) {
+      return NextResponse.json({ error: '無效的附件ID' }, { status: 400 });
+    }
 
     const attachment = await prisma.announcementAttachment.findUnique({
       where: { id: attachmentId },
@@ -32,7 +36,9 @@ export async function GET(
         announcement: {
           select: {
             isPublished: true,
-            expiryDate: true
+            expiryDate: true,
+            isGlobalAnnouncement: true,
+            targetDepartments: true
           }
         }
       }
@@ -44,8 +50,19 @@ export async function GET(
 
     // 如果是一般員工，檢查公告是否可訪問
     if (decoded.role === 'EMPLOYEE') {
+      const employee = await prisma.employee.findUnique({
+        where: { id: decoded.employeeId },
+        select: { department: true }
+      });
+      const canView = canUserAccessAnnouncement({
+        isGlobalAnnouncement: attachment.announcement.isGlobalAnnouncement,
+        targetDepartments: attachment.announcement.targetDepartments,
+        employeeDepartment: employee?.department ?? null,
+      });
+
       if (!attachment.announcement.isPublished || 
-          (attachment.announcement.expiryDate && attachment.announcement.expiryDate < new Date())) {
+          (attachment.announcement.expiryDate && attachment.announcement.expiryDate < new Date()) ||
+          !canView) {
         return NextResponse.json({ error: '無權限下載此附件' }, { status: 403 });
       }
     }
@@ -77,16 +94,14 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const decoded = await getUserFromRequest(request);
+    if (!decoded) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded) {
-      return NextResponse.json({ error: '無效的認證令牌' }, { status: 401 });
+    const csrfValidation = await validateCSRF(request);
+    if (!csrfValidation.valid) {
+      return NextResponse.json({ error: csrfValidation.error }, { status: 403 });
     }
 
     // 只有管理員和HR可以刪除附件
@@ -95,7 +110,10 @@ export async function DELETE(
     }
 
     const { id } = await params;
-    const attachmentId = parseInt(id);
+    const attachmentId = parseAttachmentId(id);
+    if (attachmentId === null) {
+      return NextResponse.json({ error: '無效的附件ID' }, { status: 400 });
+    }
 
     const attachment = await prisma.announcementAttachment.findUnique({
       where: { id: attachmentId }

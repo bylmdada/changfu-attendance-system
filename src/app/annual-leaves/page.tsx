@@ -2,7 +2,13 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { Calendar, Plus, Search, Users, Clock, X, RefreshCw, CheckCircle, AlertTriangle } from 'lucide-react';
+import { buildAuthMeRequest, buildCookieSessionRequest } from '@/lib/admin-session-client';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
+import {
+  calculateAnnualLeaveDaysFromYearsOfService,
+  calculateServiceDuration,
+  formatYearsOfServiceInput,
+} from '@/lib/annual-leave-rules';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 
 interface Employee {
@@ -82,13 +88,14 @@ export default function AnnualLeaveManagementPage() {
   const [excludeExisting, setExcludeExisting] = useState(true);
   const [departments, setDepartments] = useState<string[]>([]);
 
+  const buildSessionRequest = (path: string) => buildCookieSessionRequest(window.location.origin, path);
+
   useEffect(() => {
     const fetchData = async () => {
       try {
         // 首先獲取用戶信息
-        const authResponse = await fetch('/api/auth/me', {
-          credentials: 'include'
-        });
+        const authRequest = buildAuthMeRequest(window.location.origin);
+        const authResponse = await fetch(authRequest.url, authRequest.options);
         
         if (!authResponse.ok) {
           window.location.href = '/login';
@@ -97,20 +104,16 @@ export default function AnnualLeaveManagementPage() {
         
         const userData = await authResponse.json();
         setUser(userData.user);
-
-        const token = localStorage.getItem('token');
         
         // 獲取特休假記錄
         const annualLeavesUrl = new URL('/api/annual-leaves', window.location.origin);
         if (filters.year) annualLeavesUrl.searchParams.set('year', filters.year);
+        const annualLeavesRequest = buildSessionRequest(`${annualLeavesUrl.pathname}${annualLeavesUrl.search}`);
+        const employeesRequest = buildSessionRequest('/api/employees');
         
         const [annualLeavesResponse, employeesResponse] = await Promise.all([
-          fetch(annualLeavesUrl.toString(), {
-            headers: { 'Authorization': `Bearer ${token}` }
-          }),
-          fetch('/api/employees', {
-            headers: { 'Authorization': `Bearer ${token}` }
-          })
+          fetch(annualLeavesRequest.url, annualLeavesRequest.options),
+          fetch(employeesRequest.url, employeesRequest.options)
         ]);
 
         if (annualLeavesResponse.ok) {
@@ -137,15 +140,11 @@ export default function AnnualLeaveManagementPage() {
 
   const fetchAnnualLeaves = async () => {
     try {
-      const token = localStorage.getItem('token');
       const url = new URL('/api/annual-leaves', window.location.origin);
       if (filters.year) url.searchParams.set('year', filters.year);
+      const request = buildSessionRequest(`${url.pathname}${url.search}`);
       
-      const response = await fetch(url.toString(), {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
+      const response = await fetch(request.url, request.options);
 
       if (response.ok) {
         const data = await response.json();
@@ -166,7 +165,7 @@ export default function AnnualLeaveManagementPage() {
         body: {
           employeeId: parseInt(setupForm.employeeId),
           year: parseInt(setupForm.year),
-          yearsOfService: parseInt(setupForm.yearsOfService)
+          yearsOfService: Number(setupForm.yearsOfService)
         }
       });
 
@@ -185,41 +184,43 @@ export default function AnnualLeaveManagementPage() {
     }
   };
 
-  const calculateYearsOfService = (hireDate: string) => {
-    const hire = new Date(hireDate);
-    const now = new Date();
-    const years = now.getFullYear() - hire.getFullYear();
-    const monthDiff = now.getMonth() - hire.getMonth();
-    
-    if (monthDiff < 0 || (monthDiff === 0 && now.getDate() < hire.getDate())) {
-      return years - 1;
+  const getAutoYearsOfServiceValue = useCallback((employeeId: string, year: string) => {
+    if (!employeeId) {
+      return '';
     }
-    return years;
-  };
 
-  const getAnnualLeaveDays = (yearsOfService: number) => {
-    if (yearsOfService < 1) return 0;
-    if (yearsOfService < 3) return 7;
-    if (yearsOfService < 5) return 10;
-    if (yearsOfService < 10) return 14;
-    return Math.min(30, 14 + Math.floor((yearsOfService - 10) / 2));
+    const employee = employees.find(emp => emp.id === Number(employeeId));
+    if (!employee) {
+      return '';
+    }
+
+    const referenceDate = new Date(Number(year), 11, 31);
+    const serviceDuration = calculateServiceDuration(new Date(employee.hireDate), referenceDate);
+
+    return formatYearsOfServiceInput(serviceDuration.totalMonths);
+  }, [employees]);
+
+  const getAnnualLeavePreviewDays = (yearsOfService: string) => {
+    const parsedYears = Number(yearsOfService);
+    if (!Number.isFinite(parsedYears) || parsedYears < 0) {
+      return 0;
+    }
+
+    return calculateAnnualLeaveDaysFromYearsOfService(parsedYears).days;
   };
 
   // 獲取批量計算結果
   const fetchBatchCalculation = useCallback(async () => {
     setBatchLoading(true);
     try {
-      const token = localStorage.getItem('token');
       const url = new URL('/api/annual-leaves/batch', window.location.origin);
       url.searchParams.set('year', batchYear);
       if (batchDepartment) {
         url.searchParams.set('department', batchDepartment);
       }
+      const request = buildSessionRequest(`${url.pathname}${url.search}`);
 
-      const response = await fetch(url.toString(), {
-        headers: { 'Authorization': `Bearer ${token}` },
-        credentials: 'include'
-      });
+      const response = await fetch(request.url, request.options);
 
       if (response.ok) {
         const data = await response.json();
@@ -368,11 +369,8 @@ export default function AnnualLeaveManagementPage() {
               <div className="flex items-center gap-3">
                 <button
                   onClick={() => {
-                    const token = localStorage.getItem('token');
-                    fetch('/api/annual-leaves/import', {
-                      headers: { 'Authorization': `Bearer ${token}` },
-                      credentials: 'include'
-                    })
+                    const request = buildSessionRequest('/api/annual-leaves/import');
+                    fetch(request.url, request.options)
                     .then(res => res.blob())
                     .then(blob => {
                       const url = window.URL.createObjectURL(blob);
@@ -558,7 +556,7 @@ export default function AnnualLeaveManagementPage() {
         <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mt-6">
           <div className="bg-white rounded-lg shadow-sm p-6">
             <div className="flex items-center">
-              <div className="flex-shrink-0">
+              <div className="shrink-0">
                 <Users className="h-8 w-8 text-blue-600" />
               </div>
               <div className="ml-4">
@@ -572,7 +570,7 @@ export default function AnnualLeaveManagementPage() {
 
           <div className="bg-white rounded-lg shadow-sm p-6">
             <div className="flex items-center">
-              <div className="flex-shrink-0">
+              <div className="shrink-0">
                 <Calendar className="h-8 w-8 text-green-600" />
               </div>
               <div className="ml-4">
@@ -586,7 +584,7 @@ export default function AnnualLeaveManagementPage() {
 
           <div className="bg-white rounded-lg shadow-sm p-6">
             <div className="flex items-center">
-              <div className="flex-shrink-0">
+              <div className="shrink-0">
                 <Clock className="h-8 w-8 text-yellow-600" />
               </div>
               <div className="ml-4">
@@ -600,7 +598,7 @@ export default function AnnualLeaveManagementPage() {
 
           <div className="bg-white rounded-lg shadow-sm p-6">
             <div className="flex items-center">
-              <div className="flex-shrink-0">
+              <div className="shrink-0">
                 <Calendar className="h-8 w-8 text-red-600" />
               </div>
               <div className="ml-4">
@@ -639,11 +637,10 @@ export default function AnnualLeaveManagementPage() {
                 <select
                   value={setupForm.employeeId}
                   onChange={(e) => {
-                    const employee = employees.find(emp => emp.id === parseInt(e.target.value));
                     setSetupForm({ 
                       ...setupForm, 
                       employeeId: e.target.value,
-                      yearsOfService: employee ? calculateYearsOfService(employee.hireDate).toString() : ''
+                      yearsOfService: getAutoYearsOfServiceValue(e.target.value, setupForm.year)
                     });
                   }}
                   className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900"
@@ -664,7 +661,11 @@ export default function AnnualLeaveManagementPage() {
                 </label>
                 <select
                   value={setupForm.year}
-                  onChange={(e) => setSetupForm({ ...setupForm, year: e.target.value })}
+                  onChange={(e) => setSetupForm({
+                    ...setupForm,
+                    year: e.target.value,
+                    yearsOfService: getAutoYearsOfServiceValue(setupForm.employeeId, e.target.value),
+                  })}
                   className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900"
                   required
                 >
@@ -684,6 +685,7 @@ export default function AnnualLeaveManagementPage() {
                 <input
                   type="number"
                   min="0"
+                  step="0.1"
                   value={setupForm.yearsOfService}
                   onChange={(e) => setSetupForm({ ...setupForm, yearsOfService: e.target.value })}
                   className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900"
@@ -691,7 +693,7 @@ export default function AnnualLeaveManagementPage() {
                 />
                 {setupForm.yearsOfService && (
                   <div className="mt-2 text-sm text-gray-600">
-                    特休假天數：{getAnnualLeaveDays(parseInt(setupForm.yearsOfService))} 天
+                    特休假天數：{getAnnualLeavePreviewDays(setupForm.yearsOfService)} 天
                   </div>
                 )}
               </div>

@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { Clock, Upload, Download, Search, Users, RefreshCw, X, Plus, Minus, AlertCircle, CheckCircle } from 'lucide-react';
-import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
+import { buildAuthMeRequest, buildCookieSessionRequest } from '@/lib/admin-session-client';
+import fetchWithCSRF, { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 
 interface User {
@@ -63,25 +64,23 @@ export default function CompLeaveManagementPage() {
   const [adjusting, setAdjusting] = useState(false);
 
   const isAdmin = user?.role === 'ADMIN' || user?.role === 'HR';
+  const buildSessionRequest = (path: string) => buildCookieSessionRequest(window.location.origin, path);
 
   // 獲取資料
   const fetchData = useCallback(async () => {
     try {
-      const authResponse = await fetch('/api/auth/me', { credentials: 'include' });
+      const authRequest = buildAuthMeRequest(window.location.origin);
+      const authResponse = await fetch(authRequest.url, authRequest.options);
       if (!authResponse.ok) {
         window.location.href = '/login';
         return;
       }
       const userData = await authResponse.json();
       setUser(userData.user);
-
-      const token = localStorage.getItem('token');
+      const listRequest = buildSessionRequest('/api/comp-leave/list');
       
       // 獲取所有員工的補休餘額
-      const response = await fetch('/api/comp-leave/list', {
-        headers: { 'Authorization': `Bearer ${token}` },
-        credentials: 'include'
-      });
+      const response = await fetch(listRequest.url, listRequest.options);
 
       if (response.ok) {
         const data = await response.json();
@@ -118,11 +117,8 @@ export default function CompLeaveManagementPage() {
   // 下載範本
   const handleDownloadTemplate = async () => {
     try {
-      const token = localStorage.getItem('token');
-      const response = await fetch('/api/comp-leave/import', {
-        headers: { 'Authorization': `Bearer ${token}` },
-        credentials: 'include'
-      });
+      const request = buildSessionRequest('/api/comp-leave/import');
+      const response = await fetch(request.url, request.options);
 
       if (response.ok) {
         const blob = await response.blob();
@@ -155,11 +151,10 @@ export default function CompLeaveManagementPage() {
       const formData = new FormData();
       formData.append('file', importFile);
 
-      const token = localStorage.getItem('token');
-      const response = await fetch('/api/comp-leave/import', {
+      const request = buildSessionRequest('/api/comp-leave/import');
+      const response = await fetchWithCSRF(request.url, {
+        ...request.options,
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}` },
-        credentials: 'include',
         body: formData
       });
 

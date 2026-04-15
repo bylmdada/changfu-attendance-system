@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
+import { buildSuccessPayload } from '@/lib/api-response';
 
 export async function GET(request: NextRequest) {
   try {
@@ -130,7 +131,7 @@ export async function GET(request: NextRequest) {
       }
     };
 
-    return NextResponse.json({ payslip });
+    return NextResponse.json(buildSuccessPayload({ payslip }));
   } catch (error) {
     console.error('生成薪資條失敗:', error);
     return NextResponse.json({ error: '系統錯誤' }, { status: 500 });

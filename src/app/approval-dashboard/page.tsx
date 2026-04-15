@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
-import { useRouter } from 'next/navigation';
 import { 
   ClipboardCheck, 
   Clock, 
@@ -79,7 +78,6 @@ interface Stats {
 }
 
 export default function ApprovalDashboardPage() {
-  const _router = useRouter();
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState<PendingItem[]>([]);
   const [stats, setStats] = useState<Stats>({ total: 0, urgent: 0, overdue: 0 });
@@ -140,10 +138,15 @@ export default function ApprovalDashboardPage() {
   // 載入工作流程設定
   const loadWorkflowSettings = useCallback(async (requestType: string) => {
     try {
-      const response = await fetch(`/api/system-settings/approval-workflows?type=${requestType}`, { credentials: 'include' });
+      const response = await fetch(`/api/approval-workflow-config?type=${requestType}`, { credentials: 'include' });
       if (response.ok) {
         const data = await response.json();
-        setWorkflowSettings(data.workflow || null);
+        setWorkflowSettings({
+          enableForward: Boolean(data.enableForward),
+          enableCC: Boolean(data.enableCC)
+        });
+      } else {
+        setWorkflowSettings(null);
       }
     } catch {
       setWorkflowSettings(null);
@@ -283,6 +286,18 @@ export default function ApprovalDashboardPage() {
     return `${hours} 小時`;
   };
 
+  const getReviewStageLabel = (item: PendingItem) => {
+    if (item.currentLevel === 1) {
+      return '主管審核';
+    }
+
+    if (item.currentLevel === 2 && item.maxLevel >= 3) {
+      return 'HR會簽';
+    }
+
+    return '管理員決核';
+  };
+
   if (loading) {
     return (
       <AuthenticatedLayout>
@@ -355,7 +370,13 @@ export default function ApprovalDashboardPage() {
         {/* 待審核列表 */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-200">
           <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-            <h2 className="text-lg font-semibold text-gray-900">待審核項目</h2>
+            <div>
+              <h2 className="text-lg font-semibold text-gray-900">待審核列表</h2>
+              <p className="text-sm text-gray-500 mt-1">
+                目前顯示 {pending.filter(p => !filterDepartment || p.department === filterDepartment).length} 筆
+              </p>
+            </div>
+
             {departments.length > 0 && (
               <select
                 value={filterDepartment}
@@ -363,8 +384,8 @@ export default function ApprovalDashboardPage() {
                 className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-900 bg-white"
               >
                 <option value="">全部部門</option>
-                {departments.map(d => (
-                  <option key={d} value={d}>{d}</option>
+                {departments.map((department) => (
+                  <option key={department} value={department}>{department}</option>
                 ))}
               </select>
             )}
@@ -425,8 +446,7 @@ export default function ApprovalDashboardPage() {
                         {/* 審核層級 */}
                         <div className="text-right">
                           <span className="text-sm text-gray-500">
-                            {item.currentLevel === 1 ? '主管審核' : 
-                             item.currentLevel === 2 ? 'HR會簽' : '管理員決核'}
+                            {getReviewStageLabel(item)}
                           </span>
                           <div className="text-xs text-gray-400">
                             第 {item.currentLevel}/{item.maxLevel} 階
@@ -596,7 +616,7 @@ export default function ApprovalDashboardPage() {
                         </div>
                         {selectedItem.requestDetails.reason && (
                           <div className="flex items-start">
-                            <span className="text-gray-500 w-24 flex-shrink-0">申請原因：</span>
+                            <span className="text-gray-500 w-24 shrink-0">申請原因：</span>
                             <span className="text-gray-900">{selectedItem.requestDetails.reason}</span>
                           </div>
                         )}

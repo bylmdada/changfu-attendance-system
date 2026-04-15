@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
+import { validateCSRF } from '@/lib/csrf';
 import { sendSchedulePublishNotification, sendReminderToUnconfirmed } from '@/lib/schedule-confirm-service';
+import { parseYearMonthQueryParam } from '@/lib/query-params';
+import { safeParseJSON } from '@/lib/validation';
 
 /**
  * 班表確認 API
@@ -39,6 +42,10 @@ interface ReleaseRecord {
   deadline: Date | null;
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function getConfirmStatus(release: ReleaseRecord | null, confirmation: ConfirmationRecord | null): ConfirmStatus {
   if (!release) return 'NOT_RELEASED';
   
@@ -71,20 +78,26 @@ export async function GET(request: NextRequest) {
 
     const { searchParams } = new URL(request.url);
     const type = searchParams.get('type');
-    const yearMonth = searchParams.get('yearMonth');
+    const rawYearMonth = searchParams.get('yearMonth');
     const department = searchParams.get('department');
-
-    // 取得員工資訊
-    const employee = await prisma.employee.findUnique({
-      where: { id: user.employeeId },
-      select: { id: true, department: true }
-    });
 
     // 查詢員工自己的確認狀態
     if (type === 'my-status') {
-      if (!yearMonth) {
+      if (!rawYearMonth) {
         return NextResponse.json({ error: '缺少 yearMonth 參數' }, { status: 400 });
       }
+
+      const yearMonthResult = parseYearMonthQueryParam(rawYearMonth);
+      if (!yearMonthResult.isValid || yearMonthResult.value === null) {
+        return NextResponse.json({ error: 'yearMonth 格式錯誤' }, { status: 400 });
+      }
+
+      const yearMonth = yearMonthResult.value;
+
+      const employee = await prisma.employee.findUnique({
+        where: { id: user.employeeId },
+        select: { id: true, department: true }
+      });
 
       if (!employee) {
         return NextResponse.json({ error: '找不到員工資料' }, { status: 400 });
@@ -169,9 +182,16 @@ export async function GET(request: NextRequest) {
         return NextResponse.json({ error: '無權限' }, { status: 403 });
       }
 
-      if (!yearMonth) {
+      if (!rawYearMonth) {
         return NextResponse.json({ error: '缺少 yearMonth 參數' }, { status: 400 });
       }
+
+      const yearMonthResult = parseYearMonthQueryParam(rawYearMonth);
+      if (!yearMonthResult.isValid || yearMonthResult.value === null) {
+        return NextResponse.json({ error: 'yearMonth 格式錯誤' }, { status: 400 });
+      }
+
+      const yearMonth = yearMonthResult.value;
 
       // 查詢發布記錄
       const release = await prisma.scheduleMonthlyRelease.findFirst({
@@ -272,27 +292,53 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
 
-    const body = await request.json();
-    const { action, yearMonth, department, comment } = body;
+    const csrfResult = await validateCSRF(request);
+    if (!csrfResult.valid) {
+      return NextResponse.json({ error: 'CSRF驗證失敗，請重新操作' }, { status: 403 });
+    }
 
-    // 取得員工資訊
-    const employee = await prisma.employee.findUnique({
-      where: { id: user.employeeId },
-      select: { id: true, department: true }
-    });
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的班表確認資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const body = parseResult.data;
+    if (!isPlainObject(body)) {
+      return NextResponse.json({ error: '請提供有效的班表確認資料' }, { status: 400 });
+    }
+
+    const action = typeof body.action === 'string' ? body.action : '';
+    const department = typeof body.department === 'string' ? body.department : '';
+    const comment = typeof body.comment === 'string' ? body.comment : undefined;
+    const rawYearMonth = typeof body.yearMonth === 'string' ? body.yearMonth : null;
 
     // 員工確認班表
     if (action === 'confirm') {
+      if (!rawYearMonth) {
+        return NextResponse.json({ error: '缺少 yearMonth 參數' }, { status: 400 });
+      }
+
+      const yearMonthResult = parseYearMonthQueryParam(rawYearMonth);
+      if (!yearMonthResult.isValid || yearMonthResult.value === null) {
+        return NextResponse.json({ error: 'yearMonth 格式錯誤' }, { status: 400 });
+      }
+
+      const yearMonth = yearMonthResult.value;
+
+      const employee = await prisma.employee.findUnique({
+        where: { id: user.employeeId },
+        select: { id: true, department: true }
+      });
+
       if (!employee) {
         return NextResponse.json({ error: '找不到員工資料' }, { status: 400 });
       }
-
-      if (!yearMonth) {
-        return NextResponse.json({ error: '缺少 yearMonth 參數' }, { status: 400 });
-      }
       
       // 密碼驗證
-      const password = body.password;
+      const password = typeof body.password === 'string' ? body.password : '';
       if (!password) {
         return NextResponse.json({ error: '請輸入密碼以驗證身份' }, { status: 400 });
       }
@@ -384,9 +430,21 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: '無權限發布班表' }, { status: 403 });
       }
 
-      if (!yearMonth) {
+      if (!rawYearMonth) {
         return NextResponse.json({ error: '缺少 yearMonth 參數' }, { status: 400 });
       }
+
+      const yearMonthResult = parseYearMonthQueryParam(rawYearMonth);
+      if (!yearMonthResult.isValid || yearMonthResult.value === null) {
+        return NextResponse.json({ error: 'yearMonth 格式錯誤' }, { status: 400 });
+      }
+
+      const yearMonth = yearMonthResult.value;
+
+      const employee = await prisma.employee.findUnique({
+        where: { id: user.employeeId },
+        select: { id: true, department: true }
+      });
 
       if (!employee) {
         return NextResponse.json({ error: '找不到員工資料' }, { status: 400 });
@@ -394,32 +452,38 @@ export async function POST(request: NextRequest) {
 
       const deadline = getLastDayOfMonth(yearMonth);
 
-      // 建立或更新發布記錄
-      const release = await prisma.scheduleMonthlyRelease.upsert({
+      const targetDepartment = department || null;
+
+      const existingRelease = await prisma.scheduleMonthlyRelease.findFirst({
         where: {
-          yearMonth_department: {
-            yearMonth,
-            department: department || null
-          }
-        },
-        create: {
           yearMonth,
-          department: department || null,
-          publishedById: employee.id,
-          publishedAt: new Date(),
-          deadline,
-          status: 'PUBLISHED',
-          version: 1
-        },
-        update: {
-          publishedById: employee.id,
-          publishedAt: new Date(),
-          deadline,
-          status: 'PUBLISHED',
-          version: { increment: 1 },
-          lastModified: new Date()
+          department: targetDepartment
         }
       });
+
+      const release = existingRelease
+        ? await prisma.scheduleMonthlyRelease.update({
+            where: { id: existingRelease.id },
+            data: {
+              publishedById: employee.id,
+              publishedAt: new Date(),
+              deadline,
+              status: 'PUBLISHED',
+              version: { increment: 1 },
+              lastModified: new Date()
+            }
+          })
+        : await prisma.scheduleMonthlyRelease.create({
+            data: {
+              yearMonth,
+              department: targetDepartment,
+              publishedById: employee.id,
+              publishedAt: new Date(),
+              deadline,
+              status: 'PUBLISHED',
+              version: 1
+            }
+          });
 
       // 如果版本更新，將所有確認標記為無效
       if (release.version > 1) {
@@ -463,9 +527,16 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: '無權限執行此操作' }, { status: 403 });
       }
 
-      if (!yearMonth) {
+      if (!rawYearMonth) {
         return NextResponse.json({ error: '缺少 yearMonth 參數' }, { status: 400 });
       }
+
+      const yearMonthResult = parseYearMonthQueryParam(rawYearMonth);
+      if (!yearMonthResult.isValid || yearMonthResult.value === null) {
+        return NextResponse.json({ error: 'yearMonth 格式錯誤' }, { status: 400 });
+      }
+
+      const yearMonth = yearMonthResult.value;
 
       const reminderResult = await sendReminderToUnconfirmed(yearMonth, department || undefined);
 

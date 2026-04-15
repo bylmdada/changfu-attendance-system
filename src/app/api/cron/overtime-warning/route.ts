@@ -6,15 +6,20 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
 import { runOvertimeWarningCheck, OVERTIME_THRESHOLDS } from '@/lib/overtime-warning';
 import { systemLogger } from '@/lib/logger';
+import { safeParseJSON } from '@/lib/validation';
 
-// 驗證 CRON 秘鑰（可選）
-function validateCronSecret(request: NextRequest): boolean {
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+// 驗證 CRON 秘鑰（可選）。若未配置或不匹配，仍需走一般管理權限驗證。
+function hasValidCronSecret(request: NextRequest): boolean {
   const cronSecret = process.env.CRON_SECRET;
   if (!cronSecret) {
-    return true; // 如果未設定秘鑰，允許訪問（需要認證）
+    return false;
   }
   
   const authHeader = request.headers.get('x-cron-secret');
@@ -24,17 +29,12 @@ function validateCronSecret(request: NextRequest): boolean {
 // POST - 執行加班警示檢查
 export async function POST(request: NextRequest) {
   try {
-    // 優先檢查 CRON 秘鑰
-    if (!validateCronSecret(request)) {
-      // 回退到 JWT 認證
-      const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                    request.cookies.get('auth-token')?.value;
-      
-      if (!token) {
+    if (!hasValidCronSecret(request)) {
+      const decoded = await getUserFromRequest(request);
+      if (!decoded) {
         return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
       }
 
-      const decoded = await getUserFromToken(token);
       if (!decoded || !['ADMIN', 'HR'].includes(decoded.role)) {
         return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
       }
@@ -44,12 +44,16 @@ export async function POST(request: NextRequest) {
     let year: number | undefined;
     let month: number | undefined;
 
-    try {
-      const body = await request.json();
-      year = body.year;
-      month = body.month;
-    } catch {
-      // 使用當前年月
+    const parsedBody = await safeParseJSON(request);
+    if (parsedBody.success) {
+      if (!isPlainObject(parsedBody.data)) {
+        return NextResponse.json({ error: '請提供有效的加班警示檢查資料' }, { status: 400 });
+      }
+
+      year = typeof parsedBody.data.year === 'number' ? parsedBody.data.year : undefined;
+      month = typeof parsedBody.data.month === 'number' ? parsedBody.data.month : undefined;
+    } else if (parsedBody.error !== 'empty_body') {
+      return NextResponse.json({ error: '無效的 JSON 格式' }, { status: 400 });
     }
 
     systemLogger.info('收到加班警示檢查請求', {
@@ -82,14 +86,11 @@ export async function POST(request: NextRequest) {
 // GET - 取得加班警示狀態（預覽，不發送通知）
 export async function GET(request: NextRequest) {
   try {
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const decoded = await getUserFromRequest(request);
+    if (!decoded) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
     if (!decoded || !['ADMIN', 'HR'].includes(decoded.role)) {
       return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
     }

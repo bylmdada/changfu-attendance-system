@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
+import { validateCSRF } from '@/lib/csrf';
 import { 
   calculateMonthlyPayroll, 
   validatePayrollCalculation,
@@ -8,6 +9,15 @@ import {
   type AttendanceForPayroll
 } from '@/lib/payroll-calculator';
 import { OvertimeType } from '@/lib/overtime-calculator';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function asStringOrNumber(value: unknown): string | number | undefined {
+  return typeof value === 'string' || typeof value === 'number' ? value : undefined;
+}
 
 // 輔助函數：取得國定假日
 async function getHolidaysForMonth(year: number, month: number): Promise<Set<string>> {
@@ -105,6 +115,11 @@ async function calculateBonusForMonth(
 // 預覽薪資計算（不儲存）
 export async function POST(request: NextRequest) {
   try {
+    const csrfResult = await validateCSRF(request);
+    if (!csrfResult.valid) {
+      return NextResponse.json({ error: 'CSRF token validation failed' }, { status: 403 });
+    }
+
     const user = await getUserFromRequest(request);
     
     if (!user) {
@@ -115,14 +130,23 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '無權限執行此操作' }, { status: 403 });
     }
 
-    const { payYear, payMonth, employeeIds, department } = await request.json();
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json({ error: '無效的 JSON 格式' }, { status: 400 });
+    }
+
+    const body = parseResult.data;
+    const payYear = isPlainObject(body) ? asStringOrNumber(body.payYear) : undefined;
+    const payMonth = isPlainObject(body) ? asStringOrNumber(body.payMonth) : undefined;
+    const employeeIds = isPlainObject(body) && Array.isArray(body.employeeIds) ? body.employeeIds : undefined;
+    const department = isPlainObject(body) && typeof body.department === 'string' ? body.department : undefined;
 
     if (!payYear || !payMonth) {
       return NextResponse.json({ error: '年份和月份為必填' }, { status: 400 });
     }
 
-    const year = parseInt(payYear);
-    const month = parseInt(payMonth);
+    const year = Number(payYear);
+    const month = Number(payMonth);
 
     // 取得國定假日
     const holidayDates = await getHolidaysForMonth(year, month);

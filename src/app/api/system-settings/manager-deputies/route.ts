@@ -7,9 +7,40 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
+import { safeParseJSON } from '@/lib/validation';
+
+function parsePositiveInteger(value: unknown) {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+    return null;
+  }
+
+  return value;
+}
+
+function parseOptionalDate(value: unknown) {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  return parsed;
+}
+
+function hasOwnProperty(value: unknown, key: string) {
+  return typeof value === 'object' && value !== null && Object.prototype.hasOwnProperty.call(value, key);
+}
 
 // GET: 取得代理人列表
 export async function GET(request: NextRequest) {
@@ -78,19 +109,47 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '僅管理員可新增' }, { status: 403 });
     }
 
-    const data = await request.json();
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      const errorMessage = parseResult.error === 'empty_body'
+        ? '請提供有效的設定資料'
+        : '無效的 JSON 格式';
+
+      return NextResponse.json({ error: errorMessage }, { status: 400 });
+    }
+
+    const data = parseResult.data;
+
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      return NextResponse.json({ error: '請提供有效的設定資料' }, { status: 400 });
+    }
+
     const { managerId, deputyEmployeeId, startDate, endDate } = data;
 
     if (!managerId || !deputyEmployeeId) {
       return NextResponse.json({ error: '缺少必要欄位' }, { status: 400 });
     }
 
+    const normalizedManagerId = parsePositiveInteger(managerId);
+    const normalizedDeputyEmployeeId = parsePositiveInteger(deputyEmployeeId);
+
+    if (!normalizedManagerId || !normalizedDeputyEmployeeId) {
+      return NextResponse.json({ error: '主管與代理員工 ID 必須為正整數' }, { status: 400 });
+    }
+
+    const normalizedStartDate = parseOptionalDate(startDate);
+    const normalizedEndDate = parseOptionalDate(endDate);
+
+    if (normalizedStartDate === null || normalizedEndDate === null) {
+      return NextResponse.json({ error: '代理日期格式無效' }, { status: 400 });
+    }
+
     const deputy = await prisma.managerDeputy.create({
       data: {
-        managerId,
-        deputyEmployeeId,
-        startDate: startDate ? new Date(startDate) : null,
-        endDate: endDate ? new Date(endDate) : null
+        managerId: normalizedManagerId,
+        deputyEmployeeId: normalizedDeputyEmployeeId,
+        startDate: normalizedStartDate ?? null,
+        endDate: normalizedEndDate ?? null
       }
     });
 
@@ -122,21 +181,79 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: '僅管理員可修改' }, { status: 403 });
     }
 
-    const data = await request.json();
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      const errorMessage = parseResult.error === 'empty_body'
+        ? '請提供有效的設定資料'
+        : '無效的 JSON 格式';
+
+      return NextResponse.json({ error: errorMessage }, { status: 400 });
+    }
+
+    const data = parseResult.data;
+
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      return NextResponse.json({ error: '請提供有效的設定資料' }, { status: 400 });
+    }
+
     const { id, deputyEmployeeId, startDate, endDate, isActive } = data;
 
     if (!id) {
       return NextResponse.json({ error: '缺少 ID' }, { status: 400 });
     }
 
+    const normalizedId = parsePositiveInteger(id);
+    if (!normalizedId) {
+      return NextResponse.json({ error: '代理設定 ID 必須為正整數' }, { status: 400 });
+    }
+
+    const normalizedDeputyEmployeeId = deputyEmployeeId === undefined
+      ? undefined
+      : parsePositiveInteger(deputyEmployeeId);
+
+    if (deputyEmployeeId !== undefined && normalizedDeputyEmployeeId === null) {
+      return NextResponse.json({ error: '代理員工 ID 必須為正整數' }, { status: 400 });
+    }
+
+    const shouldUpdateStartDate = hasOwnProperty(data, 'startDate');
+    const shouldUpdateEndDate = hasOwnProperty(data, 'endDate');
+    const shouldUpdateIsActive = hasOwnProperty(data, 'isActive');
+    const normalizedIsActive = shouldUpdateIsActive && typeof isActive === 'boolean'
+      ? isActive
+      : undefined;
+
+    const normalizedStartDate = shouldUpdateStartDate ? parseOptionalDate(startDate) : undefined;
+    const normalizedEndDate = shouldUpdateEndDate ? parseOptionalDate(endDate) : undefined;
+
+    if (normalizedStartDate === null || normalizedEndDate === null) {
+      return NextResponse.json({ error: '代理日期格式無效' }, { status: 400 });
+    }
+
+    if (shouldUpdateIsActive && normalizedIsActive === undefined) {
+      return NextResponse.json({ error: '啟用狀態必須為布林值' }, { status: 400 });
+    }
+
+    const updateData: Prisma.ManagerDeputyUncheckedUpdateInput = {};
+
+    if (normalizedDeputyEmployeeId !== undefined && normalizedDeputyEmployeeId !== null) {
+      updateData.deputyEmployeeId = normalizedDeputyEmployeeId;
+    }
+
+    if (shouldUpdateStartDate) {
+      updateData.startDate = normalizedStartDate ?? null;
+    }
+
+    if (shouldUpdateEndDate) {
+      updateData.endDate = normalizedEndDate ?? null;
+    }
+
+    if (shouldUpdateIsActive) {
+      updateData.isActive = normalizedIsActive;
+    }
+
     const deputy = await prisma.managerDeputy.update({
-      where: { id },
-      data: {
-        deputyEmployeeId,
-        startDate: startDate ? new Date(startDate) : null,
-        endDate: endDate ? new Date(endDate) : null,
-        isActive
-      }
+      where: { id: normalizedId },
+      data: updateData
     });
 
     return NextResponse.json({
@@ -168,7 +285,8 @@ export async function DELETE(request: NextRequest) {
     }
 
     const { searchParams } = new URL(request.url);
-    const id = parseInt(searchParams.get('id') || '');
+    const rawId = searchParams.get('id');
+    const id = rawId && /^\d+$/.test(rawId) ? Number(rawId) : null;
 
     if (!id) {
       return NextResponse.json({ error: '缺少 ID' }, { status: 400 });

@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
+import { toCsvRow } from '@/lib/csv';
+import { parseIntegerQueryParam } from '@/lib/query-params';
 
 /**
  * 銀行薪轉檔匯出 API
@@ -10,21 +11,45 @@ import { getUserFromToken } from '@/lib/auth';
 
 export async function GET(request: NextRequest) {
   try {
-    const cookieStore = await cookies();
-    const token = cookieStore.get('auth-token')?.value;
-    if (!token) {
+    const user = await getUserFromRequest(request);
+    if (!user) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
-    const user = await getUserFromToken(token);
     if (!user || (user.role !== 'ADMIN' && user.role !== 'HR')) {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
 
     const { searchParams } = new URL(request.url);
-    const year = parseInt(searchParams.get('year') || new Date().getFullYear().toString());
-    const month = parseInt(searchParams.get('month') || (new Date().getMonth() + 1).toString());
+    const yearResult = parseIntegerQueryParam(searchParams.get('year'), {
+      defaultValue: new Date().getFullYear(),
+      min: 1900,
+      max: 9999,
+    });
+    if (!yearResult.isValid) {
+      return NextResponse.json({ error: '無效的年份參數' }, { status: 400 });
+    }
+
+    const monthResult = parseIntegerQueryParam(searchParams.get('month'), {
+      defaultValue: new Date().getMonth() + 1,
+      min: 1,
+      max: 12,
+    });
+    if (!monthResult.isValid) {
+      return NextResponse.json({ error: '無效的月份參數' }, { status: 400 });
+    }
+
+    const year = yearResult.value!;
+    const month = monthResult.value!;
     const format = searchParams.get('format') || 'json';
     const bankCode = searchParams.get('bankCode') || '806'; // 元大銀行代碼
+
+    if (!['json', 'csv', 'txt'].includes(format)) {
+      return NextResponse.json({ error: '無效的格式參數' }, { status: 400 });
+    }
+
+    if (!/^\d{3}$/.test(bankCode)) {
+      return NextResponse.json({ error: '無效的銀行代碼參數' }, { status: 400 });
+    }
 
     // 取得該月份的薪資記錄
     const payrollRecords = await prisma.payrollRecord.findMany({
@@ -38,7 +63,8 @@ export async function GET(request: NextRequest) {
             id: true,
             employeeId: true,
             name: true,
-            department: true
+            department: true,
+            bankAccount: true
           }
         }
       },
@@ -56,7 +82,7 @@ export async function GET(request: NextRequest) {
         employeeId: record.employee.employeeId,
         name: record.employee.name,
         department: record.employee.department,
-        bankAccount: '', // 銀行帳號（需從員工資料取得或手動維護）
+        bankAccount: record.employee.bankAccount || '',
         netPay: Math.round(record.netPay), // 實發金額（取整數）
         grossPay: record.grossPay,
         deductions: record.totalDeductions
@@ -125,12 +151,12 @@ export async function GET(request: NextRequest) {
     if (format === 'csv') {
       const headers = ['員工編號', '姓名', '部門', '銀行帳號', '實發金額'];
       const csvRows = [
-        headers.join(','),
-        ...records.map(r => [
+        toCsvRow(headers),
+        ...records.map(r => toCsvRow([
           r.employeeId, r.name, r.department, r.bankAccount, r.netPay
-        ].join(',')),
+        ])),
         '',
-        `合計,,,,${summary.totalAmount}`
+        toCsvRow(['合計', '', '', '', summary.totalAmount])
       ];
 
       const csvContent = '\uFEFF' + csvRows.join('\n');

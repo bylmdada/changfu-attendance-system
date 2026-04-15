@@ -1,11 +1,29 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { checkRateLimit } from '@/lib/rate-limit';
 import {
+  type ClockLocationPayload,
   getActiveAllowedLocations,
   getGPSSettingsFromDB,
+  isClockLocationPayload,
   type GpsValidationCode,
   validateGpsClockLocation,
 } from '@/lib/gps-attendance';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function parseClockLocationPayload(value: unknown): ClockLocationPayload | null | undefined {
+  if (value === undefined || value === null) {
+    return value;
+  }
+
+  if (!isClockLocationPayload(value)) {
+    throw new Error('GPS定位資料格式錯誤');
+  }
+
+  return value;
+}
 
 function mapValidationCodeToUi(
   code: GpsValidationCode
@@ -41,7 +59,24 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const { location } = await request.json();
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json({ error: '請提供有效的 GPS 驗證資料' }, { status: 400 });
+    }
+
+    if (!isPlainObject(body)) {
+      return NextResponse.json({ error: '請提供有效的 GPS 驗證資料' }, { status: 400 });
+    }
+
+    let location: ClockLocationPayload | null | undefined;
+    try {
+      location = parseClockLocationPayload(body.location);
+    } catch {
+      return NextResponse.json({ error: 'GPS定位資料格式錯誤' }, { status: 400 });
+    }
+
     const gpsSettings = await getGPSSettingsFromDB();
     const allowedLocations = gpsSettings.enabled ? await getActiveAllowedLocations() : [];
     const validation = validateGpsClockLocation({

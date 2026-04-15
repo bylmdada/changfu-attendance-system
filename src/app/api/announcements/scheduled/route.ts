@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
+import { validateCSRF } from '@/lib/csrf';
 import { sendNotification } from '@/lib/realtime-notifications';
 
 // POST: 執行定時發布檢查（可由 cron job 或手動觸發）
@@ -14,6 +15,11 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
 
+    const csrfResult = await validateCSRF(request);
+    if (!csrfResult.valid) {
+      return NextResponse.json({ error: 'CSRF驗證失敗，請重新操作' }, { status: 403 });
+    }
+
     const now = new Date();
     
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -23,7 +29,11 @@ export async function POST(request: NextRequest) {
     const announcementsToPublish = await db.announcement.findMany({
       where: {
         scheduledPublishAt: { not: null, lte: now },
-        isPublished: false
+        isPublished: false,
+        OR: [
+          { expiryDate: null },
+          { expiryDate: { gt: now } }
+        ]
       },
       select: {
         id: true,
@@ -42,6 +52,7 @@ export async function POST(request: NextRequest) {
       WHERE scheduled_publish_at IS NOT NULL 
         AND scheduled_publish_at <= ${now}
         AND is_published = false
+        AND (expiry_date IS NULL OR expiry_date > ${now})
     `;
 
     // 對緊急通知和高優先級公告發送即時通知
@@ -97,7 +108,11 @@ export async function GET(request: NextRequest) {
     const scheduledAnnouncements = await db.announcement.findMany({
       where: {
         scheduledPublishAt: { not: null },
-        isPublished: false
+        isPublished: false,
+        OR: [
+          { expiryDate: null },
+          { expiryDate: { gt: new Date() } }
+        ]
       },
       orderBy: { scheduledPublishAt: 'asc' },
       include: {

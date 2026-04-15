@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { Save, Gift, Calendar, Clock, AlertTriangle, Calculator } from 'lucide-react';
+import { buildAuthMeRequest, buildCookieSessionRequest } from '@/lib/admin-session-client';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import SystemNavbar from '@/components/SystemNavbar';
 
@@ -80,20 +81,12 @@ export default function BonusConfigPage() {
     enabled: true
   });
 
-  const getAuthHeaders = (): HeadersInit => {
-    if (typeof window === 'undefined') return {};
-    const token = localStorage.getItem('token');
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  };
-
   useEffect(() => {
     const fetchData = async () => {
       try {
         // 驗證用戶
-        const userResponse = await fetch('/api/auth/me', {
-          credentials: 'include',
-          headers: getAuthHeaders()
-        });
+        const authMeRequest = buildAuthMeRequest(window.location.origin);
+        const userResponse = await fetch(authMeRequest.url, authMeRequest.options);
 
         if (userResponse.ok) {
           const userData = await userResponse.json();
@@ -109,10 +102,8 @@ export default function BonusConfigPage() {
         }
 
         // 載入現有獎金配置
-        const configResponse = await fetch('/api/system-settings/bonus-config', {
-          credentials: 'include',
-          headers: getAuthHeaders()
-        });
+        const configRequest = buildCookieSessionRequest(window.location.origin, '/api/system-settings/bonus-config');
+        const configResponse = await fetch(configRequest.url, configRequest.options);
 
         if (configResponse.ok) {
           const data = await configResponse.json();
@@ -146,10 +137,8 @@ export default function BonusConfigPage() {
         }
 
         // 載入按比例計算設定
-        const prorateResponse = await fetch('/api/system-settings/prorated-bonus', {
-          credentials: 'include',
-          headers: getAuthHeaders()
-        });
+        const prorateRequest = buildCookieSessionRequest(window.location.origin, '/api/system-settings/prorated-bonus');
+        const prorateResponse = await fetch(prorateRequest.url, prorateRequest.options);
 
         if (prorateResponse.ok) {
           const data = await prorateResponse.json();

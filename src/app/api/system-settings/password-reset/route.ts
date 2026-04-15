@@ -1,16 +1,48 @@
 import { NextResponse } from 'next/server';
+import { prisma } from '@/lib/database';
+import { safeParseSystemSettingsValue } from '@/lib/system-settings-json';
 
-// 預設使用「聯繫管理員」模式
-// 管理員可在系統設定中開啟 Email 重設功能
+interface PasswordResetSettings {
+  emailResetEnabled: boolean;
+  adminContact: string;
+}
+
+const SETTINGS_KEY = 'password_reset_settings';
+
+const DEFAULT_SETTINGS: PasswordResetSettings = {
+  emailResetEnabled: false,
+  adminContact: '請聯繫系統管理員',
+};
+
+function normalizeSettings(input: Partial<PasswordResetSettings>): PasswordResetSettings {
+  return {
+    emailResetEnabled: input.emailResetEnabled ?? DEFAULT_SETTINGS.emailResetEnabled,
+    adminContact:
+      typeof input.adminContact === 'string' && input.adminContact.trim().length > 0
+        ? input.adminContact
+        : DEFAULT_SETTINGS.adminContact,
+  };
+}
+
+async function getStoredSettings(): Promise<PasswordResetSettings> {
+  const setting = await prisma.systemSettings.findUnique({
+    where: { key: SETTINGS_KEY },
+  });
+
+  if (!setting?.value) {
+    return DEFAULT_SETTINGS;
+  }
+
+  return normalizeSettings(
+    safeParseSystemSettingsValue<Partial<PasswordResetSettings>>(setting.value, {}, SETTINGS_KEY)
+  );
+}
 
 export async function GET() {
   try {
-    // TODO: 從資料庫讀取設定
-    // 目前預設為聯繫管理員模式
-    return NextResponse.json({
-      emailResetEnabled: false,  // 預設關閉 Email 重設
-      adminContact: '請聯繫系統管理員'
-    });
+    const settings = await getStoredSettings();
+
+    return NextResponse.json(settings);
   } catch (error) {
     console.error('讀取密碼重設設定失敗:', error);
     return NextResponse.json(

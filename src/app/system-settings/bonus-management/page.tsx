@@ -4,6 +4,10 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Gift, Save, Edit2, Trash2, X } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
+import {
+  buildAuthMeRequest,
+  buildBonusManagementRequest,
+} from '@/lib/bonus-management-client';
 import SystemNavbar from '@/components/SystemNavbar';
 
 interface BonusType {
@@ -47,20 +51,11 @@ export default function BonusManagementPage() {
   const [showForm, setShowForm] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  // Helper function to get auth headers
-  const getAuthHeaders = (): HeadersInit => {
-    if (typeof window === 'undefined') return {};
-    const token = localStorage.getItem('token');
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  };
-
   useEffect(() => {
     const fetchUser = async () => {
       try {
-        const response = await fetch('/api/auth/me', {
-          credentials: 'include',
-          headers: getAuthHeaders()
-        });
+        const { url, options } = buildAuthMeRequest(window.location.origin);
+        const response = await fetch(url, options);
         
         if (response.ok) {
           const userData = await response.json();
@@ -91,9 +86,8 @@ export default function BonusManagementPage() {
 
   const loadBonusTypes = async () => {
     try {
-      const response = await fetch('/api/system-settings/bonus-management', {
-        credentials: 'include'
-      });
+      const { url, options } = buildBonusManagementRequest(window.location.origin);
+      const response = await fetch(url, options);
       
       if (response.ok) {
         const data = await response.json();

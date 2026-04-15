@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { Shield, Plus, Pencil, Trash2, User, Calendar, Clock, RefreshCw, XCircle } from 'lucide-react';
 import { DEPARTMENT_OPTIONS } from '@/constants/departments';
+import { buildAuthMeRequest, buildCookieSessionRequest } from '@/lib/admin-session-client';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import SystemNavbar from '@/components/SystemNavbar';
 
@@ -87,22 +88,13 @@ export default function AttendancePermissionsPage() {
     scheduleManagement: [] as string[]
   });
 
-  // Helper function to get auth headers
-  const getAuthHeaders = (): HeadersInit => {
-    if (typeof window === 'undefined') return {};
-    const token = localStorage.getItem('token');
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  };
-
   // 載入數據
   useEffect(() => {
     const fetchData = async () => {
       try {
         // 檢查用戶權限
-        const userRes = await fetch('/api/auth/me', { 
-          credentials: 'include',
-          headers: getAuthHeaders()
-        });
+        const authMeRequest = buildAuthMeRequest(window.location.origin);
+        const userRes = await fetch(authMeRequest.url, authMeRequest.options);
         if (userRes.ok) {
           const userData = await userRes.json();
           const currentUser = userData.user || userData;
@@ -122,7 +114,8 @@ export default function AttendancePermissionsPage() {
         }
 
         // 載入員工列表
-        const employeesRes = await fetch('/api/employees', { credentials: 'include' });
+        const employeesRequest = buildCookieSessionRequest(window.location.origin, '/api/employees');
+        const employeesRes = await fetch(employeesRequest.url, employeesRequest.options);
         if (employeesRes.ok) {
           const employeesData = await employeesRes.json();
           const employeeList = Array.isArray(employeesData) ? employeesData : employeesData.employees || [];
@@ -130,7 +123,8 @@ export default function AttendancePermissionsPage() {
         }
 
         // 載入考勤權限設定
-        const permissionsRes = await fetch('/api/attendance-permissions', { credentials: 'include' });
+        const permissionsRequest = buildCookieSessionRequest(window.location.origin, '/api/attendance-permissions');
+        const permissionsRes = await fetch(permissionsRequest.url, permissionsRequest.options);
         if (permissionsRes.ok) {
           const permissionsData = await permissionsRes.json();
           setPermissions(permissionsData);

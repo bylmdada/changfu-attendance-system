@@ -1,11 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
 import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { toTaiwanDateStr } from '@/lib/timezone';
 import { validateCSRF } from '@/lib/csrf';
 import { createApprovalForRequest } from '@/lib/approval-helper';
+import { getManageableDepartments } from '@/lib/schedule-management-permissions';
+import { parseIntegerQueryParam } from '@/lib/query-params';
+import { safeParseJSON } from '@/lib/validation';
 
 // 簡易型別：避免直接耦合到 Prisma 生成客戶端
 interface ScheduleLite { shiftType: string; startTime: string; endTime: string }
@@ -24,6 +27,10 @@ const SHIFT_LABEL = (t: string, s: string, e: string) => {
   return s && e ? `${n} (${s}-${e})` : n;
 };
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 // 獲取加班申請列表
 export async function GET(request: NextRequest) {
   try {
@@ -33,16 +40,9 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const user = await getUserFromRequest(request);
+    if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
-    }
-
-    const decoded = await getUserFromToken(token);
-    if (!decoded) {
-      return NextResponse.json({ error: '無效的認證令牌' }, { status: 401 });
     }
 
     const { searchParams } = new URL(request.url);
@@ -55,14 +55,42 @@ export async function GET(request: NextRequest) {
       employeeId?: number;
       overtimeDate?: { gte: Date; lte: Date };
       status?: string;
+      employee?: {
+        department?: { in: string[] };
+      };
     } = {};
 
-    // 如果是一般員工，只能看自己的申請
-    if (decoded.role === 'EMPLOYEE') {
-      whereClause.employeeId = decoded.employeeId;
-    } else if (employeeId) {
-      // 管理員可以查看特定員工的申請
-      whereClause.employeeId = parseInt(employeeId);
+    if (user.role === 'ADMIN' || user.role === 'HR') {
+      // 管理員與 HR 可以查看全部資料
+      if (employeeId) {
+        const employeeIdResult = parseIntegerQueryParam(employeeId, { min: 1, max: 99999999 });
+        if (!employeeIdResult.isValid || employeeIdResult.value === null) {
+          return NextResponse.json({ error: 'employeeId 格式錯誤' }, { status: 400 });
+        }
+        whereClause.employeeId = employeeIdResult.value;
+      }
+    } else {
+      const manageableDepartments = await getManageableDepartments({
+        role: user.role,
+        employeeId: user.employeeId,
+      });
+
+      if (manageableDepartments.length > 0) {
+        whereClause.employee = {
+          department: { in: manageableDepartments }
+        };
+
+        if (employeeId) {
+          const employeeIdResult = parseIntegerQueryParam(employeeId, { min: 1, max: 99999999 });
+          if (!employeeIdResult.isValid || employeeIdResult.value === null) {
+            return NextResponse.json({ error: 'employeeId 格式錯誤' }, { status: 400 });
+          }
+          whereClause.employeeId = employeeIdResult.value;
+        }
+      } else {
+        // 沒有管理權限的使用者只能查看自己的申請
+        whereClause.employeeId = user.employeeId;
+      }
     }
 
     if (startDate && endDate) {
@@ -141,21 +169,36 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
 
-    const body = await request.json();
-    const { overtimeDate, workDate, startTime, endTime, reason, workContent, username, password } = body;
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的加班申請資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const body = parseResult.data;
+    if (!isPlainObject(body)) {
+      return NextResponse.json({ error: '請提供有效的加班申請資料' }, { status: 400 });
+    }
+
+    const overtimeDate = typeof body.overtimeDate === 'string' ? body.overtimeDate : undefined;
+    const workDate = typeof body.workDate === 'string' ? body.workDate : undefined;
+    const startTime = typeof body.startTime === 'string' ? body.startTime : undefined;
+    const endTime = typeof body.endTime === 'string' ? body.endTime : undefined;
+    const reason = typeof body.reason === 'string' ? body.reason : undefined;
+    const workContent = typeof body.workContent === 'string' ? body.workContent : undefined;
+    const username = typeof body.username === 'string' ? body.username : undefined;
+    const password = typeof body.password === 'string' ? body.password : undefined;
 
     // 雙重認證：Token 或帳密
     let employeeId: number | null = null;
+    let authenticatedViaQuickAuth = false;
     
-    // 模式1: Token 認證
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (token) {
-      const decoded = await getUserFromToken(token);
-      if (decoded) {
-        employeeId = decoded.employeeId;
-      }
+    // 模式1: 共享 session / request 認證
+    const sessionUser = await getUserFromRequest(request);
+    if (sessionUser) {
+      employeeId = sessionUser.employeeId;
     }
     
     // 模式2: 帳密認證（快速打卡模式）
@@ -167,9 +210,14 @@ export async function POST(request: NextRequest) {
       });
       
       if (user && user.employee) {
+        if (!user.isActive) {
+          return NextResponse.json({ error: '帳號已停用，請聯繫管理員' }, { status: 401 });
+        }
+
         const isValid = await verifyPassword(password, user.passwordHash);
         if (isValid) {
           employeeId = user.employee.id;
+          authenticatedViaQuickAuth = true;
         }
       }
     }
@@ -178,8 +226,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    // 如果是帳密認證，跳過 CSRF 檢查
-    if (!username) {
+    // 僅快速打卡帳密模式可以跳過 CSRF；只要是既有 session / token 登入就必須驗證。
+    if (!authenticatedViaQuickAuth) {
       const csrfResult = await validateCSRF(request);
       if (!csrfResult.valid) {
         return NextResponse.json({ error: 'CSRF token validation failed' }, { status: 403 });
@@ -294,8 +342,8 @@ export async function POST(request: NextRequest) {
     }
 
     // 取得系統設定的補償模式（目前鎖定為補休）
-    const compensationType = body.compensationType || 'COMP_LEAVE';
-    
+    const compensationType = typeof body.compensationType === 'string' ? body.compensationType : 'COMP_LEAVE';
+
     // 驗證 compensationType 值
     if (!['COMP_LEAVE', 'OVERTIME_PAY'].includes(compensationType)) {
       return NextResponse.json({ error: '無效的補償方式' }, { status: 400 });

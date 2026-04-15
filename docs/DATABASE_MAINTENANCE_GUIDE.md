@@ -89,6 +89,48 @@ curl https://localhost:3001/api/system-maintenance?action=health
 node optimize-db.js
 ```
 
+### **補休 IMPORT baseline 修復流程**
+
+若歷史上重複匯入補休基準，資料庫可能同時存在多筆 `referenceType = 'IMPORT'` 交易，造成 frozen baseline 判讀混亂。修復工具會保留最新的 IMPORT baseline，刪除較舊 baseline，並依最新 baseline 重新 upsert `compLeaveBalance`。
+
+#### 1. **先做 dry-run**
+```bash
+# 使用目前 DATABASE_URL 或 fallback 目標
+npm run repair:comp-leave-imports
+
+# 明確指定 production snapshot
+npm run repair:comp-leave-imports -- --database=/absolute/path/to/snapshot.db
+
+# 限縮單一員工
+npm run repair:comp-leave-imports -- --database=/absolute/path/to/snapshot.db --employeeId=123
+
+# 以 JSON 輸出 dry-run 結果，方便做比對或存檔
+npm run repair:comp-leave-imports -- --database=/absolute/path/to/snapshot.db --json
+```
+
+#### 2. **確認輸出後再 apply**
+```bash
+# 單一員工 apply
+npm run repair:comp-leave-imports -- --database=/absolute/path/to/snapshot.db --employeeId=123 --apply
+
+# 全庫 apply 需要額外確認字串
+npm run repair:comp-leave-imports -- --database=/absolute/path/to/snapshot.db --apply --confirm=REPAIR_ALL_IMPORT_BASELINES
+```
+
+#### 3. **資料庫目標規則**
+- 若未提供 `DATABASE_URL` 與 `-- --database=...`，fallback 會指向 `file:./prisma/dev.db`。
+- `-- --database=...` 可傳原始 SQLite 路徑或 `file:` URL，工具會以「命令列參數」標示來源。
+- `--json` 只支援 dry-run，啟用後會輸出純 JSON，適合保存修復前檢查結果。
+- 若對全庫做 `--apply`，必須同時帶 `--confirm=REPAIR_ALL_IMPORT_BASELINES`；若限定 `--employeeId=<id>` 則不需要。
+- 若資料庫檔案不存在、是空檔，或缺少 `comp_leave_transactions` 資料表，CLI 會輸出可操作的中文錯誤說明。
+- 工作區內的 `prisma/prod.db` 是 0-byte 占位檔，不應視為正式資料庫。
+
+#### 4. **建議操作順序**
+1. 先取得 production DB 或 production snapshot。
+2. 只做 dry-run，確認哪些員工會被修復。
+3. 如有需要，先以 `--employeeId=<id>` 對單一員工 apply 驗證。
+4. 最後若要全庫 apply，必須顯式帶上 `--confirm=REPAIR_ALL_IMPORT_BASELINES`。
+
 ### **每月維護**
 
 #### 1. **資料歸檔**

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 
 export async function GET(request: NextRequest) {
@@ -11,16 +11,9 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
-      return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
-    }
-
-    const decoded = await getUserFromToken(token);
+    const decoded = await getUserFromRequest(request);
     if (!decoded) {
-      return NextResponse.json({ error: '無效的認證令牌' }, { status: 401 });
+      return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
     // 只有管理員和HR可以查看薪資統計
@@ -31,12 +24,29 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const year = searchParams.get('year') || new Date().getFullYear().toString();
     const month = searchParams.get('month');
+    const department = searchParams.get('department');
+
+    const employeeFilter = department
+      ? {
+          employee: {
+            is: {
+              department,
+            },
+          },
+        }
+      : {};
 
     const whereCondition: {
       payYear: number;
       payMonth?: number;
+      employee?: {
+        is: {
+          department: string;
+        };
+      };
     } = {
-      payYear: parseInt(year)
+      payYear: parseInt(year),
+      ...employeeFilter,
     };
 
     if (month) {
@@ -128,7 +138,8 @@ export async function GET(request: NextRequest) {
       const monthlyStats = await prisma.payrollRecord.aggregate({
         where: {
           payYear: parseInt(year),
-          payMonth: m
+          payMonth: m,
+          ...employeeFilter,
         },
         _count: {
           id: true
@@ -165,12 +176,18 @@ export async function GET(request: NextRequest) {
         const whereCondition: {
           payYear: number;
           payMonth?: number;
+          employee?: {
+            is: {
+              department: string;
+            };
+          };
           grossPay: {
             gte: number;
             lt?: number;
           };
         } = {
           payYear: parseInt(year),
+          ...employeeFilter,
           grossPay: {
             gte: range.min
           }

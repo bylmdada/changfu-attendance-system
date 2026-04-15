@@ -1,13 +1,45 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
+import { verifyPassword } from '@/lib/auth';
+import { checkClockRateLimit, clearFailedAttempts, recordFailedClockAttempt } from '@/lib/rate-limit';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
-    const { username } = body;
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      const errorMessage = parseResult.error === 'empty_body'
+        ? '請提供帳號和密碼'
+        : '無效的 JSON 格式';
 
-    if (!username) {
-      return NextResponse.json({ error: '缺少用戶名' }, { status: 400 });
+      return NextResponse.json({ error: errorMessage }, { status: 400 });
+    }
+
+    const body = parseResult.data;
+    if (!isPlainObject(body)) {
+      return NextResponse.json({ error: '請提供帳號和密碼' }, { status: 400 });
+    }
+
+    const username = typeof body.username === 'string' ? body.username : '';
+    const password = typeof body.password === 'string' ? body.password : '';
+
+    if (!username || !password) {
+      return NextResponse.json({ error: '請提供帳號和密碼' }, { status: 400 });
+    }
+
+    const rateLimitResult = await checkClockRateLimit(request, username);
+    if (!rateLimitResult.allowed) {
+      return NextResponse.json(
+        { error: rateLimitResult.reason || '請求過於頻繁' },
+        {
+          status: 429,
+          headers: { 'Retry-After': String(rateLimitResult.retryAfter || 60) }
+        }
+      );
     }
 
     // 查找用戶
@@ -16,9 +48,27 @@ export async function POST(request: NextRequest) {
       include: { employee: true }
     });
 
-    if (!user || !user.employee) {
+    if (!user) {
+      await recordFailedClockAttempt(username);
+      return NextResponse.json({ error: '帳號或密碼錯誤' }, { status: 401 });
+    }
+
+    if (!user.employee) {
       return NextResponse.json({ error: '找不到員工資料' }, { status: 404 });
     }
+
+    if (!user.isActive) {
+      await recordFailedClockAttempt(username);
+      return NextResponse.json({ error: '帳號已停用，請聯繫管理員' }, { status: 401 });
+    }
+
+    const isValidPassword = await verifyPassword(password, user.passwordHash);
+    if (!isValidPassword) {
+      await recordFailedClockAttempt(username);
+      return NextResponse.json({ error: '帳號或密碼錯誤' }, { status: 401 });
+    }
+
+    await clearFailedAttempts(username);
 
     // 獲取今日日期（使用台灣時區）
     const now = new Date();

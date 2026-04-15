@@ -1,8 +1,122 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { parseIntegerQueryParam } from '@/lib/query-params';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+interface SelfChangePayload {
+  type?: string;
+  original?: string;
+}
+
+type ShiftExchangeReversalClient = Pick<typeof prisma, 'schedule'>;
+
+function getTemplateByShift(shift: string): { startTime: string; endTime: string } {
+  const map: Record<string, { startTime: string; endTime: string }> = {
+    A: { startTime: '07:30', endTime: '16:30' },
+    B: { startTime: '08:00', endTime: '17:00' },
+    C: { startTime: '08:30', endTime: '17:30' },
+  };
+
+  return map[shift] || { startTime: '', endTime: '' };
+}
+
+async function restoreApprovedShiftExchange(
+  tx: ShiftExchangeReversalClient,
+  shiftExchangeRequest: {
+    requesterId: number;
+    targetEmployeeId: number;
+    originalWorkDate: string;
+    targetWorkDate: string;
+    requestReason: string;
+  }
+) {
+  let parsed: SelfChangePayload | null = null;
+  try {
+    parsed = JSON.parse(shiftExchangeRequest.requestReason) as SelfChangePayload;
+  } catch {}
+
+  const isSelfChange = parsed?.type === 'SELF_CHANGE';
+
+  if (isSelfChange) {
+    const originalShift = parsed?.original ?? 'A';
+    const template = getTemplateByShift(originalShift);
+    const existingSchedule = await tx.schedule.findFirst({
+      where: {
+        employeeId: shiftExchangeRequest.requesterId,
+        workDate: shiftExchangeRequest.originalWorkDate,
+      },
+    });
+
+    if (existingSchedule) {
+      await tx.schedule.update({
+        where: { id: existingSchedule.id },
+        data: {
+          shiftType: originalShift,
+          startTime: template.startTime,
+          endTime: template.endTime,
+        },
+      });
+    }
+
+    return;
+  }
+
+  const [requesterSchedule, targetSchedule] = await Promise.all([
+    tx.schedule.findFirst({
+      where: {
+        employeeId: shiftExchangeRequest.requesterId,
+        workDate: shiftExchangeRequest.originalWorkDate,
+      },
+    }),
+    tx.schedule.findFirst({
+      where: {
+        employeeId: shiftExchangeRequest.targetEmployeeId,
+        workDate: shiftExchangeRequest.targetWorkDate,
+      },
+    }),
+  ]);
+
+  if (requesterSchedule && targetSchedule) {
+    const requesterOriginal = {
+      shiftType: requesterSchedule.shiftType,
+      startTime: requesterSchedule.startTime,
+      endTime: requesterSchedule.endTime,
+    };
+
+    await tx.schedule.update({
+      where: { id: requesterSchedule.id },
+      data: {
+        shiftType: targetSchedule.shiftType,
+        startTime: targetSchedule.startTime,
+        endTime: targetSchedule.endTime,
+      },
+    });
+
+    await tx.schedule.update({
+      where: { id: targetSchedule.id },
+      data: requesterOriginal,
+    });
+  }
+}
+
+async function getManagedDepartments(employeeId: number): Promise<string[]> {
+  const records = await prisma.departmentManager.findMany({
+    where: {
+      employeeId,
+      isActive: true,
+    },
+    select: { department: true },
+  });
+
+  return records.map((record) => record.department).filter(Boolean);
+}
 
 // POST: 員工申請撤銷調班
 export async function POST(
@@ -20,30 +134,46 @@ export async function POST(
       return NextResponse.json({ error: 'CSRF 驗證失敗' }, { status: 403 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const decoded = await getUserFromRequest(request);
+    if (!decoded) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded) {
-      return NextResponse.json({ error: '無效的認證' }, { status: 401 });
+    const { id } = await params;
+    const requestIdResult = parseIntegerQueryParam(id, { min: 1, max: 99999999 });
+    if (!requestIdResult.isValid || requestIdResult.value === null) {
+      return NextResponse.json({ error: '調班申請 ID 格式錯誤' }, { status: 400 });
+    }
+    const requestId = requestIdResult.value;
+
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的調班撤銷資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
     }
 
-    const { id } = await params;
-    const requestId = parseInt(id);
+    const body = parseResult.data;
+    if (!isPlainObject(body)) {
+      return NextResponse.json({ error: '請提供有效的調班撤銷資料' }, { status: 400 });
+    }
 
-    const body = await request.json();
-    const { reason } = body;
+    const reason = typeof body.reason === 'string' ? body.reason : undefined;
 
     if (!reason || reason.trim() === '') {
       return NextResponse.json({ error: '請填寫撤銷原因' }, { status: 400 });
     }
 
     const shiftExchangeRequest = await prisma.shiftExchangeRequest.findUnique({
-      where: { id: requestId }
+      where: { id: requestId },
+      include: {
+        requester: {
+          select: {
+            department: true,
+          },
+        },
+      },
     });
 
     if (!shiftExchangeRequest) {
@@ -97,26 +227,48 @@ export async function PUT(
       return NextResponse.json({ error: 'CSRF 驗證失敗' }, { status: 403 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const decoded = await getUserFromRequest(request);
+    if (!decoded) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded || !['ADMIN', 'MANAGER'].includes(decoded.role)) {
+    if (!['ADMIN', 'MANAGER'].includes(decoded.role)) {
       return NextResponse.json({ error: '需要主管或管理員權限' }, { status: 403 });
     }
 
     const { id } = await params;
-    const requestId = parseInt(id);
+    const requestIdResult = parseIntegerQueryParam(id, { min: 1, max: 99999999 });
+    if (!requestIdResult.isValid || requestIdResult.value === null) {
+      return NextResponse.json({ error: '調班申請 ID 格式錯誤' }, { status: 400 });
+    }
+    const requestId = requestIdResult.value;
 
-    const body = await request.json();
-    const { action, opinion, note } = body;
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的調班撤銷資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const body = parseResult.data;
+    if (!isPlainObject(body)) {
+      return NextResponse.json({ error: '請提供有效的調班撤銷資料' }, { status: 400 });
+    }
+
+    const action = typeof body.action === 'string' ? body.action : undefined;
+    const opinion = typeof body.opinion === 'string' ? body.opinion : undefined;
+    const note = typeof body.note === 'string' ? body.note : undefined;
 
     const shiftExchangeRequest = await prisma.shiftExchangeRequest.findUnique({
-      where: { id: requestId }
+        where: { id: requestId },
+        include: {
+          requester: {
+            select: {
+              department: true
+            }
+          }
+        }
     });
 
     if (!shiftExchangeRequest) {
@@ -129,7 +281,16 @@ export async function PUT(
 
     // 主管審核
     if (decoded.role === 'MANAGER' && shiftExchangeRequest.cancellationStatus === 'PENDING_MANAGER') {
-      if (!['AGREE', 'DISAGREE'].includes(opinion)) {
+      const managedDepartments = await getManagedDepartments(decoded.employeeId);
+      if (
+        managedDepartments.length === 0 ||
+        !shiftExchangeRequest.requester?.department ||
+        !managedDepartments.includes(shiftExchangeRequest.requester.department)
+      ) {
+        return NextResponse.json({ error: '無權限審核此部門的調班撤銷申請' }, { status: 403 });
+      }
+
+      if (!['AGREE', 'DISAGREE'].includes(opinion ?? '')) {
         return NextResponse.json({ error: '請選擇同意或不同意' }, { status: 400 });
       }
 
@@ -154,20 +315,24 @@ export async function PUT(
     if (decoded.role === 'ADMIN' && 
         (shiftExchangeRequest.cancellationStatus === 'PENDING_ADMIN' || 
          shiftExchangeRequest.cancellationStatus === 'PENDING_MANAGER')) {
-      if (!['APPROVE', 'REJECT'].includes(action)) {
+      if (!['APPROVE', 'REJECT'].includes(action ?? '')) {
         return NextResponse.json({ error: '請選擇核准或駁回' }, { status: 400 });
       }
 
       if (action === 'APPROVE') {
-        await prisma.shiftExchangeRequest.update({
-          where: { id: requestId },
-          data: {
-            status: 'CANCELLED',
-            cancellationStatus: 'APPROVED',
-            cancellationAdminApproverId: decoded.employeeId,
-            cancellationAdminNote: note || null,
-            cancellationApprovedAt: new Date()
-          }
+        await prisma.$transaction(async (tx) => {
+          await tx.shiftExchangeRequest.update({
+            where: { id: requestId },
+            data: {
+              status: 'CANCELLED',
+              cancellationStatus: 'APPROVED',
+              cancellationAdminApproverId: decoded.employeeId,
+              cancellationAdminNote: note || null,
+              cancellationApprovedAt: new Date()
+            }
+          });
+
+          await restoreApprovedShiftExchange(tx, shiftExchangeRequest);
         });
 
         return NextResponse.json({

@@ -8,6 +8,7 @@ import {
   blockIP,
   unblockIP
 } from '@/lib/security-monitoring';
+import { safeParseJSON } from '@/lib/validation';
 
 interface IncidentResponse {
   id: string;
@@ -21,6 +22,25 @@ interface IncidentResponse {
 }
 
 const incidentResponses: IncidentResponse[] = [];
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isIncidentAction(value: unknown): value is IncidentResponse['type'] {
+  return value === 'block_ip'
+    || value === 'unblock_ip'
+    || value === 'investigate'
+    || value === 'escalate'
+    || value === 'resolve';
+}
+
+function isIncidentSeverity(value: unknown): value is IncidentResponse['severity'] {
+  return value === 'low'
+    || value === 'medium'
+    || value === 'high'
+    || value === 'critical';
+}
 
 // 安全事件響應 API
 export async function POST(request: NextRequest) {
@@ -42,11 +62,29 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '需要管理員權限執行安全響應' }, { status: 403 });
     }
 
-    const { action, target, reason, severity } = await request.json();
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '缺少必要參數' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const body = parseResult.data;
+    const action = isPlainObject(body) && typeof body.action === 'string' ? body.action : undefined;
+    const target = isPlainObject(body) && typeof body.target === 'string' ? body.target : undefined;
+    const reason = isPlainObject(body) && typeof body.reason === 'string' ? body.reason : undefined;
+    const severity = isPlainObject(body) ? body.severity : undefined;
 
     if (!action || !target || !reason) {
       return NextResponse.json({ error: '缺少必要參數' }, { status: 400 });
     }
+
+    if (!isIncidentAction(action)) {
+      return NextResponse.json({ error: '不支援的操作類型' }, { status: 400 });
+    }
+
+    const normalizedSeverity = isIncidentSeverity(severity) ? severity : 'medium';
 
     const responseId = `INCIDENT-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     
@@ -55,7 +93,7 @@ export async function POST(request: NextRequest) {
       type: action,
       target,
       reason,
-      severity: severity || 'medium',
+      severity: normalizedSeverity,
       timestamp: new Date(),
       operator: user.username,
       status: 'pending'
@@ -84,7 +122,7 @@ export async function POST(request: NextRequest) {
         case 'investigate':
           logSecurityEvent(SecurityEventType.SUSPICIOUS_REQUEST, request, {
             message: `開始調查安全事件: ${target}`,
-            additionalData: { reason, operator: user.username, severity }
+            additionalData: { reason, operator: user.username, severity: normalizedSeverity }
           });
           response.status = 'executed';
           break;
@@ -92,7 +130,7 @@ export async function POST(request: NextRequest) {
         case 'escalate':
           logSecurityEvent(SecurityEventType.PRIVILEGE_ESCALATION, request, {
             message: `安全事件升級: ${target}`,
-            additionalData: { reason, operator: user.username, severity }
+            additionalData: { reason, operator: user.username, severity: normalizedSeverity }
           });
           response.status = 'executed';
           break;

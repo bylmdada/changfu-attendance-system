@@ -497,10 +497,27 @@ export default function AnnouncementsPage() {
         })
       );
 
-      await Promise.all(promises);
-      setSelectedIds(new Set());
-      showToast('success', `已${publish ? '發布' : '取消發布'} ${selectedAnnouncements.length} 個公告`);
-      fetchAnnouncements();
+      const results = await Promise.all(promises);
+      const successfulIds = selectedAnnouncements
+        .filter((_, index) => results[index]?.ok)
+        .map(ann => ann.id);
+      const failedIds = selectedAnnouncements
+        .filter((_, index) => !results[index]?.ok)
+        .map(ann => ann.id);
+
+      setSelectedIds(new Set(failedIds));
+
+      if (successfulIds.length === 0) {
+        showToast('error', `批量${publish ? '發布' : '取消發布'}失敗`);
+        await fetchAnnouncements();
+        return;
+      }
+
+      showToast('success', `已${publish ? '發布' : '取消發布'} ${successfulIds.length} 個公告`);
+      if (failedIds.length > 0) {
+        showToast('error', `另有 ${failedIds.length} 個公告操作失敗`);
+      }
+      await fetchAnnouncements();
     } catch {
       showToast('error', '批量操作失敗');
     }
@@ -516,16 +533,30 @@ export default function AnnouncementsPage() {
     if (!confirm(`確定要刪除 ${selectedIds.size} 個公告嗎？此操作無法復原。`)) return;
 
     try {
-      const promises = Array.from(selectedIds).map(id =>
+      const selectedIdList = Array.from(selectedIds);
+      const promises = selectedIdList.map(id =>
         fetchJSONWithCSRF(`/api/announcements/${id}`, {
           method: 'DELETE'
         })
       );
 
-      await Promise.all(promises);
-      setSelectedIds(new Set());
-      showToast('success', `已刪除 ${selectedIds.size} 個公告`);
-      fetchAnnouncements();
+      const results = await Promise.all(promises);
+      const successfulIds = selectedIdList.filter((_, index) => results[index]?.ok);
+      const failedIds = selectedIdList.filter((_, index) => !results[index]?.ok);
+
+      setSelectedIds(new Set(failedIds));
+
+      if (successfulIds.length === 0) {
+        showToast('error', '批量刪除失敗');
+        await fetchAnnouncements();
+        return;
+      }
+
+      showToast('success', `已刪除 ${successfulIds.length} 個公告`);
+      if (failedIds.length > 0) {
+        showToast('error', `另有 ${failedIds.length} 個公告刪除失敗`);
+      }
+      await fetchAnnouncements();
     } catch {
       showToast('error', '批量刪除失敗');
     }
@@ -1119,7 +1150,7 @@ export default function AnnouncementsPage() {
                       {announcement.attachments.map((attachment) => (
                         <div key={attachment.id} className="flex items-center justify-between bg-gray-50 p-3 rounded-lg">
                           <div className="flex items-center flex-1 min-w-0">
-                            <FileText className="w-5 h-5 text-gray-400 mr-2 flex-shrink-0" />
+                            <FileText className="w-5 h-5 text-gray-400 mr-2" style={{ flexShrink: 0 }} />
                             <div className="min-w-0 flex-1">
                               <p className="text-sm font-medium text-gray-900 truncate">
                                 {attachment.originalName}

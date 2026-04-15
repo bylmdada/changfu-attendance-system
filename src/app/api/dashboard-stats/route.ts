@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
+import { getManageableDepartments } from '@/lib/schedule-management-permissions';
 
 // GET - 取得儀表板統計資料
 export async function GET(request: NextRequest) {
@@ -11,17 +12,23 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const decoded = await getUserFromRequest(request);
+    if (!decoded) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded || !['ADMIN', 'HR', 'SUPERVISOR'].includes(decoded.role)) {
+    if (!['ADMIN', 'HR', 'SUPERVISOR'].includes(decoded.role)) {
       return NextResponse.json({ error: '需要管理權限' }, { status: 403 });
     }
+
+    const hasFullAccess = decoded.role === 'ADMIN' || decoded.role === 'HR';
+    const manageableDepartments = hasFullAccess ? [] : await getManageableDepartments(decoded);
+
+    if (!hasFullAccess && manageableDepartments.length === 0) {
+      return NextResponse.json({ error: '無權限查看儀表板統計' }, { status: 403 });
+    }
+
+    const employeeScope = hasFullAccess ? undefined : { department: { in: manageableDepartments } };
 
     const { searchParams } = new URL(request.url);
     const year = parseInt(searchParams.get('year') || new Date().getFullYear().toString());
@@ -33,7 +40,10 @@ export async function GET(request: NextRequest) {
 
     // 取得所有在職員工數
     const totalEmployees = await prisma.employee.count({
-      where: { isActive: true }
+      where: {
+        isActive: true,
+        ...(employeeScope || {}),
+      }
     });
 
     // 取得本月考勤記錄
@@ -42,7 +52,8 @@ export async function GET(request: NextRequest) {
         workDate: {
           gte: startDate,
           lte: endDate
-        }
+        },
+        ...(employeeScope ? { employee: employeeScope } : {}),
       },
       include: {
         employee: {
@@ -66,7 +77,8 @@ export async function GET(request: NextRequest) {
     const today = new Date(Date.UTC(taiwanToday.getFullYear(), taiwanToday.getMonth(), taiwanToday.getDate()) - 8 * 60 * 60 * 1000);
     const todayRecords = await prisma.attendanceRecord.findMany({
       where: {
-        workDate: today
+        workDate: today,
+        ...(employeeScope ? { employee: employeeScope } : {}),
       }
     });
 
@@ -87,7 +99,8 @@ export async function GET(request: NextRequest) {
           gte: startDate,
           lte: endDate
         },
-        status: 'APPROVED'
+        status: 'APPROVED',
+        ...(employeeScope ? { employee: employeeScope } : {}),
       }
     });
 
@@ -101,7 +114,8 @@ export async function GET(request: NextRequest) {
       where: {
         startDate: { lte: endDate },
         endDate: { gte: startDate },
-        status: 'APPROVED'
+        status: 'APPROVED',
+        ...(employeeScope ? { employee: employeeScope } : {}),
       }
     });
 
@@ -112,11 +126,17 @@ export async function GET(request: NextRequest) {
 
     // 取得待審核項目數
     const pendingLeaves = await prisma.leaveRequest.count({
-      where: { status: 'PENDING' }
+      where: {
+        status: 'PENDING',
+        ...(employeeScope ? { employee: employeeScope } : {}),
+      }
     });
 
     const pendingOvertimes = await prisma.overtimeRequest.count({
-      where: { status: 'PENDING' }
+      where: {
+        status: 'PENDING',
+        ...(employeeScope ? { employee: employeeScope } : {}),
+      }
     });
 
     // 取得每日出勤趨勢（本月每天的打卡人數）
@@ -139,7 +159,10 @@ export async function GET(request: NextRequest) {
     // 取得部門出勤統計
     const departmentStats = await prisma.employee.groupBy({
       by: ['department'],
-      where: { isActive: true },
+      where: {
+        isActive: true,
+        ...(employeeScope || {}),
+      },
       _count: { id: true }
     });
 
@@ -148,12 +171,14 @@ export async function GET(request: NextRequest) {
         const deptRecords = attendanceRecords.filter(
           r => r.employee.department === dept.department
         );
+        const attendedCount = deptRecords.filter(r => r.clockInTime).length;
+
         return {
           department: dept.department || '未分配',
           total: dept._count.id,
-          attended: deptRecords.filter(r => r.clockInTime).length,
+          attended: attendedCount,
           rate: dept._count.id > 0 
-            ? Math.round((deptRecords.length / (dept._count.id * workDays)) * 100) 
+            ? Math.round((attendedCount / (dept._count.id * workDays)) * 100) 
             : 0
         };
       })

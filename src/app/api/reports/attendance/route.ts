@@ -1,7 +1,37 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
+import { getManageableDepartments } from '@/lib/schedule-management-permissions';
+
+function validateIntegerQueryParam(
+  value: string | null,
+  fieldName: string,
+  options: { min?: number; max?: number; optional?: boolean } = {}
+) {
+  if (value === null) {
+    return { value: null as number | null, error: options.optional ? null : `缺少${fieldName}參數` };
+  }
+
+  if (!/^\d+$/.test(value)) {
+    return { value: null as number | null, error: `無效的${fieldName}參數` };
+  }
+
+  const parsedValue = Number(value);
+
+  if (!Number.isSafeInteger(parsedValue)) {
+    return { value: null as number | null, error: `無效的${fieldName}參數` };
+  }
+
+  if (
+    (options.min !== undefined && parsedValue < options.min) ||
+    (options.max !== undefined && parsedValue > options.max)
+  ) {
+    return { value: null as number | null, error: `無效的${fieldName}參數` };
+  }
+
+  return { value: parsedValue, error: null };
+}
 
 // GET - 匯出月度考勤報表 (JSON 格式，前端生成 PDF)
 export async function GET(request: NextRequest) {
@@ -11,22 +41,52 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const decoded = await getUserFromRequest(request);
+    if (!decoded) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
     if (!decoded || !['ADMIN', 'HR', 'SUPERVISOR'].includes(decoded.role)) {
       return NextResponse.json({ error: '需要管理權限' }, { status: 403 });
     }
 
+    const hasFullAccess = decoded.role === 'ADMIN' || decoded.role === 'HR';
+    const manageableDepartments = hasFullAccess ? [] : await getManageableDepartments(decoded);
+
+    if (!hasFullAccess && manageableDepartments.length === 0) {
+      return NextResponse.json({ error: '無權限查看考勤報表' }, { status: 403 });
+    }
+
     const { searchParams } = new URL(request.url);
-    const year = parseInt(searchParams.get('year') || new Date().getFullYear().toString());
-    const month = parseInt(searchParams.get('month') || (new Date().getMonth() + 1).toString());
-    const employeeId = searchParams.get('employeeId');
+    const yearResult = validateIntegerQueryParam(searchParams.get('year'), '年份', {
+      min: 1900,
+      max: 9999,
+      optional: true,
+    });
+    if (yearResult.error) {
+      return NextResponse.json({ error: yearResult.error }, { status: 400 });
+    }
+
+    const monthResult = validateIntegerQueryParam(searchParams.get('month'), '月份', {
+      min: 1,
+      max: 12,
+      optional: true,
+    });
+    if (monthResult.error) {
+      return NextResponse.json({ error: monthResult.error }, { status: 400 });
+    }
+
+    const employeeIdResult = validateIntegerQueryParam(searchParams.get('employeeId'), '員工編號', {
+      min: 1,
+      optional: true,
+    });
+    if (employeeIdResult.error) {
+      return NextResponse.json({ error: employeeIdResult.error }, { status: 400 });
+    }
+
+    const now = new Date();
+    const year = yearResult.value ?? now.getFullYear();
+    const month = monthResult.value ?? (now.getMonth() + 1);
     const department = searchParams.get('department');
 
     // 計算月份日期範圍
@@ -35,17 +95,29 @@ export async function GET(request: NextRequest) {
 
     // 取得員工資料
     const employeeWhere: Record<string, unknown> = { isActive: true };
-    if (employeeId) {
-      employeeWhere.id = parseInt(employeeId);
+    if (employeeIdResult.value !== null) {
+      employeeWhere.id = employeeIdResult.value;
     }
-    if (department) {
+    if (hasFullAccess && department) {
       employeeWhere.department = department;
+    } else if (!hasFullAccess) {
+      if (department) {
+        if (!manageableDepartments.includes(department)) {
+          return NextResponse.json({ error: '無權限查看其他部門的考勤報表' }, { status: 403 });
+        }
+        employeeWhere.department = department;
+      } else {
+        employeeWhere.department = { in: manageableDepartments };
+      }
     }
 
     const employees = await prisma.employee.findMany({
       where: employeeWhere,
       orderBy: [{ department: 'asc' }, { name: 'asc' }]
     });
+
+    const scopedEmployeeIds = employees.map((employee) => employee.id);
+    const employeeIdFilter = { in: scopedEmployeeIds.length > 0 ? scopedEmployeeIds : [0] };
 
     // 取得考勤記錄
     const attendanceRecords = await prisma.attendanceRecord.findMany({
@@ -54,7 +126,7 @@ export async function GET(request: NextRequest) {
           gte: startDate,
           lte: endDate
         },
-        employeeId: employeeId ? parseInt(employeeId) : undefined
+        employeeId: employeeIdFilter
       },
       include: {
         employee: {
@@ -71,7 +143,7 @@ export async function GET(request: NextRequest) {
         OR: [
           { startDate: { lte: endDate }, endDate: { gte: startDate } }
         ],
-        employeeId: employeeId ? parseInt(employeeId) : undefined
+        employeeId: employeeIdFilter
       },
       include: {
         employee: {
@@ -88,7 +160,7 @@ export async function GET(request: NextRequest) {
           gte: startDate,
           lte: endDate
         },
-        employeeId: employeeId ? parseInt(employeeId) : undefined
+        employeeId: employeeIdFilter
       },
       include: {
         employee: {

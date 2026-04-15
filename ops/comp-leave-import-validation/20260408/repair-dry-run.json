@@ -1,0 +1,16 @@
+{
+  "mode": "dry-run",
+  "status": "no-data",
+  "target": {
+    "path": "<offline-snapshot>",
+    "source": "受控離線驗證"
+  },
+  "filter": {
+    "employeeId": null
+  },
+  "summary": {
+    "affectedEmployees": 0,
+    "deleteImportCount": 0
+  },
+  "plans": []
+}

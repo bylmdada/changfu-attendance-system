@@ -225,12 +225,13 @@ export default function HolidaysPage() {
 
       if (response.ok) {
         const data = await response.json();
-        showToast('success', data.message || `已匯入 ${selectedHolidays.length} 個假日`);
+        showToast('success', data.message || `已匯入 ${data.count ?? 0} 個假日`);
         setShowImportModal(false);
         setGovHolidays([]);
         await loadHolidays();
       } else {
-        showToast('error', '匯入失敗');
+        const data = await response.json().catch(() => null);
+        showToast('error', data?.error || '匯入失敗');
       }
     } catch (error) {
       console.error('匯入失敗:', error);

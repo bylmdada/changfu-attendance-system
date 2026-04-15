@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Clock, Save, AlertCircle, CheckCircle } from 'lucide-react';
 import SystemNavbar from '@/components/SystemNavbar';
+import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 
 interface Settings {
   enabled: boolean;
@@ -82,11 +83,9 @@ export default function ClockReasonPromptSettingsPage() {
     setSaving(true);
     setMessage(null);
     try {
-      const response = await fetch('/api/system-settings/clock-reason-prompt', {
+      const response = await fetchJSONWithCSRF('/api/system-settings/clock-reason-prompt', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(settings),
-        credentials: 'include'
+        body: settings,
       });
 
       const data = await response.json();

@@ -1,17 +1,29 @@
 'use client';
 
 import { useState } from 'react';
+import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 
 export default function TestLoginPage() {
   const [result, setResult] = useState<string>('');
   const [loading, setLoading] = useState(false);
 
+  if (process.env.NODE_ENV === 'production') {
+    return (
+      <div className="min-h-screen bg-gray-100 p-8">
+        <div className="max-w-2xl mx-auto rounded-lg bg-white p-6 shadow">
+          <h1 className="mb-4 text-2xl font-bold">診斷工具不可用</h1>
+          <p className="text-gray-700">此頁面僅供非 production 環境使用。</p>
+        </div>
+      </div>
+    );
+  }
+
   const createTestAccount = async () => {
     setLoading(true);
     try {
-      const response = await fetch('/api/create-test-account', {
+      const response = await fetchJSONWithCSRF('/api/setup-employee', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+        body: {}
       });
       const data = await response.json();
       setResult(JSON.stringify(data, null, 2));
@@ -24,13 +36,12 @@ export default function TestLoginPage() {
   const testLogin = async () => {
     setLoading(true);
     try {
-      const response = await fetch('/api/auth/login', {
+      const response = await fetchJSONWithCSRF('/api/auth/login', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+        body: {
           username: 'employee',
           password: 'emp123'
-        })
+        }
       });
       const data = await response.json();
       setResult(JSON.stringify(data, null, 2));

@@ -8,7 +8,7 @@ jest.mock('@/lib/database', () => ({
   prisma: mockPrisma
 }));
 
-import { ensureApprovalReviewAllowed, isTerminalApprovalStatus } from '@/lib/approval-service';
+import { determineApprovalTransition, ensureApprovalReviewAllowed, isTerminalApprovalStatus } from '@/lib/approval-service';
 
 describe('approval review guards', () => {
   beforeEach(() => {
@@ -61,6 +61,22 @@ describe('approval review guards', () => {
         level: 2
       },
       select: { id: true }
+    });
+  });
+
+  it('approves immediately when the current level is already the configured final level', () => {
+    expect(
+      determineApprovalTransition(1, 1, 'APPROVE', 'ADMIN', 'LEVEL1_REVIEWING' as never)
+    ).toEqual({
+      newStatus: 'APPROVED',
+      newLevel: 1,
+    });
+
+    expect(
+      determineApprovalTransition(2, 2, 'APPROVE', 'HR', 'LEVEL2_REVIEWING' as never)
+    ).toEqual({
+      newStatus: 'APPROVED',
+      newLevel: 2,
     });
   });
 });

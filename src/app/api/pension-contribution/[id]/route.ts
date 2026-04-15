@@ -3,14 +3,20 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
+import { parseIntegerQueryParam } from '@/lib/query-params';
 import { toTaiwanDateStr } from '@/lib/timezone';
 import { validateCSRF } from '@/lib/csrf';
+import { safeParseJSON } from '@/lib/validation';
 
 /**
  * 勞退自提申請審核 API
  * - PUT: HR 審核 / Admin 決核
  * - DELETE: 員工取消待審核申請
  */
+
+function parseApplicationId(rawValue: string) {
+  return parseIntegerQueryParam(rawValue, { min: 1, max: 99999999 });
+}
 
 // PUT: 審核申請
 export async function PUT(
@@ -29,14 +35,24 @@ export async function PUT(
     }
 
     const { id } = await params;
-    const applicationId = parseInt(id);
+    const applicationIdResult = parseApplicationId(id);
 
-    if (isNaN(applicationId)) {
-      return NextResponse.json({ error: '無效的申請 ID' }, { status: 400 });
+    if (!applicationIdResult.isValid || applicationIdResult.value === null) {
+      return NextResponse.json({ error: '申請ID格式無效' }, { status: 400 });
     }
 
-    const body = await request.json();
-    const { action, opinion, note } = body;
+    const applicationId = applicationIdResult.value;
+
+    const parsedBody = await safeParseJSON(request);
+    if (!parsedBody.success) {
+      return NextResponse.json({ error: '請求內容格式無效' }, { status: 400 });
+    }
+
+    const action = typeof parsedBody.data?.action === 'string' ? parsedBody.data.action : null;
+    const opinion = typeof parsedBody.data?.opinion === 'string' ? parsedBody.data.opinion : null;
+    const note = typeof parsedBody.data?.note === 'string' ? parsedBody.data.note : null;
+    const isValidOpinion = opinion === 'AGREE' || opinion === 'DISAGREE';
+    const isValidAction = action === 'APPROVE' || action === 'REJECT';
 
     // 取得申請
     const application = await prisma.pensionContributionApplication.findUnique({
@@ -55,7 +71,7 @@ export async function PUT(
 
     // HR 審核邏輯
     if (isHR && application.status === 'PENDING_HR') {
-      if (!['AGREE', 'DISAGREE'].includes(opinion)) {
+      if (!isValidOpinion) {
         return NextResponse.json({ error: '請選擇同意或不同意' }, { status: 400 });
       }
 
@@ -79,7 +95,7 @@ export async function PUT(
 
     // Admin 可直接審核 PENDING_HR 狀態（跳過 HR）
     if (isAdmin && application.status === 'PENDING_HR') {
-      if (!['APPROVE', 'REJECT'].includes(action)) {
+      if (!isValidAction) {
         return NextResponse.json({ error: '請選擇核准或駁回' }, { status: 400 });
       }
 
@@ -118,7 +134,7 @@ export async function PUT(
 
     // Admin 決核邏輯
     if (isAdmin && application.status === 'PENDING_ADMIN') {
-      if (!['APPROVE', 'REJECT'].includes(action)) {
+      if (!isValidAction) {
         return NextResponse.json({ error: '請選擇核准或駁回' }, { status: 400 });
       }
 
@@ -179,11 +195,13 @@ export async function DELETE(
     }
 
     const { id } = await params;
-    const applicationId = parseInt(id);
+    const applicationIdResult = parseApplicationId(id);
 
-    if (isNaN(applicationId)) {
-      return NextResponse.json({ error: '無效的申請 ID' }, { status: 400 });
+    if (!applicationIdResult.isValid || applicationIdResult.value === null) {
+      return NextResponse.json({ error: '申請ID格式無效' }, { status: 400 });
     }
+
+    const applicationId = applicationIdResult.value;
 
     const application = await prisma.pensionContributionApplication.findUnique({
       where: { id: applicationId }
@@ -228,11 +246,13 @@ export async function GET(
     }
 
     const { id } = await params;
-    const applicationId = parseInt(id);
+    const applicationIdResult = parseApplicationId(id);
 
-    if (isNaN(applicationId)) {
-      return NextResponse.json({ error: '無效的申請 ID' }, { status: 400 });
+    if (!applicationIdResult.isValid || applicationIdResult.value === null) {
+      return NextResponse.json({ error: '申請ID格式無效' }, { status: 400 });
     }
+
+    const applicationId = applicationIdResult.value;
 
     const application = await prisma.pensionContributionApplication.findUnique({
       where: { id: applicationId },

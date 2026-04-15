@@ -32,7 +32,7 @@ export async function POST(request: NextRequest) {
   try {
     // 1. 速率限制檢查
     try {
-      applyRateLimit(request, '/api/auth/login');
+      await applyRateLimit(request, '/api/auth/login');
     } catch (error) {
       if (error instanceof RateLimitError) {
         logSecurityEvent(SecurityEventType.RATE_LIMIT_EXCEEDED, request, {
@@ -215,7 +215,6 @@ export async function POST(request: NextRequest) {
 
     const response = NextResponse.json({
       success: true,
-      token: token, // 添加token到響應中
       user: {
         id: user.id,
         username: user.username,

@@ -224,16 +224,14 @@ export default function PayrollManagementPage() {
   const handlePreviewPayroll = async () => {
     setProgress({ ...progress, isPreviewing: true, status: '正在預覽計算...' });
     try {
-      const response = await fetch('/api/payroll/preview', {
+      const response = await fetchJSONWithCSRF('/api/payroll/preview', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
+        body: {
           payYear: parseInt(generateForm.payYear),
           payMonth: generateForm.payMonth,
           employeeIds: generateForm.selectedEmployees.length > 0 ? generateForm.selectedEmployees : undefined,
           department: generateForm.department || undefined
-        })
+        }
       });
 
       if (response.ok) {
@@ -557,12 +555,8 @@ export default function PayrollManagementPage() {
     if (!deleteConfirm) return;
 
     try {
-      const token = localStorage.getItem('token');
-      const response = await fetch(`/api/payroll/${deleteConfirm.id}`, {
+      const response = await fetchJSONWithCSRF(`/api/payroll/${deleteConfirm.id}`, {
         method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
       });
 
       if (response.ok) {
@@ -574,8 +568,8 @@ export default function PayrollManagementPage() {
         });
         showToast('success', '薪資記錄已成功刪除');
       } else {
-        const error = await response.text();
-        showToast('error', '刪除失敗: ' + error);
+        const error = await response.json().catch(() => null);
+        showToast('error', '刪除失敗: ' + (error?.error || '未知錯誤'));
       }
     } catch (error) {
       console.error('刪除薪資記錄時發生錯誤:', error);
@@ -617,22 +611,30 @@ export default function PayrollManagementPage() {
     if (!window.confirm(`確定要刪除 ${selectedIds.size} 筆薪資記錄嗎？此操作無法復原。`)) return;
 
     try {
-      const token = localStorage.getItem('token');
-      const promises = Array.from(selectedIds).map(id =>
-        fetch(`/api/payroll/${id}`, {
+      const selectedIdList = Array.from(selectedIds);
+      const promises = selectedIdList.map(id =>
+        fetchJSONWithCSRF(`/api/payroll/${id}`, {
           method: 'DELETE',
-          headers: {
-            'Authorization': `Bearer ${token}`,
-          },
         })
       );
 
       const results = await Promise.all(promises);
-      const successCount = results.filter(r => r.ok).length;
+      const successfulIds = selectedIdList.filter((_, index) => results[index]?.ok);
+      const failedIds = selectedIdList.filter((_, index) => !results[index]?.ok);
+      const successCount = successfulIds.length;
 
-      setPayrollRecords(prev => prev.filter(r => !selectedIds.has(r.id)));
-      setSelectedIds(new Set());
+      if (successCount === 0) {
+        showToast('error', '批量刪除失敗，請稍後再試');
+        return;
+      }
+
+      const successfulIdSet = new Set(successfulIds);
+      setPayrollRecords(prev => prev.filter(r => !successfulIdSet.has(r.id)));
+      setSelectedIds(new Set(failedIds));
       showToast('success', `已刪除 ${successCount} 筆記錄`);
+      if (failedIds.length > 0) {
+        showToast('error', `另有 ${failedIds.length} 筆刪除失敗`);
+      }
     } catch {
       showToast('error', '批量刪除失敗');
     }
@@ -975,7 +977,7 @@ export default function PayrollManagementPage() {
         <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
           <div className="bg-white rounded-lg shadow-sm p-6">
             <div className="flex items-center">
-              <div className="flex-shrink-0">
+              <div className="shrink-0">
                 <Users className="h-8 w-8 text-blue-600" />
               </div>
               <div className="ml-4">
@@ -989,7 +991,7 @@ export default function PayrollManagementPage() {
 
           <div className="bg-white rounded-lg shadow-sm p-6">
             <div className="flex items-center">
-              <div className="flex-shrink-0">
+              <div className="shrink-0">
                 <DollarSign className="h-8 w-8 text-green-600" />
               </div>
               <div className="ml-4">
@@ -1003,7 +1005,7 @@ export default function PayrollManagementPage() {
 
           <div className="bg-white rounded-lg shadow-sm p-6">
             <div className="flex items-center">
-              <div className="flex-shrink-0">
+              <div className="shrink-0">
                 <TrendingUp className="h-8 w-8 text-yellow-600" />
               </div>
               <div className="ml-4">
@@ -1017,7 +1019,7 @@ export default function PayrollManagementPage() {
 
           <div className="bg-white rounded-lg shadow-sm p-6">
             <div className="flex items-center">
-              <div className="flex-shrink-0">
+              <div className="shrink-0">
                 <BarChart3 className="h-8 w-8 text-purple-600" />
               </div>
               <div className="ml-4">

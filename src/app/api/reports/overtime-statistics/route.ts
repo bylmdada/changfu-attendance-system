@@ -1,7 +1,36 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
+
+function validateIntegerQueryParam(
+  value: string | null,
+  fieldName: string,
+  options: { min?: number; max?: number; optional?: boolean } = {}
+) {
+  if (value === null) {
+    return { value: null as number | null, error: options.optional ? null : `缺少${fieldName}參數` };
+  }
+
+  if (!/^\d+$/.test(value)) {
+    return { value: null as number | null, error: `無效的${fieldName}參數` };
+  }
+
+  const parsedValue = Number(value);
+
+  if (!Number.isSafeInteger(parsedValue)) {
+    return { value: null as number | null, error: `無效的${fieldName}參數` };
+  }
+
+  if (
+    (options.min !== undefined && parsedValue < options.min) ||
+    (options.max !== undefined && parsedValue > options.max)
+  ) {
+    return { value: null as number | null, error: `無效的${fieldName}參數` };
+  }
+
+  return { value: parsedValue, error: null };
+}
 
 // GET - 取得加班時數統計
 export async function GET(request: NextRequest) {
@@ -11,26 +40,46 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const decoded = await getUserFromRequest(request);
+    if (!decoded) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
     if (!decoded || !['ADMIN', 'HR'].includes(decoded.role)) {
       return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
     }
 
     const { searchParams } = new URL(request.url);
-    const yearParam = searchParams.get('year');
-    const monthParam = searchParams.get('month');
+    const yearResult = validateIntegerQueryParam(searchParams.get('year'), '年份', {
+      min: 1900,
+      max: 9999,
+      optional: true,
+    });
+    if (yearResult.error) {
+      return NextResponse.json({ error: yearResult.error }, { status: 400 });
+    }
+
+    const monthResult = validateIntegerQueryParam(searchParams.get('month'), '月份', {
+      min: 1,
+      max: 12,
+      optional: true,
+    });
+    if (monthResult.error) {
+      return NextResponse.json({ error: monthResult.error }, { status: 400 });
+    }
+
+    const employeeIdResult = validateIntegerQueryParam(searchParams.get('employeeId'), '員工編號', {
+      min: 1,
+      optional: true,
+    });
+    if (employeeIdResult.error) {
+      return NextResponse.json({ error: employeeIdResult.error }, { status: 400 });
+    }
+
     const department = searchParams.get('department');
-    const employeeId = searchParams.get('employeeId');
 
     const now = new Date();
-    const year = yearParam ? parseInt(yearParam) : now.getFullYear();
+    const year = yearResult.value ?? now.getFullYear();
 
     // 建立查詢條件
     const whereClause: {
@@ -42,8 +91,8 @@ export async function GET(request: NextRequest) {
     };
 
     // 月度或年度範圍
-    if (monthParam) {
-      const month = parseInt(monthParam);
+    if (monthResult.value !== null) {
+      const month = monthResult.value;
       const startDate = new Date(year, month - 1, 1);
       const endDate = new Date(year, month, 0, 23, 59, 59);
       whereClause.overtimeDate = { gte: startDate, lte: endDate };
@@ -54,10 +103,10 @@ export async function GET(request: NextRequest) {
     }
 
     // 部門/員工篩選
-    if (department || employeeId) {
+    if (department || employeeIdResult.value !== null) {
       whereClause.employee = {};
       if (department) whereClause.employee.department = department;
-      if (employeeId) whereClause.employee.id = parseInt(employeeId);
+      if (employeeIdResult.value !== null) whereClause.employee.id = employeeIdResult.value;
     }
 
     // 取得加班記錄
@@ -164,8 +213,8 @@ export async function GET(request: NextRequest) {
       success: true,
       period: {
         year,
-        month: monthParam ? parseInt(monthParam) : null,
-        type: monthParam ? 'monthly' : 'yearly'
+        month: monthResult.value,
+        type: monthResult.value !== null ? 'monthly' : 'yearly'
       },
       summary: {
         totalHours: Math.round(totalHours * 100) / 100,

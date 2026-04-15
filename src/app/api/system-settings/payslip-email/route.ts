@@ -8,6 +8,31 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
+import { safeParseJSON } from '@/lib/validation';
+
+const DEFAULT_PAYSLIP_EMAIL_SETTINGS = {
+  id: 0,
+  enabled: false,
+  smtpHost: null,
+  smtpPort: 587,
+  smtpSecure: true,
+  smtpUser: null,
+  smtpPassword: null,
+  fromEmail: null,
+  fromName: '薪資系統',
+  subjectTemplate: '[%YEAR%年%MONTH%月] 薪資條通知',
+  bodyTemplate: `親愛的 %NAME% 您好,
+
+您的 %YEAR%年%MONTH%月 薪資條已產生，請查收附件。
+
+如有任何問題，請洽人事部門。
+
+此為系統自動發送信件，請勿直接回覆。`
+};
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -20,33 +45,13 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: '無權限' }, { status: 403 });
     }
 
-    // 取得設定（只會有一筆）
-    let settings = await prisma.payslipEmailSettings.findFirst();
-    
-    // 如果沒有設定，建立預設值
-    if (!settings) {
-      settings = await prisma.payslipEmailSettings.create({
-        data: {
-          enabled: false,
-          smtpPort: 587,
-          smtpSecure: true,
-          fromName: '薪資系統',
-          subjectTemplate: '[%YEAR%年%MONTH%月] 薪資條通知',
-          bodyTemplate: `親愛的 %NAME% 您好，
-
-您的 %YEAR%年%MONTH%月 薪資條已產生，請查收附件。
-
-如有任何問題，請洽人事部門。
-
-此為系統自動發送信件，請勿直接回覆。`
-        }
-      });
-    }
+    // 取得設定（只會有一筆），若尚未設定則回傳預設值，避免 GET 建立資料
+    const settings = await prisma.payslipEmailSettings.findFirst();
 
     // 隱藏密碼
     const safeSettings = {
-      ...settings,
-      smtpPassword: settings.smtpPassword ? '********' : null
+      ...(settings ?? DEFAULT_PAYSLIP_EMAIL_SETTINGS),
+      smtpPassword: settings?.smtpPassword ? '********' : null
     };
 
     return NextResponse.json({
@@ -76,7 +81,22 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: '無權限' }, { status: 403 });
     }
 
-    const data = await request.json();
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        {
+          error: parseResult.error === 'empty_body'
+            ? '請提供有效的設定資料'
+            : '無效的 JSON 格式'
+        },
+        { status: 400 }
+      );
+    }
+
+    const data = parseResult.data;
+    if (!isPlainObject(data)) {
+      return NextResponse.json({ error: '請提供有效的設定資料' }, { status: 400 });
+    }
     const {
       enabled,
       smtpHost,

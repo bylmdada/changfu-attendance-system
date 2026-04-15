@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { CheckCircle, XCircle, AlertCircle, Clock, CalendarDays, User, Filter, Search, Plus, Pencil, Trash2, X } from 'lucide-react';
+import { buildAuthMeRequest, buildCookieSessionRequest } from '@/lib/admin-session-client';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 
@@ -184,6 +185,8 @@ export default function ShiftExchangePage() {
   const [rejectDialog, setRejectDialog] = useState<{ id: number; requesterName: string } | null>(null);
   const [rejectReason, setRejectReason] = useState('');
 
+  const buildSessionRequest = (path: string) => buildCookieSessionRequest(window.location.origin, path);
+
   // 計算過濾後的申請列表
   useEffect(() => {
     let filtered = shiftExchanges;
@@ -222,7 +225,8 @@ export default function ShiftExchangePage() {
     const fetchData = async () => {
       try {
         // 先取用戶
-        const userRes = await fetch('/api/auth/me', { credentials: 'include', headers: getAuthHeaders() });
+        const authRequest = buildAuthMeRequest(window.location.origin);
+        const userRes = await fetch(authRequest.url, authRequest.options);
         let currentUser: User | null = null;
         if (userRes.ok) {
           const userData = await userRes.json();
@@ -238,7 +242,8 @@ export default function ShiftExchangePage() {
         // 取用戶班表
         if (currentUser?.employee?.id) {
           try {
-            const schedulesRes = await fetch(`/api/schedules?employeeId=${currentUser.employee.id}`, { credentials: 'include', headers: getAuthHeaders() });
+            const schedulesRequest = buildSessionRequest(`/api/schedules?employeeId=${currentUser.employee.id}`);
+            const schedulesRes = await fetch(schedulesRequest.url, schedulesRequest.options);
             if (schedulesRes.ok) {
               const schedulesData = await schedulesRes.json();
               setUserSchedules(schedulesData.schedules || []);
@@ -249,7 +254,8 @@ export default function ShiftExchangePage() {
         }
 
         // 取換班清單（所有人皆可）
-        const exchangesRes = await fetch('/api/shift-exchanges', { credentials: 'include', headers: getAuthHeaders() });
+        const exchangesRequest = buildSessionRequest('/api/shift-exchanges');
+        const exchangesRes = await fetch(exchangesRequest.url, exchangesRequest.options);
         if (exchangesRes.ok) {
           const exchangesData = await exchangesRes.json();
           setShiftExchanges(exchangesData);
@@ -259,7 +265,8 @@ export default function ShiftExchangePage() {
 
         // 僅 ADMIN/HR 取員工清單
         if (currentUser?.role === 'ADMIN' || currentUser?.role === 'HR') {
-          const employeesRes = await fetch('/api/employees', { credentials: 'include', headers: getAuthHeaders() });
+          const employeesRequest = buildSessionRequest('/api/employees');
+          const employeesRes = await fetch(employeesRequest.url, employeesRequest.options);
           if (employeesRes.ok) {
             const employeesData = await employeesRes.json();
             const list = Array.isArray(employeesData)
@@ -367,10 +374,8 @@ export default function ShiftExchangePage() {
         
         // 重新拉取最新列表確保同步
         try {
-          const listRes = await fetch('/api/shift-exchanges', { 
-            credentials: 'include', 
-            headers: getAuthHeaders() 
-          });
+          const listRequest = buildSessionRequest('/api/shift-exchanges');
+          const listRes = await fetch(listRequest.url, listRequest.options);
           if (listRes.ok) {
             const latestList = await listRes.json();
             setShiftExchanges(latestList);
@@ -389,13 +394,6 @@ export default function ShiftExchangePage() {
       console.error('Submit failed:', error);
       alert('提交失敗，請重試');
     }
-  };
-
-  // helper: include Authorization header if token exists in localStorage
-  const getAuthHeaders = (): HeadersInit => {
-    if (typeof window === 'undefined') return {};
-    const token = localStorage.getItem('token');
-    return token ? { Authorization: `Bearer ${token}` } : {};
   };
 
   // 顯示 Toast 訊息
@@ -467,7 +465,8 @@ export default function ShiftExchangePage() {
           const myId = user.employee.id;
           if (myId === updatedExchange.requesterId || myId === updatedExchange.targetEmployeeId) {
             try {
-              const schedulesRes = await fetch(`/api/schedules?employeeId=${myId}`, { credentials: 'include', headers: getAuthHeaders() });
+              const schedulesRequest = buildSessionRequest(`/api/schedules?employeeId=${myId}`);
+              const schedulesRes = await fetch(schedulesRequest.url, schedulesRequest.options);
               if (schedulesRes.ok) {
                 const schedulesData = await schedulesRes.json();
                 setUserSchedules(schedulesData.schedules || []);
@@ -582,17 +581,29 @@ export default function ShiftExchangePage() {
       );
 
       const results = await Promise.all(promises);
-      const successCount = results.filter(r => r.ok).length;
+      const successfulIds = pendingIds.filter((_, index) => results[index]?.ok);
+      const failedIds = pendingIds.filter((_, index) => !results[index]?.ok);
+      const successCount = successfulIds.length;
 
       // 重新載入列表
-      const listRes = await fetch('/api/shift-exchanges', { credentials: 'include', headers: getAuthHeaders() });
+      const listRequest = buildSessionRequest('/api/shift-exchanges');
+      const listRes = await fetch(listRequest.url, listRequest.options);
       if (listRes.ok) {
         const latestList = await listRes.json();
         setShiftExchanges(latestList);
       }
 
-      setSelectedIds(new Set());
+      setSelectedIds(new Set(failedIds));
+
+      if (successCount === 0) {
+        showToast('error', '批量批准失敗，請重新整理後再試');
+        return;
+      }
+
       showToast('success', `已批准 ${successCount} 個申請`);
+      if (failedIds.length > 0) {
+        showToast('error', `另有 ${failedIds.length} 個申請批准失敗`);
+      }
     } catch {
       showToast('error', '批量操作失敗');
     }
@@ -627,17 +638,29 @@ export default function ShiftExchangePage() {
       );
 
       const results = await Promise.all(promises);
-      const successCount = results.filter(r => r.ok).length;
+      const successfulIds = pendingIds.filter((_, index) => results[index]?.ok);
+      const failedIds = pendingIds.filter((_, index) => !results[index]?.ok);
+      const successCount = successfulIds.length;
 
       // 重新載入列表
-      const listRes = await fetch('/api/shift-exchanges', { credentials: 'include', headers: getAuthHeaders() });
+      const listRequest = buildSessionRequest('/api/shift-exchanges');
+      const listRes = await fetch(listRequest.url, listRequest.options);
       if (listRes.ok) {
         const latestList = await listRes.json();
         setShiftExchanges(latestList);
       }
 
-      setSelectedIds(new Set());
+      setSelectedIds(new Set(failedIds));
+
+      if (successCount === 0) {
+        showToast('error', '批量拒絕失敗，請重新整理後再試');
+        return;
+      }
+
       showToast('success', `已拒絕 ${successCount} 個申請`);
+      if (failedIds.length > 0) {
+        showToast('error', `另有 ${failedIds.length} 個申請拒絕失敗`);
+      }
     } catch {
       showToast('error', '批量操作失敗');
     }
@@ -772,7 +795,8 @@ export default function ShiftExchangePage() {
       }
       showToast('success', data.message || '撤銷申請已送出');
       // 重新載入列表
-      const listRes = await fetch('/api/shift-exchanges', { credentials: 'include', headers: getAuthHeaders() });
+      const listRequest = buildSessionRequest('/api/shift-exchanges');
+      const listRes = await fetch(listRequest.url, listRequest.options);
       if (listRes.ok) {
         const latestList = await listRes.json();
         setShiftExchanges(latestList);
@@ -796,7 +820,8 @@ export default function ShiftExchangePage() {
       }
       showToast('success', data.message || '已作廢');
       // 重新載入列表
-      const listRes = await fetch('/api/shift-exchanges', { credentials: 'include', headers: getAuthHeaders() });
+      const listRequest = buildSessionRequest('/api/shift-exchanges');
+      const listRes = await fetch(listRequest.url, listRequest.options);
       if (listRes.ok) {
         const latestList = await listRes.json();
         setShiftExchanges(latestList);
@@ -840,7 +865,7 @@ export default function ShiftExchangePage() {
         <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
           <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-200">
             <div className="flex items-center">
-              <div className="flex-shrink-0">
+              <div className="flex-none">
                 <div className="flex items-center justify-center w-8 h-8 bg-blue-100 rounded-md">
                   <CalendarDays className="w-5 h-5 text-blue-600" />
                 </div>
@@ -854,7 +879,7 @@ export default function ShiftExchangePage() {
 
           <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-200">
             <div className="flex items-center">
-              <div className="flex-shrink-0">
+              <div className="flex-none">
                 <div className="flex items-center justify-center w-8 h-8 bg-yellow-100 rounded-md">
                   <Clock className="w-5 h-5 text-yellow-600" />
                 </div>
@@ -870,7 +895,7 @@ export default function ShiftExchangePage() {
 
           <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-200">
             <div className="flex items-center">
-              <div className="flex-shrink-0">
+              <div className="flex-none">
                 <div className="flex items-center justify-center w-8 h-8 bg-green-100 rounded-md">
                   <CheckCircle className="w-5 h-5 text-green-600" />
                 </div>
@@ -886,7 +911,7 @@ export default function ShiftExchangePage() {
 
           <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-200">
             <div className="flex items-center">
-              <div className="flex-shrink-0">
+              <div className="flex-none">
                 <div className="flex items-center justify-center w-8 h-8 bg-red-100 rounded-md">
                   <XCircle className="w-5 h-5 text-red-600" />
                 </div>
@@ -1117,7 +1142,7 @@ export default function ShiftExchangePage() {
                        )}
                        <td className="px-6 py-4 whitespace-nowrap">
                          <div className="flex items-center">
-                           <div className="flex-shrink-0">
+                           <div className="flex-none">
                              <div className="flex items-center justify-center w-8 h-8 bg-gray-100 rounded-full">
                                <User className="w-4 h-4 text-gray-600" />
                              </div>

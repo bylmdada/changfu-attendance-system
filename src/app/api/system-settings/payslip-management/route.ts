@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import jwt from 'jsonwebtoken';
+import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { safeParseJSON } from '@/lib/validation';
 
 // 定義薪條範本類型
 interface PayslipTemplate {
@@ -17,20 +18,12 @@ interface PayslipTemplate {
 // 驗證 admin 權限
 async function verifyAdmin(request: NextRequest) {
   try {
-    const token = request.cookies.get('auth-token')?.value;
-    if (!token) {
+    const user = await getUserFromRequest(request);
+    if (!user || user.role !== 'ADMIN') {
       return null;
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as { userId: number };
-    const user = await prisma.user.findUnique({
-      where: { id: decoded.userId },
-      include: {
-        employee: true
-      }
-    });
-
-    return user?.role === 'ADMIN' ? user : null;
+    return user;
   } catch (error) {
     console.error('Token verification failed:', error);
     return null;
@@ -61,68 +54,6 @@ function getDefaultPayslipSettings() {
   };
 }
 
-// 取得預設薪資條範本
-function getDefaultPayslipTemplate() {
-  return {
-    name: '標準薪資條範本',
-    description: '標準格式薪資條',
-    isDefault: true,
-    isActive: true,
-    headerConfig: {
-      companyName: '長富股份有限公司',
-      companyAddress: '台北市信義區信義路五段7號',
-      showLogo: true,
-      logoPosition: 'left'
-    },
-    employeeSection: {
-      showEmployeeId: true,
-      showDepartment: true,
-      showPosition: true,
-      showHireDate: true,
-      showBankAccount: false
-    },
-    earningsSection: {
-      items: [
-        { id: 'base_salary', label: '基本薪資', code: 'BASE_SALARY', type: 'earning', isVisible: true, showAmount: true, showQuantity: false, showRate: false, sortOrder: 1 },
-        { id: 'overtime_pay', label: '加班費', code: 'OVERTIME_PAY', type: 'earning', isVisible: true, showAmount: true, showQuantity: true, showRate: true, sortOrder: 2 },
-        { id: 'bonus', label: '獎金', code: 'BONUS', type: 'earning', isVisible: true, showAmount: true, showQuantity: false, showRate: false, sortOrder: 3 }
-      ],
-      showSubtotal: true
-    },
-    deductionsSection: {
-      items: [
-        { id: 'labor_insurance', label: '勞工保險', code: 'LABOR_INSURANCE', type: 'deduction', isVisible: true, showAmount: true, showQuantity: false, showRate: false, sortOrder: 1 },
-        { id: 'health_insurance', label: '健康保險', code: 'HEALTH_INSURANCE', type: 'deduction', isVisible: true, showAmount: true, showQuantity: false, showRate: false, sortOrder: 2 },
-        { id: 'income_tax', label: '所得稅', code: 'INCOME_TAX', type: 'deduction', isVisible: true, showAmount: true, showQuantity: false, showRate: false, sortOrder: 3 }
-      ],
-      showSubtotal: true
-    },
-    summarySection: {
-      showGrossPay: true,
-      showTotalDeductions: true,
-      showNetPay: true,
-      showYtdTotals: false
-    },
-    footerConfig: {
-      showGeneratedDate: true,
-      showSignature: false,
-      customText: '此薪資條僅供參考，如有疑問請洽人事部門。'
-    },
-    formatting: {
-      fontSize: 12,
-      fontFamily: 'Arial',
-      pageSize: 'A4',
-      orientation: 'portrait',
-      margins: {
-        top: 20,
-        bottom: 20,
-        left: 20,
-        right: 20
-      }
-    }
-  };
-}
-
 // GET - 取得薪資條設定和範本
 export async function GET(request: NextRequest) {
   try {
@@ -145,22 +76,7 @@ export async function GET(request: NextRequest) {
       where: { key: 'payslip_templates' }
     });
 
-    let templates = [];
-    if (templatesRecord) {
-      templates = JSON.parse(templatesRecord.value);
-    } else {
-      // 創建預設範本
-      const defaultTemplate = getDefaultPayslipTemplate();
-      templates = [{ ...defaultTemplate, id: 1 }];
-      
-      await prisma.systemSettings.create({
-        data: {
-          key: 'payslip_templates',
-          value: JSON.stringify(templates),
-          description: '薪資條範本設定'
-        }
-      });
-    }
+    const templates = templatesRecord ? JSON.parse(templatesRecord.value) : [];
 
     return NextResponse.json({
       success: true,
@@ -212,7 +128,33 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
     }
 
-    const { type, data } = await request.json();
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      const errorMessage = parseResult.error === 'empty_body'
+        ? '請提供有效的設定資料'
+        : '無效的 JSON 格式';
+
+      return NextResponse.json(
+        { error: errorMessage },
+        { status: 400 }
+      );
+    }
+
+    const body = parseResult.data;
+
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json(
+        { error: '請提供有效的設定資料' },
+        { status: 400 }
+      );
+    }
+
+    const bodyRecord = body as Record<string, unknown>;
+    const type = bodyRecord.type;
+    const data = bodyRecord.data;
+    const dataRecord = data && typeof data === 'object' && !Array.isArray(data)
+      ? data as Record<string, unknown>
+      : null;
     
     // 4. 資料大小驗證
     const jsonString = JSON.stringify({ type, data });
@@ -244,6 +186,13 @@ export async function POST(request: NextRequest) {
       });
 
     } else if (type === 'template') {
+      if (!dataRecord) {
+        return NextResponse.json(
+          { error: '請提供有效的範本資料' },
+          { status: 400 }
+        );
+      }
+
       // 儲存薪資條範本
       const templatesRecord = await prisma.systemSettings.findUnique({
         where: { key: 'payslip_templates' }
@@ -251,23 +200,28 @@ export async function POST(request: NextRequest) {
 
       let templates = templatesRecord ? JSON.parse(templatesRecord.value) : [];
 
-      if (data.id) {
+      const templateId = typeof dataRecord.id === 'number' ? dataRecord.id : null;
+      const isDefault = Boolean(dataRecord.isDefault);
+      let targetTemplateId = templateId;
+
+      if (templateId) {
         // 更新現有範本
-        const index = templates.findIndex((t: PayslipTemplate) => t.id === data.id);
+        const index = templates.findIndex((t: PayslipTemplate) => t.id === templateId);
         if (index !== -1) {
-          templates[index] = data;
+          templates[index] = dataRecord as unknown as PayslipTemplate;
         }
       } else {
         // 新增範本
         const newId = Math.max(...templates.map((t: PayslipTemplate) => t.id || 0), 0) + 1;
-        templates.push({ ...data, id: newId });
+        targetTemplateId = newId;
+        templates.push({ ...dataRecord, id: newId } as PayslipTemplate);
       }
 
       // 如果設為預設範本，清除其他預設設定
-      if (data.isDefault) {
+      if (isDefault) {
         templates = templates.map((t: PayslipTemplate) => ({
           ...t,
-          isDefault: t.id === data.id
+          isDefault: t.id === targetTemplateId
         }));
       }
 
@@ -286,7 +240,7 @@ export async function POST(request: NextRequest) {
 
       return NextResponse.json({
         success: true,
-        template: data,
+        template: dataRecord,
         message: '薪資條範本已儲存'
       });
 
@@ -329,9 +283,30 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
     }
 
-    const { template } = await request.json();
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      const errorMessage = parseResult.error === 'empty_body'
+        ? '請提供有效的設定資料'
+        : '無效的 JSON 格式';
 
-    if (!template || !template.id) {
+      return NextResponse.json({ error: errorMessage }, { status: 400 });
+    }
+
+    const body = parseResult.data;
+
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json({ error: '請提供有效的設定資料' }, { status: 400 });
+    }
+
+    const bodyRecord = body as Record<string, unknown>;
+    const templateValue = bodyRecord.template;
+    const template = templateValue && typeof templateValue === 'object' && !Array.isArray(templateValue)
+      ? templateValue as Record<string, unknown>
+      : null;
+
+    const templateId = typeof template?.id === 'number' ? template.id : null;
+
+    if (!template || !templateId) {
       return NextResponse.json({ error: '缺少範本資料' }, { status: 400 });
     }
 
@@ -344,7 +319,7 @@ export async function PUT(request: NextRequest) {
     }
 
     let templates = JSON.parse(templatesRecord.value);
-    const index = templates.findIndex((t: PayslipTemplate) => t.id === template.id);
+    const index = templates.findIndex((t: PayslipTemplate) => t.id === templateId);
 
     if (index === -1) {
       return NextResponse.json({ error: '範本不存在' }, { status: 404 });
@@ -357,7 +332,7 @@ export async function PUT(request: NextRequest) {
     if (template.isDefault) {
       templates = templates.map((t: PayslipTemplate) => ({
         ...t,
-        isDefault: t.id === template.id
+        isDefault: t.id === templateId
       }));
     }
 

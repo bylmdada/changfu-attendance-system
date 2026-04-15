@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { safeParseJSON } from '@/lib/validation';
+import { safeParseSystemSettingsValue } from '@/lib/system-settings-json';
 
 // 預設 Email 通知設定（預設關閉）
 const DEFAULT_SETTINGS = {
@@ -23,6 +25,24 @@ const DEFAULT_SETTINGS = {
 
 const SETTINGS_KEY = 'email_notification_settings';
 
+async function verifyAdmin(request: NextRequest) {
+  const user = await getUserFromRequest(request);
+
+  if (!user) {
+    return {
+      error: NextResponse.json({ error: '未授權訪問' }, { status: 401 })
+    };
+  }
+
+  if (user.role !== 'ADMIN') {
+    return {
+      error: NextResponse.json({ error: '需要管理員權限' }, { status: 403 })
+    };
+  }
+
+  return { user };
+}
+
 // GET - 取得 Email 通知設定
 export async function GET(request: NextRequest) {
   try {
@@ -31,16 +51,9 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
-      return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
-    }
-
-    const decoded = await getUserFromToken(token);
-    if (!decoded || decoded.role !== 'ADMIN') {
-      return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
+    const authResult = await verifyAdmin(request);
+    if (authResult.error) {
+      return authResult.error;
     }
 
     const settings = await prisma.systemSettings.findUnique({
@@ -48,7 +61,7 @@ export async function GET(request: NextRequest) {
     });
 
     if (settings) {
-      const parsed = JSON.parse(settings.value);
+      const parsed = safeParseSystemSettingsValue(settings.value, DEFAULT_SETTINGS, SETTINGS_KEY);
       // 不回傳密碼明文
       return NextResponse.json({
         success: true,
@@ -85,47 +98,50 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'CSRF驗證失敗' }, { status: 403 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
-      return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
+    const authResult = await verifyAdmin(request);
+    if (authResult.error) {
+      return authResult.error;
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded || decoded.role !== 'ADMIN') {
-      return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      const errorMessage = parseResult.error === 'empty_body'
+        ? '請提供有效的設定資料'
+        : '無效的 JSON 格式';
+
+      return NextResponse.json({ error: errorMessage }, { status: 400 });
     }
 
-    const body = await request.json();
+    const body = parseResult.data;
+
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json({ error: '請提供有效的設定資料' }, { status: 400 });
+    }
 
     // 取得現有設定（保留密碼）
     const existingSettings = await prisma.systemSettings.findUnique({
       where: { key: SETTINGS_KEY }
     });
 
-    let existingSmtpPass = '';
-    if (existingSettings) {
-      const parsed = JSON.parse(existingSettings.value);
-      existingSmtpPass = parsed.smtpPass || '';
-    }
+    const baseSettings = safeParseSystemSettingsValue(existingSettings?.value, DEFAULT_SETTINGS, SETTINGS_KEY);
+    const existingSmtpPass = baseSettings.smtpPass || '';
 
     // 如果密碼是遮罩值，保留原密碼
-    const smtpPass = body.smtpPass === '********' ? existingSmtpPass : (body.smtpPass || '');
+    const smtpPass = body.smtpPass === '********' ? existingSmtpPass : (body.smtpPass ?? '');
 
     const newSettings = {
-      enabled: body.enabled ?? DEFAULT_SETTINGS.enabled,
-      smtpHost: body.smtpHost || DEFAULT_SETTINGS.smtpHost,
-      smtpPort: body.smtpPort || DEFAULT_SETTINGS.smtpPort,
-      smtpSecure: body.smtpSecure ?? DEFAULT_SETTINGS.smtpSecure,
-      smtpUser: body.smtpUser || DEFAULT_SETTINGS.smtpUser,
+      enabled: body.enabled ?? baseSettings.enabled,
+      smtpHost: body.smtpHost ?? baseSettings.smtpHost,
+      smtpPort: body.smtpPort ?? baseSettings.smtpPort,
+      smtpSecure: body.smtpSecure ?? baseSettings.smtpSecure,
+      smtpUser: body.smtpUser ?? baseSettings.smtpUser,
       smtpPass,
-      senderName: body.senderName || DEFAULT_SETTINGS.senderName,
-      senderEmail: body.senderEmail || DEFAULT_SETTINGS.senderEmail,
-      notifyLeaveApproval: body.notifyLeaveApproval ?? DEFAULT_SETTINGS.notifyLeaveApproval,
-      notifyOvertimeApproval: body.notifyOvertimeApproval ?? DEFAULT_SETTINGS.notifyOvertimeApproval,
-      notifyScheduleChange: body.notifyScheduleChange ?? DEFAULT_SETTINGS.notifyScheduleChange,
-      notifyPasswordReset: body.notifyPasswordReset ?? DEFAULT_SETTINGS.notifyPasswordReset
+      senderName: body.senderName ?? baseSettings.senderName,
+      senderEmail: body.senderEmail ?? baseSettings.senderEmail,
+      notifyLeaveApproval: body.notifyLeaveApproval ?? baseSettings.notifyLeaveApproval,
+      notifyOvertimeApproval: body.notifyOvertimeApproval ?? baseSettings.notifyOvertimeApproval,
+      notifyScheduleChange: body.notifyScheduleChange ?? baseSettings.notifyScheduleChange,
+      notifyPasswordReset: body.notifyPasswordReset ?? baseSettings.notifyPasswordReset
     };
 
     await prisma.systemSettings.upsert({

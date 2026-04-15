@@ -3,11 +3,15 @@
  * POST - 停用雙因素驗證
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
+import { safeParseJSON } from '@/lib/validation';
 import bcrypt from 'bcryptjs';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -16,20 +20,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'CSRF 驗證失敗' }, { status: 403 });
     }
 
-    const cookieStore = await cookies();
-    const token = cookieStore.get('auth-token')?.value;
-    
-    if (!token) {
+    const user = await getUserFromRequest(request);
+    if (!user) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
-    
-    const user = await getUserFromToken(token);
-    if (!user) {
-      return NextResponse.json({ error: '無效的 Token' }, { status: 401 });
+
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json({ error: '無效的 JSON 格式' }, { status: 400 });
     }
 
-    const body = await request.json();
-    const { password } = body;
+    const body = parseResult.data;
+    const password = isPlainObject(body) && typeof body.password === 'string' ? body.password : '';
 
     if (!password) {
       return NextResponse.json({ error: '請輸入密碼確認' }, { status: 400 });

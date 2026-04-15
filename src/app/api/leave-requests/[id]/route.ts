@@ -1,18 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
 import { notifyLeaveApproval } from '@/lib/email';
 import { notifyHRAfterManagerReview } from '@/lib/hr-notification';
 import { toTaiwanDateStr } from '@/lib/timezone';
 import { getApprovalWorkflow } from '@/lib/approval-workflow';
+import { validateCSRF } from '@/lib/csrf';
+import { parseIntegerQueryParam } from '@/lib/query-params';
+import { safeParseJSON } from '@/lib/validation';
+import { getAnnualLeaveYearBreakdown } from '@/lib/annual-leave';
 
-// 窄化型別，避免直接耦合
 interface PrismaWithSchedule {
   schedule?: {
     updateMany: (args: { where: Record<string, unknown>; data: Record<string, unknown> }) => Promise<unknown>
   }
 }
-const db = prisma as unknown as PrismaWithSchedule;
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 function toYmd(d: Date) {
   // 使用台灣時區轉換日期
@@ -23,25 +29,73 @@ function toYmd(d: Date) {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+async function getManagedDepartments(employeeId: number): Promise<string[]> {
+  const records = await prisma.departmentManager.findMany({
+    where: {
+      employeeId,
+      isActive: true,
+    },
+    select: { department: true },
+  });
+
+  return records.map((record) => record.department).filter(Boolean);
+}
+
 export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const csrfValidation = await validateCSRF(request);
+    if (!csrfValidation.valid) {
+      return NextResponse.json({ error: `CSRF驗證失敗: ${csrfValidation.error}` }, { status: 403 });
+    }
+
+    const user = await getUserFromRequest(request);
+    if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded) {
-      return NextResponse.json({ error: '無效的認證令牌' }, { status: 401 });
+    const { id } = await params;
+    const leaveRequestIdResult = parseIntegerQueryParam(id, { min: 1, max: 99999999 });
+    if (!leaveRequestIdResult.isValid || leaveRequestIdResult.value === null) {
+      return NextResponse.json({ error: '請假申請 ID 格式錯誤' }, { status: 400 });
+    }
+    const leaveRequestId = leaveRequestIdResult.value;
+
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的請假申請資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
     }
 
-    const { id } = await params;
-    const leaveRequestId = parseInt(id);
+    const body = parseResult.data;
+    if (!isPlainObject(body)) {
+      return NextResponse.json({ error: '請提供有效的請假申請資料' }, { status: 400 });
+    }
+
+    const requestedStatus = typeof body.status === 'string' ? body.status : undefined;
+    const requestedOpinion = typeof body.opinion === 'string' ? body.opinion : undefined;
+    const note = typeof body.note === 'string' ? body.note : undefined;
+    const rejectionReason = typeof body.rejectionReason === 'string' ? body.rejectionReason : undefined;
+    const leaveType = typeof body.leaveType === 'string' ? body.leaveType : undefined;
+    const startDate = typeof body.startDate === 'string' ? body.startDate : undefined;
+    const endDate = typeof body.endDate === 'string' ? body.endDate : undefined;
+    const reason = typeof body.reason === 'string' ? body.reason : undefined;
+    const startHour = typeof body.startHour === 'string' || typeof body.startHour === 'number'
+      ? String(body.startHour)
+      : undefined;
+    const startMinute = typeof body.startMinute === 'string' || typeof body.startMinute === 'number'
+      ? String(body.startMinute)
+      : undefined;
+    const endHour = typeof body.endHour === 'string' || typeof body.endHour === 'number'
+      ? String(body.endHour)
+      : undefined;
+    const endMinute = typeof body.endMinute === 'string' || typeof body.endMinute === 'number'
+      ? String(body.endMinute)
+      : undefined;
 
     // 查找請假申請
     const existing = await prisma.leaveRequest.findUnique({
@@ -53,20 +107,27 @@ export async function PATCH(
       return NextResponse.json({ error: '找不到請假申請' }, { status: 404 });
     }
 
-    const body = await request.json();
-
     // 若傳入 status 或 opinion，視為審核
-    if (typeof body.status === 'string' || typeof body.opinion === 'string') {
+    if (requestedStatus || requestedOpinion) {
       // 主管審核（提供意見，轉交 Admin）
-      if (decoded.role === 'MANAGER' && existing.status === 'PENDING') {
-        const opinion = body.opinion as 'AGREE' | 'DISAGREE';
+      if (user.role === 'MANAGER' && existing.status === 'PENDING') {
+        const managedDepartments = await getManagedDepartments(user.employeeId);
+        if (
+          managedDepartments.length === 0 ||
+          !existing.employee.department ||
+          !managedDepartments.includes(existing.employee.department)
+        ) {
+          return NextResponse.json({ error: '無權限審核此部門的請假申請' }, { status: 403 });
+        }
+
+        const opinion = requestedOpinion as 'AGREE' | 'DISAGREE';
         if (!['AGREE', 'DISAGREE'].includes(opinion)) {
           return NextResponse.json({ error: '請選擇同意或不同意' }, { status: 400 });
         }
 
         // 取得主管資訊
         const manager = await prisma.employee.findUnique({
-          where: { id: decoded.employeeId },
+          where: { id: user.employeeId },
           select: { name: true }
         });
 
@@ -74,9 +135,9 @@ export async function PATCH(
           where: { id: leaveRequestId },
           data: {
             status: 'PENDING_ADMIN',
-            managerReviewerId: decoded.employeeId,
+            managerReviewerId: user.employeeId,
             managerOpinion: opinion,
-            managerNote: body.note || null,
+            managerNote: note || null,
             managerReviewedAt: new Date()
           }
         });
@@ -91,7 +152,7 @@ export async function PATCH(
             employeeDepartment: existing.employee.department || '未指定',
             managerName: manager?.name || '主管',
             managerOpinion: opinion,
-            managerNote: body.note
+            managerNote: note
           });
         }
 
@@ -102,8 +163,8 @@ export async function PATCH(
       }
 
       // Admin 最終決核
-      if (decoded.role === 'ADMIN') {
-        const status = body.status as 'APPROVED' | 'REJECTED';
+      if (user.role === 'ADMIN') {
+        const status = requestedStatus as 'APPROVED' | 'REJECTED';
         if (!['APPROVED', 'REJECTED'].includes(status)) {
           return NextResponse.json({ error: '無效的審核狀態' }, { status: 400 });
         }
@@ -113,33 +174,56 @@ export async function PATCH(
           return NextResponse.json({ error: '該請假申請已經被審核過' }, { status: 400 });
         }
 
-        const updatedLeaveRequest = await prisma.leaveRequest.update({
-          where: { id: leaveRequestId },
-          data: {
-            status,
-            approvedBy: decoded.employeeId,
-            approvedAt: new Date()
-          },
-          include: {
-            employee: {
-              select: { id: true, employeeId: true, name: true, department: true, position: true }
+        const updatedLeaveRequest = await prisma.$transaction(async (tx) => {
+          const updated = await tx.leaveRequest.update({
+            where: { id: leaveRequestId },
+            data: {
+              status,
+              approvedBy: user.employeeId,
+              approvedAt: new Date()
+            },
+            include: {
+              employee: {
+                select: { id: true, employeeId: true, name: true, department: true, position: true }
+              }
+            }
+          });
+
+          if (status === 'APPROVED' && existing.leaveType === 'ANNUAL_LEAVE') {
+            const startDate = new Date(existing.startDate);
+            const endDate = new Date(existing.endDate);
+            for (const { year, days } of getAnnualLeaveYearBreakdown(startDate, endDate)) {
+              await tx.annualLeave.updateMany({
+                where: {
+                  employeeId: existing.employeeId,
+                  year,
+                },
+                data: {
+                  usedDays: { increment: days },
+                  remainingDays: { decrement: days },
+                },
+              });
             }
           }
-        });
 
-        // 若批准，更新班表為請假（FDL）
-        if (status === 'APPROVED' && db.schedule) {
-          const empId = existing.employeeId;
-          const start = new Date(existing.startDate);
-          const end = new Date(existing.endDate);
-          for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-            const ymd = toYmd(d);
-            await db.schedule.updateMany({
-              where: { employeeId: empId, workDate: ymd },
-              data: { shiftType: 'FDL', startTime: '', endTime: '' }
-            });
+          const txWithSchedule = tx as unknown as PrismaWithSchedule;
+
+          // 若批准，更新班表為請假（FDL）
+          if (status === 'APPROVED' && txWithSchedule.schedule) {
+            const empId = existing.employeeId;
+            const start = new Date(existing.startDate);
+            const end = new Date(existing.endDate);
+            for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+              const ymd = toYmd(d);
+              await txWithSchedule.schedule.updateMany({
+                where: { employeeId: empId, workDate: ymd },
+                data: { shiftType: 'FDL', startTime: '', endTime: '' }
+              });
+            }
           }
-        }
+
+          return updated;
+        });
 
         // 發送審核結果通知
         try {
@@ -151,7 +235,7 @@ export async function PATCH(
             leaveType: existing.leaveType,
             startDate: toTaiwanDateStr(existing.startDate),
             endDate: toTaiwanDateStr(existing.endDate),
-            reason: body.rejectionReason,
+            reason: rejectionReason,
           });
         } catch (notifyError) {
           console.error('發送通知失敗:', notifyError);
@@ -173,17 +257,9 @@ export async function PATCH(
       return NextResponse.json({ error: '僅能修改待審核的申請' }, { status: 400 });
     }
 
-    if (existing.employeeId !== decoded.employeeId && decoded.role !== 'ADMIN' && decoded.role !== 'HR') {
+    if (existing.employeeId !== user.employeeId && user.role !== 'ADMIN' && user.role !== 'HR') {
       return NextResponse.json({ error: '無權限修改此申請' }, { status: 403 });
     }
-
-    const { leaveType, startDate, endDate, reason, startHour, startMinute, endHour, endMinute } = body as Partial<{
-      leaveType: string;
-      startDate: string;
-      endDate: string;
-      reason: string;
-      startHour: string; startMinute: string; endHour: string; endMinute: string;
-    }>;
 
     // 驗證與計算 totalDays
     let nextStart: Date | undefined;
@@ -256,20 +332,22 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const csrfValidation = await validateCSRF(request);
+    if (!csrfValidation.valid) {
+      return NextResponse.json({ error: `CSRF驗證失敗: ${csrfValidation.error}` }, { status: 403 });
+    }
+
+    const user = await getUserFromRequest(request);
+    if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded) {
-      return NextResponse.json({ error: '無效的認證令牌' }, { status: 401 });
-    }
-
     const { id } = await params;
-    const leaveRequestId = parseInt(id);
+    const leaveRequestIdResult = parseIntegerQueryParam(id, { min: 1, max: 99999999 });
+    if (!leaveRequestIdResult.isValid || leaveRequestIdResult.value === null) {
+      return NextResponse.json({ error: '請假申請 ID 格式錯誤' }, { status: 400 });
+    }
+    const leaveRequestId = leaveRequestIdResult.value;
 
     // 查找請假申請
     const leaveRequest = await prisma.leaveRequest.findUnique({
@@ -281,8 +359,8 @@ export async function DELETE(
     }
 
     // 只有申請人或管理員可以刪除
-    if (leaveRequest.employeeId !== decoded.employeeId && 
-        decoded.role !== 'ADMIN' && decoded.role !== 'HR') {
+    if (leaveRequest.employeeId !== user.employeeId && 
+        user.role !== 'ADMIN' && user.role !== 'HR') {
       return NextResponse.json({ error: '無權限執行此操作' }, { status: 403 });
     }
 

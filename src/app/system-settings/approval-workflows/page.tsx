@@ -51,6 +51,24 @@ interface Employee {
   department: string;
 }
 
+interface OverdueSettings {
+  enabled: boolean;
+  autoEscalateEnabled: boolean;
+  autoEscalateHours: number;
+  autoRejectEnabled: boolean;
+  autoRejectDays: number;
+  dailyReportEnabled: boolean;
+  dailyReportTime: string;
+}
+
+interface OverdueStats {
+  total: number;
+  overdue: number;
+  urgent: number;
+  todayProcessed: number;
+  percentOverdue: number;
+}
+
 export default function ApprovalWorkflowsPage() {
   const router = useRouter();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -63,6 +81,11 @@ export default function ApprovalWorkflowsPage() {
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [freezeReminder, setFreezeReminder] = useState<FreezeReminder | null>(null);
   const [freezeSettings, setFreezeSettings] = useState<{ freezeDay: number; freezeTime: string } | null>(null);
+  const [overdueSettings, setOverdueSettings] = useState<OverdueSettings | null>(null);
+  const [overdueStats, setOverdueStats] = useState<OverdueStats | null>(null);
+  const [overdueLoading, setOverdueLoading] = useState(true);
+  const [overdueSaving, setOverdueSaving] = useState(false);
+  const [overdueRunning, setOverdueRunning] = useState(false);
   
   // 部門主管
   const [managers, setManagers] = useState<Manager[]>([]);
@@ -97,7 +120,7 @@ export default function ApprovalWorkflowsPage() {
             return;
           }
           setUser(data.user);
-          await Promise.all([loadWorkflows(), loadManagers()]);
+          await Promise.all([loadWorkflows(), loadManagers(), loadOverdueSettings()]);
         } else {
           router.push('/login');
         }
@@ -138,6 +161,21 @@ export default function ApprovalWorkflowsPage() {
     }
   };
 
+  const loadOverdueSettings = async () => {
+    try {
+      const response = await fetch('/api/system-settings/approval-overdue', { credentials: 'include' });
+      if (response.ok) {
+        const data = await response.json();
+        setOverdueSettings(data.settings || null);
+        setOverdueStats(data.stats || null);
+      }
+    } catch (error) {
+      console.error('載入逾期處理設定失敗:', error);
+    } finally {
+      setOverdueLoading(false);
+    }
+  };
+
   const handleSaveWorkflows = async () => {
     setSaving(true);
     setMessage(null);
@@ -155,6 +193,72 @@ export default function ApprovalWorkflowsPage() {
       setMessage({ type: 'error', text: '儲存失敗' });
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleSaveOverdueSettings = async () => {
+    if (!overdueSettings) {
+      return;
+    }
+
+    setOverdueSaving(true);
+    setMessage(null);
+
+    try {
+      const response = await fetchJSONWithCSRF('/api/system-settings/approval-overdue', {
+        method: 'PUT',
+        body: overdueSettings
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setOverdueSettings(data.settings || overdueSettings);
+        setMessage({ type: 'success', text: '逾期處理設定已儲存' });
+        await loadOverdueSettings();
+      } else {
+        const error = await response.json().catch(() => null);
+        setMessage({ type: 'error', text: error?.error || '逾期處理設定儲存失敗' });
+      }
+    } catch {
+      setMessage({ type: 'error', text: '逾期處理設定儲存失敗' });
+    } finally {
+      setOverdueSaving(false);
+    }
+  };
+
+  const handleRunOverdueProcess = async () => {
+    if (!overdueSettings) {
+      return;
+    }
+
+    setOverdueRunning(true);
+    setMessage(null);
+
+    try {
+      const response = await fetchJSONWithCSRF('/api/system-settings/approval-overdue', {
+        method: 'POST',
+        body: {
+          forceRun: !overdueSettings.enabled
+        }
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const result = data.result || {};
+        const reportSuffix = result.reportSent ? '，並已送出報告' : '';
+        setMessage({
+          type: 'success',
+          text: `已執行逾期處理：升級 ${result.escalated ?? 0} 筆、取消 ${result.rejected ?? 0} 筆${reportSuffix}`
+        });
+        await loadOverdueSettings();
+      } else {
+        const error = await response.json().catch(() => null);
+        setMessage({ type: 'error', text: error?.message || error?.error || '執行逾期處理失敗' });
+      }
+    } catch {
+      setMessage({ type: 'error', text: '執行逾期處理失敗' });
+    } finally {
+      setOverdueRunning(false);
     }
   };
 
@@ -312,6 +416,10 @@ export default function ApprovalWorkflowsPage() {
     ));
   };
 
+  const updateOverdueSetting = <K extends keyof OverdueSettings>(field: K, value: OverdueSettings[K]) => {
+    setOverdueSettings(prev => prev ? { ...prev, [field]: value } : prev);
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -434,6 +542,7 @@ export default function ApprovalWorkflowsPage() {
                           >
                             <option value={1}>一階</option>
                             <option value={2}>二階</option>
+                            <option value={3}>三階</option>
                           </select>
                         </td>
                         <td className="px-4 py-3 text-center">
@@ -474,7 +583,7 @@ export default function ApprovalWorkflowsPage() {
                               onChange={(e) => updateWorkflow(wf.id, 'enableForward', e.target.checked)}
                               className="sr-only peer"
                             />
-                            <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+                            <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
                           </label>
                         </td>
                         <td className="px-4 py-3 text-center">
@@ -485,7 +594,7 @@ export default function ApprovalWorkflowsPage() {
                               onChange={(e) => updateWorkflow(wf.id, 'enableCC', e.target.checked)}
                               className="sr-only peer"
                             />
-                            <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+                            <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
                           </label>
                         </td>
                       </tr>
@@ -886,10 +995,20 @@ export default function ApprovalWorkflowsPage() {
         {/* 逾期處理設定 */}
         {activeTab === 'overdue' && (
           <div className="bg-white rounded-lg shadow p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">
-              <Timer className="inline w-5 h-5 mr-2" />
-              逾期自動處理設定
-            </h3>
+            <div className="flex flex-col gap-4 mb-4 sm:flex-row sm:items-center sm:justify-between">
+              <h3 className="text-lg font-semibold text-gray-900">
+                <Timer className="inline w-5 h-5 mr-2" />
+                逾期自動處理設定
+              </h3>
+              <button
+                onClick={handleSaveOverdueSettings}
+                disabled={overdueLoading || overdueSaving || overdueRunning || !overdueSettings}
+                className="inline-flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+              >
+                <Save className="w-4 h-4" />
+                {overdueSaving ? '儲存中...' : '儲存設定'}
+              </button>
+            </div>
             
             <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6">
               <p className="text-yellow-800 text-sm">
@@ -897,7 +1016,30 @@ export default function ApprovalWorkflowsPage() {
               </p>
             </div>
 
+            {overdueLoading || !overdueSettings || !overdueStats ? (
+              <div className="py-8 text-center text-gray-500">載入逾期處理設定中...</div>
+            ) : (
             <div className="space-y-6">
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+                <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
+                  <div className="text-sm text-gray-500">待審核總數</div>
+                  <div className="mt-1 text-2xl font-semibold text-gray-900">{overdueStats.total}</div>
+                </div>
+                <div className="rounded-lg border border-red-200 bg-red-50 p-4">
+                  <div className="text-sm text-red-600">已逾期</div>
+                  <div className="mt-1 text-2xl font-semibold text-red-700">{overdueStats.overdue}</div>
+                  <div className="mt-1 text-xs text-red-500">佔比 {overdueStats.percentOverdue}%</div>
+                </div>
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
+                  <div className="text-sm text-amber-700">24 小時內到期</div>
+                  <div className="mt-1 text-2xl font-semibold text-amber-800">{overdueStats.urgent}</div>
+                </div>
+                <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
+                  <div className="text-sm text-blue-600">今日已處理</div>
+                  <div className="mt-1 text-2xl font-semibold text-blue-700">{overdueStats.todayProcessed}</div>
+                </div>
+              </div>
+
               {/* 主開關 */}
               <div className="flex items-center justify-between p-4 border rounded-lg">
                 <div>
@@ -905,21 +1047,32 @@ export default function ApprovalWorkflowsPage() {
                   <p className="text-sm text-gray-500">開啟後，系統會自動處理逾期的審核項目</p>
                 </div>
                 <label className="relative inline-flex items-center cursor-pointer">
-                  <input type="checkbox" className="sr-only peer" disabled />
-                  <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                  <input
+                    type="checkbox"
+                    className="sr-only peer"
+                    checked={overdueSettings.enabled}
+                    onChange={(e) => updateOverdueSetting('enabled', e.target.checked)}
+                  />
+                  <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
                 </label>
               </div>
 
               {/* 自動升級 */}
-              <div className="p-4 border rounded-lg opacity-60">
+              <div className={`p-4 border rounded-lg ${!overdueSettings.enabled ? 'opacity-60' : ''}`}>
                 <div className="flex items-center justify-between mb-3">
                   <div>
                     <h4 className="font-medium text-gray-900">自動升級到二階審核</h4>
                     <p className="text-sm text-gray-500">一階審核逾期後自動轉給管理員</p>
                   </div>
                   <label className="relative inline-flex items-center cursor-pointer">
-                    <input type="checkbox" className="sr-only peer" disabled />
-                    <div className="w-11 h-6 bg-gray-200 rounded-full peer peer-checked:bg-blue-600"></div>
+                    <input
+                      type="checkbox"
+                      className="sr-only peer"
+                      checked={overdueSettings.autoEscalateEnabled}
+                      onChange={(e) => updateOverdueSetting('autoEscalateEnabled', e.target.checked)}
+                      disabled={!overdueSettings.enabled}
+                    />
+                    <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
                   </label>
                 </div>
                 <div className="flex items-center gap-2 text-sm text-gray-600">
@@ -927,23 +1080,32 @@ export default function ApprovalWorkflowsPage() {
                   <input 
                     type="number" 
                     className="w-16 px-2 py-1 border rounded" 
-                    defaultValue={24}
-                    disabled
+                    value={overdueSettings.autoEscalateHours}
+                    min={1}
+                    max={168}
+                    onChange={(e) => updateOverdueSetting('autoEscalateHours', Number(e.target.value) || 1)}
+                    disabled={!overdueSettings.enabled || !overdueSettings.autoEscalateEnabled}
                   />
                   <span>小時後自動升級</span>
                 </div>
               </div>
 
               {/* 自動拒絕 */}
-              <div className="p-4 border rounded-lg opacity-60">
+              <div className={`p-4 border rounded-lg ${!overdueSettings.enabled ? 'opacity-60' : ''}`}>
                 <div className="flex items-center justify-between mb-3">
                   <div>
                     <h4 className="font-medium text-gray-900">自動取消申請</h4>
                     <p className="text-sm text-gray-500">嚴重逾期的申請自動標記為已取消</p>
                   </div>
                   <label className="relative inline-flex items-center cursor-pointer">
-                    <input type="checkbox" className="sr-only peer" disabled />
-                    <div className="w-11 h-6 bg-gray-200 rounded-full peer peer-checked:bg-red-600"></div>
+                    <input
+                      type="checkbox"
+                      className="sr-only peer"
+                      checked={overdueSettings.autoRejectEnabled}
+                      onChange={(e) => updateOverdueSetting('autoRejectEnabled', e.target.checked)}
+                      disabled={!overdueSettings.enabled}
+                    />
+                    <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-red-200 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-red-600"></div>
                   </label>
                 </div>
                 <div className="flex items-center gap-2 text-sm text-gray-600">
@@ -951,23 +1113,32 @@ export default function ApprovalWorkflowsPage() {
                   <input 
                     type="number" 
                     className="w-16 px-2 py-1 border rounded" 
-                    defaultValue={7}
-                    disabled
+                    value={overdueSettings.autoRejectDays}
+                    min={1}
+                    max={30}
+                    onChange={(e) => updateOverdueSetting('autoRejectDays', Number(e.target.value) || 1)}
+                    disabled={!overdueSettings.enabled || !overdueSettings.autoRejectEnabled}
                   />
-                  <span>天後自動取消</span>
+                  <span>天後自動標記取消</span>
                 </div>
               </div>
 
               {/* 每日報告 */}
-              <div className="p-4 border rounded-lg opacity-60">
+              <div className={`p-4 border rounded-lg ${!overdueSettings.enabled ? 'opacity-60' : ''}`}>
                 <div className="flex items-center justify-between mb-3">
                   <div>
                     <h4 className="font-medium text-gray-900">每日統計報告</h4>
                     <p className="text-sm text-gray-500">發送待審核統計給管理員</p>
                   </div>
                   <label className="relative inline-flex items-center cursor-pointer">
-                    <input type="checkbox" className="sr-only peer" disabled />
-                    <div className="w-11 h-6 bg-gray-200 rounded-full peer peer-checked:bg-blue-600"></div>
+                    <input
+                      type="checkbox"
+                      className="sr-only peer"
+                      checked={overdueSettings.dailyReportEnabled}
+                      onChange={(e) => updateOverdueSetting('dailyReportEnabled', e.target.checked)}
+                      disabled={!overdueSettings.enabled}
+                    />
+                    <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
                   </label>
                 </div>
                 <div className="flex items-center gap-2 text-sm text-gray-600">
@@ -975,8 +1146,9 @@ export default function ApprovalWorkflowsPage() {
                   <input 
                     type="time" 
                     className="px-2 py-1 border rounded" 
-                    defaultValue="09:00"
-                    disabled
+                    value={overdueSettings.dailyReportTime}
+                    onChange={(e) => updateOverdueSetting('dailyReportTime', e.target.value)}
+                    disabled={!overdueSettings.enabled || !overdueSettings.dailyReportEnabled}
                   />
                 </div>
               </div>
@@ -984,17 +1156,25 @@ export default function ApprovalWorkflowsPage() {
               {/* 手動執行 */}
               <div className="pt-4 border-t">
                 <button
-                  className="inline-flex items-center px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
-                  disabled
+                  onClick={handleRunOverdueProcess}
+                  disabled={overdueRunning || overdueSaving}
+                  className="inline-flex items-center px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors disabled:opacity-50"
                 >
                   <Play className="w-4 h-4 mr-2" />
-                  手動執行一次處理
+                  {overdueRunning
+                    ? '執行中...'
+                    : overdueSettings.enabled
+                      ? '手動執行一次處理'
+                      : '強制執行一次處理'}
                 </button>
                 <p className="text-xs text-gray-500 mt-2">
-                  啟用主開關後可使用此功能
+                  {overdueSettings.enabled
+                    ? '立即使用目前設定執行一次逾期處理。'
+                    : '目前主開關未啟用；此按鈕會以 forceRun 僅執行一次，不會改變排程啟用狀態。'}
                 </p>
               </div>
             </div>
+            )}
           </div>
         )}
       </main>

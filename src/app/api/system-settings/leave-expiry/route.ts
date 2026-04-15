@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { safeParseSystemSettingsValue } from '@/lib/system-settings-json';
+import { safeParseJSON } from '@/lib/validation';
 
 const DEFAULT_SETTINGS = {
   compLeaveExpiryMonths: 6,       // 補休 6 個月內使用
@@ -12,6 +14,32 @@ const DEFAULT_SETTINGS = {
   enabled: true
 };
 
+const VALID_EXPIRY_MODES = ['NOTIFY_ONLY', 'AUTO_EXPIRE', 'AUTO_SETTLE', 'AUTO_EXTEND'] as const;
+
+function isReminderDaysBeforeArray(value: unknown): value is number[] {
+  return Array.isArray(value) && value.every(
+    (day) => Number.isInteger(day) && day >= 0 && day <= 365
+  );
+}
+
+async function verifyAdmin(request: NextRequest) {
+  const user = await getUserFromRequest(request);
+
+  if (!user) {
+    return {
+      error: NextResponse.json({ error: '未授權訪問' }, { status: 401 }),
+    };
+  }
+
+  if (user.role !== 'ADMIN') {
+    return {
+      error: NextResponse.json({ error: '需要管理員權限' }, { status: 403 }),
+    };
+  }
+
+  return { user };
+}
+
 // GET - 取得假期到期設定
 export async function GET(request: NextRequest) {
   try {
@@ -20,16 +48,9 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
-      return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
-    }
-
-    const decoded = await getUserFromToken(token);
-    if (!decoded) {
-      return NextResponse.json({ error: '無效的認證令牌' }, { status: 401 });
+    const authResult = await verifyAdmin(request);
+    if (authResult.error) {
+      return authResult.error;
     }
 
     const settings = await prisma.systemSettings.findUnique({
@@ -39,7 +60,14 @@ export async function GET(request: NextRequest) {
     if (settings) {
       return NextResponse.json({
         success: true,
-        settings: JSON.parse(settings.value)
+        settings: {
+          ...DEFAULT_SETTINGS,
+          ...safeParseSystemSettingsValue<Partial<typeof DEFAULT_SETTINGS>>(
+            settings.value,
+            {},
+            'leave_expiry_settings'
+          )
+        }
       });
     }
 
@@ -66,37 +94,77 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'CSRF驗證失敗' }, { status: 403 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
-      return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
+    const authResult = await verifyAdmin(request);
+    if (authResult.error) {
+      return authResult.error;
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded || decoded.role !== 'ADMIN') {
-      return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
+    const bodyResult = await safeParseJSON(request);
+    if (!bodyResult.success) {
+      return NextResponse.json({ error: '請提供有效的設定資料' }, { status: 400 });
     }
 
-    const body = await request.json();
+    const body = bodyResult.data;
+
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json({ error: '請提供有效的設定資料' }, { status: 400 });
+    }
+
     const { compLeaveExpiryMonths, annualLeaveCanExtend, expiryMode, reminderDaysBefore, enabled } = body;
 
     // 驗證
-    if (compLeaveExpiryMonths !== undefined && (compLeaveExpiryMonths < 1 || compLeaveExpiryMonths > 24)) {
+    if (
+      compLeaveExpiryMonths !== undefined && (
+        typeof compLeaveExpiryMonths !== 'number' ||
+        !Number.isInteger(compLeaveExpiryMonths) ||
+        compLeaveExpiryMonths < 1 ||
+        compLeaveExpiryMonths > 24
+      )
+    ) {
       return NextResponse.json({ error: '補休有效期限需在 1-24 個月之間' }, { status: 400 });
     }
 
-    const validModes = ['NOTIFY_ONLY', 'AUTO_EXPIRE', 'AUTO_SETTLE', 'AUTO_EXTEND'];
-    if (expiryMode !== undefined && !validModes.includes(expiryMode)) {
+    if (annualLeaveCanExtend !== undefined && typeof annualLeaveCanExtend !== 'boolean') {
+      return NextResponse.json({ error: 'annualLeaveCanExtend 必須為布林值' }, { status: 400 });
+    }
+
+    if (enabled !== undefined && typeof enabled !== 'boolean') {
+      return NextResponse.json({ error: 'enabled 必須為布林值' }, { status: 400 });
+    }
+
+    if (
+      expiryMode !== undefined && (
+        typeof expiryMode !== 'string' ||
+        !VALID_EXPIRY_MODES.includes(expiryMode as (typeof VALID_EXPIRY_MODES)[number])
+      )
+    ) {
       return NextResponse.json({ error: '無效的到期處理模式' }, { status: 400 });
     }
 
+    if (reminderDaysBefore !== undefined && !isReminderDaysBeforeArray(reminderDaysBefore)) {
+      return NextResponse.json({ error: 'reminderDaysBefore 必須為 0 到 365 的整數陣列' }, { status: 400 });
+    }
+
+    const existingSettingsRecord = await prisma.systemSettings.findUnique({
+      where: { key: 'leave_expiry_settings' }
+    });
+    const existingSettings = existingSettingsRecord
+      ? {
+          ...DEFAULT_SETTINGS,
+          ...safeParseSystemSettingsValue<Partial<typeof DEFAULT_SETTINGS>>(
+            existingSettingsRecord.value,
+            {},
+            'leave_expiry_settings'
+          )
+        }
+      : DEFAULT_SETTINGS;
+
     const newSettings = {
-      compLeaveExpiryMonths: compLeaveExpiryMonths ?? DEFAULT_SETTINGS.compLeaveExpiryMonths,
-      annualLeaveCanExtend: annualLeaveCanExtend ?? DEFAULT_SETTINGS.annualLeaveCanExtend,
-      expiryMode: expiryMode ?? DEFAULT_SETTINGS.expiryMode,
-      reminderDaysBefore: reminderDaysBefore ?? DEFAULT_SETTINGS.reminderDaysBefore,
-      enabled: enabled ?? DEFAULT_SETTINGS.enabled
+      compLeaveExpiryMonths: compLeaveExpiryMonths ?? existingSettings.compLeaveExpiryMonths,
+      annualLeaveCanExtend: annualLeaveCanExtend ?? existingSettings.annualLeaveCanExtend,
+      expiryMode: expiryMode ?? existingSettings.expiryMode,
+      reminderDaysBefore: reminderDaysBefore ?? existingSettings.reminderDaysBefore,
+      enabled: enabled ?? existingSettings.enabled
     };
 
     await prisma.systemSettings.upsert({

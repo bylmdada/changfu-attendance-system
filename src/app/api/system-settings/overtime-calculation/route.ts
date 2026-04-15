@@ -3,6 +3,8 @@ import { prisma } from '@/lib/database';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { getUserFromRequest } from '@/lib/auth';
+import { safeParseJSON } from '@/lib/validation';
+import { safeParseSystemSettingsValue } from '@/lib/system-settings-json';
 
 interface OvertimeCalculationSettings {
   weekdayFirstTwoHoursRate: number;
@@ -55,11 +57,14 @@ async function getOvertimeSettingsFromDB(): Promise<OvertimeCalculationSettings>
     });
 
     if (setting) {
-      const parsed = JSON.parse(setting.value);
       // 確保所有欄位都存在（向後相容）
       return {
         ...defaultOvertimeSettings,
-        ...parsed
+        ...safeParseSystemSettingsValue<Partial<OvertimeCalculationSettings>>(
+          setting.value,
+          {},
+          OVERTIME_SETTINGS_KEY
+        )
       };
     }
   } catch (error) {
@@ -86,8 +91,16 @@ async function saveOvertimeSettingsToDB(settings: OvertimeCalculationSettings): 
 }
 
 // GET - 獲取加班費設定
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
+    const userAuth = await getUserFromRequest(request);
+    if (!userAuth || userAuth.role !== 'ADMIN') {
+      return NextResponse.json(
+        { success: false, message: '需要管理員權限' },
+        { status: 403 }
+      );
+    }
+
     const settings = await getOvertimeSettingsFromDB();
     
     return NextResponse.json({
@@ -142,7 +155,39 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const body = await request.json();
+    const bodyResult = await safeParseJSON(request);
+
+    if (!bodyResult.success) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: bodyResult.error === 'empty_body' ? '請提供有效的設定資料' : '無效的 JSON 格式'
+        },
+        { status: 400 }
+      );
+    }
+
+    const body = bodyResult.data;
+
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json(
+        { success: false, message: '請提供有效的設定資料' },
+        { status: 400 }
+      );
+    }
+
+    const input = body as Record<string, unknown>;
+
+    const clampRate = (value: unknown, fallback: number) =>
+      Math.max(1, Math.min(3, Number.parseFloat(String(value)) || fallback));
+
+    const clampHours = (value: unknown, fallback: number, min: number, max: number) =>
+      Math.max(min, Math.min(max, Number.parseInt(String(value), 10) || fallback));
+
+    const parseAllowedInt = (value: unknown, fallback: number, allowedValues: number[]) => {
+      const parsedValue = Number.parseInt(String(value), 10);
+      return allowedValues.includes(parsedValue) ? parsedValue : fallback;
+    };
     
     // 4. 資料大小驗證
     const jsonString = JSON.stringify(body);
@@ -153,31 +198,61 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const existingSettings = await getOvertimeSettingsFromDB();
+
     // 驗證並清理設定值
     const validatedSettings: OvertimeCalculationSettings = {
-      weekdayFirstTwoHoursRate: Math.max(1, Math.min(3, parseFloat(body.weekdayFirstTwoHoursRate) || 1.34)),
-      weekdayAfterTwoHoursRate: Math.max(1, Math.min(3, parseFloat(body.weekdayAfterTwoHoursRate) || 1.67)),
-      restDayFirstEightHoursRate: Math.max(1, Math.min(3, parseFloat(body.restDayFirstEightHoursRate) || 1.34)),
-      restDayAfterEightHoursRate: Math.max(1, Math.min(3, parseFloat(body.restDayAfterEightHoursRate) || 1.67)),
-      holidayRate: Math.max(1, Math.min(3, parseFloat(body.holidayRate) || 2.0)),
-      mandatoryRestRate: Math.max(1, Math.min(3, parseFloat(body.mandatoryRestRate) || 2.0)),
-      weekdayMaxHours: Math.max(1, Math.min(12, parseInt(body.weekdayMaxHours) || 4)),
-      restDayMaxHours: Math.max(8, Math.min(16, parseInt(body.restDayMaxHours) || 12)),
-      holidayMaxHours: Math.max(4, Math.min(12, parseInt(body.holidayMaxHours) || 8)),
-      mandatoryRestMaxHours: Math.max(4, Math.min(12, parseInt(body.mandatoryRestMaxHours) || 8)),
-      monthlyBasicHours: Math.max(160, Math.min(280, parseInt(body.monthlyBasicHours) || 240)),
-      restDayMinimumPayHours: Math.max(2, Math.min(8, parseInt(body.restDayMinimumPayHours) || 4)),
-      overtimeMinUnit: [1, 5, 15, 30, 60].includes(parseInt(body.overtimeMinUnit)) 
-        ? parseInt(body.overtimeMinUnit) 
-        : 30,
-      compensationMode: ['COMP_LEAVE_ONLY', 'OVERTIME_PAY_ONLY', 'EMPLOYEE_CHOICE'].includes(body.compensationMode)
-        ? body.compensationMode
-        : 'COMP_LEAVE_ONLY',
-      settleOnResignation: Boolean(body.settleOnResignation),
-      isEnabled: Boolean(body.isEnabled),
-      description: typeof body.description === 'string' 
-        ? body.description.slice(0, 200) 
-        : defaultOvertimeSettings.description
+      weekdayFirstTwoHoursRate: input.weekdayFirstTwoHoursRate === undefined
+        ? existingSettings.weekdayFirstTwoHoursRate
+        : clampRate(input.weekdayFirstTwoHoursRate, existingSettings.weekdayFirstTwoHoursRate),
+      weekdayAfterTwoHoursRate: input.weekdayAfterTwoHoursRate === undefined
+        ? existingSettings.weekdayAfterTwoHoursRate
+        : clampRate(input.weekdayAfterTwoHoursRate, existingSettings.weekdayAfterTwoHoursRate),
+      restDayFirstEightHoursRate: input.restDayFirstEightHoursRate === undefined
+        ? existingSettings.restDayFirstEightHoursRate
+        : clampRate(input.restDayFirstEightHoursRate, existingSettings.restDayFirstEightHoursRate),
+      restDayAfterEightHoursRate: input.restDayAfterEightHoursRate === undefined
+        ? existingSettings.restDayAfterEightHoursRate
+        : clampRate(input.restDayAfterEightHoursRate, existingSettings.restDayAfterEightHoursRate),
+      holidayRate: input.holidayRate === undefined
+        ? existingSettings.holidayRate
+        : clampRate(input.holidayRate, existingSettings.holidayRate),
+      mandatoryRestRate: input.mandatoryRestRate === undefined
+        ? existingSettings.mandatoryRestRate
+        : clampRate(input.mandatoryRestRate, existingSettings.mandatoryRestRate),
+      weekdayMaxHours: input.weekdayMaxHours === undefined
+        ? existingSettings.weekdayMaxHours
+        : clampHours(input.weekdayMaxHours, existingSettings.weekdayMaxHours, 1, 12),
+      restDayMaxHours: input.restDayMaxHours === undefined
+        ? existingSettings.restDayMaxHours
+        : clampHours(input.restDayMaxHours, existingSettings.restDayMaxHours, 8, 16),
+      holidayMaxHours: input.holidayMaxHours === undefined
+        ? existingSettings.holidayMaxHours
+        : clampHours(input.holidayMaxHours, existingSettings.holidayMaxHours, 4, 12),
+      mandatoryRestMaxHours: input.mandatoryRestMaxHours === undefined
+        ? existingSettings.mandatoryRestMaxHours
+        : clampHours(input.mandatoryRestMaxHours, existingSettings.mandatoryRestMaxHours, 4, 12),
+      monthlyBasicHours: input.monthlyBasicHours === undefined
+        ? existingSettings.monthlyBasicHours
+        : clampHours(input.monthlyBasicHours, existingSettings.monthlyBasicHours, 160, 280),
+      restDayMinimumPayHours: input.restDayMinimumPayHours === undefined
+        ? existingSettings.restDayMinimumPayHours
+        : clampHours(input.restDayMinimumPayHours, existingSettings.restDayMinimumPayHours, 2, 8),
+      overtimeMinUnit: input.overtimeMinUnit === undefined
+        ? existingSettings.overtimeMinUnit
+        : parseAllowedInt(input.overtimeMinUnit, existingSettings.overtimeMinUnit, [1, 5, 15, 30, 60]),
+      compensationMode: input.compensationMode === 'COMP_LEAVE_ONLY' || input.compensationMode === 'OVERTIME_PAY_ONLY' || input.compensationMode === 'EMPLOYEE_CHOICE'
+        ? input.compensationMode
+        : existingSettings.compensationMode,
+      settleOnResignation: typeof input.settleOnResignation === 'boolean'
+        ? input.settleOnResignation
+        : existingSettings.settleOnResignation,
+      isEnabled: typeof input.isEnabled === 'boolean'
+        ? input.isEnabled
+        : existingSettings.isEnabled,
+      description: typeof input.description === 'string' 
+        ? input.description.slice(0, 200) 
+        : existingSettings.description
     };
 
     // 更新設定到資料庫

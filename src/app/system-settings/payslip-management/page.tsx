@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { FileText, Save, Edit2, Trash2, Eye, Download, Plus, AlertTriangle, Power, PowerOff, Copy, Printer, ZoomIn, ZoomOut, Maximize2, X } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
+import { buildAuthMeRequest, buildPayslipManagementRequest } from '@/lib/payslip-management-client';
 import SystemNavbar from '@/components/SystemNavbar';
 
 interface PayslipTemplate {
@@ -109,20 +110,11 @@ export default function PayslipManagementPage() {
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<{ id: number; name: string } | null>(null);
 
-  // Helper function to get auth headers
-  const getAuthHeaders = (): HeadersInit => {
-    if (typeof window === 'undefined') return {};
-    const token = localStorage.getItem('token');
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  };
-
   useEffect(() => {
     const fetchUser = async () => {
       try {
-        const response = await fetch('/api/auth/me', {
-          credentials: 'include',
-          headers: getAuthHeaders()
-        });
+        const request = buildAuthMeRequest(window.location.origin);
+        const response = await fetch(request.url, request.options);
         
         if (response.ok) {
           const userData = await response.json();
@@ -154,9 +146,8 @@ export default function PayslipManagementPage() {
 
   const loadData = async () => {
     try {
-      const response = await fetch('/api/system-settings/payslip-management', {
-        credentials: 'include'
-      });
+      const request = buildPayslipManagementRequest(window.location.origin);
+      const response = await fetch(request.url, request.options);
       
       if (response.ok) {
         const data = await response.json();
@@ -1132,7 +1123,7 @@ function PreviewTab({
                 >
                   <ZoomOut className="h-4 w-4 text-gray-600" />
                 </button>
-                <span className="px-2 text-sm text-gray-700 min-w-[50px] text-center">{zoomLevel}%</span>
+                <span className="px-2 text-sm text-gray-700 min-w-12.5 text-center">{zoomLevel}%</span>
                 <button 
                   onClick={handleZoomIn}
                   className="p-2 hover:bg-gray-200 rounded-r-lg"
@@ -1256,7 +1247,7 @@ function PayslipPreview({ template }: { template: PayslipTemplate }) {
         } mb-4`}>
           {/* Logo */}
           {template.headerConfig.showLogo && (
-            <div className="flex-shrink-0">
+            <div className="shrink-0">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img 
                 src="/logo.png" 

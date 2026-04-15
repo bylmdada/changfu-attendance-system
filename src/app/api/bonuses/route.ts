@@ -3,10 +3,81 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { parseIntegerQueryParam } from '@/lib/query-params';
+import { safeParseJSON } from '@/lib/validation';
 import { 
   calculateBonusSupplementaryPremium, 
   getInsuredAmount 
 } from '@/lib/tax-calculator';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function normalizeOptionalNonEmptyString(rawValue: unknown, fieldName: string) {
+  if (rawValue === undefined) {
+    return { isValid: true as const, value: undefined };
+  }
+
+  if (rawValue === null) {
+    return { isValid: true as const, value: null };
+  }
+
+  if (typeof rawValue !== 'string') {
+    return { isValid: false as const, error: `${fieldName}格式無效` };
+  }
+
+  const trimmedValue = rawValue.trim();
+  return { isValid: true as const, value: trimmedValue === '' ? null : trimmedValue };
+}
+
+function parseRequiredPositiveInteger(rawValue: unknown, fieldName: string) {
+  const normalized = typeof rawValue === 'number'
+    ? String(rawValue)
+    : typeof rawValue === 'string'
+      ? rawValue
+      : null;
+
+  const parsed = parseIntegerQueryParam(normalized, { min: 1 });
+
+  if (!parsed.isValid || parsed.value === null) {
+    return { isValid: false as const, error: `${fieldName}格式無效` };
+  }
+
+  return { isValid: true as const, value: parsed.value };
+}
+
+function parseOptionalPositiveInteger(rawValue: string | null, fieldName: string) {
+  if (rawValue === null) {
+    return { isPresent: false as const };
+  }
+
+  const parsed = parseIntegerQueryParam(rawValue, { min: 1 });
+
+  if (!parsed.isValid || parsed.value === null) {
+    return { isPresent: true as const, isValid: false as const, error: `${fieldName}格式無效` };
+  }
+
+  return { isPresent: true as const, isValid: true as const, value: parsed.value };
+}
+
+function parseFiniteNumberValue(rawValue: unknown, fieldName: string) {
+  if (rawValue === undefined || rawValue === null || rawValue === '') {
+    return { isValid: false as const, error: `${fieldName}格式無效` };
+  }
+
+  const value = typeof rawValue === 'number'
+    ? rawValue
+    : typeof rawValue === 'string'
+      ? Number(rawValue)
+      : NaN;
+
+  if (!Number.isFinite(value)) {
+    return { isValid: false as const, error: `${fieldName}格式無效` };
+  }
+
+  return { isValid: true as const, value };
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -35,19 +106,34 @@ export async function GET(request: NextRequest) {
     const year = searchParams.get('year');
     const month = searchParams.get('month');
 
+    const parsedEmployeeId = parseOptionalPositiveInteger(employeeId, 'employeeId');
+    if (parsedEmployeeId.isPresent && !parsedEmployeeId.isValid) {
+      return NextResponse.json({ error: parsedEmployeeId.error }, { status: 400 });
+    }
+
+    const parsedYear = parseOptionalPositiveInteger(year, 'year');
+    if (parsedYear.isPresent && !parsedYear.isValid) {
+      return NextResponse.json({ error: parsedYear.error }, { status: 400 });
+    }
+
+    const parsedMonth = parseOptionalPositiveInteger(month, 'month');
+    if (parsedMonth.isPresent && !parsedMonth.isValid) {
+      return NextResponse.json({ error: parsedMonth.error }, { status: 400 });
+    }
+
     // 查詢獎金記錄
     const whereClause: Record<string, number> = {};
     
-    if (employeeId) {
-      whereClause.employeeId = parseInt(employeeId);
+    if (parsedEmployeeId.isPresent && parsedEmployeeId.isValid) {
+      whereClause.employeeId = parsedEmployeeId.value;
     }
     
-    if (year) {
-      whereClause.payrollYear = parseInt(year);
+    if (parsedYear.isPresent && parsedYear.isValid) {
+      whereClause.payrollYear = parsedYear.value;
     }
     
-    if (month) {
-      whereClause.payrollMonth = parseInt(month);
+    if (parsedMonth.isPresent && parsedMonth.isValid) {
+      whereClause.payrollMonth = parsedMonth.value;
     }
 
     const bonusRecords = await prisma.bonusRecord.findMany({
@@ -80,12 +166,12 @@ export async function GET(request: NextRequest) {
 
     // 如果查詢特定員工的年度累計，同時返回年度統計
     let annualSummary = null;
-    if (employeeId && year) {
+    if (parsedEmployeeId.isPresent && parsedEmployeeId.isValid && parsedYear.isPresent && parsedYear.isValid) {
       annualSummary = await prisma.employeeAnnualBonus.findUnique({
         where: {
           employeeId_year: {
-            employeeId: parseInt(employeeId),
-            year: parseInt(year)
+            employeeId: parsedEmployeeId.value,
+            year: parsedYear.value
           }
         }
       });
@@ -136,7 +222,20 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '無權限執行此操作' }, { status: 403 });
     }
 
-    const body = await request.json();
+    if (!user.employeeId) {
+      return NextResponse.json({ error: '找不到操作人員員工資料' }, { status: 403 });
+    }
+
+    const parsedBody = await safeParseJSON(request);
+    if (!parsedBody.success) {
+      return NextResponse.json({ error: '請求內容格式無效' }, { status: 400 });
+    }
+
+    if (!isPlainObject(parsedBody.data)) {
+      return NextResponse.json({ error: '請求內容格式無效' }, { status: 400 });
+    }
+
+    const body = parsedBody.data;
     const {
       employeeId,
       bonusType,
@@ -144,22 +243,76 @@ export async function POST(request: NextRequest) {
       amount,
       payrollYear,
       payrollMonth,
-      createdBy,
       adjustmentReason,
       originalRecordId
     } = body;
 
     // 驗證必要欄位
-    if (!employeeId || !bonusType || !amount || !payrollYear || !payrollMonth || !createdBy) {
+    if (employeeId === undefined || bonusType === undefined || amount === undefined || payrollYear === undefined || payrollMonth === undefined) {
       return NextResponse.json(
         { success: false, error: '缺少必要欄位' },
         { status: 400 }
       );
     }
 
+    if (typeof bonusType !== 'string' || bonusType.trim() === '') {
+      return NextResponse.json(
+        { success: false, error: 'bonusType格式無效' },
+        { status: 400 }
+      );
+    }
+
+    const parsedEmployeeId = parseRequiredPositiveInteger(employeeId, 'employeeId');
+    if (!parsedEmployeeId.isValid) {
+      return NextResponse.json({ success: false, error: parsedEmployeeId.error }, { status: 400 });
+    }
+
+    const parsedPayrollYear = parseRequiredPositiveInteger(payrollYear, 'payrollYear');
+    if (!parsedPayrollYear.isValid) {
+      return NextResponse.json({ success: false, error: parsedPayrollYear.error }, { status: 400 });
+    }
+
+    const parsedPayrollMonth = parseRequiredPositiveInteger(payrollMonth, 'payrollMonth');
+    if (!parsedPayrollMonth.isValid) {
+      return NextResponse.json({ success: false, error: parsedPayrollMonth.error }, { status: 400 });
+    }
+
+    const parsedAmount = parseFiniteNumberValue(amount, 'amount');
+    if (!parsedAmount.isValid) {
+      return NextResponse.json({ success: false, error: parsedAmount.error }, { status: 400 });
+    }
+
+    const parsedOriginalRecordId = originalRecordId === undefined || originalRecordId === null || originalRecordId === ''
+      ? null
+      : parseRequiredPositiveInteger(originalRecordId, 'originalRecordId');
+    if (parsedOriginalRecordId && !parsedOriginalRecordId.isValid) {
+      return NextResponse.json({ success: false, error: parsedOriginalRecordId.error }, { status: 400 });
+    }
+
+    const normalizedBonusTypeNameResult = normalizeOptionalNonEmptyString(bonusTypeName, 'bonusTypeName');
+    if (!normalizedBonusTypeNameResult.isValid) {
+      return NextResponse.json({ success: false, error: normalizedBonusTypeNameResult.error }, { status: 400 });
+    }
+
+    const normalizedAdjustmentReasonResult = normalizeOptionalNonEmptyString(adjustmentReason, 'adjustmentReason');
+    if (!normalizedAdjustmentReasonResult.isValid) {
+      return NextResponse.json({ success: false, error: normalizedAdjustmentReasonResult.error }, { status: 400 });
+    }
+
+    const normalizedBonusType = bonusType.trim();
+    const normalizedBonusTypeName = typeof normalizedBonusTypeNameResult.value === 'string'
+      ? normalizedBonusTypeNameResult.value
+      : normalizedBonusType;
+    const normalizedAdjustmentReason = normalizedAdjustmentReasonResult.value;
+    const employeeIdValue = parsedEmployeeId.value;
+    const payrollYearValue = parsedPayrollYear.value;
+    const payrollMonthValue = parsedPayrollMonth.value;
+    const amountValue = parsedAmount.value;
+    const originalRecordIdValue = parsedOriginalRecordId?.value ?? null;
+
     // 檢查員工是否存在
     const employee = await prisma.employee.findUnique({
-      where: { id: employeeId },
+      where: { id: employeeIdValue },
       select: { 
         id: true, 
         name: true, 
@@ -179,13 +332,13 @@ export async function POST(request: NextRequest) {
     const annualBonus = await prisma.employeeAnnualBonus.upsert({
       where: {
         employeeId_year: {
-          employeeId: employeeId,
-          year: payrollYear
+          employeeId: employeeIdValue,
+          year: payrollYearValue
         }
       },
       create: {
-        employeeId: employeeId,
-        year: payrollYear,
+        employeeId: employeeIdValue,
+        year: payrollYearValue,
         totalBonusAmount: 0,
         supplementaryPremium: 0
       },
@@ -199,7 +352,7 @@ export async function POST(request: NextRequest) {
     const supplementaryCalculation = calculateBonusSupplementaryPremium(
       insuredAmount,
       annualBonus.totalBonusAmount,
-      amount
+      amountValue
     );
 
     // 開始事務處理
@@ -207,24 +360,24 @@ export async function POST(request: NextRequest) {
       // 創建獎金記錄
       const bonusRecord = await tx.bonusRecord.create({
         data: {
-          employeeId,
+          employeeId: employeeIdValue,
           annualBonusId: annualBonus.id,
-          bonusType,
-          bonusTypeName: bonusTypeName || bonusType,
-          amount,
-          payrollYear,
-          payrollMonth,
+          bonusType: normalizedBonusType,
+          bonusTypeName: normalizedBonusTypeName,
+          amount: amountValue,
+          payrollYear: payrollYearValue,
+          payrollMonth: payrollMonthValue,
           insuredAmount,
           exemptThreshold: supplementaryCalculation.exemptThreshold,
           cumulativeBonusBefore: supplementaryCalculation.currentYearBonusTotal,
-          cumulativeBonusAfter: supplementaryCalculation.currentYearBonusTotal + amount,
+          cumulativeBonusAfter: supplementaryCalculation.currentYearBonusTotal + amountValue,
           calculationBase: supplementaryCalculation.calculationBase,
           supplementaryPremium: supplementaryCalculation.premiumAmount,
           premiumRate: supplementaryCalculation.premiumRate,
-          isAdjustment: !!originalRecordId,
-          adjustmentReason,
-          originalRecordId,
-          createdBy
+          isAdjustment: originalRecordIdValue !== null,
+          adjustmentReason: normalizedAdjustmentReason,
+          originalRecordId: originalRecordIdValue,
+          createdBy: user.employeeId
         },
         include: {
           employee: {
@@ -244,7 +397,7 @@ export async function POST(request: NextRequest) {
         where: { id: annualBonus.id },
         data: {
           totalBonusAmount: {
-            increment: amount
+            increment: amountValue
           },
           supplementaryPremium: {
             increment: supplementaryCalculation.premiumAmount
@@ -272,19 +425,78 @@ export async function POST(request: NextRequest) {
 
 export async function PUT(request: NextRequest) {
   try {
-    const body = await request.json();
-    const { id, amount, adjustmentReason, createdBy } = body;
+    const rateLimitResult = await checkRateLimit(request, '/api/bonuses');
+    if (!rateLimitResult.allowed) {
+      return NextResponse.json(
+        { error: '請求過於頻繁', retryAfter: rateLimitResult.retryAfter },
+        { status: 429, headers: { 'Retry-After': rateLimitResult.retryAfter?.toString() || '60' } }
+      );
+    }
 
-    if (!id || amount === undefined || !createdBy) {
+    const csrfResult = await validateCSRF(request);
+    if (!csrfResult.valid) {
+      return NextResponse.json({ error: 'CSRF驗證失敗' }, { status: 403 });
+    }
+
+    const user = await getUserFromRequest(request);
+    if (!user) {
+      return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
+    }
+
+    if (user.role !== 'ADMIN' && user.role !== 'HR') {
+      return NextResponse.json({ error: '無權限執行此操作' }, { status: 403 });
+    }
+
+    const parsedBody = await safeParseJSON(request);
+    if (!parsedBody.success) {
+      return NextResponse.json({ error: '請求內容格式無效' }, { status: 400 });
+    }
+
+    if (!isPlainObject(parsedBody.data)) {
+      return NextResponse.json({ error: '請求內容格式無效' }, { status: 400 });
+    }
+
+    const body = parsedBody.data;
+    const { id, amount, adjustmentReason } = body;
+
+    if (!id || amount === undefined) {
       return NextResponse.json(
         { success: false, error: '缺少必要欄位' },
         { status: 400 }
       );
     }
 
+    const parsedId = parseRequiredPositiveInteger(id, '獎金記錄ID');
+    if (!parsedId.isValid) {
+      return NextResponse.json(
+        { success: false, error: parsedId.error },
+        { status: 400 }
+      );
+    }
+
+    const parsedAmount = parseFiniteNumberValue(amount, 'amount');
+    if (!parsedAmount.isValid) {
+      return NextResponse.json(
+        { success: false, error: parsedAmount.error },
+        { status: 400 }
+      );
+    }
+
+    const normalizedAdjustmentReasonResult = normalizeOptionalNonEmptyString(adjustmentReason, 'adjustmentReason');
+    if (!normalizedAdjustmentReasonResult.isValid) {
+      return NextResponse.json(
+        { success: false, error: normalizedAdjustmentReasonResult.error },
+        { status: 400 }
+      );
+    }
+
+    const recordId = parsedId.value;
+    const amountValue = parsedAmount.value;
+    const normalizedAdjustmentReason = normalizedAdjustmentReasonResult.value;
+
     // 查詢原始記錄
     const originalRecord = await prisma.bonusRecord.findUnique({
-      where: { id },
+      where: { id: recordId },
       include: {
         employee: {
           select: { baseSalary: true }
@@ -300,7 +512,7 @@ export async function PUT(request: NextRequest) {
       );
     }
 
-    const amountDifference = amount - originalRecord.amount;
+    const amountDifference = amountValue - originalRecord.amount;
 
     // 重新計算補充保費 (使用調整後的累計金額)
     const newCumulativeBefore = originalRecord.cumulativeBonusBefore;
@@ -309,7 +521,7 @@ export async function PUT(request: NextRequest) {
     const supplementaryCalculation = calculateBonusSupplementaryPremium(
       originalRecord.insuredAmount,
       newCumulativeBefore,
-      amount
+      amountValue
     );
 
     const supplementaryDifference = supplementaryCalculation.premiumAmount - originalRecord.supplementaryPremium;
@@ -318,13 +530,13 @@ export async function PUT(request: NextRequest) {
     const result = await prisma.$transaction(async (tx) => {
       // 更新原記錄
       const updatedRecord = await tx.bonusRecord.update({
-        where: { id },
+        where: { id: recordId },
         data: {
-          amount,
+          amount: amountValue,
           cumulativeBonusAfter: newCumulativeAfter,
           calculationBase: supplementaryCalculation.calculationBase,
           supplementaryPremium: supplementaryCalculation.premiumAmount,
-          adjustmentReason,
+          adjustmentReason: normalizedAdjustmentReason,
         },
         include: {
           employee: {
@@ -375,6 +587,28 @@ export async function PUT(request: NextRequest) {
 
 export async function DELETE(request: NextRequest) {
   try {
+    const rateLimitResult = await checkRateLimit(request, '/api/bonuses');
+    if (!rateLimitResult.allowed) {
+      return NextResponse.json(
+        { error: '請求過於頻繁', retryAfter: rateLimitResult.retryAfter },
+        { status: 429, headers: { 'Retry-After': rateLimitResult.retryAfter?.toString() || '60' } }
+      );
+    }
+
+    const csrfResult = await validateCSRF(request);
+    if (!csrfResult.valid) {
+      return NextResponse.json({ error: 'CSRF驗證失敗' }, { status: 403 });
+    }
+
+    const user = await getUserFromRequest(request);
+    if (!user) {
+      return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
+    }
+
+    if (user.role !== 'ADMIN' && user.role !== 'HR') {
+      return NextResponse.json({ error: '無權限執行此操作' }, { status: 403 });
+    }
+
     const { searchParams } = new URL(request.url);
     const id = searchParams.get('id');
 
@@ -385,9 +619,19 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
+    const parsedId = parseIntegerQueryParam(id, { min: 1 });
+    if (!parsedId.isValid || parsedId.value === null) {
+      return NextResponse.json(
+        { success: false, error: '獎金記錄ID格式無效' },
+        { status: 400 }
+      );
+    }
+
+    const recordId = parsedId.value;
+
     // 查詢要刪除的記錄
     const recordToDelete = await prisma.bonusRecord.findUnique({
-      where: { id: parseInt(id) },
+      where: { id: recordId },
       include: { annualBonus: true }
     });
 
@@ -402,7 +646,7 @@ export async function DELETE(request: NextRequest) {
     await prisma.$transaction(async (tx) => {
       // 刪除記錄
       await tx.bonusRecord.delete({
-        where: { id: parseInt(id) }
+        where: { id: recordId }
       });
 
       // 更新年度累計 (減少對應金額)

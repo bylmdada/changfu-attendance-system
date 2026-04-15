@@ -3,13 +3,14 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { checkRateLimit } from '@/lib/rate-limit';
+import { safeParseJSON } from '@/lib/validation';
 
 // GET - 取得目前生效的假別規則設定
 export async function GET(request: NextRequest) {
   try {
     const user = await getUserFromRequest(request);
-    if (!user) {
-      return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
+    if (!user || user.role !== 'ADMIN') {
+      return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
     }
 
     // 取得目前生效的設定
@@ -95,7 +96,20 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
     }
 
-    const body = await request.json();
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的設定資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const body = parseResult.data;
+
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json({ error: '請提供有效的設定資料' }, { status: 400 });
+    }
+
     const {
       parentalLeaveFlexible,
       parentalLeaveMaxDays,
@@ -114,42 +128,59 @@ export async function POST(request: NextRequest) {
       compLeaveExpiryMonths,
       effectiveDate,
       description
-    } = body;
+    } = body as Record<string, unknown>;
 
     // 驗證必要欄位
-    if (!effectiveDate) {
+    const normalizedEffectiveDate = typeof effectiveDate === 'string' ? effectiveDate : '';
+
+    if (!normalizedEffectiveDate) {
       return NextResponse.json({ error: '請填寫生效日期' }, { status: 400 });
     }
 
-    // 將舊設定設為非作用中
-    await prisma.leaveRulesConfig.updateMany({
-      where: { isActive: true },
-      data: { isActive: false }
-    });
-
-    // 建立新設定
-    const config = await prisma.leaveRulesConfig.create({
-      data: {
-        parentalLeaveFlexible: parentalLeaveFlexible ?? true,
-        parentalLeaveMaxDays: parseInt(parentalLeaveMaxDays) || 30,
-        parentalLeaveCombinedMax: parseInt(parentalLeaveCombinedMax) || 60,
-        familyCareLeaveMaxDays: parseInt(familyCareLeaveMaxDays) || 7,
-        familyCareHourlyEnabled: familyCareHourlyEnabled ?? true,
-        familyCareHourlyMaxHours: parseInt(familyCareHourlyMaxHours) || 56,
-        familyCareNoDeductAttendance: familyCareNoDeductAttendance ?? true,
-        sickLeaveAnnualMax: parseInt(sickLeaveAnnualMax) || 30,
-        sickLeaveNoDeductDays: parseInt(sickLeaveNoDeductDays) || 10,
-        sickLeaveHalfPay: sickLeaveHalfPay ?? true,
-        annualLeaveRollover: annualLeaveRollover ?? false,
-        annualLeaveRolloverMax: parseInt(annualLeaveRolloverMax) || 0,
-        compLeaveRollover: compLeaveRollover ?? false,
-        compLeaveRolloverMax: parseInt(compLeaveRolloverMax) || 0,
-        compLeaveExpiryMonths: parseInt(compLeaveExpiryMonths) || 6,
-        effectiveDate: new Date(effectiveDate),
-        description: description || null,
-        isActive: true
+    const parseIntegerField = (value: unknown, fallback: number) => {
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        return Math.trunc(value);
       }
-    });
+
+      const parsed = Number.parseInt(String(value ?? ''), 10);
+      return Number.isNaN(parsed) ? fallback : parsed;
+    };
+
+    const parseBooleanField = (value: unknown, fallback: boolean) => {
+      return typeof value === 'boolean' ? value : fallback;
+    };
+
+    const newConfigData = {
+      parentalLeaveFlexible: parseBooleanField(parentalLeaveFlexible, true),
+      parentalLeaveMaxDays: parseIntegerField(parentalLeaveMaxDays, 30),
+      parentalLeaveCombinedMax: parseIntegerField(parentalLeaveCombinedMax, 60),
+      familyCareLeaveMaxDays: parseIntegerField(familyCareLeaveMaxDays, 7),
+      familyCareHourlyEnabled: parseBooleanField(familyCareHourlyEnabled, true),
+      familyCareHourlyMaxHours: parseIntegerField(familyCareHourlyMaxHours, 56),
+      familyCareNoDeductAttendance: parseBooleanField(familyCareNoDeductAttendance, true),
+      sickLeaveAnnualMax: parseIntegerField(sickLeaveAnnualMax, 30),
+      sickLeaveNoDeductDays: parseIntegerField(sickLeaveNoDeductDays, 10),
+      sickLeaveHalfPay: parseBooleanField(sickLeaveHalfPay, true),
+      annualLeaveRollover: parseBooleanField(annualLeaveRollover, false),
+      annualLeaveRolloverMax: parseIntegerField(annualLeaveRolloverMax, 0),
+      compLeaveRollover: parseBooleanField(compLeaveRollover, false),
+      compLeaveRolloverMax: parseIntegerField(compLeaveRolloverMax, 0),
+      compLeaveExpiryMonths: parseIntegerField(compLeaveExpiryMonths, 6),
+      effectiveDate: new Date(normalizedEffectiveDate),
+      description: typeof description === 'string' && description ? description : null,
+      isActive: true
+    };
+
+    // 使用交易避免舊設定先失效、但新設定建立失敗時留下空白狀態。
+    const [, config] = await prisma.$transaction([
+      prisma.leaveRulesConfig.updateMany({
+        where: { isActive: true },
+        data: { isActive: false }
+      }),
+      prisma.leaveRulesConfig.create({
+        data: newConfigData
+      })
+    ]);
 
     return NextResponse.json({
       success: true,

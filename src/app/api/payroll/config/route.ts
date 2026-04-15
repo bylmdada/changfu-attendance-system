@@ -3,6 +3,12 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { buildSuccessPayload } from '@/lib/api-response';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -29,7 +35,7 @@ export async function GET(request: NextRequest) {
       ]
     });
 
-    return NextResponse.json({ configs });
+    return NextResponse.json(buildSuccessPayload({ configs }));
   } catch (error) {
     console.error('獲取薪資項目配置失敗:', error);
     return NextResponse.json({ error: '系統錯誤' }, { status: 500 });
@@ -56,8 +62,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '無權限訪問' }, { status: 403 });
     }
 
-    const body = await request.json();
-    const { code, name, type, category, sortOrder, description } = body;
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json({ error: '無效的 JSON 格式' }, { status: 400 });
+    }
+
+    const body = parseResult.data;
+    const code = isPlainObject(body) && typeof body.code === 'string' ? body.code : undefined;
+    const name = isPlainObject(body) && typeof body.name === 'string' ? body.name : undefined;
+    const type = isPlainObject(body) && typeof body.type === 'string' ? body.type : undefined;
+    const category = isPlainObject(body) && typeof body.category === 'string' ? body.category : undefined;
+    const sortOrder = isPlainObject(body) && typeof body.sortOrder === 'number' ? body.sortOrder : undefined;
+    const description = isPlainObject(body) && typeof body.description === 'string' ? body.description : undefined;
 
     if (!code || !name || !type || !category) {
       return NextResponse.json({ error: '缺少必要欄位' }, { status: 400 });
@@ -83,7 +99,7 @@ export async function POST(request: NextRequest) {
       }
     });
 
-    return NextResponse.json({ config }, { status: 201 });
+    return NextResponse.json(buildSuccessPayload({ config }), { status: 201 });
   } catch (error) {
     console.error('創建薪資項目配置失敗:', error);
     return NextResponse.json({ error: '系統錯誤' }, { status: 500 });

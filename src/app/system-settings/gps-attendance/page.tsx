@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { MapPin, Settings, Save, Plus, Edit2, Trash2, ToggleLeft, ToggleRight, AlertTriangle, CheckCircle, Wifi, X } from 'lucide-react';
 import { DEPARTMENT_OPTIONS } from '@/constants/departments';
+import { buildAuthMeRequest, buildCookieSessionRequest } from '@/lib/admin-session-client';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import SystemNavbar from '@/components/SystemNavbar';
 
@@ -160,24 +161,13 @@ export default function GPSAttendanceSettings() {
   // 批量選擇狀態（權限）
   const [selectedPermissionIds, setSelectedPermissionIds] = useState<Set<number>>(new Set());
 
-  // Helper function to get auth headers
-  const getAuthHeaders = (): HeadersInit => {
-    if (typeof window === 'undefined') return { Authorization: 'Bearer admin-token' };
-    const token = localStorage.getItem('token');
-    const authHeader = token ? `Bearer ${token}` : 'Bearer admin-token';
-    console.log('Sending auth header:', authHeader);
-    return { Authorization: authHeader };
-  };
-
   // 載入用戶資訊和設定
   useEffect(() => {
     const fetchUserAndSettings = async () => {
       try {
         // 驗證用戶身份
-        const userResponse = await fetch('/api/auth/me', {
-          credentials: 'include',
-          headers: getAuthHeaders()
-        });
+        const authMeRequest = buildAuthMeRequest(window.location.origin);
+        const userResponse = await fetch(authMeRequest.url, authMeRequest.options);
         
         if (userResponse.ok) {
           const userData = await userResponse.json();
@@ -198,7 +188,8 @@ export default function GPSAttendanceSettings() {
         }
 
         // 載入GPS設定
-        const settingsResponse = await fetch('/api/system-settings/gps-attendance');
+        const settingsRequest = buildCookieSessionRequest(window.location.origin, '/api/system-settings/gps-attendance');
+        const settingsResponse = await fetch(settingsRequest.url, settingsRequest.options);
         if (settingsResponse.ok) {
           const settingsData = await settingsResponse.json();
           if (settingsData.settings) {
@@ -207,12 +198,8 @@ export default function GPSAttendanceSettings() {
         }
 
         // 載入允許位置
-        const locationsResponse = await fetch('/api/attendance/allowed-locations', {
-          headers: {
-            ...getAuthHeaders(),
-            'Content-Type': 'application/json'
-          }
-        });
+        const locationsRequest = buildCookieSessionRequest(window.location.origin, '/api/attendance/allowed-locations');
+        const locationsResponse = await fetch(locationsRequest.url, locationsRequest.options);
         if (locationsResponse.ok) {
           const locationsData = await locationsResponse.json();
           console.log('Locations response:', locationsData);
@@ -223,12 +210,8 @@ export default function GPSAttendanceSettings() {
         }
 
         // 載入 GPS 权限配置
-        const permissionsResponse = await fetch('/api/attendance/gps-permissions', {
-          headers: {
-            ...getAuthHeaders(),
-            'Content-Type': 'application/json'
-          }
-        });
+        const permissionsRequest = buildCookieSessionRequest(window.location.origin, '/api/attendance/gps-permissions');
+        const permissionsResponse = await fetch(permissionsRequest.url, permissionsRequest.options);
         if (permissionsResponse.ok) {
           const permissionsData = await permissionsResponse.json();
           console.log('GPS permissions response:', permissionsData);
@@ -239,12 +222,8 @@ export default function GPSAttendanceSettings() {
         }
 
         // 載入員工列表
-        const employeesResponse = await fetch('/api/employees', {
-          headers: {
-            ...getAuthHeaders(),
-            'Content-Type': 'application/json'
-          }
-        });
+        const employeesRequest = buildCookieSessionRequest(window.location.origin, '/api/employees');
+        const employeesResponse = await fetch(employeesRequest.url, employeesRequest.options);
         if (employeesResponse.ok) {
           const employeesData = await employeesResponse.json();
           console.log('Employees response:', employeesData);
@@ -355,12 +334,6 @@ export default function GPSAttendanceSettings() {
 
     try {
       const method = editingLocation ? 'PUT' : 'POST';
-      const headers = { 
-        'Content-Type': 'application/json',
-        ...getAuthHeaders()
-      };
-      
-      console.log('Request headers:', headers);
       console.log('Request method:', method);
       
       const response = await fetchJSONWithCSRF('/api/attendance/allowed-locations', {
@@ -546,22 +519,34 @@ export default function GPSAttendanceSettings() {
     }
 
     try {
-      const promises = Array.from(selectedLocationIds).map(id =>
+      const selectedIdList = Array.from(selectedLocationIds);
+      const promises = selectedIdList.map(id =>
         fetchJSONWithCSRF('/api/attendance/allowed-locations', {
           method: 'PUT',
           body: { id, isActive: activate }
         })
       );
 
-      await Promise.all(promises);
-      
+      const results = await Promise.all(promises);
+      const successfulIds = selectedIdList.filter((_, index) => results[index]?.ok);
+      const failedIds = selectedIdList.filter((_, index) => !results[index]?.ok);
+
+      if (successfulIds.length === 0) {
+        showToast('error', '批量操作失敗');
+        return;
+      }
+
+      const successfulIdSet = new Set(successfulIds);
       setAllowedLocations(locations =>
         locations.map(loc =>
-          selectedLocationIds.has(loc.id) ? { ...loc, isActive: activate } : loc
+          successfulIdSet.has(loc.id) ? { ...loc, isActive: activate } : loc
         )
       );
-      setSelectedLocationIds(new Set());
-      showToast('success', `已${activate ? '啟用' : '停用'} ${selectedLocationIds.size} 個位置`);
+      setSelectedLocationIds(new Set(failedIds));
+      showToast('success', `已${activate ? '啟用' : '停用'} ${successfulIds.length} 個位置`);
+      if (failedIds.length > 0) {
+        showToast('error', `另有 ${failedIds.length} 個位置操作失敗`);
+      }
     } catch (error) {
       console.error('批量操作失敗:', error);
       showToast('error', '批量操作失敗');
@@ -768,22 +753,34 @@ export default function GPSAttendanceSettings() {
     }
 
     try {
-      const promises = Array.from(selectedPermissionIds).map(id =>
+      const selectedIdList = Array.from(selectedPermissionIds);
+      const promises = selectedIdList.map(id =>
         fetchJSONWithCSRF('/api/attendance/gps-permissions', {
           method: 'PUT',
           body: { id, isEnabled: activate }
         })
       );
 
-      await Promise.all(promises);
-      
+      const results = await Promise.all(promises);
+      const successfulIds = selectedIdList.filter((_, index) => results[index]?.ok);
+      const failedIds = selectedIdList.filter((_, index) => !results[index]?.ok);
+
+      if (successfulIds.length === 0) {
+        showToast('error', '批量操作失敗');
+        return;
+      }
+
+      const successfulIdSet = new Set(successfulIds);
       setGpsPermissions(permissions =>
         permissions.map(perm =>
-          selectedPermissionIds.has(perm.id) ? { ...perm, isEnabled: activate } : perm
+          successfulIdSet.has(perm.id) ? { ...perm, isEnabled: activate } : perm
         )
       );
-      setSelectedPermissionIds(new Set());
-      showToast('success', `已${activate ? '啟用' : '停用'} ${selectedPermissionIds.size} 個權限`);
+      setSelectedPermissionIds(new Set(failedIds));
+      showToast('success', `已${activate ? '啟用' : '停用'} ${successfulIds.length} 個權限`);
+      if (failedIds.length > 0) {
+        showToast('error', `另有 ${failedIds.length} 個權限操作失敗`);
+      }
     } catch (error) {
       console.error('批量操作失敗:', error);
       showToast('error', '批量操作失敗');
@@ -1772,9 +1769,10 @@ export default function GPSAttendanceSettings() {
                       員工
                     </label>
                     <div className="relative">
-                      <div 
+                      <div
                         onClick={() => setShowEmployeeSelector(true)}
-                        className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white text-black cursor-pointer min-h-[42px] flex items-center justify-between"
+                        className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white text-black cursor-pointer flex items-center justify-between"
+                        style={{ minHeight: 42 }}
                       >
                         {permissionForm.employeeId ? (
                           <div>
