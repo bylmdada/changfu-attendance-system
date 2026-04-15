@@ -1,4 +1,26 @@
-/**
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+export function extractApiErrorMessage(payload: unknown, fallback: string): string {
+  if (typeof payload === 'string' && payload.trim()) {
+    return payload;
+  }
+
+  if (!isPlainObject(payload)) {
+    return fallback;
+  }
+
+  const candidates = [payload.error, payload.message, payload.details];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) {
+      return candidate;
+    }
+  }
+
+  return fallback;
+}/**
  * 統一 API 錯誤處理模組
  * 
  * 提供標準化的錯誤回應格式和錯誤類型定義

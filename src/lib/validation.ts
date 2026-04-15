@@ -294,6 +294,8 @@ export function validateQueryParams<T>(schema: z.ZodSchema<T>, searchParams: URL
   return validateRequest(schema, params);
 }
 
+export const EMPTY_BODY_PARSE_ERROR = 'empty_body';
+
 // 安全的JSON解析
 export async function safeParseJSON(request: Request): Promise<{
   success: boolean;
@@ -303,7 +305,7 @@ export async function safeParseJSON(request: Request): Promise<{
   try {
     const text = await request.text();
     if (!text.trim()) {
-      return { success: false, error: '請求體不能為空' };
+      return { success: false, error: EMPTY_BODY_PARSE_ERROR };
     }
     
     const data = JSON.parse(text) as Record<string, unknown>;

@@ -3,21 +3,14 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
 import { prisma } from '@/lib/database';
 
 export async function GET(request: NextRequest) {
   try {
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
-      return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
-    }
-
-    const decoded = await getUserFromToken(token);
+    const decoded = await getUserFromRequest(request);
     if (!decoded) {
-      return NextResponse.json({ error: '無效的認證令牌' }, { status: 401 });
+      return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
     const searchParams = request.nextUrl.searchParams;
@@ -36,6 +29,7 @@ export async function GET(request: NextRequest) {
     }
 
     const isAdmin = user.role === 'ADMIN' || user.role === 'HR';
+    const requestedEmployeeId = employeeId ? parseInt(employeeId) : undefined;
 
     // 取得該年度國定假日數量
     const holidaysCount = await prisma.holiday.count({
@@ -51,7 +45,7 @@ export async function GET(request: NextRequest) {
 
     // 個人統計
     if (!isAdmin || employeeId) {
-      const targetEmployeeId = employeeId ? parseInt(employeeId) : user.employeeId;
+      const targetEmployeeId = isAdmin ? requestedEmployeeId ?? user.employeeId : user.employeeId;
       
       if (!targetEmployeeId) {
         return NextResponse.json({ error: '找不到員工資料' }, { status: 404 });

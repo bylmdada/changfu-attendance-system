@@ -5,31 +5,25 @@ import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { canEmployeeClockIn } from '@/lib/schedule-confirm-service';
 import { isMobileClockingDevice, MOBILE_CLOCKING_REQUIRED_MESSAGE } from '@/lib/device-detection';
+import { getActiveAllowedLocations, getGPSSettingsFromDB, isClockLocationPayload, validateGpsClockLocation } from '@/lib/gps-attendance';
+import { getTaiwanTodayEnd, getTaiwanTodayStart, toTaiwanDateStr } from '@/lib/timezone';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 // GET - 獲取今日打卡狀態
 export async function GET(request: NextRequest) {
   try {
-    console.log('🔍 打卡狀態檢查開始');
-    
-    // 檢查可用的 cookies
-    const authToken = request.cookies.get('auth-token')?.value;
-    const token = request.cookies.get('token')?.value;
-    console.log('📋 可用的 Cookies:', { 
-      'auth-token': authToken ? '存在' : '不存在',
-      'token': token ? '存在' : '不存在'
-    });
-
     // 使用統一的身份驗證方式
     const userAuth = await getUserFromRequest(request);
-    console.log('🔐 身份驗證結果:', userAuth ? '成功' : '失敗');
     
     if (!userAuth) {
-      console.log('❌ 用戶未登入');
       return NextResponse.json({ error: '未登入' }, { status: 401 });
     }
 
     const userId = userAuth.userId;
-    console.log('👤 用戶 ID:', userId);
 
     // 獲取用戶的員工資料
     const user = await prisma.user.findUnique({
@@ -38,19 +32,13 @@ export async function GET(request: NextRequest) {
     });
 
     if (!user || !user.employee) {
-      console.log('❌ 找不到員工資料，用戶:', user?.id, '員工:', user?.employee?.id);
       return NextResponse.json({ error: '找不到員工資料' }, { status: 404 });
     }
 
-    console.log('👥 員工資料:', { id: user.employee.id, name: user.employee.name });
-
     // 獲取今日日期（使用台灣時區）
     const now = new Date();
-    const taiwanDate = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
-    const todayStart = new Date(Date.UTC(taiwanDate.getFullYear(), taiwanDate.getMonth(), taiwanDate.getDate()) - 8 * 60 * 60 * 1000);
-    const todayEnd = new Date(todayStart.getTime() + 24 * 60 * 60 * 1000);
-    
-    console.log('📅 今日日期範圍:', { start: todayStart, end: todayEnd });
+    const todayStart = getTaiwanTodayStart(now);
+    const todayEnd = getTaiwanTodayEnd(now);
 
     // 查找今日考勤記錄
     const todayAttendance = await prisma.attendanceRecord.findFirst({
@@ -63,19 +51,15 @@ export async function GET(request: NextRequest) {
       }
     });
 
-    console.log('📊 今日考勤記錄:', todayAttendance);
-
     const result = {
       hasClockIn: todayAttendance?.clockInTime != null,
       hasClockOut: todayAttendance?.clockOutTime != null,
       today: todayAttendance
     };
-
-    console.log('✅ 返回結果:', result);
     return NextResponse.json(result);
 
   } catch (error) {
-    console.error('💥 獲取打卡狀態錯誤:', error);
+    console.error('Failed to fetch attendance clock status', error);
     return NextResponse.json({ error: '系統錯誤' }, { status: 500 });
   }
 }
@@ -102,7 +86,26 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'CSRF驗證失敗' }, { status: 403 });
     }
 
-    const { type, location } = await request.json();
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '無效的打卡類型' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const body = parseResult.data;
+    if (!isPlainObject(body)) {
+      return NextResponse.json({ error: '無效的打卡類型' }, { status: 400 });
+    }
+
+    const type = typeof body.type === 'string' ? body.type : null;
+
+    if (body.location !== undefined && body.location !== null && !isClockLocationPayload(body.location)) {
+      return NextResponse.json({ error: 'GPS定位資料格式錯誤' }, { status: 400 });
+    }
+
+    const location = body.location === undefined || body.location === null ? null : body.location;
 
     if (!type || !['in', 'out'].includes(type)) {
       return NextResponse.json({ error: '無效的打卡類型' }, { status: 400 });
@@ -127,6 +130,24 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '找不到員工資料' }, { status: 404 });
     }
 
+    const gpsSettings = await getGPSSettingsFromDB();
+    const allowedLocations = gpsSettings.enabled ? await getActiveAllowedLocations() : [];
+    const gpsValidation = validateGpsClockLocation({
+      gpsSettings,
+      location,
+      allowedLocations,
+    });
+
+    if (!gpsValidation.ok) {
+      return NextResponse.json(
+        {
+          error: gpsValidation.error,
+          code: gpsValidation.code,
+        },
+        { status: 400 }
+      );
+    }
+
     // 班表確認檢查：員工必須已確認當月班表才能打卡
     const clockCheck = await canEmployeeClockIn(user.employee.id, new Date());
     if (!clockCheck.allowed) {
@@ -138,9 +159,8 @@ export async function POST(request: NextRequest) {
 
     // 獲取今日日期和當前時間（使用台灣時區）
     const now = new Date();
-    const taiwanNow = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
-    const todayStart = new Date(Date.UTC(taiwanNow.getFullYear(), taiwanNow.getMonth(), taiwanNow.getDate()) - 8 * 60 * 60 * 1000);
-    const todayEnd = new Date(todayStart.getTime() + 24 * 60 * 60 * 1000);
+    const todayStart = getTaiwanTodayStart(now);
+    const todayEnd = getTaiwanTodayEnd(now);
     const currentTime = now.toISOString();
 
     // 獲取今日已有的考勤記錄
@@ -204,7 +224,7 @@ export async function POST(request: NextRequest) {
         const settings = reasonPromptSetting ? JSON.parse(reasonPromptSetting.value) : { enabled: false };
         
         if (settings.enabled) {
-          const todayStr = todayStart.toISOString().split('T')[0];
+          const todayStr = toTaiwanDateStr(now);
           const todaySchedule = await prisma.schedule.findFirst({
             where: {
               employeeId: user.employee.id,
@@ -229,8 +249,8 @@ export async function POST(request: NextRequest) {
             }
           }
         }
-      } catch (e) {
-        console.warn('檢查提早打卡設定失敗:', e);
+      } catch {
+        console.warn('檢查提早打卡設定失敗');
       }
 
       return NextResponse.json({ 
@@ -314,7 +334,7 @@ export async function POST(request: NextRequest) {
         
         if (settings.enabled) {
           // 查詢今天的班表
-          const todayStr = todayStart.toISOString().split('T')[0];
+          const todayStr = toTaiwanDateStr(now);
           const todaySchedule = await prisma.schedule.findFirst({
             where: {
               employeeId: user.employee.id,
@@ -343,8 +363,8 @@ export async function POST(request: NextRequest) {
             }
           }
         }
-      } catch (e) {
-        console.warn('檢查延後打卡設定失敗:', e);
+      } catch {
+        console.warn('檢查延後打卡設定失敗');
       }
 
       return NextResponse.json({ 
@@ -360,7 +380,7 @@ export async function POST(request: NextRequest) {
     }
 
   } catch (error) {
-    console.error('打卡錯誤:', error);
+    console.error('Failed to process attendance clock request', error);
     return NextResponse.json({ error: '系統錯誤，請稍後再試' }, { status: 500 });
   }
 }

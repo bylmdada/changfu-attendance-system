@@ -9,7 +9,41 @@ interface BatchApproveBarProps {
   apiEndpoint: string;
   onSuccess: () => void;
   onClear: () => void;
+  onSelectionChange?: (ids: number[]) => void;
   itemName?: string;
+  requireRejectReason?: boolean;
+}
+
+function extractFailedIds(payload: unknown): number[] {
+  if (!payload || typeof payload !== 'object') {
+    return [];
+  }
+
+  const data = payload as {
+    failedIds?: unknown;
+    errors?: unknown;
+  };
+
+  if (Array.isArray(data.failedIds)) {
+    return data.failedIds
+      .map((id) => (typeof id === 'number' && Number.isInteger(id) ? id : Number(id)))
+      .filter((id): id is number => Number.isInteger(id) && id > 0);
+  }
+
+  if (!Array.isArray(data.errors)) {
+    return [];
+  }
+
+  return data.errors
+    .flatMap((error) => {
+      if (typeof error !== 'string') {
+        return [];
+      }
+
+      const match = error.match(/ID\s+(\d+):/i);
+      return match ? [Number(match[1])] : [];
+    })
+    .filter((id) => Number.isInteger(id) && id > 0);
 }
 
 export default function BatchApproveBar({
@@ -17,7 +51,9 @@ export default function BatchApproveBar({
   apiEndpoint,
   onSuccess,
   onClear,
-  itemName = '申請'
+  onSelectionChange,
+  itemName = '申請',
+  requireRejectReason = true,
 }: BatchApproveBarProps) {
   const [loading, setLoading] = useState(false);
   const [remarks, setRemarks] = useState('');
@@ -30,7 +66,7 @@ export default function BatchApproveBar({
   const handleBatchAction = async (action: 'APPROVED' | 'REJECTED') => {
     if (loading) return;
     
-    if (action === 'REJECTED' && !remarks.trim()) {
+    if (action === 'REJECTED' && requireRejectReason && !remarks.trim()) {
       setShowRemarks(true);
       return;
     }
@@ -42,19 +78,37 @@ export default function BatchApproveBar({
         body: { 
           ids: selectedIds, 
           action,
-          reason: action === 'REJECTED' ? remarks : undefined  // 改用 reason
+          reason: action === 'REJECTED' && requireRejectReason ? remarks : undefined,
+          remarks: action === 'REJECTED' && requireRejectReason ? remarks : undefined,
         }
       });
 
       if (response.ok) {
         const data = await response.json();
-        // 使用 API 返回的 message 或自己組合訊息
-        const successCount = data.successCount || data.count || selectedIds.length;
+        const failedIds = extractFailedIds(data);
+        const rawSuccessCount =
+          typeof data.successCount === 'number'
+            ? data.successCount
+            : typeof data.count === 'number'
+              ? data.count
+              : selectedIds.length - failedIds.length;
+        const successCount = Math.max(0, rawSuccessCount);
+
+        if (successCount === 0) {
+          alert(data.error || '批次操作失敗');
+          return;
+        }
+
         alert(data.message || `已${action === 'APPROVED' ? '批准' : '拒絕'} ${successCount} 筆${itemName}`);
         setRemarks('');
         setShowRemarks(false);
         onSuccess();
-        onClear();
+
+        if (failedIds.length > 0 && onSelectionChange) {
+          onSelectionChange(failedIds);
+        } else {
+          onClear();
+        }
       } else {
         const error = await response.json();
         alert(error.error || '操作失敗');
@@ -123,7 +177,7 @@ export default function BatchApproveBar({
                 批次批准
               </button>
               <button
-                onClick={() => setShowRemarks(true)}
+                onClick={() => requireRejectReason ? setShowRemarks(true) : handleBatchAction('REJECTED')}
                 disabled={loading}
                 className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50"
               >

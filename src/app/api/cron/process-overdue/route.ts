@@ -16,21 +16,31 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { processOverdueApprovals, getOverdueSettings } from '@/lib/approval-scheduler';
 
-// 安全驗證用的 secret（可從環境變數讀取）
-const CRON_SECRET = process.env.CRON_SECRET || 'changfu-cron-2024';
+function getConfiguredCronSecret() {
+  const secret = process.env.CRON_SECRET?.trim();
+  return secret ? secret : null;
+}
+
+function hasValidCronSecret(request: NextRequest, configuredSecret: string | null) {
+  if (!configuredSecret) {
+    return false;
+  }
+
+  const authHeader = request.headers.get('Authorization');
+  const headerSecret = request.headers.get('x-cron-secret');
+  const querySecret = request.nextUrl.searchParams.get('secret');
+
+  return headerSecret === configuredSecret || querySecret === configuredSecret || authHeader === `Bearer ${configuredSecret}`;
+}
 
 export async function GET(request: NextRequest) {
   try {
-    // 驗證呼叫來源（簡易驗證）
-    const authHeader = request.headers.get('Authorization');
-    const cronSecret = request.headers.get('x-cron-secret') || 
-                       request.nextUrl.searchParams.get('secret');
-
     // Vercel Cron 會帶有特殊 header
     const isVercelCron = request.headers.get('x-vercel-cron') === '1';
+    const configuredSecret = getConfiguredCronSecret();
     
     // 驗證權限
-    if (!isVercelCron && cronSecret !== CRON_SECRET && authHeader !== `Bearer ${CRON_SECRET}`) {
+    if (!isVercelCron && !hasValidCronSecret(request, configuredSecret)) {
       return NextResponse.json(
         { error: '未授權', message: '請提供有效的 cron secret' },
         { status: 401 }

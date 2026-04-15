@@ -81,19 +81,12 @@ export default function BonusManagementPage() {
   const [annualSummary, setAnnualSummary] = useState<AnnualSummary | null>(null);
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
 
-  // 獲取認證 headers
-  const getAuthHeaders = (): HeadersInit => {
-    const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
-    return token ? { 'Authorization': `Bearer ${token}` } : {};
-  };
-
   // 獲取當前用戶
   useEffect(() => {
     const fetchCurrentUser = async () => {
       try {
         const response = await fetch('/api/auth/me', {
-          credentials: 'include',
-          headers: getAuthHeaders()
+          credentials: 'include'
         });
         if (response.ok) {
           const data = await response.json();
@@ -127,7 +120,6 @@ export default function BonusManagementPage() {
   // 載入員工列表
   useEffect(() => {
     fetchEmployees();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // 載入獎金記錄
@@ -139,8 +131,7 @@ export default function BonusManagementPage() {
   const fetchEmployees = async () => {
     try {
       const response = await fetch('/api/employees', {
-        credentials: 'include',
-        headers: getAuthHeaders()
+        credentials: 'include'
       });
       if (response.ok) {
         const data = await response.json();
@@ -161,8 +152,7 @@ export default function BonusManagementPage() {
       if (filters.month) params.append('month', filters.month);
 
       const response = await fetch(`/api/bonuses?${params}`, {
-        credentials: 'include',
-        headers: getAuthHeaders()
+        credentials: 'include'
       });
       if (response.ok) {
         const data = await response.json();

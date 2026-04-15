@@ -2,9 +2,14 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
 
 // POST - 手動調整員工補休餘額
 export async function POST(request: NextRequest) {
@@ -20,31 +25,49 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: csrfResult.error || 'CSRF 驗證失敗' }, { status: 403 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const user = await getUserFromRequest(request);
+    if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded || !['ADMIN', 'HR'].includes(decoded.role)) {
+    if (!['ADMIN', 'HR'].includes(user.role)) {
       return NextResponse.json({ error: '需要管理員或人資權限' }, { status: 403 });
     }
 
-    const body = await request.json();
-    const { employeeId, type, hours, reason } = body;
+    const parsedBody = await safeParseJSON(request);
+    if (!parsedBody.success) {
+      const error = parsedBody.error === 'empty_body'
+        ? '請提供有效的補休調整資料'
+        : '無效的 JSON 格式';
+      return NextResponse.json({ error }, { status: 400 });
+    }
 
-    if (!employeeId || !type || !hours || !reason) {
+    if (!isPlainObject(parsedBody.data)) {
+      const error = '請提供有效的補休調整資料';
+      return NextResponse.json({ error }, { status: 400 });
+    }
+
+    const body = parsedBody.data;
+    const rawEmployeeId = body.employeeId;
+    const employeeId = typeof rawEmployeeId === 'number'
+      ? rawEmployeeId
+      : typeof rawEmployeeId === 'string' && rawEmployeeId.trim()
+        ? Number(rawEmployeeId)
+        : NaN;
+    const type = body.type === 'add' || body.type === 'subtract' ? body.type : '';
+    const hours = typeof body.hours === 'number'
+      ? body.hours
+      : typeof body.hours === 'string' && body.hours.trim()
+        ? Number(body.hours)
+        : NaN;
+    const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+
+    if (!Number.isInteger(employeeId) || employeeId <= 0 || !type || !Number.isFinite(hours) || !reason) {
       return NextResponse.json({ error: '缺少必要參數' }, { status: 400 });
     }
 
-    if (!['add', 'subtract'].includes(type)) {
-      return NextResponse.json({ error: '無效的調整類型' }, { status: 400 });
-    }
-
-    const adjustHours = parseFloat(hours);
-    if (isNaN(adjustHours) || adjustHours <= 0) {
+    const adjustHours = hours;
+    if (adjustHours <= 0) {
       return NextResponse.json({ error: '無效的時數' }, { status: 400 });
     }
 
@@ -56,12 +79,12 @@ export async function POST(request: NextRequest) {
     const result = await prisma.$transaction(async (tx) => {
       // 取得或建立餘額記錄
       let balance = await tx.compLeaveBalance.findUnique({
-        where: { employeeId: parseInt(employeeId) }
+        where: { employeeId }
       });
 
       if (!balance) {
         balance = await tx.compLeaveBalance.create({
-          data: { employeeId: parseInt(employeeId) }
+          data: { employeeId }
         });
       }
 
@@ -86,7 +109,7 @@ export async function POST(request: NextRequest) {
 
       // 更新餘額
       const updatedBalance = await tx.compLeaveBalance.update({
-        where: { employeeId: parseInt(employeeId) },
+        where: { employeeId },
         data: {
           totalEarned: newTotalEarned,
           totalUsed: newTotalUsed,
@@ -97,7 +120,7 @@ export async function POST(request: NextRequest) {
       // 建立交易記錄
       await tx.compLeaveTransaction.create({
         data: {
-          employeeId: parseInt(employeeId),
+          employeeId,
           transactionType,
           hours: adjustHours,
           isFrozen: true,

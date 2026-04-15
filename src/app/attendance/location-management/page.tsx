@@ -2,6 +2,8 @@
 
 import { useState, useEffect } from 'react';
 import { MapPin, Plus, Edit2, Trash2, Save, X, CheckCircle, XCircle } from 'lucide-react';
+import { extractApiErrorMessage } from '@/lib/api-error';
+import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 
 interface AllowedLocation {
   id: number;
@@ -92,10 +94,9 @@ export default function LocationManagement() {
     };
 
     try {
-      const response = await fetch('/api/attendance/allowed-locations', {
+      const response = await fetchJSONWithCSRF('/api/attendance/allowed-locations', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newLocation)
+        body: newLocation
       });
 
       if (response.ok) {
@@ -106,7 +107,7 @@ export default function LocationManagement() {
         alert('位置添加成功');
       } else {
         const error = await response.json();
-        alert(`添加失敗: ${error.message}`);
+        alert(`添加失敗: ${extractApiErrorMessage(error, '新增位置失敗')}`);
       }
     } catch (error) {
       console.error('添加位置失敗:', error);
@@ -128,10 +129,9 @@ export default function LocationManagement() {
     };
 
     try {
-      const response = await fetch('/api/attendance/allowed-locations', {
+      const response = await fetchJSONWithCSRF('/api/attendance/allowed-locations', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updatedLocation)
+        body: updatedLocation
       });
 
       if (response.ok) {
@@ -144,7 +144,7 @@ export default function LocationManagement() {
         alert('位置更新成功');
       } else {
         const error = await response.json();
-        alert(`更新失敗: ${error.message}`);
+        alert(`更新失敗: ${extractApiErrorMessage(error, '更新位置失敗')}`);
       }
     } catch (error) {
       console.error('更新位置失敗:', error);
@@ -157,10 +157,9 @@ export default function LocationManagement() {
     if (!confirm('確定要刪除這個位置嗎？')) return;
 
     try {
-      const response = await fetch('/api/attendance/allowed-locations', {
+      const response = await fetchJSONWithCSRF('/api/attendance/allowed-locations', {
         method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: locationId })
+        body: { id: locationId }
       });
 
       if (response.ok) {
@@ -168,7 +167,7 @@ export default function LocationManagement() {
         alert('位置刪除成功');
       } else {
         const error = await response.json();
-        alert(`刪除失敗: ${error.message}`);
+        alert(`刪除失敗: ${extractApiErrorMessage(error, '刪除位置失敗')}`);
       }
     } catch (error) {
       console.error('刪除位置失敗:', error);

@@ -71,15 +71,19 @@ export async function updateOverdueSettings(newSettings: Partial<OverdueSettings
   }
 }
 
+interface ProcessOverdueApprovalOptions {
+  forceRun?: boolean;
+}
+
 /**
  * 處理逾期項目主函數
  * 建議由 cron job 每小時或每日執行
  */
-export async function processOverdueApprovals() {
+export async function processOverdueApprovals(options: ProcessOverdueApprovalOptions = {}) {
   const settings = await getOverdueSettings();
 
   // 如果功能未啟用，直接返回
-  if (!settings.enabled) {
+  if (!settings.enabled && !options.forceRun) {
     console.log('⏸️ 逾期自動處理功能未啟用');
     return { 
       skipped: true, 

@@ -1,11 +1,30 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
 import { notifyOvertimeApproval } from '@/lib/email';
 import { calculateOvertimePayForRequest, OvertimeType } from '@/lib/salary-utils';
 import { toTaiwanDateStr, getTaiwanYearMonth } from '@/lib/timezone';
 import { notifyHRAfterManagerReview } from '@/lib/hr-notification';
 import { getApprovalWorkflow } from '@/lib/approval-workflow';
+import { validateCSRF } from '@/lib/csrf';
+import { parseIntegerQueryParam } from '@/lib/query-params';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+async function getManagedDepartments(employeeId: number): Promise<string[]> {
+  const records = await prisma.departmentManager.findMany({
+    where: {
+      employeeId,
+      isActive: true,
+    },
+    select: { department: true },
+  });
+
+  return records.map((record) => record.department).filter(Boolean);
+}
 
 // 審核或編輯加班申請
 export async function PATCH(
@@ -13,20 +32,48 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const csrfValidation = await validateCSRF(request);
+    if (!csrfValidation.valid) {
+      return NextResponse.json({ error: `CSRF驗證失敗: ${csrfValidation.error}` }, { status: 403 });
+    }
+
+    const user = await getUserFromRequest(request);
+    if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded) {
-      return NextResponse.json({ error: '無效的認證令牌' }, { status: 401 });
+    const { id } = await params;
+    const overtimeRequestIdResult = parseIntegerQueryParam(id, { min: 1, max: 99999999 });
+    if (!overtimeRequestIdResult.isValid || overtimeRequestIdResult.value === null) {
+      return NextResponse.json({ error: '加班申請 ID 格式錯誤' }, { status: 400 });
+    }
+    const overtimeRequestId = overtimeRequestIdResult.value;
+
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的加班申請資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
     }
 
-    const { id } = await params;
-    const overtimeRequestId = parseInt(id);
+    const body = parseResult.data;
+    if (!isPlainObject(body)) {
+      return NextResponse.json({ error: '請提供有效的加班申請資料' }, { status: 400 });
+    }
+
+    const requestedStatus = typeof body.status === 'string' ? body.status : undefined;
+    const requestedOpinion = typeof body.opinion === 'string' ? body.opinion : undefined;
+    const note = typeof body.note === 'string' ? body.note : undefined;
+    const requestedOvertimeType = typeof body.overtimeType === 'string'
+      ? body.overtimeType as OvertimeType
+      : undefined;
+    const rejectionReason = typeof body.rejectionReason === 'string' ? body.rejectionReason : undefined;
+    const overtimeDate = typeof body.overtimeDate === 'string' ? body.overtimeDate : undefined;
+    const startTime = typeof body.startTime === 'string' ? body.startTime : undefined;
+    const endTime = typeof body.endTime === 'string' ? body.endTime : undefined;
+    const reason = typeof body.reason === 'string' ? body.reason : undefined;
+    const workContent = typeof body.workContent === 'string' ? body.workContent : undefined;
 
     // 查找加班申請
     const existing = await prisma.overtimeRequest.findUnique({
@@ -38,20 +85,27 @@ export async function PATCH(
       return NextResponse.json({ error: '找不到加班申請' }, { status: 404 });
     }
 
-    const body = await request.json();
-
     // 若傳入 status 或 opinion，視為審核
-    if (typeof body.status === 'string' || typeof body.opinion === 'string') {
+    if (requestedStatus || requestedOpinion) {
       // 主管審核（提供意見，轉交 Admin）
-      if (decoded.role === 'MANAGER' && existing.status === 'PENDING') {
-        const opinion = body.opinion as 'AGREE' | 'DISAGREE';
-        if (!['AGREE', 'DISAGREE'].includes(opinion)) {
+      if (user.role === 'MANAGER' && existing.status === 'PENDING') {
+        const managedDepartments = await getManagedDepartments(user.employeeId);
+        if (
+          managedDepartments.length === 0 ||
+          !existing.employee.department ||
+          !managedDepartments.includes(existing.employee.department)
+        ) {
+          return NextResponse.json({ error: '無權限審核此部門的加班申請' }, { status: 403 });
+        }
+
+        const opinion = requestedOpinion as 'AGREE' | 'DISAGREE';
+        if (!['AGREE', 'DISAGREE'].includes(opinion ?? '')) {
           return NextResponse.json({ error: '請選擇同意或不同意' }, { status: 400 });
         }
 
         // 取得主管資訊
         const manager = await prisma.employee.findUnique({
-          where: { id: decoded.employeeId },
+          where: { id: user.employeeId },
           select: { name: true }
         });
 
@@ -59,9 +113,9 @@ export async function PATCH(
           where: { id: overtimeRequestId },
           data: {
             status: 'PENDING_ADMIN',
-            managerReviewerId: decoded.employeeId,
+            managerReviewerId: user.employeeId,
             managerOpinion: opinion,
-            managerNote: body.note || null,
+            managerNote: note || null,
             managerReviewedAt: new Date()
           }
         });
@@ -76,7 +130,7 @@ export async function PATCH(
             employeeDepartment: existing.employee.department || '未指定',
             managerName: manager?.name || '主管',
             managerOpinion: opinion,
-            managerNote: body.note
+            managerNote: note
           });
         }
 
@@ -87,10 +141,10 @@ export async function PATCH(
       }
 
       // Admin 最終決核
-      if (decoded.role === 'ADMIN') {
-        const { status } = body as { status: 'APPROVED' | 'REJECTED' };
+      if (user.role === 'ADMIN') {
+        const status = requestedStatus as 'APPROVED' | 'REJECTED';
 
-        if (!['APPROVED', 'REJECTED'].includes(status)) {
+        if (!['APPROVED', 'REJECTED'].includes(status ?? '')) {
           return NextResponse.json({ error: '無效的審核狀態' }, { status: 400 });
         }
 
@@ -105,7 +159,7 @@ export async function PATCH(
         let overtimeType: OvertimeType = 'WEEKDAY';
 
         if (status === 'APPROVED' && existing.compensationType === 'OVERTIME_PAY') {
-          overtimeType = (body.overtimeType as OvertimeType) || 'WEEKDAY';
+          overtimeType = requestedOvertimeType || 'WEEKDAY';
           
           const payResult = await calculateOvertimePayForRequest(
             existing.employeeId,
@@ -115,58 +169,80 @@ export async function PATCH(
           );
 
           if (payResult.success) {
-            overtimePay = payResult.overtimePay || null;
-            hourlyRateUsed = payResult.hourlyRate || null;
+            overtimePay = payResult.overtimePay ?? null;
+            hourlyRateUsed = payResult.hourlyRate ?? null;
           } else {
             console.error('計算加班費失敗:', payResult.error);
+            return NextResponse.json(
+              { error: `加班費計算失敗：${payResult.error || '無法取得員工薪資資料'}` },
+              { status: 400 }
+            );
           }
         }
 
-        const updatedOvertimeRequest = await prisma.overtimeRequest.update({
-          where: { id: overtimeRequestId },
-          data: {
-            status,
-            approvedBy: decoded.employeeId,
-            approvedAt: new Date(),
-            overtimeType: overtimeType || undefined,
-            overtimePay: overtimePay || undefined,
-            hourlyRateUsed: hourlyRateUsed || undefined
-          },
-          include: {
-            employee: {
-              select: { id: true, employeeId: true, name: true, department: true, position: true }
-            }
-          }
-        });
+        const updatedOvertimeRequest = status === 'APPROVED' && existing.compensationType === 'COMP_LEAVE'
+          ? await prisma.$transaction(async (tx) => {
+              const updatedRequest = await tx.overtimeRequest.update({
+                where: { id: overtimeRequestId },
+                data: {
+                  status,
+                  approvedBy: user.employeeId,
+                  approvedAt: new Date(),
+                  overtimeType: overtimeType || undefined,
+                  overtimePay: overtimePay || undefined,
+                  hourlyRateUsed: hourlyRateUsed || undefined
+                },
+                include: {
+                  employee: {
+                    select: { id: true, employeeId: true, name: true, department: true, position: true }
+                  }
+                }
+              });
 
-        // 審核通過時，累積補休時數
-        if (status === 'APPROVED' && existing.compensationType === 'COMP_LEAVE') {
-          const yearMonth = getTaiwanYearMonth(new Date(existing.overtimeDate));
-          
-          await prisma.compLeaveTransaction.create({
-            data: {
-              employeeId: existing.employeeId,
-              transactionType: 'EARN',
-              hours: existing.totalHours,
-              referenceId: overtimeRequestId,
-              referenceType: 'OVERTIME',
-              yearMonth,
-              description: `加班審核通過 - ${existing.reason}`,
-              isFrozen: false
-            }
-          });
+              const yearMonth = getTaiwanYearMonth(new Date(existing.overtimeDate));
 
-          await prisma.compLeaveBalance.upsert({
-            where: { employeeId: existing.employeeId },
-            update: {
-              pendingEarn: { increment: existing.totalHours }
-            },
-            create: {
-              employeeId: existing.employeeId,
-              pendingEarn: existing.totalHours
-            }
-          });
-        }
+              await tx.compLeaveTransaction.create({
+                data: {
+                  employeeId: existing.employeeId,
+                  transactionType: 'EARN',
+                  hours: existing.totalHours,
+                  referenceId: overtimeRequestId,
+                  referenceType: 'OVERTIME',
+                  yearMonth,
+                  description: `加班審核通過 - ${existing.reason}`,
+                  isFrozen: false
+                }
+              });
+
+              await tx.compLeaveBalance.upsert({
+                where: { employeeId: existing.employeeId },
+                update: {
+                  pendingEarn: { increment: existing.totalHours }
+                },
+                create: {
+                  employeeId: existing.employeeId,
+                  pendingEarn: existing.totalHours
+                }
+              });
+
+              return updatedRequest;
+            })
+          : await prisma.overtimeRequest.update({
+              where: { id: overtimeRequestId },
+              data: {
+                status,
+                approvedBy: user.employeeId,
+                approvedAt: new Date(),
+                overtimeType: overtimeType || undefined,
+                overtimePay: overtimePay || undefined,
+                hourlyRateUsed: hourlyRateUsed || undefined
+              },
+              include: {
+                employee: {
+                  select: { id: true, employeeId: true, name: true, department: true, position: true }
+                }
+              }
+            });
 
         // 發送審核結果通知
         try {
@@ -177,7 +253,7 @@ export async function PATCH(
             approved: status === 'APPROVED',
             overtimeDate: toTaiwanDateStr(existing.overtimeDate),
             hours: existing.totalHours,
-            reason: body.rejectionReason,
+            reason: rejectionReason,
           });
         } catch (notifyError) {
           console.error('發送通知失敗:', notifyError);
@@ -199,17 +275,9 @@ export async function PATCH(
       return NextResponse.json({ error: '僅能修改待審核的申請' }, { status: 400 });
     }
 
-    if (existing.employeeId !== decoded.employeeId && decoded.role !== 'ADMIN' && decoded.role !== 'HR') {
+    if (existing.employeeId !== user.employeeId && user.role !== 'ADMIN' && user.role !== 'HR') {
       return NextResponse.json({ error: '無權限修改此申請' }, { status: 403 });
     }
-
-    const { overtimeDate, startTime, endTime, reason, workContent } = body as Partial<{
-      overtimeDate: string;
-      startTime: string;
-      endTime: string;
-      reason: string;
-      workContent: string;
-    }>;
 
     // 驗證變更（若提供）
     if (startTime) {
@@ -273,20 +341,22 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const csrfValidation = await validateCSRF(request);
+    if (!csrfValidation.valid) {
+      return NextResponse.json({ error: `CSRF驗證失敗: ${csrfValidation.error}` }, { status: 403 });
+    }
+
+    const user = await getUserFromRequest(request);
+    if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded) {
-      return NextResponse.json({ error: '無效的認證令牌' }, { status: 401 });
-    }
-
     const { id } = await params;
-    const overtimeRequestId = parseInt(id);
+    const overtimeRequestIdResult = parseIntegerQueryParam(id, { min: 1, max: 99999999 });
+    if (!overtimeRequestIdResult.isValid || overtimeRequestIdResult.value === null) {
+      return NextResponse.json({ error: '加班申請 ID 格式錯誤' }, { status: 400 });
+    }
+    const overtimeRequestId = overtimeRequestIdResult.value;
 
     // 查找加班申請
     const overtimeRequest = await prisma.overtimeRequest.findUnique({
@@ -298,8 +368,8 @@ export async function DELETE(
     }
 
     // 只有申請人或管理員可以刪除
-    if (overtimeRequest.employeeId !== decoded.employeeId && 
-        decoded.role !== 'ADMIN' && decoded.role !== 'HR') {
+    if (overtimeRequest.employeeId !== user.employeeId && 
+        user.role !== 'ADMIN' && user.role !== 'HR') {
       return NextResponse.json({ error: '無權限執行此操作' }, { status: 403 });
     }
 

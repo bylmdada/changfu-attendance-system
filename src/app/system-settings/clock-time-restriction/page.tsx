@@ -4,6 +4,10 @@ import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { Power, PowerOff, Clock } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
+import {
+  buildAuthMeRequest,
+  buildClockTimeRestrictionRequest,
+} from '@/lib/clock-time-restriction-client';
 import SystemNavbar from '@/components/SystemNavbar';
 
 interface ClockTimeRestrictionSettings {
@@ -35,18 +39,11 @@ export default function ClockTimeRestrictionPage() {
     };
   } | null>(null);
 
-  const getAuthHeaders = (): HeadersInit => {
-    if (typeof window === 'undefined') return {};
-    const token = localStorage.getItem('token');
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  };
-
   const loadSettings = useCallback(async () => {
     try {
-      const response = await fetch('/api/system-settings/clock-time-restriction', {
-        credentials: 'include',
-        headers: getAuthHeaders()
-      });
+      const origin = window.location.origin;
+      const settingsRequest = buildClockTimeRestrictionRequest(origin);
+      const response = await fetch(settingsRequest.url, settingsRequest.options);
 
       if (response.ok) {
         const data = await response.json();
@@ -62,10 +59,9 @@ export default function ClockTimeRestrictionPage() {
   useEffect(() => {
     const fetchUser = async () => {
       try {
-        const response = await fetch('/api/auth/me', {
-          credentials: 'include',
-          headers: getAuthHeaders()
-        });
+        const origin = window.location.origin;
+        const authMeRequest = buildAuthMeRequest(origin);
+        const response = await fetch(authMeRequest.url, authMeRequest.options);
         
         if (response.ok) {
           const userData = await response.json();

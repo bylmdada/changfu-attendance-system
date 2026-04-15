@@ -1,9 +1,30 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getUserFromRequest } from '@/lib/auth';
 import { prisma } from '@/lib/database';
+import { getManageableDepartments } from '@/lib/schedule-management-permissions';
 import bcrypt from 'bcryptjs';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { parseIntegerQueryParam } from '@/lib/query-params';
+import { safeParseJSON } from '@/lib/validation';
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function parsePayrollNumber(value: unknown): number | null {
+  const parsedValue = typeof value === 'number'
+    ? value
+    : typeof value === 'string'
+      ? Number(value)
+      : Number.NaN;
+
+  return Number.isFinite(parsedValue) && parsedValue >= 0 ? parsedValue : null;
+}
+
+function isValidDateInput(value: unknown): value is string {
+  return isNonEmptyString(value) && !Number.isNaN(Date.parse(value));
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -20,32 +41,7 @@ export async function GET(request: NextRequest) {
 
     const isFullAdmin = user.role === 'ADMIN' || user.role === 'HR';
     
-    // 計算可管理的部門/據點列表
-    let manageableLocations: string[] = [];
-    
-    if (!isFullAdmin && user.employeeId) {
-      // 1. 部門主管：可管理自己部門
-      const managerRecord = await prisma.departmentManager.findFirst({
-        where: { employeeId: user.employeeId, isActive: true }
-      });
-      if (managerRecord) {
-        manageableLocations.push(managerRecord.department);
-      }
-      
-      // 2. 授權員工：可管理 scheduleManagement 中的據點
-      const permRecord = await prisma.attendancePermission.findUnique({
-        where: { employeeId: user.employeeId }
-      });
-      if (permRecord?.permissions) {
-        const permissions = permRecord.permissions as { scheduleManagement?: string[] };
-        if (Array.isArray(permissions.scheduleManagement)) {
-          manageableLocations.push(...permissions.scheduleManagement);
-        }
-      }
-      
-      // 去重
-      manageableLocations = [...new Set(manageableLocations)];
-    }
+    const manageableLocations = await getManageableDepartments(user);
 
     // 非管理員且無任何管理權限無權限
     if (!isFullAdmin && manageableLocations.length === 0) {
@@ -53,8 +49,25 @@ export async function GET(request: NextRequest) {
     }
 
     const { searchParams } = new URL(request.url);
-    const page = parseInt(searchParams.get('page') || '1');
-    const limit = parseInt(searchParams.get('limit') || '10');
+    const pageResult = parseIntegerQueryParam(searchParams.get('page'), {
+      defaultValue: 1,
+      min: 1,
+    });
+    if (!pageResult.isValid) {
+      return NextResponse.json({ error: 'page 參數格式無效' }, { status: 400 });
+    }
+
+    const limitResult = parseIntegerQueryParam(searchParams.get('limit'), {
+      defaultValue: 10,
+      min: 1,
+      max: 1000,
+    });
+    if (!limitResult.isValid) {
+      return NextResponse.json({ error: 'limit 參數格式無效' }, { status: 400 });
+    }
+
+    const page = pageResult.value ?? 1;
+    const limit = limitResult.value ?? 10;
     const search = searchParams.get('search') || '';
     const department = searchParams.get('department') || '';
     const position = searchParams.get('position') || '';
@@ -164,7 +177,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '無權限' }, { status: 403 });
     }
 
-    const data = await request.json();
+    const parsedBody = await safeParseJSON(request);
+    if (!parsedBody.success || !parsedBody.data) {
+      return NextResponse.json({ error: '請求內容格式無效' }, { status: 400 });
+    }
+
+    const data = parsedBody.data;
     const {
       employeeId,
       name,
@@ -184,10 +202,32 @@ export async function POST(request: NextRequest) {
       password,
       createAccount
     } = data;
+
+    const normalizedEmployeeId = isNonEmptyString(employeeId) ? employeeId.trim() : '';
+    const normalizedName = isNonEmptyString(name) ? name.trim() : '';
+    const normalizedDepartment = isNonEmptyString(department) ? department.trim() : '';
+    const normalizedPosition = isNonEmptyString(position) ? position.trim() : '';
+    const normalizedUsername = isNonEmptyString(username) ? username.trim() : '';
+    const normalizedPassword = isNonEmptyString(password) ? password : '';
+    const normalizedBaseSalary = parsePayrollNumber(baseSalary);
+    const normalizedHourlyRate = parsePayrollNumber(hourlyRate);
+    const normalizedEmployeeType = employeeType === 'HOURLY' ? 'HOURLY' : 'MONTHLY';
+
+    if (!normalizedEmployeeId || !normalizedName || !isValidDateInput(birthday) || !isValidDateInput(hireDate) || !normalizedDepartment || !normalizedPosition || normalizedBaseSalary === null || normalizedHourlyRate === null) {
+      return NextResponse.json({ error: '缺少必要欄位或欄位格式無效' }, { status: 400 });
+    }
+
+    if (createAccount !== undefined && typeof createAccount !== 'boolean') {
+      return NextResponse.json({ error: 'createAccount 參數格式無效' }, { status: 400 });
+    }
+
+    if (createAccount === true && (!normalizedUsername || !normalizedPassword)) {
+      return NextResponse.json({ error: '建立帳號時必須提供 username 和 password' }, { status: 400 });
+    }
     
     // 檢查員工編號是否已存在
     const existingEmployee = await prisma.employee.findUnique({
-      where: { employeeId }
+      where: { employeeId: normalizedEmployeeId }
     });
     
     if (existingEmployee) {
@@ -195,9 +235,9 @@ export async function POST(request: NextRequest) {
     }
 
     // 如果要創建帳號，檢查用戶名是否已存在
-    if (createAccount && username) {
+    if (createAccount && normalizedUsername) {
       const existingUser = await prisma.user.findUnique({
-        where: { username }
+        where: { username: normalizedUsername }
       });
       
       if (existingUser) {
@@ -210,30 +250,30 @@ export async function POST(request: NextRequest) {
       // 建立員工記錄
       const employee = await tx.employee.create({
         data: {
-          employeeId,
-          name,
+          employeeId: normalizedEmployeeId,
+          name: normalizedName,
           birthday: new Date(birthday),
-          phone,
-          address,
-          emergencyContact,
-          emergencyPhone,
+          phone: isNonEmptyString(phone) ? phone.trim() : '',
+          address: isNonEmptyString(address) ? address.trim() : '',
+          emergencyContact: isNonEmptyString(emergencyContact) ? emergencyContact.trim() : '',
+          emergencyPhone: isNonEmptyString(emergencyPhone) ? emergencyPhone.trim() : '',
           hireDate: new Date(hireDate),
-          baseSalary: parseFloat(baseSalary),
-          hourlyRate: parseFloat(hourlyRate),
-          department,
-          position,
-          employeeType: employeeType || 'MONTHLY',
+          baseSalary: normalizedBaseSalary,
+          hourlyRate: normalizedHourlyRate,
+          department: normalizedDepartment,
+          position: normalizedPosition,
+          employeeType: normalizedEmployeeType,
           laborInsuranceActive: laborInsuranceActive !== false
         }
       });
 
       // 如果需要創建帳號
-      if (createAccount && username && password) {
-        const hashedPassword = bcrypt.hashSync(password, 10);
+      if (createAccount && normalizedUsername && normalizedPassword) {
+        const hashedPassword = bcrypt.hashSync(normalizedPassword, 10);
         
         await tx.user.create({
           data: {
-            username,
+            username: normalizedUsername,
             passwordHash: hashedPassword,
             role: 'EMPLOYEE',
             employeeId: employee.id,

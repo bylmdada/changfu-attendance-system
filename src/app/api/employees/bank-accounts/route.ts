@@ -4,22 +4,55 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
+import { validateCSRF } from '@/lib/csrf';
+import { safeParseJSON } from '@/lib/validation';
 import { encrypt, decrypt, maskIdNumber, maskBankAccount, validateTaiwanIdNumber } from '@/lib/encryption';
+
+function parsePositiveInteger(value: unknown): number | null {
+  const parsed = typeof value === 'number'
+    ? value
+    : typeof value === 'string'
+      ? Number(value)
+      : Number.NaN;
+
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function normalizeOptionalString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function normalizeIdNumber(value: unknown): string {
+  return normalizeOptionalString(value).toUpperCase();
+}
+
+function normalizeBankAccount(value: unknown): string {
+  if (typeof value !== 'string' && typeof value !== 'number') {
+    return '';
+  }
+
+  return String(value).replace(/\D/g, '');
+}
+
+function isValidIdNumberFormat(idNumber: string): boolean {
+  return /^[A-Z]\d{9}$/.test(idNumber);
+}
+
+function isValidBankAccountFormat(bankAccount: string): boolean {
+  return bankAccount.length >= 10 && bankAccount.length <= 16;
+}
 
 /**
  * GET - 取得所有員工銀行帳號清單
  */
 export async function GET(request: NextRequest) {
   try {
-    const cookieStore = await cookies();
-    const token = cookieStore.get('auth-token')?.value;
-    if (!token) {
+    const user = await getUserFromRequest(request);
+    if (!user) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
-    const user = await getUserFromToken(token);
     if (!user || (user.role !== 'ADMIN' && user.role !== 'HR')) {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
@@ -102,52 +135,44 @@ export async function GET(request: NextRequest) {
  */
 export async function PUT(request: NextRequest) {
   try {
-    const cookieStore = await cookies();
-    const token = cookieStore.get('auth-token')?.value;
-    if (!token) {
+    const user = await getUserFromRequest(request);
+    if (!user) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
-    const user = await getUserFromToken(token);
     if (!user || (user.role !== 'ADMIN' && user.role !== 'HR')) {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
 
-    const bodyText = await request.text();
-    console.log('📥 [bank-accounts] 原始 body:', bodyText);
-    
-    let body;
-    try {
-      body = JSON.parse(bodyText);
-    } catch {
-      console.log('❌ [bank-accounts] JSON 解析失敗');
-      return NextResponse.json({ error: '請求格式錯誤' }, { status: 400 });
-    }
-    
-    const { employeeId, idNumber, bankCode: _bankCode, bankAccount } = body;
-
-    console.log('📥 [bank-accounts] 解析後:', { employeeId, idNumber: idNumber ? '有' : '無', bankAccount: bankAccount ? '有' : '無' });
-
-    if (!employeeId) {
-      console.log('❌ [bank-accounts] 錯誤: 沒有提供員工ID, body=', body);
-      return NextResponse.json({ error: '請提供員工ID' }, { status: 400 });
+    const csrfValidation = await validateCSRF(request);
+    if (!csrfValidation.valid) {
+      return NextResponse.json({ error: csrfValidation.error }, { status: 403 });
     }
 
-    console.log('📥 [bank-accounts] 收到更新請求:', { employeeId, idNumber: idNumber ? '***' : '(空)', bankAccount: bankAccount ? '***' : '(空)' });
+    const parsedBody = await safeParseJSON(request);
+    if (!parsedBody.success || !parsedBody.data) {
+      return NextResponse.json({ error: '請求內容格式無效' }, { status: 400 });
+    }
+
+    const body = parsedBody.data;
+    
+    const { employeeId, idNumber, bankAccount } = body;
+
+    const normalizedEmployeeId = parsePositiveInteger(employeeId);
+    if (normalizedEmployeeId === null) {
+      return NextResponse.json({ error: '員工ID格式無效' }, { status: 400 });
+    }
 
     // 驗證身分證字號格式 - 只檢查基本格式（1個英文字母 + 9個數字），不驗證檢查碼
-    const trimmedIdNumber = idNumber?.trim()?.toUpperCase() || '';
+    const trimmedIdNumber = normalizeIdNumber(idNumber);
     if (trimmedIdNumber && trimmedIdNumber.length > 0) {
-      if (!/^[A-Z]\d{9}$/.test(trimmedIdNumber)) {
-        console.log('❌ [bank-accounts] 身分證字號格式不正確:', trimmedIdNumber);
+      if (!isValidIdNumberFormat(trimmedIdNumber)) {
         return NextResponse.json({ error: '身分證字號格式不正確（應為1個英文字母加9個數字，例如：A123456789）' }, { status: 400 });
       }
-      console.log('✅ [bank-accounts] 身分證字號格式正確');
     }
 
     // 驗證銀行帳號格式（只在有輸入時驗證）
-    const cleanBankAccount = bankAccount ? String(bankAccount).replace(/\D/g, '') : '';
-    if (cleanBankAccount && (cleanBankAccount.length < 10 || cleanBankAccount.length > 16)) {
-      console.log('❌ [bank-accounts] 銀行帳號格式不正確:', cleanBankAccount.length, '位');
+    const cleanBankAccount = normalizeBankAccount(bankAccount);
+    if (cleanBankAccount && !isValidBankAccountFormat(cleanBankAccount)) {
       return NextResponse.json({ error: '銀行帳號格式不正確（應為10-16位數字）' }, { status: 400 });
     }
 
@@ -156,12 +181,10 @@ export async function PUT(request: NextRequest) {
     // 只在有輸入有效值時才更新
     if (trimmedIdNumber && trimmedIdNumber.length === 10) {
       updateData.idNumber = encrypt(trimmedIdNumber);
-      console.log('✅ [bank-accounts] 將更新身分證字號');
     }
-    if (cleanBankAccount && cleanBankAccount.length >= 10) {
+    if (cleanBankAccount && isValidBankAccountFormat(cleanBankAccount)) {
       updateData.bankAccount = cleanBankAccount;
       updateData.bankCode = '806';
-      console.log('✅ [bank-accounts] 將更新銀行帳號');
     }
 
     // 如果沒有任何要更新的資料
@@ -171,7 +194,7 @@ export async function PUT(request: NextRequest) {
     }
 
     const updated = await prisma.employee.update({
-      where: { id: employeeId },
+      where: { id: normalizedEmployeeId },
       data: updateData,
       select: {
         id: true,
@@ -197,18 +220,25 @@ export async function PUT(request: NextRequest) {
  */
 export async function POST(request: NextRequest) {
   try {
-    const cookieStore = await cookies();
-    const token = cookieStore.get('auth-token')?.value;
-    if (!token) {
+    const user = await getUserFromRequest(request);
+    if (!user) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
-    const user = await getUserFromToken(token);
     if (!user || (user.role !== 'ADMIN' && user.role !== 'HR')) {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
 
-    const body = await request.json();
-    const { records } = body;
+    const csrfValidation = await validateCSRF(request);
+    if (!csrfValidation.valid) {
+      return NextResponse.json({ error: csrfValidation.error }, { status: 403 });
+    }
+
+    const parsedBody = await safeParseJSON(request);
+    if (!parsedBody.success || !parsedBody.data) {
+      return NextResponse.json({ error: '請求內容格式無效' }, { status: 400 });
+    }
+
+    const { records } = parsedBody.data as { records?: unknown[] };
 
     if (!Array.isArray(records) || records.length === 0) {
       return NextResponse.json({ error: '請提供匯入資料' }, { status: 400 });
@@ -220,12 +250,45 @@ export async function POST(request: NextRequest) {
 
     for (const record of records) {
       try {
-        const { idNumber, bankAccount, name } = record;
+        if (!record || typeof record !== 'object') {
+          errors.push({ name: '未知', error: '匯入資料格式無效' });
+          errorCount++;
+          continue;
+        }
+
+        const { idNumber, bankAccount, name } = record as Record<string, unknown>;
+        const normalizedName = normalizeOptionalString(name) || '未知';
+        const normalizedIdNumber = normalizeIdNumber(idNumber);
+        const normalizedBankAccount = normalizeBankAccount(bankAccount);
+
+        if (normalizedIdNumber && !isValidIdNumberFormat(normalizedIdNumber)) {
+          errors.push({ name: normalizedName, error: '身分證字號格式不正確（應為1個英文字母加9個數字）' });
+          errorCount++;
+          continue;
+        }
+
+        if (normalizedIdNumber && !validateTaiwanIdNumber(normalizedIdNumber)) {
+          errors.push({ name: normalizedName, error: '身分證字號格式不正確（檢查碼錯誤）' });
+          errorCount++;
+          continue;
+        }
+
+        if (normalizedBankAccount && !isValidBankAccountFormat(normalizedBankAccount)) {
+          errors.push({ name: normalizedName, error: '銀行帳號格式不正確（應為10-16位數字）' });
+          errorCount++;
+          continue;
+        }
+
+        if (!normalizedIdNumber && !normalizedBankAccount) {
+          errors.push({ name: normalizedName, error: '請提供有效的身分證字號或銀行帳號' });
+          errorCount++;
+          continue;
+        }
 
         // 透過身分證字號或姓名找到員工
         let employee = null;
         
-        if (idNumber) {
+        if (normalizedIdNumber) {
           // 先查詢所有員工並解密比對
           const allEmployees = await prisma.employee.findMany({
             where: { isActive: true },
@@ -234,19 +297,19 @@ export async function POST(request: NextRequest) {
           
           employee = allEmployees.find(emp => {
             if (!emp.idNumber) return false;
-            return decrypt(emp.idNumber) === idNumber;
+            return decrypt(emp.idNumber) === normalizedIdNumber;
           });
         }
         
-        if (!employee && name) {
+        if (!employee && normalizedName !== '未知') {
           employee = await prisma.employee.findFirst({
-            where: { name, isActive: true },
+            where: { name: normalizedName, isActive: true },
             select: { id: true, name: true, idNumber: true }
           });
         }
 
         if (!employee) {
-          errors.push({ name: name || idNumber || '未知', error: '找不到對應員工' });
+          errors.push({ name: normalizedName || normalizedIdNumber || '未知', error: '找不到對應員工' });
           errorCount++;
           continue;
         }
@@ -254,26 +317,31 @@ export async function POST(request: NextRequest) {
         // 更新資料
         const updateData: Record<string, string | null> = {};
         
-        if (idNumber && !employee.idNumber) {
-          if (validateTaiwanIdNumber(idNumber)) {
-            updateData.idNumber = encrypt(idNumber);
-          }
+        if (normalizedIdNumber && !employee.idNumber) {
+          updateData.idNumber = encrypt(normalizedIdNumber);
         }
         
-        if (bankAccount) {
-          updateData.bankAccount = bankAccount.replace(/[,\s]/g, ''); // 移除逗號和空白
+        if (normalizedBankAccount) {
+          updateData.bankAccount = normalizedBankAccount;
           updateData.bankCode = '806';  // 元大銀行
         }
 
-        if (Object.keys(updateData).length > 0) {
-          await prisma.employee.update({
-            where: { id: employee.id },
-            data: updateData
-          });
-          successCount++;
+        if (Object.keys(updateData).length === 0) {
+          errors.push({ name: employee.name || normalizedName, error: '沒有可更新的有效銀行帳戶資料' });
+          errorCount++;
+          continue;
         }
+
+        await prisma.employee.update({
+          where: { id: employee.id },
+          data: updateData
+        });
+        successCount++;
       } catch (err) {
-        errors.push({ name: record.name || '未知', error: String(err) });
+        const recordName = typeof record === 'object' && record !== null && 'name' in record
+          ? normalizeOptionalString((record as Record<string, unknown>).name)
+          : '';
+        errors.push({ name: recordName || '未知', error: String(err) });
         errorCount++;
       }
     }

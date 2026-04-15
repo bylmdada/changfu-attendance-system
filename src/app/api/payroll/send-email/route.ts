@@ -9,6 +9,56 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import nodemailer from 'nodemailer';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function getSafeMailSendErrorMessage() {
+  return '郵件發送失敗，請檢查 SMTP 設定後再試';
+}
+
+function getSafeMailSendErrorLog(error: unknown, payrollId: number, employeeId: number) {
+  const safeLog: {
+    payrollId: number;
+    employeeId: number;
+    code?: string;
+    responseCode?: number;
+  } = {
+    payrollId,
+    employeeId,
+  };
+
+  if (error && typeof error === 'object') {
+    const maybeError = error as { code?: unknown; responseCode?: unknown };
+
+    if (typeof maybeError.code === 'string') {
+      safeLog.code = maybeError.code;
+    }
+
+    if (typeof maybeError.responseCode === 'number') {
+      safeLog.responseCode = maybeError.responseCode;
+    }
+  }
+
+  return safeLog;
+}
+
+function parsePositiveInteger(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
+    return value;
+  }
+
+  if (typeof value === 'string' && value.trim()) {
+    const parsedValue = Number(value);
+    if (Number.isInteger(parsedValue) && parsedValue > 0) {
+      return parsedValue;
+    }
+  }
+
+  return undefined;
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -62,8 +112,23 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '無權限' }, { status: 403 });
     }
 
-    const data = await request.json();
-    const { payrollIds, year, month } = data;
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json({ error: '無效的 JSON 格式' }, { status: 400 });
+    }
+
+    const data = parseResult.data;
+    const payrollIds = isPlainObject(data) && Array.isArray(data.payrollIds)
+      ? data.payrollIds.reduce<number[]>((validPayrollIds, payrollId) => {
+          const parsedPayrollId = parsePositiveInteger(payrollId);
+          if (parsedPayrollId !== undefined) {
+            validPayrollIds.push(parsedPayrollId);
+          }
+          return validPayrollIds;
+        }, [])
+      : undefined;
+    const year = isPlainObject(data) ? parsePositiveInteger(data.year) : undefined;
+    const month = isPlainObject(data) ? parsePositiveInteger(data.month) : undefined;
 
     if (!payrollIds || !Array.isArray(payrollIds) || payrollIds.length === 0) {
       return NextResponse.json({ error: '請選擇要發送的薪資條' }, { status: 400 });
@@ -172,8 +237,9 @@ export async function POST(request: NextRequest) {
 
       } catch (err) {
         results.failed++;
-        const errorMessage = err instanceof Error ? err.message : '發送失敗';
+        const errorMessage = getSafeMailSendErrorMessage();
         results.errors.push(`${employee.name}: ${errorMessage}`);
+        console.error('薪資條 Email 發送失敗:', getSafeMailSendErrorLog(err, payroll.id, employee.id));
 
         await prisma.payslipSendHistory.create({
           data: {

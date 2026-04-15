@@ -1683,6 +1683,7 @@ export default function LeaveManagementPage() {
           apiEndpoint="/api/leave-requests/batch"
           onSuccess={fetchLeaveRequests}
           onClear={() => setSelectedIds([])}
+          onSelectionChange={setSelectedIds}
           itemName="請假申請"
         />
       )}

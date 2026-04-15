@@ -1,10 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
+import { validateCSRF } from '@/lib/csrf';
+import { safeParseJSON } from '@/lib/validation';
+import { parseIntegerQueryParam } from '@/lib/query-params';
 
 interface DecodedToken {
   role: string;
   employeeId?: number;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function normalizePermissionList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+}
+
+function parseAttendancePermissionId(rawId: string): number | null {
+  const parsed = parseIntegerQueryParam(rawId, { min: 1 });
+  return parsed.isValid ? parsed.value : null;
 }
 
 // PATCH - 更新權限設定
@@ -13,9 +29,14 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const csrfValidation = await validateCSRF(request);
+    if (!csrfValidation.valid) {
+      return NextResponse.json({ error: `CSRF驗證失敗: ${csrfValidation.error}` }, { status: 403 });
+    }
+
     const { id: idParam } = await params;
-    const id = parseInt(idParam);
-    if (isNaN(id)) {
+    const id = parseAttendancePermissionId(idParam);
+    if (id === null) {
       return NextResponse.json({ error: '無效的權限ID' }, { status: 400 });
     }
 
@@ -28,15 +49,31 @@ export async function PATCH(
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
 
-    const data = await request.json();
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '缺少權限設定' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const data = parseResult.data;
+    const permissions = isPlainObject(data) && isPlainObject(data.permissions)
+      ? {
+          leaveRequests: normalizePermissionList(data.permissions.leaveRequests),
+          overtimeRequests: normalizePermissionList(data.permissions.overtimeRequests),
+          shiftExchanges: normalizePermissionList(data.permissions.shiftExchanges),
+          scheduleManagement: normalizePermissionList(data.permissions.scheduleManagement),
+        }
+      : undefined;
 
     // 驗證權限數據
-    if (!data.permissions) {
+    if (!permissions) {
       return NextResponse.json({ error: '缺少權限設定' }, { status: 400 });
     }
 
     // 驗證至少有一個權限
-    const hasPermissions = Object.values(data.permissions).some(perm => 
+    const hasPermissions = Object.values(permissions).some(perm => 
       Array.isArray(perm) && perm.length > 0
     );
 
@@ -49,7 +86,7 @@ export async function PATCH(
     const updatedPermission = await (prisma as any).attendancePermission.update({
       where: { id },
       data: {
-        permissions: data.permissions
+        permissions
       },
       include: {
         employee: {
@@ -80,9 +117,14 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const csrfValidation = await validateCSRF(request);
+    if (!csrfValidation.valid) {
+      return NextResponse.json({ error: `CSRF驗證失敗: ${csrfValidation.error}` }, { status: 403 });
+    }
+
     const { id: idParam } = await params;
-    const id = parseInt(idParam);
-    if (isNaN(id)) {
+    const id = parseAttendancePermissionId(idParam);
+    if (id === null) {
       return NextResponse.json({ error: '無效的權限ID' }, { status: 400 });
     }
 

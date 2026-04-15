@@ -1,29 +1,54 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getUserFromRequest } from '@/lib/auth';
+import { getAuthResultFromRequest } from '@/lib/auth';
 import { prisma } from '@/lib/database';
 import { Prisma } from '@prisma/client';
+import { buildActiveDeputyAssignmentWhere } from '@/lib/schedule-management-permissions';
 
 function buildEmployeeSelect(): Prisma.EmployeeSelect {
-  const employeeModel = Prisma.dmmf.datamodel.models.find(m => m.name === 'Employee');
-  const fields = new Set((employeeModel?.fields ?? []).map(f => f.name));
-  const base: Record<string, boolean> = {
+  return {
     id: true,
     employeeId: true,
     name: true,
     department: true,
-    position: true,
-    baseSalary: true,
-    hourlyRate: true
+    position: true
   };
-  if (fields.has('insuredBase')) base.insuredBase = true;
-  if (fields.has('dependents')) base.dependents = true;
-  if (fields.has('laborPensionSelfRate')) base.laborPensionSelfRate = true;
-  return base as Prisma.EmployeeSelect;
+}
+
+function buildEmployeeResponse(employee: {
+  id: number;
+  employeeId: string;
+  name: string | null;
+  department: string | null;
+  position: string | null;
+} | null | undefined) {
+  if (!employee) {
+    return undefined;
+  }
+
+  return {
+    id: employee.id,
+    employeeId: employee.employeeId,
+    name: employee.name,
+    department: employee.department,
+    position: employee.position
+  };
 }
 
 export async function GET(request: NextRequest) {
   try {
-    const user = await getUserFromRequest(request);
+    const authResult = await getAuthResultFromRequest(request);
+
+    if (authResult.reason === 'session_invalid') {
+      return NextResponse.json(
+        {
+          error: '您已在其他裝置登入，此會話已失效',
+          code: 'SESSION_INVALID'
+        },
+        { status: 401 }
+      );
+    }
+
+    const user = authResult.user;
     
     if (!user) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
@@ -68,14 +93,7 @@ export async function GET(request: NextRequest) {
 
       // 檢查代理人
       const deputyRecord = await prisma.managerDeputy.findFirst({
-        where: { 
-          deputyEmployeeId: userData.employee.id, 
-          isActive: true,
-          OR: [
-            { startDate: null },
-            { startDate: { lte: new Date() } }
-          ]
-        }
+        where: buildActiveDeputyAssignmentWhere(userData.employee.id)
       });
       isDeputyManager = !!deputyRecord;
 
@@ -89,13 +107,15 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    const employee = buildEmployeeResponse(userData.employee);
+
     return NextResponse.json({
       user: {
         id: userData.id,
         username: userData.username,
         role: userData.role,
-        employeeId: userData.employee ? userData.employee.id : undefined,
-        employee: userData.employee ?? undefined,
+        employeeId: employee?.id,
+        employee,
         isDepartmentManager,
         isDeputyManager,
         hasSchedulePermission

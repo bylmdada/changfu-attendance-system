@@ -2,6 +2,53 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { prisma } from '@/lib/database';
+import { parseIntegerQueryParam } from '@/lib/query-params';
+
+function parseDateQueryParam(rawValue: string | null) {
+  if (rawValue === null || rawValue === '') {
+    return {
+      value: null,
+      isValid: true,
+    };
+  }
+
+  const parsedDate = new Date(rawValue);
+  if (Number.isNaN(parsedDate.getTime())) {
+    return {
+      value: null,
+      isValid: false,
+    };
+  }
+
+  return {
+    value: parsedDate,
+    isValid: true,
+  };
+}
+
+function matchesRequestedStatus(displayStatus: string, requestedStatus: string) {
+  if (requestedStatus === '正常') {
+    return displayStatus === '正常';
+  }
+
+  if (requestedStatus === '異常') {
+    return displayStatus === '異常';
+  }
+
+  if (requestedStatus === '遲到') {
+    return displayStatus.includes('遲到');
+  }
+
+  if (requestedStatus === '早退') {
+    return displayStatus.includes('早退');
+  }
+
+  if (requestedStatus === '缺勤') {
+    return displayStatus === '缺勤';
+  }
+
+  return false;
+}
 
 // 獲取考勤記錄
 export async function GET(request: NextRequest) {
@@ -18,13 +65,39 @@ export async function GET(request: NextRequest) {
     }
 
     const { searchParams } = new URL(request.url);
-    const page = parseInt(searchParams.get('page') || '1');
-    const pageSize = parseInt(searchParams.get('pageSize') || '10');
+    const parsedPage = parseIntegerQueryParam(searchParams.get('page'), { defaultValue: 1, min: 1 });
+    if (!parsedPage.isValid || parsedPage.value === null) {
+      return NextResponse.json({ error: 'page 參數格式無效' }, { status: 400 });
+    }
+
+    const parsedPageSize = parseIntegerQueryParam(searchParams.get('pageSize'), { defaultValue: 10, min: 1, max: 100 });
+    if (!parsedPageSize.isValid || parsedPageSize.value === null) {
+      return NextResponse.json({ error: 'pageSize 參數格式無效' }, { status: 400 });
+    }
+
+    const page = parsedPage.value;
+    const pageSize = parsedPageSize.value;
     const startDate = searchParams.get('startDate');
     const endDate = searchParams.get('endDate');
     const search = searchParams.get('search');
     const status = searchParams.get('status');
     const overtimeHours = searchParams.get('overtimeHours');
+    const department = searchParams.get('department');
+
+    const parsedStartDate = parseDateQueryParam(startDate);
+    if (!parsedStartDate.isValid) {
+      return NextResponse.json({ error: 'startDate 參數格式無效' }, { status: 400 });
+    }
+
+    const parsedEndDate = parseDateQueryParam(endDate);
+    if (!parsedEndDate.isValid) {
+      return NextResponse.json({ error: 'endDate 參數格式無效' }, { status: 400 });
+    }
+
+    const allowedStatuses = new Set(['正常', '異常', '遲到', '早退', '缺勤']);
+    if (status && !allowedStatuses.has(status)) {
+      return NextResponse.json({ error: 'status 參數格式無效' }, { status: 400 });
+    }
 
     console.log('📋 獲取考勤記錄請求:', { 
       username: user.username, 
@@ -40,7 +113,6 @@ export async function GET(request: NextRequest) {
 
     // 構建查詢條件
     const where: Record<string, unknown> = {};
-    const department = searchParams.get('department');
     
     // 非管理員只能查看自己的記錄
     if (user.role !== 'ADMIN' && user.role !== 'HR') {
@@ -75,27 +147,14 @@ export async function GET(request: NextRequest) {
     // 日期篩選
     if (startDate || endDate) {
       where.workDate = {};
-      if (startDate) {
-        (where.workDate as Record<string, unknown>).gte = new Date(startDate);
+      if (parsedStartDate.value) {
+        (where.workDate as Record<string, unknown>).gte = parsedStartDate.value;
       }
-      if (endDate) {
-        const end = new Date(endDate);
+      if (parsedEndDate.value) {
+        const end = new Date(parsedEndDate.value);
         end.setHours(23, 59, 59, 999);
         (where.workDate as Record<string, unknown>).lte = end;
       }
-    }
-
-    // 狀態篩選（將中文轉換為資料庫值）
-    const statusMap: Record<string, string> = {
-      '正常': 'PRESENT',
-      '遲到': 'LATE',
-      '早退': 'EARLY_LEAVE',
-      '缺勤': 'ABSENT'
-    };
-    
-    if (status && status !== '異常') {
-      const dbStatus = statusMap[status] || status;
-      where.status = dbStatus;
     }
 
     // 加班工時篩選
@@ -111,11 +170,9 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // 查詢總數
-    const total = await prisma.attendanceRecord.count({ where });
+    const shouldFilterByDisplayStatus = !!status;
 
-    // 查詢記錄
-    const records = await prisma.attendanceRecord.findMany({
+    const recordQuery = {
       where,
       include: {
         employee: {
@@ -128,10 +185,22 @@ export async function GET(request: NextRequest) {
           }
         }
       },
-      orderBy: { workDate: 'desc' },
-      skip: (page - 1) * pageSize,
-      take: pageSize
-    });
+      orderBy: { workDate: 'desc' as const }
+    };
+
+    let total = 0;
+    let records;
+
+    if (shouldFilterByDisplayStatus) {
+      records = await prisma.attendanceRecord.findMany(recordQuery);
+    } else {
+      total = await prisma.attendanceRecord.count({ where });
+      records = await prisma.attendanceRecord.findMany({
+        ...recordQuery,
+        skip: (page - 1) * pageSize,
+        take: pageSize
+      });
+    }
 
     // 獲取相關的班表資料
     const workDates = records.map(r => r.workDate.toISOString().split('T')[0]);
@@ -150,15 +219,6 @@ export async function GET(request: NextRequest) {
       const key = `${s.employeeId}-${s.workDate}`;
       scheduleMap.set(key, { startTime: s.startTime, endTime: s.endTime });
     });
-
-    // 計算統計
-    const allRecords = await prisma.attendanceRecord.findMany({
-      where,
-      select: { regularHours: true, overtimeHours: true }
-    });
-
-    const totalRegularHours = allRecords.reduce((sum, r) => sum + (r.regularHours || 0), 0);
-    const totalOvertimeHours = allRecords.reduce((sum, r) => sum + (r.overtimeHours || 0), 0);
 
     // 最低工時門檻（小時）
     const MIN_WORK_HOURS = 8;
@@ -281,19 +341,22 @@ export async function GET(request: NextRequest) {
       };
     });
 
-    // 如果篩選狀態，需過濾結果
     let finalRecords = formattedRecords;
-    if (status === '正常') {
-      finalRecords = formattedRecords.filter(r => r.status === '正常');
-    } else if (status === '異常') {
-      finalRecords = formattedRecords.filter(r => r.status === '異常');
-    } else if (status === '遲到') {
-      finalRecords = formattedRecords.filter(r => r.status.includes('遲到'));
-    } else if (status === '早退') {
-      finalRecords = formattedRecords.filter(r => r.status.includes('早退'));
-    } else if (status === '缺勤') {
-      finalRecords = formattedRecords.filter(r => r.status === '缺勤');
+    if (status) {
+      finalRecords = formattedRecords.filter(r => matchesRequestedStatus(r.status, status));
+      total = finalRecords.length;
+      finalRecords = finalRecords.slice((page - 1) * pageSize, page * pageSize);
     }
+
+    const summarySource = status
+      ? formattedRecords.filter(r => matchesRequestedStatus(r.status, status))
+      : await prisma.attendanceRecord.findMany({
+          where,
+          select: { regularHours: true, overtimeHours: true }
+        });
+
+    const totalRegularHours = summarySource.reduce((sum, r) => sum + (r.regularHours || 0), 0);
+    const totalOvertimeHours = summarySource.reduce((sum, r) => sum + (r.overtimeHours || 0), 0);
 
     console.log(`✅ 返回考勤記錄: ${finalRecords.length} 筆 (總共 ${total} 筆)`);
 

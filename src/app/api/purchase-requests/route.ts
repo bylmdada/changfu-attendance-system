@@ -2,10 +2,15 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
-import { cookies } from 'next/headers';
+import { getUserFromRequest } from '@/lib/auth';
 import { createApprovalForRequest } from '@/lib/approval-helper';
+import { validateCSRF } from '@/lib/csrf';
 import { getTaiwanNow } from '@/lib/timezone';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 // 生成請購單號
 async function generateRequestNumber(): Promise<string> {
@@ -38,16 +43,9 @@ async function generateRequestNumber(): Promise<string> {
 // GET - 取得請購單列表
 export async function GET(request: NextRequest) {
   try {
-    const cookieStore = await cookies();
-    const token = cookieStore.get('auth-token')?.value;
-    
-    if (!token) {
-      return NextResponse.json({ error: '未登入' }, { status: 401 });
-    }
-
-    const decoded = await getUserFromToken(token);
+    const decoded = await getUserFromRequest(request);
     if (!decoded) {
-      return NextResponse.json({ error: '無效的 token' }, { status: 401 });
+      return NextResponse.json({ error: '未登入' }, { status: 401 });
     }
 
     // 取得用戶資料
@@ -115,16 +113,14 @@ export async function GET(request: NextRequest) {
 // POST - 新增請購單
 export async function POST(request: NextRequest) {
   try {
-    const cookieStore = await cookies();
-    const token = cookieStore.get('auth-token')?.value;
-    
-    if (!token) {
-      return NextResponse.json({ error: '未登入' }, { status: 401 });
+    const csrfValidation = await validateCSRF(request);
+    if (!csrfValidation.valid) {
+      return NextResponse.json({ error: csrfValidation.error }, { status: 403 });
     }
 
-    const decoded = await getUserFromToken(token);
+    const decoded = await getUserFromRequest(request);
     if (!decoded) {
-      return NextResponse.json({ error: '無效的 token' }, { status: 401 });
+      return NextResponse.json({ error: '未登入' }, { status: 401 });
     }
 
     // 取得用戶資料
@@ -137,8 +133,29 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '用戶不存在' }, { status: 404 });
     }
 
-    const body = await request.json();
-    const { title, category, items, totalAmount, reason, priority } = body;
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的請購資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const body = parseResult.data;
+    if (!isPlainObject(body)) {
+      return NextResponse.json({ error: '請提供有效的請購資料' }, { status: 400 });
+    }
+
+    const title = typeof body.title === 'string' ? body.title.trim() : '';
+    const category = typeof body.category === 'string' ? body.category : '';
+    const items = body.items;
+    const totalAmount = typeof body.totalAmount === 'number'
+      ? body.totalAmount
+      : typeof body.totalAmount === 'string' && body.totalAmount.trim()
+        ? Number(body.totalAmount)
+        : 0;
+    const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+    const priority = typeof body.priority === 'string' ? body.priority : 'NORMAL';
 
     if (!title || !items || !reason) {
       return NextResponse.json({ error: '請填寫必要欄位' }, { status: 400 });
@@ -159,7 +176,7 @@ export async function POST(request: NextRequest) {
         title,
         category: validCategory,
         items: typeof items === 'string' ? items : JSON.stringify(items),
-        totalAmount: totalAmount || 0,
+        totalAmount: Number.isFinite(totalAmount) ? totalAmount : 0,
         reason,
         priority: priority || 'NORMAL',
         status: 'PENDING'
@@ -198,16 +215,14 @@ export async function POST(request: NextRequest) {
 // PUT - 審核請購單
 export async function PUT(request: NextRequest) {
   try {
-    const cookieStore = await cookies();
-    const token = cookieStore.get('auth-token')?.value;
-    
-    if (!token) {
-      return NextResponse.json({ error: '未登入' }, { status: 401 });
+    const csrfValidation = await validateCSRF(request);
+    if (!csrfValidation.valid) {
+      return NextResponse.json({ error: csrfValidation.error }, { status: 403 });
     }
 
-    const decoded = await getUserFromToken(token);
+    const decoded = await getUserFromRequest(request);
     if (!decoded) {
-      return NextResponse.json({ error: '無效的 token' }, { status: 401 });
+      return NextResponse.json({ error: '未登入' }, { status: 401 });
     }
 
     // 取得用戶資料
@@ -226,15 +241,30 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: '無權限審核' }, { status: 403 });
     }
 
-    const body = await request.json();
-    const { id, status, rejectReason } = body;
-
-    if (!id || !status) {
-      return NextResponse.json({ error: '缺少必要參數' }, { status: 400 });
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的請購審核資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
     }
 
-    if (!['APPROVED', 'REJECTED'].includes(status)) {
-      return NextResponse.json({ error: '無效的狀態' }, { status: 400 });
+    const body = parseResult.data;
+    if (!isPlainObject(body)) {
+      return NextResponse.json({ error: '請提供有效的請購審核資料' }, { status: 400 });
+    }
+
+    const rawId = body.id;
+    const id = typeof rawId === 'number'
+      ? rawId
+      : typeof rawId === 'string' && rawId.trim()
+        ? Number(rawId)
+        : NaN;
+    const status = body.status === 'APPROVED' || body.status === 'REJECTED' ? body.status : '';
+    const rejectReason = typeof body.rejectReason === 'string' ? body.rejectReason : null;
+
+    if (!Number.isInteger(id) || id <= 0 || !status) {
+      return NextResponse.json({ error: '缺少必要參數' }, { status: 400 });
     }
 
     // 檢查請購單是否存在
@@ -315,16 +345,14 @@ export async function PUT(request: NextRequest) {
 // DELETE - 刪除請購單（僅申請人可刪除待審核的單）
 export async function DELETE(request: NextRequest) {
   try {
-    const cookieStore = await cookies();
-    const token = cookieStore.get('auth-token')?.value;
-    
-    if (!token) {
-      return NextResponse.json({ error: '未登入' }, { status: 401 });
+    const csrfValidation = await validateCSRF(request);
+    if (!csrfValidation.valid) {
+      return NextResponse.json({ error: csrfValidation.error }, { status: 403 });
     }
 
-    const decoded = await getUserFromToken(token);
+    const decoded = await getUserFromRequest(request);
     if (!decoded) {
-      return NextResponse.json({ error: '無效的 token' }, { status: 401 });
+      return NextResponse.json({ error: '未登入' }, { status: 401 });
     }
 
     // 取得用戶資料

@@ -1044,6 +1044,7 @@ export default function MissedClockPage() {
           apiEndpoint="/api/missed-clock-requests/batch-approve"
           onSuccess={fetchMissedClockRequests}
           onClear={() => setSelectedIds([])}
+          onSelectionChange={setSelectedIds}
           itemName="忽打卡申請"
         />
       )}

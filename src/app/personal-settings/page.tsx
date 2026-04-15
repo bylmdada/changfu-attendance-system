@@ -3,6 +3,8 @@
 import { useState, useEffect } from 'react';
 import { User, Fingerprint, Smartphone, Trash2, Plus, Shield, Clock, Eye, EyeOff } from 'lucide-react';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
+import { serializeRegistrationCredential } from '@/lib/webauthn-browser';
 
 interface WebAuthnCredential {
   id: number;
@@ -86,11 +88,9 @@ export default function PersonalSettingsPage() {
 
     setActionLoading(true);
     try {
-      const response = await fetch('/api/user/webauthn-credentials', {
+      const response = await fetchJSONWithCSRF('/api/user/webauthn-credentials', {
         method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ credentialId }),
-        credentials: 'include'
+        body: { credentialId }
       });
 
       const data = await response.json();
@@ -160,22 +160,14 @@ export default function PersonalSettingsPage() {
       }
 
       // 3. 發送憑證到伺服器驗證
-      const attestationResponse = credential.response as AuthenticatorAttestationResponse;
-      
       const verifyResponse = await fetch('/api/webauthn/register-verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          credential: {
+          credential: serializeRegistrationCredential({
             id: credential.id,
-            rawId: btoa(String.fromCharCode(...new Uint8Array(credential.rawId))),
-            type: credential.type,
-            response: {
-              clientDataJSON: btoa(String.fromCharCode(...new Uint8Array(attestationResponse.clientDataJSON))),
-              attestationObject: btoa(String.fromCharCode(...new Uint8Array(attestationResponse.attestationObject))),
-              transports: attestationResponse.getTransports ? attestationResponse.getTransports() : undefined
-            }
-          },
+            response: credential.response as AuthenticatorAttestationResponse,
+          }),
           deviceName: registerData.deviceName || getDeviceName()
         }),
         credentials: 'include'

@@ -9,6 +9,7 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { createApprovalForRequest } from '@/lib/approval-helper';
+import { safeParseJSON } from '@/lib/validation';
 
 export async function GET(request: NextRequest) {
   try {
@@ -89,6 +90,28 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
 
+    const parsedBody = await safeParseJSON(request);
+    if (!parsedBody.success) {
+      return NextResponse.json({ error: '請求內容格式無效' }, { status: 400 });
+    }
+
+    const applicationType = typeof parsedBody.data?.applicationType === 'string' ? parsedBody.data.applicationType : null;
+    const dependentIdRaw = parsedBody.data?.dependentId;
+    const dependentId = typeof dependentIdRaw === 'number'
+      ? dependentIdRaw
+      : typeof dependentIdRaw === 'string' && /^-?\d+$/.test(dependentIdRaw)
+        ? Number(dependentIdRaw)
+        : null;
+    const dependentName = typeof parsedBody.data?.dependentName === 'string' ? parsedBody.data.dependentName : null;
+    const relationship = typeof parsedBody.data?.relationship === 'string' ? parsedBody.data.relationship : '';
+    const idNumber = typeof parsedBody.data?.idNumber === 'string' ? parsedBody.data.idNumber : '';
+    const birthDate = typeof parsedBody.data?.birthDate === 'string' ? parsedBody.data.birthDate : null;
+    const effectiveDate = typeof parsedBody.data?.effectiveDate === 'string' ? parsedBody.data.effectiveDate : null;
+    const changeField = typeof parsedBody.data?.changeField === 'string' ? parsedBody.data.changeField : null;
+    const oldValue = typeof parsedBody.data?.oldValue === 'string' ? parsedBody.data.oldValue : null;
+    const newValue = typeof parsedBody.data?.newValue === 'string' ? parsedBody.data.newValue : null;
+    const remarks = typeof parsedBody.data?.remarks === 'string' ? parsedBody.data.remarks : null;
+
     // 取得員工資料
     const userRecord = await prisma.user.findUnique({
       where: { id: user.userId },
@@ -98,21 +121,6 @@ export async function POST(request: NextRequest) {
     if (!userRecord?.employee) {
       return NextResponse.json({ error: '找不到員工資料' }, { status: 404 });
     }
-
-    const data = await request.json();
-    const { 
-      applicationType, 
-      dependentId,
-      dependentName, 
-      relationship, 
-      idNumber, 
-      birthDate, 
-      effectiveDate,
-      changeField,
-      oldValue,
-      newValue,
-      remarks 
-    } = data;
 
     // 驗證必填欄位
     if (!applicationType || !dependentName || !effectiveDate) {
@@ -130,10 +138,10 @@ export async function POST(request: NextRequest) {
         employeeId: userRecord.employee.id,
         employeeName: userRecord.employee.name,
         applicationType,
-        dependentId: dependentId || null,
+        dependentId,
         dependentName,
-        relationship: relationship || '',
-        idNumber: idNumber || '',
+        relationship,
+        idNumber,
         birthDate: birthDate ? new Date(birthDate) : new Date(),
         effectiveDate: new Date(effectiveDate),
         changeField,

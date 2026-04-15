@@ -3,6 +3,7 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { writeFile, mkdir } from 'fs/promises';
 import path from 'path';
+import { validateCSRF } from '@/lib/csrf';
 
 // 允許的檔案類型
 const ALLOWED_MIME_TYPES = [
@@ -27,6 +28,11 @@ const FILE_TYPES = {
 // 上傳附件
 export async function POST(request: NextRequest) {
   try {
+    const csrfValidation = await validateCSRF(request);
+    if (!csrfValidation.valid) {
+      return NextResponse.json({ error: `CSRF驗證失敗: ${csrfValidation.error}` }, { status: 403 });
+    }
+
     const user = await getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
@@ -178,6 +184,11 @@ export async function GET(request: NextRequest) {
 // 刪除附件
 export async function DELETE(request: NextRequest) {
   try {
+    const csrfValidation = await validateCSRF(request);
+    if (!csrfValidation.valid) {
+      return NextResponse.json({ error: `CSRF驗證失敗: ${csrfValidation.error}` }, { status: 403 });
+    }
+
     const user = await getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });

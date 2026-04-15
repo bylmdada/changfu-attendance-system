@@ -26,6 +26,10 @@ import {
 } from '@/lib/api-integration';
 import { apiGateway } from '@/lib/api-gateway';
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
 // API 整合管理 - 獲取狀態與報告
 export async function GET(request: NextRequest) {
   try {
@@ -167,7 +171,21 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '需要管理員權限管理 API 整合' }, { status: 403 });
     }
 
-    const { action } = await request.json();
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json({ error: '請提供有效的整合管理操作' }, { status: 400 });
+    }
+
+    if (!isPlainObject(body)) {
+      return NextResponse.json({ error: '請提供有效的整合管理操作' }, { status: 400 });
+    }
+
+    const action = typeof body.action === 'string' ? body.action : '';
+    if (!action) {
+      return NextResponse.json({ error: '請提供有效的操作類型' }, { status: 400 });
+    }
 
     switch (action) {
       case 'reinitialize':

@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Shield, Settings, Save, Plus, Trash2, AlertTriangle, Lock, Key, Eye, EyeOff } from 'lucide-react';
+import { buildAuthMeRequest, buildCookieSessionRequest } from '@/lib/admin-session-client';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import SystemNavbar from '@/components/SystemNavbar';
 
@@ -138,23 +139,13 @@ export default function PasswordPolicySettings() {
   const [showTestPassword, setShowTestPassword] = useState(false);
   const [testResults, setTestResults] = useState<TestResults | null>(null);
 
-  // Helper function to get auth headers
-  const getAuthHeaders = (): HeadersInit => {
-    if (typeof window === 'undefined') return { Authorization: 'Bearer admin-token' };
-    const token = localStorage.getItem('token');
-    const authHeader = token ? `Bearer ${token}` : 'Bearer admin-token';
-    return { Authorization: authHeader };
-  };
-
   // 載入用戶資訊和設定
   useEffect(() => {
     const fetchUserAndSettings = async () => {
       try {
         // 驗證用戶身份
-        const userResponse = await fetch('/api/auth/me', {
-          credentials: 'include',
-          headers: getAuthHeaders()
-        });
+        const authMeRequest = buildAuthMeRequest(window.location.origin);
+        const userResponse = await fetch(authMeRequest.url, authMeRequest.options);
         
         if (userResponse.ok) {
           const userData = await userResponse.json();
@@ -171,7 +162,8 @@ export default function PasswordPolicySettings() {
         }
 
         // 載入密碼政策設定
-        const policyResponse = await fetch('/api/system-settings/password-policy');
+        const policyRequest = buildCookieSessionRequest(window.location.origin, '/api/system-settings/password-policy');
+        const policyResponse = await fetch(policyRequest.url, policyRequest.options);
         if (policyResponse.ok) {
           const policyData = await policyResponse.json();
           if (policyData.policy) {
@@ -180,24 +172,16 @@ export default function PasswordPolicySettings() {
         }
 
         // 載入員工列表
-        const employeesResponse = await fetch('/api/employees', {
-          headers: {
-            ...getAuthHeaders(),
-            'Content-Type': 'application/json'
-          }
-        });
+        const employeesRequest = buildCookieSessionRequest(window.location.origin, '/api/employees');
+        const employeesResponse = await fetch(employeesRequest.url, employeesRequest.options);
         if (employeesResponse.ok) {
           const employeesData = await employeesResponse.json();
           setEmployees(employeesData.employees || []);
         }
 
         // 載入密碼例外
-        const exceptionsResponse = await fetch('/api/system-settings/password-exceptions', {
-          headers: {
-            ...getAuthHeaders(),
-            'Content-Type': 'application/json'
-          }
-        });
+        const exceptionsRequest = buildCookieSessionRequest(window.location.origin, '/api/system-settings/password-exceptions');
+        const exceptionsResponse = await fetch(exceptionsRequest.url, exceptionsRequest.options);
         if (exceptionsResponse.ok) {
           const exceptionsData = await exceptionsResponse.json();
           setPasswordExceptions(exceptionsData.exceptions || []);

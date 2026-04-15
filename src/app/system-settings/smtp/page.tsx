@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { Save, Mail, Server, CheckCircle, XCircle, Send } from 'lucide-react';
+import { buildAuthMeRequest, buildCookieSessionRequest } from '@/lib/admin-session-client';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import SystemNavbar from '@/components/SystemNavbar';
 
@@ -48,20 +49,12 @@ export default function SmtpSettingsPage() {
     fromName: '長福考勤系統'
   });
 
-  const getAuthHeaders = (): HeadersInit => {
-    if (typeof window === 'undefined') return {};
-    const token = localStorage.getItem('token');
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  };
-
   useEffect(() => {
     const fetchData = async () => {
       try {
         // 驗證用戶
-        const userResponse = await fetch('/api/auth/me', {
-          credentials: 'include',
-          headers: getAuthHeaders()
-        });
+        const authMeRequest = buildAuthMeRequest(window.location.origin);
+        const userResponse = await fetch(authMeRequest.url, authMeRequest.options);
 
         if (userResponse.ok) {
           const userData = await userResponse.json();
@@ -77,10 +70,8 @@ export default function SmtpSettingsPage() {
         }
 
         // 載入 SMTP 設定
-        const response = await fetch('/api/system-settings/smtp', {
-          credentials: 'include',
-          headers: getAuthHeaders()
-        });
+        const request = buildCookieSessionRequest(window.location.origin, '/api/system-settings/smtp');
+        const response = await fetch(request.url, request.options);
 
         if (response.ok) {
           const data = await response.json();

@@ -10,7 +10,8 @@ import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { updateRequestStatus, WorkflowType } from '@/lib/approval-helper';
 import { notifyApplicant, notifyReviewers } from '@/lib/approval-notifications';
-import { ensureApprovalReviewAllowed } from '@/lib/approval-service';
+import { determineApprovalTransition, ensureApprovalReviewAllowed, isReviewerFor } from '@/lib/approval-service';
+import { safeParseJSON } from '@/lib/validation';
 
 // 申請類型名稱對照
 const REQUEST_TYPE_NAMES: Record<string, string> = {
@@ -42,6 +43,10 @@ const STATUS_NAMES: Record<string, string> = {
   PENDING_HR: '待 HR 審核',
   PENDING_ADMIN: '待管理員決核'
 };
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 // GET: 取得待審核項目
 export async function GET(request: NextRequest) {
@@ -440,16 +445,37 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
 
-    const data = await request.json();
-    const { instanceId, action, comment } = data;
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的審核資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
 
-    if (!instanceId || !action) {
+    const data = parseResult.data;
+    if (!isPlainObject(data)) {
+      return NextResponse.json({ error: '請提供有效的審核資料' }, { status: 400 });
+    }
+
+    const rawInstanceId = data.instanceId;
+    const instanceId = typeof rawInstanceId === 'number'
+      ? rawInstanceId
+      : typeof rawInstanceId === 'string' && rawInstanceId.trim()
+        ? Number(rawInstanceId)
+        : NaN;
+    const action = typeof data.action === 'string' ? data.action : '';
+    const comment = typeof data.comment === 'string' ? data.comment : undefined;
+
+    if (!Number.isInteger(instanceId) || instanceId <= 0 || !action) {
       return NextResponse.json({ error: '缺少必要參數' }, { status: 400 });
     }
 
-    if (!['APPROVE', 'REJECT'].includes(action)) {
+    if (action !== 'APPROVE' && action !== 'REJECT') {
       return NextResponse.json({ error: '無效的審核動作' }, { status: 400 });
     }
+
+    const reviewAction: 'APPROVE' | 'REJECT' = action;
 
     // 取得審核實例
     const instance = await prisma.approvalInstance.findUnique({
@@ -467,17 +493,15 @@ export async function POST(request: NextRequest) {
     if (instance.currentLevel === 1) {
       // 一階審核需要是部門主管
       if (user.role !== 'ADMIN') {
-        const isManager = await prisma.departmentManager.findFirst({
-          where: {
-            employeeId: user.employeeId,
-            department: instance.department || undefined,
-            isActive: true
-          }
-        });
-        if (!isManager) {
+        if (!instance.department) {
+          return NextResponse.json({ error: '此審核缺少部門資訊' }, { status: 400 });
+        }
+
+        const reviewerPermission = await isReviewerFor(user.employeeId, instance.department);
+        if (!reviewerPermission.isReviewer) {
           return NextResponse.json({ error: '您不是此部門的審核者' }, { status: 403 });
         }
-        reviewerRole = 'MANAGER';
+        reviewerRole = reviewerPermission.role ?? 'MANAGER';
       }
     } else {
       // 二階審核需要是 ADMIN 或 HR
@@ -493,40 +517,13 @@ export async function POST(request: NextRequest) {
       select: { name: true }
     });
 
-    // 更新審核實例
-    let newStatus: string;
-    let newLevel = instance.currentLevel;
-
-    if (action === 'REJECT') {
-      // HR 的「不同意」僅為會簽意見，不阻擋流程，進入三階由管理員決核
-      if (reviewerRole === 'HR') {
-        // HR 不同意：記錄意見但繼續進入三階
-        newLevel = 3;
-        newStatus = 'LEVEL3_REVIEWING';
-      } else {
-        // 主管或管理員退回：終止流程
-        newStatus = 'REJECTED';
-      }
-    } else {
-      // APPROVE
-      if (instance.currentLevel === 1) {
-        // 一階通過 → 進入二階（HR會簽）
-        newLevel = 2;
-        newStatus = 'LEVEL2_REVIEWING';
-      } else if (instance.currentLevel === 2) {
-        // 二階通過（HR同意）→ 進入三階（管理員決核）
-        newLevel = 3;
-        newStatus = 'LEVEL3_REVIEWING';
-      } else if (instance.currentLevel === 3) {
-        // 三階通過 → 最終核准
-        newStatus = 'APPROVED';
-      } else if (instance.currentLevel < instance.maxLevel) {
-        newLevel = instance.currentLevel + 1;
-        newStatus = 'LEVEL2_REVIEWING';
-      } else {
-        newStatus = 'APPROVED';
-      }
-    }
+    const { newStatus, newLevel } = determineApprovalTransition(
+      instance.currentLevel,
+      instance.maxLevel,
+      reviewAction,
+      reviewerRole,
+      instance.status as 'PENDING' | 'LEVEL1_REVIEWING' | 'LEVEL2_REVIEWING' | 'LEVEL3_REVIEWING' | 'APPROVED' | 'REJECTED'
+    );
 
     await prisma.$transaction(async (tx) => {
       await ensureApprovalReviewAllowed(tx, instance, user.employeeId);
@@ -581,7 +578,7 @@ export async function POST(request: NextRequest) {
           status: string;
           deadlineAt: Date | null;
         },
-        action,
+        reviewAction,
         employee?.name || user.username,
         comment
       );

@@ -135,14 +135,18 @@ export async function GET(request: NextRequest) {
 
     try {
       // 查詢範本設定
-      const templateSetting = await prisma.systemSettings.findFirst({
-        where: { key: 'payslipTemplate' }
+      const templatesSetting = await prisma.systemSettings.findUnique({
+        where: { key: 'payslip_templates' }
       });
 
-      if (templateSetting?.value) {
-        const template = JSON.parse(templateSetting.value);
-        if (template.securityConfig) {
-          securityConfig = template.securityConfig;
+      if (templatesSetting?.value) {
+        const templates = JSON.parse(templatesSetting.value);
+        const activeTemplate = Array.isArray(templates)
+          ? templates.find((template) => template?.isDefault) || templates[0]
+          : null;
+
+        if (activeTemplate?.securityConfig) {
+          securityConfig = activeTemplate.securityConfig;
         }
       }
 

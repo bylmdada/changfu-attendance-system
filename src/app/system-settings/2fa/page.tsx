@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import Image from 'next/image';
 import { Shield, Smartphone, Key, Copy, Check, X, RefreshCw, AlertTriangle, Eye, EyeOff } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import SystemNavbar from '@/components/SystemNavbar';
@@ -78,9 +79,8 @@ export default function TwoFASettingsPage() {
   const startSetup = async () => {
     setSaving(true);
     try {
-      const res = await fetch('/api/auth/2fa/setup', {
+      const res = await fetchJSONWithCSRF('/api/auth/2fa/setup', {
         method: 'POST',
-        credentials: 'include'
       });
       
       if (res.ok) {
@@ -262,7 +262,14 @@ export default function TwoFASettingsPage() {
               </h3>
               <div className="flex flex-col items-center">
                 {qrCode && (
-                  <img src={qrCode} alt="2FA QR Code" className="w-48 h-48 mb-4" />
+                  <Image
+                    src={qrCode}
+                    alt="2FA QR Code"
+                    width={192}
+                    height={192}
+                    className="mb-4 h-48 w-48"
+                    unoptimized
+                  />
                 )}
                 <p className="text-sm text-gray-600 text-center mb-2">
                   使用 Google Authenticator、Microsoft Authenticator 或其他驗證器 APP 掃描上方 QR Code
@@ -282,7 +289,7 @@ export default function TwoFASettingsPage() {
               </h3>
               <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-4">
                 <div className="flex items-start gap-3">
-                  <AlertTriangle className="w-5 h-5 text-yellow-600 flex-shrink-0 mt-0.5" />
+                  <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-yellow-600" />
                   <p className="text-sm text-yellow-800">
                     請妥善保存這些備用碼！如果手機遺失，可使用備用碼登入。每個備用碼只能使用一次。
                   </p>

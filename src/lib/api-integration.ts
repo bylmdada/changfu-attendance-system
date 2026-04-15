@@ -56,9 +56,9 @@ const API_CATEGORIES: APIIntegrationConfig[] = [
     category: '考勤管理 (Attendance Management)',
     routes: [
       {
-        path: '/api/attendance/clock-in',
+        path: '/api/attendance/clock',
         method: 'POST',
-        handler: '/src/app/api/attendance/clock-in/route.ts',
+        handler: '/src/app/api/attendance/clock/route.ts',
         authRequired: true,
         cached: false,
         rateLimit: { maxRequests: 5, windowMs: 60000 },

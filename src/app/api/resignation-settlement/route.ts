@@ -1,8 +1,36 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { safeParseJSON } from '@/lib/validation';
+
+function parsePositiveIntegerInput(value: unknown): number | null {
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value > 0 ? value : null;
+  }
+
+  if (typeof value === 'string') {
+    const trimmedValue = value.trim();
+    if (!/^\d+$/.test(trimmedValue)) {
+      return null;
+    }
+
+    const parsedValue = Number(trimmedValue);
+    return Number.isSafeInteger(parsedValue) && parsedValue > 0 ? parsedValue : null;
+  }
+
+  return null;
+}
+
+function normalizeOptionalString(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const trimmedValue = value.trim();
+  return trimmedValue ? trimmedValue : undefined;
+}
 
 // GET - 取得離職結算列表
 export async function GET(request: NextRequest) {
@@ -12,15 +40,12 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const decoded = await getUserFromRequest(request);
+    if (!decoded) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded || !['ADMIN', 'HR'].includes(decoded.role)) {
+    if (!['ADMIN', 'HR'].includes(decoded.role)) {
       return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
     }
 
@@ -68,28 +93,39 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'CSRF驗證失敗' }, { status: 403 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const decoded = await getUserFromRequest(request);
+    if (!decoded) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded || !['ADMIN', 'HR'].includes(decoded.role)) {
+    if (!['ADMIN', 'HR'].includes(decoded.role)) {
       return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
     }
 
-    const body = await request.json();
-    const { employeeId, notes } = body;
+    const parsedBody = await safeParseJSON(request);
+    if (!parsedBody.success) {
+      return NextResponse.json({ error: '請求內容格式無效' }, { status: 400 });
+    }
+
+    const body = parsedBody.data;
+    if (!body || Array.isArray(body)) {
+      return NextResponse.json({ error: '請求內容格式無效' }, { status: 400 });
+    }
+
+    const employeeId = parsePositiveIntegerInput(body.employeeId);
+    const notes = normalizeOptionalString(body.notes);
 
     if (!employeeId) {
-      return NextResponse.json({ error: '缺少員工 ID' }, { status: 400 });
+      if (body.employeeId === undefined || body.employeeId === null || body.employeeId === '') {
+        return NextResponse.json({ error: '缺少員工 ID' }, { status: 400 });
+      }
+
+      return NextResponse.json({ error: '員工ID格式無效' }, { status: 400 });
     }
 
     // 檢查員工是否存在
     const employee = await prisma.employee.findUnique({
-      where: { id: parseInt(employeeId) }
+      where: { id: employeeId }
     });
 
     if (!employee) {
@@ -98,7 +134,7 @@ export async function POST(request: NextRequest) {
 
     // 檢查是否已結算過
     const existingSettlement = await prisma.resignationSettlement.findUnique({
-      where: { employeeId: parseInt(employeeId) }
+      where: { employeeId }
     });
 
     if (existingSettlement) {
@@ -107,7 +143,7 @@ export async function POST(request: NextRequest) {
 
     // ==================== 1. 補休餘額計算 ====================
     const compBalance = await prisma.compLeaveBalance.findUnique({
-      where: { employeeId: parseInt(employeeId) }
+      where: { employeeId }
     });
 
     const compLeaveConfirmed = compBalance ? (compBalance.totalEarned - compBalance.totalUsed) : 0;
@@ -118,7 +154,7 @@ export async function POST(request: NextRequest) {
     const currentYear = new Date().getFullYear();
     const annualLeaves = await prisma.annualLeave.findMany({
       where: {
-        employeeId: parseInt(employeeId),
+        employeeId,
         year: currentYear
       }
     });
@@ -164,84 +200,84 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // ==================== 4. 建立結算記錄 ====================
-    const settlement = await prisma.resignationSettlement.create({
-      data: {
-        employeeId: parseInt(employeeId),
-        compLeaveHours: totalCompLeaveHours,
-        hourlyRate,
-        totalAmount,
-        settlementDate: new Date(),
-        processedBy: decoded.employeeId,
-        notes: notes ? `${notes}\n\n特休假餘額: ${totalAnnualLeaveDays} 天, 結算金額: $${annualLeaveAmount.toLocaleString()}` : 
-               `特休假餘額: ${totalAnnualLeaveDays} 天, 結算金額: $${annualLeaveAmount.toLocaleString()}`
-      },
-      include: {
-        employee: {
-          select: {
-            id: true,
-            employeeId: true,
-            name: true,
-            department: true,
-            position: true,
-            baseSalary: true
-          }
-        },
-        processor: {
-          select: {
-            id: true,
-            name: true
-          }
-        }
-      }
-    });
-
-    // ==================== 5. 新增交易記錄 ====================
-    const now = new Date();
-    const yearMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-    
-    // 補休結算交易
-    if (totalCompLeaveHours > 0) {
-      await prisma.compLeaveTransaction.create({
+    // ==================== 4. 建立結算記錄與清帳 ====================
+    const settlement = await prisma.$transaction(async (tx) => {
+      const createdSettlement = await tx.resignationSettlement.create({
         data: {
-          employeeId: parseInt(employeeId),
-          transactionType: 'SETTLE',
-          hours: totalCompLeaveHours,
-          referenceId: settlement.id,
-          referenceType: 'RESIGNATION',
-          yearMonth,
-          description: `離職結算（補休）- 結算金額 $${compLeaveAmount.toLocaleString()}`,
-          isFrozen: true
+          employeeId,
+          compLeaveHours: totalCompLeaveHours,
+          hourlyRate,
+          totalAmount,
+          settlementDate: new Date(),
+          processedBy: decoded.employeeId,
+          notes: notes ? `${notes}\n\n特休假餘額: ${totalAnnualLeaveDays} 天, 結算金額: $${annualLeaveAmount.toLocaleString()}` : 
+                 `特休假餘額: ${totalAnnualLeaveDays} 天, 結算金額: $${annualLeaveAmount.toLocaleString()}`
+        },
+        include: {
+          employee: {
+            select: {
+              id: true,
+              employeeId: true,
+              name: true,
+              department: true,
+              position: true,
+              baseSalary: true
+            }
+          },
+          processor: {
+            select: {
+              id: true,
+              name: true
+            }
+          }
         }
       });
 
-      // 清空補休餘額
-      if (compBalance) {
-        await prisma.compLeaveBalance.update({
-          where: { employeeId: parseInt(employeeId) },
+      const now = new Date();
+      const yearMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+      if (totalCompLeaveHours > 0) {
+        await tx.compLeaveTransaction.create({
           data: {
-            totalUsed: compBalance.totalEarned,
-            balance: 0,
-            pendingEarn: 0,
-            pendingUse: 0
+            employeeId,
+            transactionType: 'SETTLE',
+            hours: totalCompLeaveHours,
+            referenceId: createdSettlement.id,
+            referenceType: 'RESIGNATION',
+            yearMonth,
+            description: `離職結算（補休）- 結算金額 $${compLeaveAmount.toLocaleString()}`,
+            isFrozen: true
+          }
+        });
+
+        if (compBalance) {
+          await tx.compLeaveBalance.update({
+            where: { employeeId },
+            data: {
+              totalUsed: compBalance.totalEarned,
+              balance: 0,
+              pendingEarn: 0,
+              pendingUse: 0
+            }
+          });
+        }
+      }
+
+      if (totalAnnualLeaveDays > 0) {
+        await tx.annualLeave.updateMany({
+          where: {
+            employeeId,
+            year: currentYear
+          },
+          data: {
+            usedDays: { increment: totalAnnualLeaveDays },
+            remainingDays: 0
           }
         });
       }
-    }
 
-    // 特休假標記為已結算（將 remainingDays 設為 0）
-    if (totalAnnualLeaveDays > 0) {
-      await prisma.annualLeave.updateMany({
-        where: {
-          employeeId: parseInt(employeeId),
-          year: currentYear
-        },
-        data: {
-          usedDays: { increment: totalAnnualLeaveDays },
-          remainingDays: 0
-        }
-      });
-    }
+      return createdSettlement;
+    });
 
     return NextResponse.json({
       success: true,

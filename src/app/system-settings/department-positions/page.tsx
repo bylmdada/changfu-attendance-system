@@ -50,6 +50,9 @@ interface ApiResponse {
   department?: Department;
   position?: Position;
   message?: string;
+  deletedCount?: number;
+  deletedIds?: number[];
+  failedIds?: number[];
 }
 
 export default function DepartmentPositionManagementPage() {
@@ -278,17 +281,36 @@ export default function DepartmentPositionManagementPage() {
 
     setSaving(true);
     try {
+      const requestedIds = [...selectedPositionIds];
       const response = await fetchJSONWithCSRF('/api/system-settings/department-positions', {
         method: 'DELETE',
-        body: { action: 'deletePositions', ids: selectedPositionIds }
+        body: { action: 'deletePositions', ids: requestedIds }
       });
       const result: ApiResponse = await response.json();
 
       if (result.success) {
-        addToast('success', `已刪除 ${selectedPositionIds.length} 個職位`);
+        const deletedIds = Array.isArray(result.deletedIds)
+          ? result.deletedIds.filter((id): id is number => typeof id === 'number')
+          : requestedIds;
+        const failedIds = Array.isArray(result.failedIds)
+          ? result.failedIds.filter((id): id is number => typeof id === 'number')
+          : requestedIds.filter(id => !deletedIds.includes(id));
+        const deletedCount = typeof result.deletedCount === 'number'
+          ? result.deletedCount
+          : deletedIds.length;
+
+        if (deletedCount === 0 || deletedIds.length === 0) {
+          addToast('error', result.error || '批量刪除失敗');
+          return;
+        }
+
+        addToast('success', result.message || `已刪除 ${deletedCount} 個職位`);
         setShowDeleteConfirm(null);
-        setSelectedPositionIds([]);
-        setEditingPositions(prev => prev.filter(p => !selectedPositionIds.includes(p.id)));
+        setSelectedPositionIds(failedIds);
+        setEditingPositions(prev => prev.filter(p => !deletedIds.includes(p.id)));
+        if (failedIds.length > 0) {
+          addToast('warning', `另有 ${failedIds.length} 個職位刪除失敗`);
+        }
         fetchData();
       } else {
         addToast('error', result.error || '批量刪除失敗');
@@ -471,7 +493,7 @@ export default function DepartmentPositionManagementPage() {
             {filteredDepartments.map((department) => (
               <div key={department.id} className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden hover:shadow-md transition-shadow">
                 {/* 部門標題 */}
-                <div className="bg-gradient-to-r from-blue-50 to-indigo-50 px-6 py-4 border-b border-gray-200">
+                <div className="bg-linear-to-r from-blue-50 to-indigo-50 px-6 py-4 border-b border-gray-200">
                   <div className="flex items-center justify-between">
                     <h3 className="text-lg font-semibold text-gray-900">{department.name}</h3>
                     <div className="flex items-center space-x-1">
@@ -621,7 +643,7 @@ export default function DepartmentPositionManagementPage() {
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
             {/* Header */}
-            <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between bg-gradient-to-r from-blue-50 to-indigo-50">
+            <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between bg-linear-to-r from-blue-50 to-indigo-50">
               <h3 className="text-xl font-semibold text-gray-900">
                 編輯職位：{selectedDepartment.name}
               </h3>

@@ -6,6 +6,7 @@ import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { toTaiwanDateStr } from '@/lib/timezone';
+import { safeParseJSON } from '@/lib/validation';
 
 /**
  * 勞退自提管理 API
@@ -28,6 +29,11 @@ function calculateEffectiveDate(applicationDate: Date): Date {
     // 25日後申請，隔月1日生效
     return new Date(Date.UTC(year, month + 2, 1) - 8 * 60 * 60 * 1000);
   }
+}
+
+function parsePercentageValue(value: unknown) {
+  const parsed = typeof value === 'number' ? value : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 // GET: 取得自提資訊與申請歷史
@@ -179,11 +185,16 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const body = await request.json();
-    const { requestedRate, reason } = body;
+    const parsedBody = await safeParseJSON(request);
+    if (!parsedBody.success) {
+      return NextResponse.json({ error: '請求內容格式無效' }, { status: 400 });
+    }
+
+    const requestedRate = parsePercentageValue(parsedBody.data?.requestedRate);
+    const reason = typeof parsedBody.data?.reason === 'string' ? parsedBody.data.reason : null;
 
     // 驗證比例範圍
-    if (typeof requestedRate !== 'number' || requestedRate < 0 || requestedRate > 6) {
+    if (requestedRate === null || requestedRate < 0 || requestedRate > 6) {
       return NextResponse.json({ error: '自提比例必須在 0% ~ 6% 之間' }, { status: 400 });
     }
 

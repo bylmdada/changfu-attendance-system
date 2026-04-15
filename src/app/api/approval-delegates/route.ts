@@ -1,8 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 // GET - 取得代理審核設定
 export async function GET(request: NextRequest) {
@@ -12,16 +17,10 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
-      return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
-    }
+    const decoded = await getUserFromRequest(request);
 
-    const decoded = await getUserFromToken(token);
     if (!decoded) {
-      return NextResponse.json({ error: '無效的認證令牌' }, { status: 401 });
+      return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
     const { searchParams } = new URL(request.url);
@@ -100,27 +99,52 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'CSRF驗證失敗' }, { status: 403 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const decoded = await getUserFromRequest(request);
+
+    if (!decoded) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded) {
-      return NextResponse.json({ error: '無效的認證令牌' }, { status: 401 });
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的代理審核設定資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
     }
 
-    const body = await request.json();
-    const { delegatorId, delegateId, startDate, endDate, resourceTypes } = body;
+    const body = parseResult.data;
+    if (!isPlainObject(body)) {
+      return NextResponse.json({ error: '請提供有效的代理審核設定資料' }, { status: 400 });
+    }
+
+    const delegatorId = typeof body.delegatorId === 'number' || typeof body.delegatorId === 'string'
+      ? body.delegatorId
+      : undefined;
+    const delegateId = typeof body.delegateId === 'number' || typeof body.delegateId === 'string'
+      ? body.delegateId
+      : undefined;
+    const startDate = typeof body.startDate === 'string' || body.startDate instanceof Date
+      ? body.startDate
+      : undefined;
+    const endDate = typeof body.endDate === 'string' || body.endDate instanceof Date
+      ? body.endDate
+      : undefined;
+    const resourceTypes = body.resourceTypes;
 
     // 驗證
     if (!delegatorId || !delegateId || !startDate || !endDate) {
       return NextResponse.json({ error: '缺少必要欄位' }, { status: 400 });
     }
 
-    if (delegatorId === delegateId) {
+    const normalizedDelegatorId = parseInt(String(delegatorId), 10);
+    const normalizedDelegateId = parseInt(String(delegateId), 10);
+
+    if (Number.isNaN(normalizedDelegatorId) || Number.isNaN(normalizedDelegateId)) {
+      return NextResponse.json({ error: '缺少必要欄位' }, { status: 400 });
+    }
+
+    if (normalizedDelegatorId === normalizedDelegateId) {
       return NextResponse.json({ error: '委託人與代理人不能相同' }, { status: 400 });
     }
 
@@ -132,14 +156,15 @@ export async function POST(request: NextRequest) {
     }
 
     // 權限檢查：只能設定自己的代理，或管理員可設定任何人
-    if (decoded.role !== 'ADMIN' && decoded.employeeId !== delegatorId) {
+
+    if (decoded.role !== 'ADMIN' && decoded.employeeId !== normalizedDelegatorId) {
       return NextResponse.json({ error: '只能設定自己的代理審核' }, { status: 403 });
     }
 
     // 檢查是否有重疊的代理設定
     const overlapping = await prisma.approvalDelegate.findFirst({
       where: {
-        delegatorId: parseInt(delegatorId),
+        delegatorId: normalizedDelegatorId,
         isActive: true,
         OR: [
           { startDate: { lte: end }, endDate: { gte: start } }
@@ -156,8 +181,8 @@ export async function POST(request: NextRequest) {
 
     const delegate = await prisma.approvalDelegate.create({
       data: {
-        delegatorId: parseInt(delegatorId),
-        delegateId: parseInt(delegateId),
+        delegatorId: normalizedDelegatorId,
+        delegateId: normalizedDelegateId,
         startDate: start,
         endDate: end,
         resourceTypes: resourceTypes ? JSON.stringify(resourceTypes) : null,
@@ -195,16 +220,15 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
-      return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
+    const csrfResult = await validateCSRF(request);
+    if (!csrfResult.valid) {
+      return NextResponse.json({ error: 'CSRF token validation failed' }, { status: 403 });
     }
 
-    const decoded = await getUserFromToken(token);
+    const decoded = await getUserFromRequest(request);
+
     if (!decoded) {
-      return NextResponse.json({ error: '無效的認證令牌' }, { status: 401 });
+      return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
     const { searchParams } = new URL(request.url);

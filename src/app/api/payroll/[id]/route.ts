@@ -1,25 +1,45 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
+import { buildSuccessPayload } from '@/lib/api-response';
+import { validateCSRF } from '@/lib/csrf';
+import { parseIntegerQueryParam } from '@/lib/query-params';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function asNumber(value: unknown): number | undefined {
+  return typeof value === 'number' ? value : undefined;
+}
+
+function parsePayrollId(id: string) {
+  const parsed = parseIntegerQueryParam(id, { min: 1, max: 99999999 });
+
+  if (!parsed.isValid || parsed.value === null) {
+    return null;
+  }
+
+  return parsed.value;
+}
 
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '');
-    
-    if (!token) {
+    const decoded = await getUserFromRequest(request);
+    if (!decoded) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded) {
-      return NextResponse.json({ error: '無效的認證令牌' }, { status: 401 });
-    }
-
     const { id } = await params;
-    const payrollId = parseInt(id);
+    const payrollId = parsePayrollId(id);
+
+    if (!payrollId) {
+      return NextResponse.json({ error: '無效的薪資記錄 ID' }, { status: 400 });
+    }
 
     const payrollRecord = await prisma.payrollRecord.findUnique({
       where: { id: payrollId },
@@ -48,7 +68,7 @@ export async function GET(
       return NextResponse.json({ error: '無權限查看此記錄' }, { status: 403 });
     }
 
-    return NextResponse.json({ payrollRecord });
+    return NextResponse.json(buildSuccessPayload({ payrollRecord }));
   } catch (error) {
     console.error('獲取薪資記錄失敗:', error);
     return NextResponse.json({ error: '系統錯誤' }, { status: 500 });
@@ -60,15 +80,14 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '');
-    
-    if (!token) {
+    const decoded = await getUserFromRequest(request);
+    if (!decoded) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded) {
-      return NextResponse.json({ error: '無效的認證令牌' }, { status: 401 });
+    const csrfResult = await validateCSRF(request);
+    if (!csrfResult.valid) {
+      return NextResponse.json({ error: 'CSRF token validation failed' }, { status: 403 });
     }
 
     // 只有管理員和HR可以更新薪資記錄
@@ -77,8 +96,22 @@ export async function PATCH(
     }
 
     const { id } = await params;
-    const payrollId = parseInt(id);
-    const { regularHours, overtimeHours, basePay, overtimePay } = await request.json();
+    const payrollId = parsePayrollId(id);
+
+    if (!payrollId) {
+      return NextResponse.json({ error: '無效的薪資記錄 ID' }, { status: 400 });
+    }
+
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json({ error: '無效的 JSON 格式' }, { status: 400 });
+    }
+
+    const body = parseResult.data;
+    const regularHours = isPlainObject(body) ? asNumber(body.regularHours) : undefined;
+    const overtimeHours = isPlainObject(body) ? asNumber(body.overtimeHours) : undefined;
+    const basePay = isPlainObject(body) ? asNumber(body.basePay) : undefined;
+    const overtimePay = isPlainObject(body) ? asNumber(body.overtimePay) : undefined;
 
     const payrollRecord = await prisma.payrollRecord.findUnique({
       where: { id: payrollId }
@@ -117,11 +150,12 @@ export async function PATCH(
       }
     });
 
-    return NextResponse.json({
-      success: true,
-      payrollRecord: updatedPayrollRecord,
-      message: '薪資記錄更新成功'
-    });
+    return NextResponse.json(
+      buildSuccessPayload({
+        payrollRecord: updatedPayrollRecord,
+        message: '薪資記錄更新成功'
+      })
+    );
   } catch (error) {
     console.error('更新薪資記錄失敗:', error);
     return NextResponse.json({ error: '系統錯誤' }, { status: 500 });
@@ -133,15 +167,14 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '');
-    
-    if (!token) {
+    const decoded = await getUserFromRequest(request);
+    if (!decoded) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded) {
-      return NextResponse.json({ error: '無效的認證令牌' }, { status: 401 });
+    const csrfResult = await validateCSRF(request);
+    if (!csrfResult.valid) {
+      return NextResponse.json({ error: 'CSRF token validation failed' }, { status: 403 });
     }
 
     // 只有管理員可以刪除薪資記錄
@@ -150,7 +183,11 @@ export async function DELETE(
     }
 
     const { id } = await params;
-    const payrollId = parseInt(id);
+    const payrollId = parsePayrollId(id);
+
+    if (!payrollId) {
+      return NextResponse.json({ error: '無效的薪資記錄 ID' }, { status: 400 });
+    }
 
     const payrollRecord = await prisma.payrollRecord.findUnique({
       where: { id: payrollId }
@@ -164,10 +201,11 @@ export async function DELETE(
       where: { id: payrollId }
     });
 
-    return NextResponse.json({
-      success: true,
-      message: '薪資記錄已刪除'
-    });
+    return NextResponse.json(
+      buildSuccessPayload({
+        message: '薪資記錄已刪除'
+      })
+    );
   } catch (error) {
     console.error('刪除薪資記錄失敗:', error);
     return NextResponse.json({ error: '系統錯誤' }, { status: 500 });

@@ -5,7 +5,8 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
+import { validateCSRF } from '@/lib/csrf';
 import { 
   savePushSubscription, 
   removePushSubscription, 
@@ -14,20 +15,14 @@ import {
 } from '@/lib/push-notifications';
 import { systemLogger } from '@/lib/logger';
 import { prisma } from '@/lib/database';
+import { safeParseJSON } from '@/lib/validation';
 
 // GET - 取得 VAPID 公鑰和訂閱狀態
 export async function GET(request: NextRequest) {
   try {
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
-      return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
-    }
-
-    const decoded = await getUserFromToken(token);
+    const decoded = await getUserFromRequest(request);
     if (!decoded) {
-      return NextResponse.json({ error: '無效的認證令牌' }, { status: 401 });
+      return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
     // 取得用戶的推播訂閱狀態
@@ -61,23 +56,30 @@ export async function GET(request: NextRequest) {
 // POST - 儲存推播訂閱
 export async function POST(request: NextRequest) {
   try {
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const decoded = await getUserFromRequest(request);
+    if (!decoded) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded) {
-      return NextResponse.json({ error: '無效的認證令牌' }, { status: 401 });
+    const csrfResult = await validateCSRF(request);
+    if (!csrfResult.valid) {
+      return NextResponse.json({ error: 'CSRF驗證失敗，請重新操作' }, { status: 403 });
     }
 
-    const body = await request.json();
+    const parsedBody = await safeParseJSON(request);
+    if (!parsedBody.success) {
+      return NextResponse.json({ error: '請求內容格式無效' }, { status: 400 });
+    }
+
+    const body = parsedBody.data ?? {};
     const { subscription, sendTest } = body;
 
-    if (!subscription || !subscription.endpoint || !subscription.keys) {
+    if (!isValidPushSubscription(subscription)) {
       return NextResponse.json({ error: '無效的訂閱資料' }, { status: 400 });
+    }
+
+    if (sendTest !== undefined && typeof sendTest !== 'boolean') {
+      return NextResponse.json({ error: 'sendTest 參數格式無效' }, { status: 400 });
     }
 
     const success = await savePushSubscription(decoded.userId, {
@@ -116,19 +118,39 @@ export async function POST(request: NextRequest) {
   }
 }
 
+function isValidPushSubscription(subscription: unknown): subscription is {
+  endpoint: string;
+  keys: { p256dh: string; auth: string };
+} {
+  if (!subscription || typeof subscription !== 'object') {
+    return false;
+  }
+
+  const candidate = subscription as {
+    endpoint?: unknown;
+    keys?: { p256dh?: unknown; auth?: unknown };
+  };
+
+  return typeof candidate.endpoint === 'string' &&
+    candidate.endpoint.trim().length > 0 &&
+    !!candidate.keys &&
+    typeof candidate.keys.p256dh === 'string' &&
+    candidate.keys.p256dh.trim().length > 0 &&
+    typeof candidate.keys.auth === 'string' &&
+    candidate.keys.auth.trim().length > 0;
+}
+
 // DELETE - 取消推播訂閱
 export async function DELETE(request: NextRequest) {
   try {
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const decoded = await getUserFromRequest(request);
+    if (!decoded) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded) {
-      return NextResponse.json({ error: '無效的認證令牌' }, { status: 401 });
+    const csrfResult = await validateCSRF(request);
+    if (!csrfResult.valid) {
+      return NextResponse.json({ error: 'CSRF驗證失敗，請重新操作' }, { status: 403 });
     }
 
     const success = await removePushSubscription(decoded.userId);

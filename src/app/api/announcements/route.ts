@@ -9,6 +9,11 @@ import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { sendNotification } from '@/lib/realtime-notifications';
 import { createApprovalForRequest } from '@/lib/approval-helper';
+import {
+  canUserAccessAnnouncement,
+  parseAnnouncementDate,
+  validateAnnouncementTargetDepartments,
+} from '@/lib/announcement-utils';
 
 // Minimal interfaces to avoid explicit any while Prisma client types are pending
 interface AttachmentLite { id: number; fileName: string; originalName: string; fileSize: number; mimeType: string }
@@ -24,6 +29,8 @@ interface AnnouncementLite {
   publishedAt: string | null;
   expiryDate: string | null;
   scheduledPublishAt: string | null;
+  targetDepartments?: string | null;
+  isGlobalAnnouncement?: boolean;
   createdAt: string;
   updatedAt: string;
   publisher?: PublisherLite;
@@ -110,10 +117,27 @@ export async function GET(request: NextRequest) {
       }
     });
 
+    let visibleAnnouncements = announcements;
+
+    if (user.role === 'EMPLOYEE') {
+      const employee = await prisma.employee.findUnique({
+        where: { id: user.employeeId },
+        select: { department: true }
+      });
+
+      visibleAnnouncements = announcements.filter((announcement) =>
+        canUserAccessAnnouncement({
+          isGlobalAnnouncement: announcement.isGlobalAnnouncement,
+          targetDepartments: announcement.targetDepartments,
+          employeeDepartment: employee?.department ?? null
+        })
+      );
+    }
+
     return NextResponse.json({
       success: true,
-      announcements,
-      total: announcements.length
+      announcements: visibleAnnouncements,
+      total: visibleAnnouncements.length
     });
   } catch (error) {
     console.error('取得公告失敗:', error);
@@ -169,14 +193,36 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: '請至少選擇一個部門，或選擇全部部門發送通告' }, { status: 400 });
     }
 
+    const normalizedTargetDepartments = isGlobalAnnouncement
+      ? { normalized: null as string | null }
+      : validateAnnouncementTargetDepartments(targetDepartmentsStr);
+
+    if (!isGlobalAnnouncement && normalizedTargetDepartments.error) {
+      return NextResponse.json({ success: false, error: normalizedTargetDepartments.error }, { status: 400 });
+    }
+
     const priority = ['HIGH', 'NORMAL', 'LOW'].includes(priorityRaw) ? priorityRaw as 'HIGH' | 'NORMAL' | 'LOW' : 'NORMAL';
     const category = ['PERSONNEL', 'POLICY', 'EVENT', 'SYSTEM', 'BENEFITS', 'URGENT', 'GENERAL'].includes(categoryRaw) 
       ? categoryRaw as 'PERSONNEL' | 'POLICY' | 'EVENT' | 'SYSTEM' | 'BENEFITS' | 'URGENT' | 'GENERAL' 
       : 'GENERAL';
 
     const now = new Date();
-    const expiryDate = expiryDateStr ? new Date(expiryDateStr) : null;
-    const scheduledPublishAt = scheduledPublishAtStr ? new Date(scheduledPublishAtStr) : null;
+    const expiryDateResult = parseAnnouncementDate(expiryDateStr, '到期日');
+    if (expiryDateResult.error) {
+      return NextResponse.json({ success: false, error: expiryDateResult.error }, { status: 400 });
+    }
+
+    if (!canDirectPublish && scheduledPublishAtStr) {
+      return NextResponse.json({ success: false, error: '只有管理員或 HR 可以設定定時發布' }, { status: 400 });
+    }
+
+    const scheduledPublishAtResult = parseAnnouncementDate(scheduledPublishAtStr, '定時發布時間', { mustBeFuture: true });
+    if (scheduledPublishAtResult.error) {
+      return NextResponse.json({ success: false, error: scheduledPublishAtResult.error }, { status: 400 });
+    }
+
+    const expiryDate = expiryDateResult.value;
+    const scheduledPublishAt = scheduledPublishAtResult.value;
 
     // If Prisma client isn't generated with Announcement yet, short-circuit in demo mode
     const anyPrisma = prisma as unknown as { announcement?: { create?: (args: unknown) => Promise<unknown> } };
@@ -202,7 +248,7 @@ export async function POST(request: NextRequest) {
       scheduledPublishAt: canDirectPublish ? scheduledPublishAt : null, // 員工不支持定時發布
       // 新增：部門相關字段
       isGlobalAnnouncement,
-      targetDepartments: isGlobalAnnouncement ? null : targetDepartmentsStr,
+      targetDepartments: isGlobalAnnouncement ? null : normalizedTargetDepartments.normalized,
       // 新增：審核狀態
       status: canDirectPublish ? 'APPROVED' : 'PENDING_APPROVAL'
     } as const;

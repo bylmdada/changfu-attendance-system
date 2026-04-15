@@ -47,6 +47,31 @@ interface EmailContent {
   html?: string;
 }
 
+function getSafeEmailErrorMessage() {
+  return '郵件發送失敗，請檢查 SMTP 設定後再試';
+}
+
+function getSafeEmailErrorLog(error: unknown) {
+  const safeLog: {
+    code?: string;
+    responseCode?: number;
+  } = {};
+
+  if (error && typeof error === 'object') {
+    const maybeError = error as { code?: unknown; responseCode?: unknown };
+
+    if (typeof maybeError.code === 'string') {
+      safeLog.code = maybeError.code;
+    }
+
+    if (typeof maybeError.responseCode === 'number') {
+      safeLog.responseCode = maybeError.responseCode;
+    }
+  }
+
+  return safeLog;
+}
+
 // 通知內容介面
 export interface NotificationContent {
   type: NotificationType;
@@ -164,10 +189,10 @@ async function sendEmail(content: EmailContent): Promise<{ success: boolean; err
 
     return { success: true };
   } catch (error) {
-    console.error('郵件發送失敗:', error);
+    console.error('郵件發送失敗:', getSafeEmailErrorLog(error));
     return { 
       success: false, 
-      error: error instanceof Error ? error.message : '郵件發送失敗' 
+      error: getSafeEmailErrorMessage()
     };
   }
 }
