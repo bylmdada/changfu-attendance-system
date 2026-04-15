@@ -79,7 +79,6 @@ export default function PensionContributionPage() {
   
   // 審核表單
   const [reviewingApp, setReviewingApp] = useState<Application | null>(null);
-  const [_reviewOpinion, _setReviewOpinion] = useState('');
   const [reviewNote, setReviewNote] = useState('');
 
   // 取得用戶資訊
@@ -269,7 +268,7 @@ export default function PensionContributionPage() {
         ) : (
           <div className="space-y-6">
             {/* 目前自提資訊卡片 */}
-            <div className="bg-gradient-to-r from-blue-500 to-blue-600 rounded-xl p-6 text-white">
+            <div className="bg-linear-to-r from-blue-500 to-blue-600 rounded-xl p-6 text-white">
               <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
                 <TrendingUp className="w-5 h-5" />
                 目前自提狀態

@@ -223,6 +223,7 @@ export default function PasswordManagement() {
     
     setBatchResetLoading(true);
     let successCount = 0;
+    const failedIds: number[] = [];
     
     try {
       for (const userId of selectedIds) {
@@ -230,11 +231,23 @@ export default function PasswordManagement() {
           method: 'POST',
           body: { userId: userId.toString(), newPassword: batchResetPassword }
         });
-        if (response.ok) successCount++;
+        if (response.ok) {
+          successCount++;
+        } else {
+          failedIds.push(userId);
+        }
       }
-      
+
+      if (successCount === 0) {
+        showToast('error', '批量重置失敗，請檢查後再試');
+        return;
+      }
+
       showToast('success', `已成功重置 ${successCount} 個用戶的密碼`);
-      setSelectedIds(new Set());
+      if (failedIds.length > 0) {
+        showToast('error', `另有 ${failedIds.length} 個用戶重置失敗`);
+      }
+      setSelectedIds(new Set(failedIds));
       setShowBatchResetModal(false);
       setBatchResetPassword('');
     } catch (error) {

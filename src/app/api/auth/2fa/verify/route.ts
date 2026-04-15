@@ -3,12 +3,16 @@
  * POST - 驗證 TOTP 碼並啟用 2FA
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
 import { verifyTOTP } from '@/lib/totp';
 import { decrypt } from '@/lib/encryption';
 import { validateCSRF } from '@/lib/csrf';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -17,20 +21,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'CSRF 驗證失敗' }, { status: 403 });
     }
 
-    const cookieStore = await cookies();
-    const token = cookieStore.get('auth-token')?.value;
-    
-    if (!token) {
+    const user = await getUserFromRequest(request);
+    if (!user) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
-    
-    const user = await getUserFromToken(token);
-    if (!user) {
-      return NextResponse.json({ error: '無效的 Token' }, { status: 401 });
+
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json({ error: '無效的 JSON 格式' }, { status: 400 });
     }
 
-    const body = await request.json();
-    const { code } = body;
+    const body = parseResult.data;
+    const code = isPlainObject(body) && typeof body.code === 'string' ? body.code : '';
 
     if (!code || typeof code !== 'string' || code.length !== 6) {
       return NextResponse.json({ error: '請輸入 6 位數驗證碼' }, { status: 400 });

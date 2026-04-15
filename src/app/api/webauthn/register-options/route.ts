@@ -1,14 +1,30 @@
 import { NextResponse } from 'next/server';
+import { generateRegistrationOptions } from '@simplewebauthn/server';
 import { prisma } from '@/lib/database';
-import crypto from 'crypto';
+import { normalizeStoredCredentialTransports, WEBAUTHN_RP_ID, WEBAUTHN_RP_NAME } from '@/lib/webauthn';
+import { safeParseJSON } from '@/lib/validation';
 
-// WebAuthn 設定
-const RP_NAME = '長福會考勤系統';
-const RP_ID = process.env.WEBAUTHN_RP_ID || 'localhost';
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 export async function POST(request: Request) {
   try {
-    const { username, password } = await request.json();
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供帳號和密碼' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const body = parseResult.data;
+    const username = isPlainObject(body) && typeof body.username === 'string'
+      ? body.username
+      : '';
+    const password = isPlainObject(body) && typeof body.password === 'string'
+      ? body.password
+      : '';
 
     if (!username || !password) {
       return NextResponse.json({ error: '請提供帳號和密碼' }, { status: 400 });
@@ -27,6 +43,10 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: '帳號或密碼錯誤' }, { status: 401 });
     }
 
+    if (!user.isActive || !user.employee) {
+      return NextResponse.json({ error: '帳號已停用或無有效員工資料' }, { status: 403 });
+    }
+
     // 驗證密碼
     const bcrypt = await import('bcryptjs');
     const isValidPassword = await bcrypt.compare(password, user.passwordHash);
@@ -34,46 +54,30 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: '帳號或密碼錯誤' }, { status: 401 });
     }
 
-    // 生成 challenge
-    const challenge = crypto.randomBytes(32);
-    const challengeBase64 = challenge.toString('base64url');
-
-    // 已註冊的憑證 ID（排除重複註冊）
     const excludeCredentials = user.webauthnCredentials.map(cred => ({
       id: cred.credentialId,
-      type: 'public-key' as const,
-      transports: cred.transports ? JSON.parse(cred.transports) : ['internal']
+      transports: normalizeStoredCredentialTransports(cred.transports)
     }));
 
-    // PublicKeyCredentialCreationOptions
-    const options = {
-      challenge: challengeBase64,
-      rp: {
-        name: RP_NAME,
-        id: RP_ID
-      },
-      user: {
-        id: Buffer.from(user.id.toString()).toString('base64url'),
-        name: username,
-        displayName: user.employee?.name || username
-      },
-      pubKeyCredParams: [
-        { alg: -7, type: 'public-key' },   // ES256
-        { alg: -257, type: 'public-key' }  // RS256
-      ],
+    const options = await generateRegistrationOptions({
+      rpName: WEBAUTHN_RP_NAME,
+      rpID: WEBAUTHN_RP_ID,
+      userName: username,
+      userID: Buffer.from(user.id.toString(), 'utf8'),
+      userDisplayName: user.employee?.name || username,
       timeout: 60000,
-      attestation: 'none',
+      attestationType: 'none',
       authenticatorSelection: {
-        authenticatorAttachment: 'platform', // 平台驗證器（Face ID / 指紋）
+        authenticatorAttachment: 'platform',
         userVerification: 'required',
         residentKey: 'preferred'
       },
-      excludeCredentials
-    };
+      excludeCredentials,
+      supportedAlgorithmIDs: [-7, -257],
+    });
 
-    // 儲存 challenge 到 session（簡化版：使用 cookie）
     const response = NextResponse.json({ options });
-    response.cookies.set('webauthn_challenge', challengeBase64, {
+    response.cookies.set('webauthn_challenge', options.challenge, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'strict',

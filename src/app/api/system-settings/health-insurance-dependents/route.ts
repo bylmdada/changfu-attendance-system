@@ -1,29 +1,52 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import jwt from 'jsonwebtoken';
+import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { safeParseJSON } from '@/lib/validation';
+
+function parsePositiveInteger(value: unknown) {
+  if (typeof value === 'number') {
+    return Number.isInteger(value) && value > 0 ? value : null;
+  }
+
+  if (typeof value !== 'string' || value.trim() === '') {
+    return null;
+  }
+
+  const parsedValue = Number(value);
+  if (!Number.isInteger(parsedValue) || parsedValue <= 0) {
+    return null;
+  }
+
+  return parsedValue;
+}
+
+function parseDateValue(value: unknown) {
+  if (typeof value !== 'string' || value.trim() === '') {
+    return null;
+  }
+
+  const parsedDate = new Date(value);
+  if (Number.isNaN(parsedDate.getTime())) {
+    return null;
+  }
+
+  return parsedDate;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
 
 // 驗證 admin 權限
 async function verifyAdmin(request: NextRequest) {
-  try {
-    const token = request.cookies.get('auth-token')?.value;
-    if (!token) {
-      return null;
-    }
-
-    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as { userId: number };
-    const user = await prisma.user.findUnique({
-      where: { id: decoded.userId },
-      include: {
-        employee: true
-      }
-    });
-
-    return user?.role === 'ADMIN' ? user : null;
-  } catch {
+  const user = await getUserFromRequest(request);
+  if (!user || user.role !== 'ADMIN') {
     return null;
   }
+
+  return user;
 }
 
 // GET - 取得所有員工及其眷屬資料
@@ -129,7 +152,21 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
     }
 
-    const data = await request.json();
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的眷屬資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const data = parseResult.data;
+    if (!isPlainObject(data)) {
+      return NextResponse.json(
+        { error: '請提供有效的眷屬資料' },
+        { status: 400 }
+      );
+    }
     
     // 4. 資料大小驗證
     const jsonString = JSON.stringify(data);
@@ -151,18 +188,55 @@ export async function POST(request: NextRequest) {
       endDate,
       remarks
     } = data;
+    const parsedId = id === undefined || id === null || id === '' ? null : parsePositiveInteger(id);
+    const parsedEmployeeId = parsePositiveInteger(employeeId);
+    const parsedBirthDate = parseDateValue(birthDate);
+    const parsedStartDate = parseDateValue(startDate);
+    const parsedEndDate = endDate ? parseDateValue(endDate) : null;
+    const normalizedDependentName = typeof dependentName === 'string' ? dependentName.trim() : '';
+    const normalizedRelationship = typeof relationship === 'string' ? relationship.trim() : '';
+    const normalizedIdNumber = typeof idNumber === 'string' ? idNumber.trim().toUpperCase() : '';
+    const normalizedRemarks = typeof remarks === 'string' ? remarks.trim() : '';
+    const normalizedIsActive = typeof isActive === 'boolean'
+      ? isActive
+      : isActive === 'true'
+        ? true
+        : isActive === 'false'
+          ? false
+          : Boolean(isActive);
 
     // 驗證必填欄位
-    if (!employeeId || !dependentName || !relationship || !idNumber || !birthDate || !startDate) {
+    if (!employeeId || !normalizedDependentName || !normalizedRelationship || !normalizedIdNumber || !birthDate || !startDate) {
       return NextResponse.json(
         { error: '請填寫所有必填欄位' },
         { status: 400 }
       );
     }
 
+    if (!parsedEmployeeId) {
+      return NextResponse.json(
+        { error: '員工 ID 格式無效' },
+        { status: 400 }
+      );
+    }
+
+    if ((id !== undefined && id !== null && id !== '') && !parsedId) {
+      return NextResponse.json(
+        { error: '眷屬 ID 格式無效' },
+        { status: 400 }
+      );
+    }
+
+    if (!parsedBirthDate || !parsedStartDate || (endDate && !parsedEndDate)) {
+      return NextResponse.json(
+        { error: '日期格式無效' },
+        { status: 400 }
+      );
+    }
+
     // 驗證員工是否存在
     const employee = await prisma.employee.findUnique({
-      where: { id: employeeId }
+      where: { id: parsedEmployeeId }
     });
 
     if (!employee) {
@@ -174,7 +248,7 @@ export async function POST(request: NextRequest) {
 
     // 驗證身分證號格式
     const idNumberRegex = /^[A-Z][0-9]{9}$/;
-    if (!idNumberRegex.test(idNumber)) {
+    if (!idNumberRegex.test(normalizedIdNumber)) {
       return NextResponse.json(
         { error: '身分證號格式不正確' },
         { status: 400 }
@@ -184,8 +258,8 @@ export async function POST(request: NextRequest) {
     // 檢查身分證號是否重複（排除自己）
     const existingDependent = await prisma.healthInsuranceDependent.findFirst({
       where: {
-        idNumber,
-        id: id ? { not: id } : undefined
+        idNumber: normalizedIdNumber,
+        id: parsedId ? { not: parsedId } : undefined
       }
     });
 
@@ -198,30 +272,30 @@ export async function POST(request: NextRequest) {
 
     // 準備儲存的資料
     const dependentData = {
-      employeeId,
-      dependentName,
-      relationship,
-      idNumber,
-      birthDate: new Date(birthDate),
-      isActive,
-      startDate: new Date(startDate),
-      endDate: endDate ? new Date(endDate) : null,
-      remarks: remarks || null
+      employeeId: parsedEmployeeId,
+      dependentName: normalizedDependentName,
+      relationship: normalizedRelationship,
+      idNumber: normalizedIdNumber,
+      birthDate: parsedBirthDate,
+      isActive: normalizedIsActive,
+      startDate: parsedStartDate,
+      endDate: parsedEndDate,
+      remarks: normalizedRemarks || null
     };
 
     let savedDependent;
-    const changedBy = user.employee?.name || user.username;
+    const changedBy = user.username;
 
-    if (id) {
+    if (parsedId) {
       // 取得舊資料用於記錄變更
       const oldDependent = await prisma.healthInsuranceDependent.findUnique({
-        where: { id },
+        where: { id: parsedId },
         include: { employee: { select: { name: true } } }
       });
       
       // 更新現有眷屬
       savedDependent = await prisma.healthInsuranceDependent.update({
-        where: { id },
+        where: { id: parsedId },
         data: dependentData,
         include: { employee: { select: { name: true } } }
       });
@@ -242,7 +316,7 @@ export async function POST(request: NextRequest) {
         for (const change of changes) {
           await prisma.dependentHistoryLog.create({
             data: {
-              dependentId: id,
+              dependentId: parsedId,
               dependentName: dependentData.dependentName,
               employeeName: savedDependent.employee.name,
               action: 'UPDATE',
@@ -322,18 +396,26 @@ export async function DELETE(request: NextRequest) {
     }
 
     const { searchParams } = new URL(request.url);
-    const id = searchParams.get('id');
+    const rawId = searchParams.get('id');
+    const id = rawId ? parsePositiveInteger(rawId) : null;
 
-    if (!id) {
+    if (!rawId) {
       return NextResponse.json(
         { error: '缺少眷屬 ID' },
         { status: 400 }
       );
     }
 
+    if (!id) {
+      return NextResponse.json(
+        { error: '眷屬 ID 格式無效' },
+        { status: 400 }
+      );
+    }
+
     // 檢查眷屬是否存在
     const dependent = await prisma.healthInsuranceDependent.findUnique({
-      where: { id: parseInt(id) }
+      where: { id }
     });
 
     if (!dependent) {
@@ -344,7 +426,7 @@ export async function DELETE(request: NextRequest) {
     }
 
     // 刪除眷屬資料前記錄歷史
-    const changedBy = user.employee?.name || user.username;
+    const changedBy = user.username;
     await prisma.dependentHistoryLog.create({
       data: {
         dependentId: dependent.id,
@@ -357,7 +439,7 @@ export async function DELETE(request: NextRequest) {
 
     // 刪除眷屬資料
     await prisma.healthInsuranceDependent.delete({
-      where: { id: parseInt(id) }
+      where: { id }
     });
 
     return NextResponse.json({

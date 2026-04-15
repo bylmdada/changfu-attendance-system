@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Clock, Calendar, BarChart3, History, Timer, CheckCircle, XCircle, User, Lock, Eye, EyeOff, MapPin, Wifi, WifiOff, AlertCircle, Fingerprint } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
@@ -156,8 +156,17 @@ export default function AttendancePage() {
     }
   }, []);
 
+  useEffect(() => {
+    if (!verificationData.username && !savedUsername && loggedInUsername) {
+      setVerificationData((prev) => ({
+        ...prev,
+        username: loggedInUsername
+      }));
+    }
+  }, [loggedInUsername, savedUsername, verificationData.username]);
+
   // 檢查使用者是否已註冊 WebAuthn 憑證
-  const checkWebAuthnCredential = async (username: string) => {
+  const checkWebAuthnCredential = useCallback(async (username: string) => {
     if (!biometricSupported || !username) {
       setHasWebAuthnCredential(false);
       return;
@@ -179,7 +188,7 @@ export default function AttendancePage() {
       console.error('檢查 WebAuthn 憑證失敗:', error);
       setHasWebAuthnCredential(false);
     }
-  };
+  }, [biometricSupported]);
 
   // Face ID / 指紋打卡處理
   const handleBiometricClock = async (clockType: 'in' | 'out') => {
@@ -308,14 +317,14 @@ export default function AttendancePage() {
       console.log('🔑 重新檢查 WebAuthn 憑證:', loggedInUsername);
       checkWebAuthnCredential(loggedInUsername);
     }
-  }, [biometricSupported, loggedInUsername]);
+  }, [biometricSupported, checkWebAuthnCredential, loggedInUsername]);
 
   useEffect(() => {
     // 設定頁面標題
     document.title = '打卡系統 - 長福會考勤系統';
-    
-    loadTodayStatus();
-    loadAllowedLocations();
+  }, []);
+
+  useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
@@ -436,7 +445,7 @@ export default function AttendancePage() {
     return { isValid: false, nearestLocation, distance: minDistance };
   };
 
-  const loadAllowedLocations = async () => {
+  const loadAllowedLocations = useCallback(async () => {
     try {
       const response = await fetch('/api/attendance/allowed-locations', {
         credentials: 'include'
@@ -477,7 +486,7 @@ export default function AttendancePage() {
     } catch (error) {
       console.error('載入允許位置失敗:', error);
     }
-  };
+  }, []);
 
   const checkLocation = async (): Promise<LocationCheckResult> => {
     try {
@@ -538,7 +547,7 @@ export default function AttendancePage() {
     }
   };
 
-  const loadTodayStatus = async () => {
+  const loadTodayStatus = useCallback(async () => {
     try {
       console.log('🔄 載入打卡狀態...');
       
@@ -586,7 +595,12 @@ export default function AttendancePage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [checkWebAuthnCredential]);
+
+  useEffect(() => {
+    void loadTodayStatus();
+    void loadAllowedLocations();
+  }, [loadAllowedLocations, loadTodayStatus]);
 
   const handleClock = async (type: 'in' | 'out') => {
     if (isMobileClocking !== true) {
@@ -692,7 +706,12 @@ export default function AttendancePage() {
       }
 
       // 準備打卡數據，包含GPS位置信息
-      const effectiveUsername = verificationData.username || savedUsername;
+      const effectiveUsername = verificationData.username || savedUsername || loggedInUsername;
+      if (!effectiveUsername) {
+        showToast('error', '請先輸入帳號');
+        return;
+      }
+
       const clockData: {
         username: string;
         password: string;
@@ -1131,7 +1150,7 @@ export default function AttendancePage() {
               </div>
 
               {/* 考勤提醒 */}
-              <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-2xl p-6 border border-blue-200">
+              <div className="bg-linear-to-r from-blue-50 to-indigo-50 rounded-2xl p-6 border border-blue-200">
                 <h3 className="text-lg font-bold text-blue-900 mb-3">考勤提醒</h3>
                 <div className="space-y-2 text-sm text-blue-800">
                   <p>• 系統支援靈活打卡，可隨時上下班打卡</p>
@@ -1269,7 +1288,7 @@ export default function AttendancePage() {
                     })}
                     className="w-full pl-10 pr-3 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black text-base"
                     placeholder="請輸入您的帳號"
-                    autoFocus={!savedUsername}
+                    autoFocus={!(verificationData.username || savedUsername)}
                   />
                 </div>
               </div>
@@ -1287,7 +1306,7 @@ export default function AttendancePage() {
                     })}
                     className="w-full pl-10 pr-10 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black text-base"
                     placeholder="請輸入您的密碼"
-                    autoFocus={!!savedUsername}
+                    autoFocus={!!(verificationData.username || savedUsername)}
                     onKeyPress={(e) => {
                       if (e.key === 'Enter') {
                         handleVerificationSubmit();
@@ -1334,13 +1353,14 @@ export default function AttendancePage() {
               </button>
               <button
                 onClick={() => {
+                  const effectiveUsername = verificationData.username || savedUsername || loggedInUsername;
                   // 記住帳號
-                  if (rememberDevice && verificationData.username) {
-                    localStorage.setItem('attendance_remembered_username', verificationData.username);
+                  if (rememberDevice && effectiveUsername) {
+                    localStorage.setItem('attendance_remembered_username', effectiveUsername);
                   }
                   handleVerificationSubmit();
                 }}
-                disabled={!(verificationData.username || savedUsername) || !verificationData.password || clockLoading}
+                disabled={!(verificationData.username || savedUsername || loggedInUsername) || !verificationData.password || clockLoading}
                 className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-3 px-4 rounded-lg transition-colors"
               >
                 {clockLoading ? '打卡中...' : '確認打卡'}

@@ -1,4 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { prisma } from '@/lib/database';
+import { getUserFromRequest } from '@/lib/auth';
+import { validateCSRF } from '@/lib/csrf';
+import { checkRateLimit } from '@/lib/rate-limit';
 
 interface Schedule {
   workDate: string;
@@ -9,38 +13,123 @@ interface Schedule {
 }
 
 interface User {
-  employeeId: number;
+    employeeId: number | string;
   name?: string;
   department?: string;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null;
+}
+
+function isValidSchedule(value: unknown): value is Schedule {
+    return isRecord(value)
+        && typeof value.workDate === 'string'
+        && typeof value.shiftType === 'string'
+        && typeof value.startTime === 'string'
+        && typeof value.endTime === 'string'
+        && (value.breakTime === undefined || typeof value.breakTime === 'number');
+}
+
+function isValidExportUser(value: unknown): value is User {
+    return isRecord(value)
+        && (typeof value.employeeId === 'number' || typeof value.employeeId === 'string')
+        && (value.name === undefined || typeof value.name === 'string')
+        && (value.department === undefined || typeof value.department === 'string');
+}
+
+function parseExportPayload(body: unknown): { year: number; month: number; schedules: Schedule[]; user: User } | null {
+    if (!isRecord(body)) {
+        return null;
+    }
+
+    const { year, month, schedules, user } = body;
+    if (typeof year !== 'number' || typeof month !== 'number') {
+        return null;
+    }
+
+    if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
+        return null;
+    }
+
+    if (!Array.isArray(schedules) || !schedules.every(isValidSchedule) || !isValidExportUser(user)) {
+        return null;
+    }
+
+    return {
+        year,
+        month,
+        schedules,
+        user,
+    };
+}
+
 export async function POST(request: NextRequest) {
   try {
-    const { year, month, schedules, user }: {
-      year: number;
-      month: number;
-      schedules: Schedule[];
-      user: User;
-    } = await request.json();
+        const rateLimitResult = await checkRateLimit(request);
+        if (!rateLimitResult.allowed) {
+            return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
+        }
 
-    // 生成HTML內容用於PDF轉換
-    const htmlContent = generateScheduleHTML(year, month, schedules, user);
-    
-    // 由於沒有安裝PDF生成庫，我們返回HTML格式供瀏覽器打印
-    // 在生產環境中，建議使用 puppeteer 或 jsPDF 等庫
+        const csrfResult = await validateCSRF(request);
+        if (!csrfResult.valid) {
+            return NextResponse.json({ error: 'CSRF token validation failed' }, { status: 403 });
+        }
+
+        const currentUser = await getUserFromRequest(request);
+        if (!currentUser?.employeeId) {
+            return NextResponse.json({ error: '未授權' }, { status: 401 });
+        }
+
+        let body: unknown;
+        try {
+            body = await request.json();
+        } catch {
+            return NextResponse.json({ error: '請提供有效的班表匯出資料' }, { status: 400 });
+        }
+
+        const payload = parseExportPayload(body);
+        if (!payload) {
+            return NextResponse.json({ error: '請提供有效的班表匯出資料' }, { status: 400 });
+        }
+
+        const employee = await prisma.employee.findUnique({
+            where: { id: currentUser.employeeId },
+            select: {
+                employeeId: true,
+                name: true,
+                department: true,
+            },
+        });
+
+        if (!employee) {
+            return NextResponse.json({ error: '找不到員工資料' }, { status: 404 });
+        }
+
+        if (String(payload.user.employeeId) !== String(employee.employeeId)) {
+            return NextResponse.json({ error: '只能匯出自己的班表' }, { status: 403 });
+        }
+
+        const exportUser: User = {
+            employeeId: employee.employeeId,
+            name: employee.name ?? payload.user.name,
+            department: employee.department ?? payload.user.department,
+        };
+
+        const htmlContent = generateScheduleHTML(payload.year, payload.month, payload.schedules, exportUser);
     
     return new NextResponse(htmlContent, {
       headers: {
         'Content-Type': 'text/html; charset=utf-8',
-        'Content-Disposition': `inline; filename="schedule_${user?.employeeId}_${year}${month.toString().padStart(2, '0')}.html"`
+                'Content-Disposition': `inline; filename="schedule_${exportUser.employeeId}_${payload.year}${payload.month.toString().padStart(2, '0')}.html"`
       }
     });
 
   } catch (error) {
     console.error('班表匯出失敗:', error);
     return NextResponse.json(
-      { error: '班表匯出失敗' },
-      { status: 500 }
+            { error: '系統錯誤' },
+            { status: 500 }
     );
   }
 }

@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
+import { getUserFromRequest, type JWTPayload } from '@/lib/auth';
+import { validateCSRF } from '@/lib/csrf';
 import { 
   calculateYearEndBonus,
   calculateFestivalBonus,
@@ -11,6 +13,8 @@ import {
   calculateBonusSupplementaryPremium, 
   getInsuredAmount 
 } from '@/lib/tax-calculator';
+import { parseIntegerQueryParam } from '@/lib/query-params';
+import { safeParseJSON } from '@/lib/validation';
 
 interface BonusResults {
   yearEndBonus?: unknown;
@@ -23,23 +27,51 @@ interface BonusCalculation {
   proRatedAmount: number;
 }
 
+function isBonusManager(user: JWTPayload | null): user is JWTPayload {
+  return !!user && ['ADMIN', 'HR'].includes(user.role);
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parsePositiveInteger(value: string | number, max: number) {
+  return parseIntegerQueryParam(String(value), { min: 1, max });
+}
+
 export async function GET(request: NextRequest) {
   try {
+    const user = await getUserFromRequest(request);
+    if (!isBonusManager(user)) {
+      return NextResponse.json(
+        { success: false, error: '未授權' },
+        { status: 401 }
+      );
+    }
+
     const { searchParams } = new URL(request.url);
     const action = searchParams.get('action');
     const employeeId = searchParams.get('employeeId');
     const year = searchParams.get('year') || new Date().getFullYear().toString();
     const bonusType = searchParams.get('bonusType');
 
+    const yearResult = parsePositiveInteger(year, 9999);
+    if (!yearResult.isValid || yearResult.value === null) {
+      return NextResponse.json(
+        { success: false, error: 'year 參數格式無效' },
+        { status: 400 }
+      );
+    }
+
     switch (action) {
       case 'calculate-individual':
-        return await handleIndividualCalculation(employeeId, year, bonusType);
+        return await handleIndividualCalculation(employeeId, yearResult.value, bonusType);
       
       case 'calculate-batch':
-        return await handleBatchCalculation(year, bonusType);
+        return await handleBatchCalculation(yearResult.value, bonusType);
       
       case 'generate-report':
-        return await handleReportGeneration(year);
+        return await handleReportGeneration(yearResult.value);
       
       default:
         return NextResponse.json(
@@ -58,24 +90,81 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
-    const {
-      action,
-      employeeIds,
-      bonusType,
-      year,
-      autoCreateRecords = false,
-      createdBy
-    } = body;
+    const user = await getUserFromRequest(request);
+    if (!isBonusManager(user)) {
+      return NextResponse.json(
+        { success: false, error: '未授權' },
+        { status: 401 }
+      );
+    }
+
+    const csrfResult = await validateCSRF(request);
+    if (!csrfResult.valid) {
+      return NextResponse.json(
+        { success: false, error: 'CSRF驗證失敗，請重新操作' },
+        { status: 403 }
+      );
+    }
+
+    if (!user.employeeId) {
+      return NextResponse.json(
+        { success: false, error: '找不到員工身份' },
+        { status: 400 }
+      );
+    }
+
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { success: false, error: '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const body = parseResult.data;
+    const action = isPlainObject(body) && typeof body.action === 'string'
+      ? body.action
+      : undefined;
+    const employeeIds = isPlainObject(body) && Array.isArray(body.employeeIds) && body.employeeIds.every((id) => typeof id === 'number')
+      ? body.employeeIds as number[]
+      : undefined;
+    const bonusType = isPlainObject(body) && typeof body.bonusType === 'string'
+      ? body.bonusType
+      : undefined;
+    const festivalType = isPlainObject(body) && typeof body.festivalType === 'string'
+      ? body.festivalType
+      : undefined;
+    const year = isPlainObject(body) && (typeof body.year === 'string' || typeof body.year === 'number')
+      ? body.year
+      : undefined;
+    const autoCreateRecords = isPlainObject(body) && typeof body.autoCreateRecords === 'boolean'
+      ? body.autoCreateRecords
+      : false;
 
     switch (action) {
       case 'batch-calculate-and-create':
+        if (!employeeIds || !bonusType || year === undefined) {
+          return NextResponse.json(
+            { success: false, error: '缺少必要欄位' },
+            { status: 400 }
+          );
+        }
+
+        const yearResult = parsePositiveInteger(year, 9999);
+        if (!yearResult.isValid || yearResult.value === null) {
+          return NextResponse.json(
+            { success: false, error: 'year 欄位格式無效' },
+            { status: 400 }
+          );
+        }
+
         return await handleBatchCalculateAndCreate(
           employeeIds, 
           bonusType, 
-          parseInt(year), 
+          festivalType,
+          yearResult.value,
           autoCreateRecords, 
-          createdBy
+          user.employeeId
         );
       
       default:
@@ -96,7 +185,7 @@ export async function POST(request: NextRequest) {
 // 處理個別員工計算
 async function handleIndividualCalculation(
   employeeId: string | null, 
-  year: string, 
+  year: number,
   bonusType: string | null
 ) {
   if (!employeeId) {
@@ -106,8 +195,16 @@ async function handleIndividualCalculation(
     );
   }
 
+  const employeeIdResult = parsePositiveInteger(employeeId, 99999999);
+  if (!employeeIdResult.isValid || employeeIdResult.value === null) {
+    return NextResponse.json(
+      { success: false, error: 'employeeId 參數格式無效' },
+      { status: 400 }
+    );
+  }
+
   const employee = await prisma.employee.findUnique({
-    where: { id: parseInt(employeeId) }
+    where: { id: employeeIdResult.value }
   });
 
   if (!employee) {
@@ -117,7 +214,7 @@ async function handleIndividualCalculation(
     );
   }
 
-  const targetYear = parseInt(year);
+  const targetYear = year;
   const results: BonusResults = {};
 
   if (!bonusType || bonusType === 'YEAR_END') {
@@ -179,7 +276,7 @@ async function handleIndividualCalculation(
 }
 
 // 處理批量計算
-async function handleBatchCalculation(year: string, bonusType: string | null) {
+async function handleBatchCalculation(year: number, bonusType: string | null) {
   const employees = await prisma.employee.findMany({
     where: { isActive: true },
     select: {
@@ -194,7 +291,7 @@ async function handleBatchCalculation(year: string, bonusType: string | null) {
     }
   });
 
-  const targetYear = parseInt(year);
+  const targetYear = year;
   const results: BonusResults = {};
 
   if (!bonusType || bonusType === 'YEAR_END') {
@@ -203,9 +300,9 @@ async function handleBatchCalculation(year: string, bonusType: string | null) {
 
   if (!bonusType || bonusType === 'FESTIVAL') {
     results.festivalBonus = {
-      springFestival: await batchCalculateFestivalBonus(employees, 'spring_festival', targetYear),
-      dragonBoat: await batchCalculateFestivalBonus(employees, 'dragon_boat', targetYear),
-      midAutumn: await batchCalculateFestivalBonus(employees, 'mid_autumn', targetYear)
+      spring_festival: await batchCalculateFestivalBonus(employees, 'spring_festival', targetYear),
+      dragon_boat: await batchCalculateFestivalBonus(employees, 'dragon_boat', targetYear),
+      mid_autumn: await batchCalculateFestivalBonus(employees, 'mid_autumn', targetYear)
     };
   }
 
@@ -220,7 +317,7 @@ async function handleBatchCalculation(year: string, bonusType: string | null) {
 }
 
 // 處理報表生成
-async function handleReportGeneration(year: string) {
+async function handleReportGeneration(year: number) {
   const employees = await prisma.employee.findMany({
     where: { isActive: true },
     select: {
@@ -235,7 +332,7 @@ async function handleReportGeneration(year: string) {
     }
   });
 
-  const targetYear = parseInt(year);
+  const targetYear = year;
   const report = await generateProRatedBonusReport(
     employees.map(emp => ({
       ...emp,
@@ -255,6 +352,7 @@ async function handleReportGeneration(year: string) {
 async function handleBatchCalculateAndCreate(
   employeeIds: number[],
   bonusType: string,
+  festivalType: string | undefined,
   year: number,
   autoCreateRecords: boolean,
   createdBy: number
@@ -274,9 +372,23 @@ async function handleBatchCalculateAndCreate(
       dependents: true
     }
   });
+  
+  const activeEmployeeIds = new Set(employees.map((employee) => employee.id));
+  const missingOrInactiveEmployeeIds = Array.from(
+    new Set(employeeIds.filter((employeeId) => !activeEmployeeIds.has(employeeId)))
+  );
 
   const calculations: BonusCalculation[] = [];
   const createdRecords: unknown[] = [];
+  const failedEmployeeIds: number[] = [];
+  const creationErrors: string[] = [];
+  
+  if (missingOrInactiveEmployeeIds.length > 0) {
+    failedEmployeeIds.push(...missingOrInactiveEmployeeIds);
+    creationErrors.push(
+      ...missingOrInactiveEmployeeIds.map((employeeId) => `員工 ID ${employeeId} 不存在或已停用`)
+    );
+  }
 
   for (const employee of employees) {
     let bonusCalculation: BonusCalculation;
@@ -295,8 +407,17 @@ async function handleBatchCalculateAndCreate(
       bonusCalculation = await calculateYearEndBonus(employee, year, bonusConfig);
       payrollMonth = 12; // 年終獎金通常在12月發放
     } else if (bonusType === 'FESTIVAL') {
-      // 這裡需要指定具體的節慶類型，暫時使用春節獎金
-      const festivalInfo = { name: 'spring_festival', month: 2, description: '春節獎金' };
+      const festivalConfigMap = {
+        spring_festival: { name: 'spring_festival', month: 2, description: '春節獎金' },
+        dragon_boat: { name: 'dragon_boat', month: 6, description: '端午節獎金' },
+        mid_autumn: { name: 'mid_autumn', month: 9, description: '中秋節獎金' }
+      } as const;
+      const festivalInfo = festivalType ? festivalConfigMap[festivalType as keyof typeof festivalConfigMap] : undefined;
+
+      if (!festivalInfo) {
+        continue;
+      }
+
       const bonusConfig = {
         defaultAmount: 5000,
         eligibilityRules: {
@@ -389,9 +510,20 @@ async function handleBatchCalculateAndCreate(
 
       } catch (error) {
         console.error(`創建員工 ${employee.name} 的獎金記錄失敗:`, error);
+        failedEmployeeIds.push(employee.id);
+        creationErrors.push(`員工 ${employee.name} 的獎金記錄建立失敗`);
         // 繼續處理其他員工，不中斷整個流程
       }
     }
+  }
+
+  if (autoCreateRecords && createdRecords.length === 0 && failedEmployeeIds.length > 0) {
+    return NextResponse.json({
+      success: false,
+      error: '所有獎金記錄建立失敗',
+      failedEmployeeIds,
+      errors: creationErrors,
+    }, { status: 400 });
   }
 
   return NextResponse.json({
@@ -400,6 +532,9 @@ async function handleBatchCalculateAndCreate(
       totalProcessed: employees.length,
       calculations,
       createdRecordsCount: createdRecords.length,
+      failedRecordsCount: failedEmployeeIds.length,
+      failedEmployeeIds,
+      errors: creationErrors,
       createdRecords: autoCreateRecords ? createdRecords : []
     }
   });

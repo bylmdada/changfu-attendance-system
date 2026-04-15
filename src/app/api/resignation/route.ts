@@ -9,6 +9,8 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { parseIntegerQueryParam } from '@/lib/query-params';
+import { safeParseJSON } from '@/lib/validation';
 
 // 預設交接項目
 const DEFAULT_HANDOVER_ITEMS = [
@@ -29,6 +31,42 @@ const DEFAULT_HANDOVER_ITEMS = [
   { category: 'DOCUMENT', description: '結算剩餘薪資/加班費' },
   { category: 'DOCUMENT', description: '辦理勞健保轉出' },
 ];
+
+function parseDateInput(value: unknown): Date | null {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return null;
+  }
+
+  const [year, month, day] = value.split('-').map(Number);
+  const parsedUtcDate = new Date(Date.UTC(year, month - 1, day));
+  if (
+    parsedUtcDate.getUTCFullYear() !== year ||
+    parsedUtcDate.getUTCMonth() !== month - 1 ||
+    parsedUtcDate.getUTCDate() !== day
+  ) {
+    return null;
+  }
+
+  return new Date(value);
+}
+
+function normalizeRequiredString(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const normalized = value.trim();
+  return normalized ? normalized : null;
+}
+
+function normalizeOptionalString(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const normalized = value.trim();
+  return normalized ? normalized : undefined;
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -54,7 +92,12 @@ export async function GET(request: NextRequest) {
     }
 
     if (year) {
-      const yearInt = parseInt(year);
+      const parsedYear = parseIntegerQueryParam(year, { min: 1900, max: 9999 });
+      if (!parsedYear.isValid || parsedYear.value === null) {
+        return NextResponse.json({ error: '年份格式無效' }, { status: 400 });
+      }
+
+      const yearInt = parsedYear.value;
       where.applicationDate = {
         gte: new Date(`${yearInt}-01-01`),
         lt: new Date(`${yearInt + 1}-01-01`)
@@ -112,12 +155,24 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
 
-    const data = await request.json();
-    const { expectedDate, reason, reasonType, notes } = data;
+    const parsedBody = await safeParseJSON(request);
+    if (!parsedBody.success || !parsedBody.data) {
+      return NextResponse.json({ error: '請求內容格式無效' }, { status: 400 });
+    }
+
+    const expectedDate = parsedBody.data.expectedDate;
+    const reason = normalizeRequiredString(parsedBody.data.reason);
+    const reasonType = normalizeOptionalString(parsedBody.data.reasonType);
+    const notes = normalizeOptionalString(parsedBody.data.notes);
 
     // 驗證必填欄位
     if (!expectedDate || !reason) {
       return NextResponse.json({ error: '請填寫預計離職日和離職原因' }, { status: 400 });
+    }
+
+    const parsedExpectedDate = parseDateInput(expectedDate);
+    if (!parsedExpectedDate) {
+      return NextResponse.json({ error: '預計離職日格式無效' }, { status: 400 });
     }
 
     // 檢查是否已有進行中的離職申請
@@ -136,7 +191,7 @@ export async function POST(request: NextRequest) {
     const record = await prisma.resignationRecord.create({
       data: {
         employeeId: user.employeeId,
-        expectedDate: new Date(expectedDate),
+        expectedDate: parsedExpectedDate,
         reason,
         reasonType: reasonType || 'VOLUNTARY',
         notes,

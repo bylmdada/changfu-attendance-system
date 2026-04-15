@@ -45,6 +45,12 @@ interface Employee {
   managedLocation?: string;  // 據點排班員負責的據點
 }
 
+interface DepartmentOption {
+  id: number;
+  name: string;
+  sortOrder: number;
+}
+
 interface DaySchedule {
   shiftType: string;
   startTime: string;
@@ -135,6 +141,7 @@ const LOCATIONS = [
 
 export default function ScheduleManagementPage() {
   const [employees, setEmployees] = useState<Employee[]>([]);
+  const [departmentOptions, setDepartmentOptions] = useState<DepartmentOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState<User | null>(null);
   const [currentDate, setCurrentDate] = useState(new Date());
@@ -173,7 +180,7 @@ export default function ScheduleManagementPage() {
   });
   
   // Toast 通知
-  const { showToast, toast, clearToast } = useLocalToast();
+  const { toast, clearToast } = useLocalToast();
   // 搜尋相關狀態
   const [searchFilters, setSearchFilters] = useState({
     yearMonth: '',
@@ -233,6 +240,7 @@ export default function ScheduleManagementPage() {
   useEffect(() => {
     fetchUser();
     fetchEmployees();
+    fetchDepartments();
     fetchSchedules();
     fetchWeeklyTemplates();
   }, []);
@@ -312,6 +320,20 @@ export default function ScheduleManagementPage() {
     }
   };
 
+  const fetchDepartments = async () => {
+    try {
+      const response = await fetch('/api/departments', {
+        credentials: 'include'
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setDepartmentOptions(data.departments || []);
+      }
+    } catch (error) {
+      console.error('獲取部門列表失敗:', error);
+    }
+  };
+
   const fetchSchedules = async () => {
     try {
       const response = await fetch('/api/schedules', {
@@ -355,6 +377,12 @@ export default function ScheduleManagementPage() {
       }
       if (searchFilters.employeeName) {
         queryParams.set('employeeName', searchFilters.employeeName);
+      }
+      if (searchFilters.department) {
+        queryParams.set('department', searchFilters.department);
+      }
+      if (searchFilters.position) {
+        queryParams.set('position', searchFilters.position);
       }
 
       console.log('搜尋參數:', queryParams.toString()); // 調試用
@@ -567,12 +595,14 @@ export default function ScheduleManagementPage() {
           templateId: selectedTemplateId,
           year,
           month,
-          employeeIds: selectedEmployees
+          employeeIds: selectedEmployees,
+          overwriteExisting: true
         }
       });
 
       if (response.ok) {
-        alert('週模版套用成功');
+        const data = await response.json();
+        alert(data.message || '週模版套用成功');
         setShowApplyTemplateModal(false);
         setSelectedTemplateId(null);
         setApplyToMonth('');
@@ -605,7 +635,9 @@ export default function ScheduleManagementPage() {
   });
 
   // 取得部門列表（用於模版部門篩選）
-  const templateDepartments = [...new Set(employees.map(e => e.department).filter(Boolean))].sort();
+  const templateDepartments = departmentOptions.length > 0
+    ? departmentOptions.map((department) => department.name)
+    : [...new Set(employees.map((employee) => employee.department).filter(Boolean))].sort();
 
   // 处理员工选择
   const handleEmployeeToggle = (employeeId: number) => {
@@ -808,7 +840,7 @@ export default function ScheduleManagementPage() {
                 <select
                   value={locationFilter}
                   onChange={(e) => setLocationFilter(e.target.value)}
-                  className="px-4 py-2.5 text-base font-semibold text-gray-900 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 min-w-[220px]"
+                  className="min-w-55 rounded-lg border border-gray-300 px-4 py-2.5 text-base font-semibold text-gray-900 focus:ring-2 focus:ring-blue-500"
                   disabled={!!(hasSchedulePermission && !isFullAdmin && allowedLocations.length === 1)}
                 >
                   {isFullAdmin ? (
@@ -1068,7 +1100,7 @@ export default function ScheduleManagementPage() {
                 return (
                   <div 
                     key={index} 
-                    className={`min-h-[120px] border rounded p-2 ${
+                    className={`min-h-30 border rounded p-2 ${
                       holiday ? 'border-red-300 bg-red-50' : 'border-gray-200'
                     }`}
                   >
@@ -1579,6 +1611,7 @@ export default function ScheduleManagementPage() {
                       setApplyToMonth('');
                       setSelectedEmployees([]);
                       setEmployeeSearch('');
+                        setTemplateDepartmentFilter('');
                     }}
                     className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50"
                   >

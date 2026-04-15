@@ -1,12 +1,47 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest, verifyPassword } from '@/lib/auth';
+import { validateCSRF } from '@/lib/csrf';
+import { checkClockRateLimit, clearFailedAttempts, recordFailedClockAttempt } from '@/lib/rate-limit';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 // POST - 更新下班打卡的超時原因
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
-    const { attendanceId, lateClockOutReason, clockOutReason: newClockOutReason, username, password } = body;
+    const csrfValidation = await validateCSRF(request);
+    if (!csrfValidation.valid) {
+      return NextResponse.json(
+        { error: csrfValidation.error || 'CSRF token validation failed' },
+        { status: 403 }
+      );
+    }
+
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '缺少考勤記錄ID' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const body = parseResult.data;
+    if (!isPlainObject(body)) {
+      return NextResponse.json({ error: '缺少考勤記錄ID' }, { status: 400 });
+    }
+
+    const attendanceId = typeof body.attendanceId === 'number'
+      ? body.attendanceId
+      : typeof body.attendanceId === 'string' && /^\d+$/.test(body.attendanceId)
+        ? Number(body.attendanceId)
+        : undefined;
+    const lateClockOutReason = typeof body.lateClockOutReason === 'string' ? body.lateClockOutReason : undefined;
+    const newClockOutReason = typeof body.clockOutReason === 'string' ? body.clockOutReason : undefined;
+    const username = typeof body.username === 'string' ? body.username : '';
+    const password = typeof body.password === 'string' ? body.password : '';
     
     // 支援新舊欄位名稱
     const reason = newClockOutReason || lateClockOutReason;
@@ -43,15 +78,36 @@ export async function POST(request: NextRequest) {
     
     // 模式2: 帳密認證 (快速打卡模式)
     if (!isAuthorized && username && password) {
+      const rateLimitResult = await checkClockRateLimit(request, username);
+      if (!rateLimitResult.allowed) {
+        return NextResponse.json(
+          { error: rateLimitResult.reason || '請求過於頻繁' },
+          {
+            status: 429,
+            headers: { 'Retry-After': String(rateLimitResult.retryAfter || 60) }
+          }
+        );
+      }
+
       const userRecord = await prisma.user.findUnique({
         where: { username },
         include: { employee: true }
       });
       
-      if (userRecord && userRecord.employee) {
+      if (!userRecord) {
+        await recordFailedClockAttempt(username);
+      } else if (!userRecord.isActive) {
+        await recordFailedClockAttempt(username);
+        return NextResponse.json({ error: '帳號已停用，請聯繫管理員' }, { status: 401 });
+      } else if (!userRecord.employee) {
+        await recordFailedClockAttempt(username);
+      } else {
         const isPasswordValid = await verifyPassword(password, userRecord.passwordHash);
         if (isPasswordValid && attendance.employeeId === userRecord.employee.id) {
           isAuthorized = true;
+          await clearFailedAttempts(username);
+        } else {
+          await recordFailedClockAttempt(username);
         }
       }
     }

@@ -1,64 +1,63 @@
 import { NextResponse } from 'next/server';
+import { verifyRegistrationResponse } from '@simplewebauthn/server';
 import { prisma } from '@/lib/database';
 import { cookies } from 'next/headers';
+import {
+  convertCredentialPublicKeyToSpki,
+  getExpectedWebAuthnOrigins,
+  normalizeRegistrationCredential,
+  WEBAUTHN_RP_ID,
+} from '@/lib/webauthn';
+import { safeParseJSON } from '@/lib/validation';
 
-// Base64URL 解碼
-function base64urlToBuffer(base64url: string): Buffer {
-  const base64 = base64url.replace(/-/g, '+').replace(/_/g, '/');
-  const padLen = (4 - (base64.length % 4)) % 4;
-  return Buffer.from(base64 + '='.repeat(padLen), 'base64');
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-// 解析 COSE 公鑰（簡化版，僅支援 ES256）
-function parseCOSEPublicKey(coseKey: Buffer): string {
-  // 直接儲存 COSE 格式的公鑰
-  return coseKey.toString('base64url');
-}
-
-// 解析 attestationObject（簡化版）
-function parseAttestationObject(attestationObject: Buffer): { authData: Buffer } {
-  // CBOR 解碼簡化：attestationObject 結構固定
-  // 找到 authData 的起始位置
-  const authDataStart = attestationObject.indexOf(Buffer.from([0x68, 0x61, 0x75, 0x74, 0x68, 0x44, 0x61, 0x74, 0x61]));
-  if (authDataStart === -1) {
-    throw new Error('無法解析 attestationObject');
+function isDuplicateCredentialError(error: unknown): boolean {
+  if (!isPlainObject(error)) {
+    return false;
   }
-  
-  // authData 長度標記後的數據
-  const lengthByte = attestationObject[authDataStart + 9];
-  let authDataLength: number;
-  let dataStart: number;
-  
-  if (lengthByte < 0x58) {
-    // 短格式
-    authDataLength = lengthByte - 0x40;
-    dataStart = authDataStart + 10;
-  } else if (lengthByte === 0x58) {
-    // 1 字節長度
-    authDataLength = attestationObject[authDataStart + 10];
-    dataStart = authDataStart + 11;
-  } else if (lengthByte === 0x59) {
-    // 2 字節長度
-    authDataLength = attestationObject.readUInt16BE(authDataStart + 10);
-    dataStart = authDataStart + 12;
-  } else {
-    throw new Error('不支援的 authData 長度格式');
-  }
-  
-  const authData = attestationObject.subarray(dataStart, dataStart + authDataLength);
-  return { authData };
+
+  return error.code === 'P2002';
 }
 
-// 從 authData 提取憑證資訊
-function parseAuthData(authData: Buffer): { credentialId: Buffer; publicKey: Buffer; counter: number } {
-  // authData 結構：
-  // rpIdHash (32) + flags (1) + counter (4) + attestedCredentialData (variable)
-  const credentialIdLength = authData.readUInt16BE(53);
-  const credentialId = authData.subarray(55, 55 + credentialIdLength);
-  const publicKey = authData.subarray(55 + credentialIdLength);
-  const counter = authData.readUInt32BE(33);
-  
-  return { credentialId, publicKey, counter };
+function mapRegistrationErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : '未知錯誤';
+
+  if (message.includes('Unexpected registration response challenge')) {
+    return 'Challenge 驗證失敗';
+  }
+
+  if (message.includes('Unexpected registration response type')) {
+    return 'Type 驗證失敗';
+  }
+
+  if (message.includes('Unexpected registration response origin')) {
+    return '來源驗證失敗';
+  }
+
+  if (message.includes('Unexpected RP ID hash')) {
+    return 'RP ID 驗證失敗';
+  }
+
+  if (
+    message.includes('User verification')
+    || message.includes('User not present')
+  ) {
+    return '生物識別驗證失敗';
+  }
+
+  if (
+    message.includes('attestation')
+    || message.includes('ECDSA')
+    || message.includes('ASN1')
+    || message.includes('signature')
+  ) {
+    return '註冊驗證失敗';
+  }
+
+  return message;
 }
 
 export async function POST(request: Request) {
@@ -74,56 +73,69 @@ export async function POST(request: Request) {
     const expectedChallenge = challengeCookie.value;
     const userId = parseInt(userIdCookie.value);
 
-    const { credential, deviceName } = await request.json();
+    if (!Number.isInteger(userId) || userId <= 0) {
+      return NextResponse.json({ error: '註冊會話無效，請重新開始' }, { status: 400 });
+    }
 
-    if (!credential || !credential.id || !credential.response) {
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json({ error: '無效的 JSON 格式' }, { status: 400 });
+    }
+
+    const body = parseResult.data;
+    const credential = isPlainObject(body) && isPlainObject(body.credential) ? body.credential : null;
+    const deviceName = isPlainObject(body) && typeof body.deviceName === 'string' ? body.deviceName : undefined;
+
+    if (!credential || typeof credential.id !== 'string' || !isPlainObject(credential.response)) {
       return NextResponse.json({ error: '無效的憑證資料' }, { status: 400 });
     }
 
-    // 解析 clientDataJSON
-    const clientDataJSON = base64urlToBuffer(credential.response.clientDataJSON);
-    const clientData = JSON.parse(clientDataJSON.toString('utf-8'));
-
-    // 驗證 challenge
-    if (clientData.challenge !== expectedChallenge) {
-      return NextResponse.json({ error: 'Challenge 驗證失敗' }, { status: 400 });
-    }
-
-    // 驗證 origin（開發環境允許 localhost）
-    const allowedOrigins = [
-      'https://localhost:3001',
-      'https://127.0.0.1:3001',
-      `https://${process.env.WEBAUTHN_RP_ID || 'localhost'}:3001`
-    ];
-    
-    // 也允許本地 IP
-    if (!allowedOrigins.some(origin => clientData.origin.startsWith(origin.replace(':3001', '')))) {
-      console.warn('Origin 不匹配:', clientData.origin);
-      // 開發環境放寬限制
-      if (process.env.NODE_ENV === 'production') {
-        return NextResponse.json({ error: 'Origin 驗證失敗' }, { status: 400 });
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        isActive: true,
+        employeeId: true
       }
+    });
+
+    if (!user || !user.isActive || !user.employeeId) {
+      return NextResponse.json({ error: '帳號已停用或無有效員工資料' }, { status: 403 });
     }
 
-    // 驗證 type
-    if (clientData.type !== 'webauthn.create') {
-      return NextResponse.json({ error: 'Type 驗證失敗' }, { status: 400 });
+    const normalizedCredential = normalizeRegistrationCredential(credential);
+
+    let verification;
+
+    try {
+      verification = await verifyRegistrationResponse({
+        response: normalizedCredential,
+        expectedChallenge,
+        expectedOrigin: getExpectedWebAuthnOrigins(),
+        expectedRPID: WEBAUTHN_RP_ID,
+        requireUserVerification: true,
+      });
+    } catch (error) {
+      return NextResponse.json(
+        { error: mapRegistrationErrorMessage(error) },
+        { status: 400 }
+      );
     }
 
-    // 解析 attestationObject
-    const attestationObject = base64urlToBuffer(credential.response.attestationObject);
-    const { authData } = parseAttestationObject(attestationObject);
-    const { credentialId, publicKey, counter } = parseAuthData(authData);
+    if (!verification.verified) {
+      return NextResponse.json({ error: '註冊驗證失敗' }, { status: 400 });
+    }
 
-    // 儲存憑證
+    const { credential: verifiedCredential } = verification.registrationInfo;
+
     await prisma.webAuthnCredential.create({
       data: {
-        credentialId: credential.id, // 使用原始的 base64url ID
-        publicKey: parseCOSEPublicKey(publicKey),
-        counter,
+        credentialId: verifiedCredential.id,
+        publicKey: convertCredentialPublicKeyToSpki(verifiedCredential.publicKey),
+        counter: verifiedCredential.counter,
         deviceName: deviceName || '未命名裝置',
-        transports: credential.response.transports ? JSON.stringify(credential.response.transports) : null,
-        userId
+        transports: verifiedCredential.transports ? JSON.stringify(verifiedCredential.transports) : null,
+        userId: user.id
       }
     });
 
@@ -137,6 +149,10 @@ export async function POST(request: Request) {
 
     return response;
   } catch (error) {
+    if (isDuplicateCredentialError(error)) {
+      return NextResponse.json({ error: '此裝置憑證已註冊' }, { status: 409 });
+    }
+
     console.error('WebAuthn 註冊驗證錯誤:', error);
     return NextResponse.json({ 
       error: '註冊失敗：' + (error instanceof Error ? error.message : '未知錯誤')

@@ -1,6 +1,41 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
+import { validateCSRF } from '@/lib/csrf';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parseTimeToMinutes(value: unknown): number | null {
+  if (typeof value !== 'string' || !/^\d{2}:\d{2}$/.test(value)) {
+    return null;
+  }
+
+  const [hour, minute] = value.split(':').map(Number);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute)) {
+    return null;
+  }
+
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+    return null;
+  }
+
+  return hour * 60 + minute;
+}
+
+function calculateLinkedOvertimeHours(startTime: unknown, endTime: unknown): number | null {
+  const startMinutes = parseTimeToMinutes(startTime);
+  const endMinutes = parseTimeToMinutes(endTime);
+
+  if (startMinutes === null || endMinutes === null || endMinutes <= startMinutes) {
+    return null;
+  }
+
+  const totalHours = (endMinutes - startMinutes) / 60;
+  return Math.ceil(totalHours * 2) / 2;
+}
 
 // POST - 提交打卡原因
 export async function POST(request: NextRequest) {
@@ -10,7 +45,28 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const { recordId, clockType, reason, overtimeId, newOvertimeRequest } = await request.json();
+    const csrfValidation = await validateCSRF(request);
+    if (!csrfValidation.valid) {
+      return NextResponse.json(
+        { error: csrfValidation.error || 'CSRF token validation failed' },
+        { status: 403 }
+      );
+    }
+
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '缺少必要參數' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const body = parseResult.data;
+    const recordId = isPlainObject(body) && typeof body.recordId === 'number' ? body.recordId : undefined;
+    const clockType = isPlainObject(body) && typeof body.clockType === 'string' ? body.clockType : undefined;
+    const reason = isPlainObject(body) && typeof body.reason === 'string' ? body.reason : undefined;
+    const overtimeId = isPlainObject(body) && typeof body.overtimeId === 'number' ? body.overtimeId : undefined;
+    const newOvertimeRequest = isPlainObject(body) ? body.newOvertimeRequest : undefined;
 
     if (!recordId || !clockType || !reason) {
       return NextResponse.json({ error: '缺少必要參數' }, { status: 400 });
@@ -47,7 +103,32 @@ export async function POST(request: NextRequest) {
 
     // 如果選擇公務且需要快速申請加班
     if (reason === 'BUSINESS' && newOvertimeRequest) {
-      const { startTime, endTime, hours, overtimeReason } = newOvertimeRequest;
+      const startTime = isPlainObject(newOvertimeRequest) && typeof newOvertimeRequest.startTime === 'string'
+        ? newOvertimeRequest.startTime
+        : undefined;
+      const endTime = isPlainObject(newOvertimeRequest) && typeof newOvertimeRequest.endTime === 'string'
+        ? newOvertimeRequest.endTime
+        : undefined;
+      const overtimeReason = isPlainObject(newOvertimeRequest) && typeof newOvertimeRequest.overtimeReason === 'string'
+        ? newOvertimeRequest.overtimeReason
+        : undefined;
+      const calculatedHours = calculateLinkedOvertimeHours(startTime, endTime);
+
+      if (calculatedHours === null) {
+        return NextResponse.json({ error: '加班時間格式無效' }, { status: 400 });
+      }
+
+      if (calculatedHours < 0.5) {
+        return NextResponse.json({ error: '加班時數最少0.5小時' }, { status: 400 });
+      }
+
+      if (calculatedHours > 4) {
+        return NextResponse.json({ error: '單日加班時數不能超過4小時' }, { status: 400 });
+      }
+
+      if (!startTime || !endTime) {
+        return NextResponse.json({ error: '加班時間格式無效' }, { status: 400 });
+      }
       
       // 建立加班申請
       const newOvertime = await prisma.overtimeRequest.create({
@@ -56,7 +137,7 @@ export async function POST(request: NextRequest) {
           overtimeDate: record.workDate,
           startTime: startTime, // String format "HH:mm"
           endTime: endTime,     // String format "HH:mm"
-          totalHours: hours || 0,
+          totalHours: calculatedHours,
           reason: overtimeReason || (clockType === 'in' ? '提早上班工作' : '延後下班工作'),
           status: 'PENDING'
         }

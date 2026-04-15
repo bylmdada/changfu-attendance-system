@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
+import { validateCSRF } from '@/lib/csrf';
+import { getManageableDepartments } from '@/lib/schedule-management-permissions';
+import { parseIntegerQueryParam } from '@/lib/query-params';
+import { safeParseJSON } from '@/lib/validation';
 import fs from 'fs';
 import path from 'path';
 
@@ -43,6 +47,10 @@ function loadTemplates(): Template[] {
   return [];
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 // 獲取月份的所有日期
 function getMonthDates(year: number, month: number) {
   const dates = [];
@@ -61,36 +69,6 @@ function getMonthDates(year: number, month: number) {
   return dates;
 }
 
-// 計算用戶可管理的據點列表
-async function getManageableLocations(user: { role: string; employeeId?: number }): Promise<string[]> {
-  if (user.role === 'ADMIN' || user.role === 'HR') {
-    return []; // 空陣列代表不限
-  }
-  
-  if (!user.employeeId) return [];
-  
-  const locations: string[] = [];
-  
-  const managerRecord = await prisma.departmentManager.findFirst({
-    where: { employeeId: user.employeeId, isActive: true }
-  });
-  if (managerRecord) {
-    locations.push(managerRecord.department);
-  }
-  
-  const permRecord = await prisma.attendancePermission.findUnique({
-    where: { employeeId: user.employeeId }
-  });
-  if (permRecord?.permissions) {
-    const permissions = permRecord.permissions as { scheduleManagement?: string[] };
-    if (Array.isArray(permissions.scheduleManagement)) {
-      locations.push(...permissions.scheduleManagement);
-    }
-  }
-  
-  return [...new Set(locations)];
-}
-
 export async function OPTIONS() {
   return NextResponse.json({}, { status: 200 });
 }
@@ -105,9 +83,29 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '請先登入' }, { status: 401 });
     }
 
-    const body = await request.json();
-    const { templateId, year, month, employeeIds } = body;
-    console.log('📥 接收到參數:', { templateId, year, month, employeeIds });
+    const csrfResult = await validateCSRF(request);
+    if (!csrfResult.valid) {
+      return NextResponse.json({ error: 'CSRF token validation failed' }, { status: 403 });
+    }
+
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '缺少必要參數或未選擇員工' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const body = parseResult.data;
+    if (!isPlainObject(body)) {
+      return NextResponse.json(
+        { error: '缺少必要參數或未選擇員工' },
+        { status: 400 }
+      );
+    }
+
+    const { templateId, year, month, employeeIds, overwriteExisting } = body;
+    console.log('📥 接收到參數:', { templateId, year, month, employeeIds, overwriteExisting });
 
     if (!templateId || !year || !month || !employeeIds || !Array.isArray(employeeIds) || employeeIds.length === 0) {
       console.log('❌ 缺少必要參數');
@@ -117,11 +115,57 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const templateIdResult = parseIntegerQueryParam(String(templateId), { min: 1, max: 99999999 });
+    const yearResult = parseIntegerQueryParam(String(year), { min: 1, max: 99999999 });
+    const monthResult = parseIntegerQueryParam(String(month), { min: 1, max: 12 });
+    if (!templateIdResult.isValid || templateIdResult.value === null) {
+      return NextResponse.json(
+        { error: 'templateId 格式錯誤' },
+        { status: 400 }
+      );
+    }
+
+    if (!yearResult.isValid || yearResult.value === null) {
+      return NextResponse.json(
+        { error: 'year 格式錯誤' },
+        { status: 400 }
+      );
+    }
+
+    if (!monthResult.isValid || monthResult.value === null) {
+      return NextResponse.json(
+        { error: 'month 格式錯誤' },
+        { status: 400 }
+      );
+    }
+
+    const normalizedEmployeeIds = employeeIds.map((employeeId: number | string) => {
+      const result = parseIntegerQueryParam(String(employeeId), { min: 1, max: 99999999 });
+      return result.isValid ? result.value : null;
+    }).filter((employeeId: number | null): employeeId is number => employeeId !== null);
+
+    if (normalizedEmployeeIds.length !== employeeIds.length) {
+      return NextResponse.json(
+        { error: 'employeeIds 格式錯誤' },
+        { status: 400 }
+      );
+    }
+
+    if (overwriteExisting !== true) {
+      return NextResponse.json(
+        { error: '套用模版前必須明確確認覆蓋既有班表' },
+        { status: 400 }
+      );
+    }
+
+    const yearValue = yearResult.value;
+    const monthValue = monthResult.value;
+
     // 檢查權限
     const isFullAdmin = user.role === 'ADMIN' || user.role === 'HR';
-    const manageableLocations = await getManageableLocations(user);
+    const manageableDepartments = await getManageableDepartments(user);
     
-    if (!isFullAdmin && manageableLocations.length === 0) {
+    if (!isFullAdmin && manageableDepartments.length === 0) {
       return NextResponse.json({ error: '無權限執行此操作' }, { status: 403 });
     }
 
@@ -130,7 +174,7 @@ export async function POST(request: NextRequest) {
     const templates = loadTemplates();
     console.log(`📋 找到模版數量: ${templates.length}`);
     
-    const template = templates.find((t: Template) => Number(t.id) === Number(templateId));
+    const template = templates.find((t: Template) => t.id === templateIdResult.value);
     
     if (!template) {
       console.log(`❌ 找不到指定的模版, templateId: ${templateId}`);
@@ -145,7 +189,7 @@ export async function POST(request: NextRequest) {
     console.log('👥 從資料庫獲取員工...');
     const employees = await prisma.employee.findMany({
       where: {
-        id: { in: employeeIds },
+        id: { in: normalizedEmployeeIds },
         isActive: true
       },
       select: {
@@ -158,9 +202,18 @@ export async function POST(request: NextRequest) {
     });
     console.log(`👤 找到員工數量: ${employees.length}`);
 
+    if (employees.length !== normalizedEmployeeIds.length) {
+      const foundEmployeeIds = new Set(employees.map(employee => employee.id));
+      const missingEmployeeIds = normalizedEmployeeIds.filter(employeeId => !foundEmployeeIds.has(employeeId));
+      return NextResponse.json({
+        error: '部分員工不存在或已停用，請重新整理後再試',
+        failedEmployeeIds: missingEmployeeIds,
+      }, { status: 400 });
+    }
+
     // 權限檢查：確保只能管理可管理部門的員工
-    if (!isFullAdmin && manageableLocations.length > 0) {
-      const invalidEmployees = employees.filter(emp => !emp.department || !manageableLocations.includes(emp.department));
+    if (!isFullAdmin && manageableDepartments.length > 0) {
+      const invalidEmployees = employees.filter(emp => !emp.department || !manageableDepartments.includes(emp.department));
       if (invalidEmployees.length > 0) {
         return NextResponse.json({
           error: `無權限管理以下員工的班表: ${invalidEmployees.map(e => e.name).join(', ')}`
@@ -170,26 +223,31 @@ export async function POST(request: NextRequest) {
 
     // 獲取該月份的所有日期
     console.log('📅 生成月份日期...');
-    const monthDates = getMonthDates(year, month);
+    const monthDates = getMonthDates(yearValue, monthValue);
     console.log(`📆 月份日期數量: ${monthDates.length}`);
 
     // 刪除該月份選定員工的現有排程
-    const monthStart = `${year}-${String(month).padStart(2, '0')}-01`;
-    const monthEnd = `${year}-${String(month).padStart(2, '0')}-31`;
+    const monthStart = `${yearValue}-${String(monthValue).padStart(2, '0')}-01`;
+    const monthEnd = `${yearValue}-${String(monthValue).padStart(2, '0')}-31`;
     
-    const deleteResult = await prisma.schedule.deleteMany({
-      where: {
-        employeeId: { in: employeeIds },
-        workDate: {
-          gte: monthStart,
-          lte: monthEnd
-        }
+    const scheduleDeleteWhere = {
+      employeeId: { in: normalizedEmployeeIds },
+      workDate: {
+        gte: monthStart,
+        lte: monthEnd
       }
-    });
-    console.log(`🧹 刪除現有排程數量: ${deleteResult.count}`);
+    };
+
+    let deleteResult: { count: number } = { count: 0 };
 
     // 生成新的排程
-    const newSchedules = [];
+    const newSchedules: Array<{
+      employeeId: number;
+      workDate: string;
+      shiftType: string;
+      startTime: string;
+      endTime: string;
+    }> = [];
 
     for (const employee of employees) {
       for (const dateInfo of monthDates) {
@@ -217,16 +275,29 @@ export async function POST(request: NextRequest) {
     console.log(`✨ 準備新增排程數量: ${newSchedules.length}`);
 
     // 批量新增排程到資料庫
-    if (newSchedules.length > 0) {
-      await prisma.schedule.createMany({
+    const createResult = await prisma.$transaction(async (tx) => {
+      deleteResult = await tx.schedule.deleteMany({
+        where: scheduleDeleteWhere
+      });
+
+      if (newSchedules.length === 0) {
+        return { count: 0 };
+      }
+
+      return tx.schedule.createMany({
         data: newSchedules
       });
+    });
+    console.log(`🧹 刪除現有排程數量: ${deleteResult.count}`);
+
+    if (newSchedules.length > 0 && createResult.count === 0) {
+      return NextResponse.json({ error: '套用模版失敗，未建立任何班表' }, { status: 400 });
     }
     console.log('✅ 排程儲存完成');
 
     return NextResponse.json({
-      message: `成功套用模版 "${template.name}" 到 ${year}年${month}月，共 ${employees.length} 位員工`,
-      applied: newSchedules.length,
+      message: `成功套用模版 "${template.name}" 到 ${yearValue}年${monthValue}月，共建立 ${createResult.count} 筆班表`,
+      applied: createResult.count,
       employees: employees.length,
       success: true
     });

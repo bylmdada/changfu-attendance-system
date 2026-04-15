@@ -3,6 +3,7 @@ import { prisma } from '@/lib/database';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { getUserFromRequest } from '@/lib/auth';
+import { safeParseJSON } from '@/lib/validation';
 
 interface AttendancePermissionData {
   employeeId: number;
@@ -17,6 +18,14 @@ interface AttendancePermissionData {
 interface DecodedToken {
   role: string;
   employeeId?: number;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function normalizePermissionList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
 }
 
 
@@ -91,16 +100,37 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
 
-    const data: AttendancePermissionData = await request.json();
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的權限設定資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const data = parseResult.data;
+    if (!isPlainObject(data)) {
+      return NextResponse.json({ error: '請提供有效的權限設定資料' }, { status: 400 });
+    }
+
+    const employeeId = typeof data.employeeId === 'number' ? data.employeeId : undefined;
+    const permissions: AttendancePermissionData['permissions'] | undefined = isPlainObject(data.permissions)
+      ? {
+          leaveRequests: normalizePermissionList(data.permissions.leaveRequests),
+          overtimeRequests: normalizePermissionList(data.permissions.overtimeRequests),
+          shiftExchanges: normalizePermissionList(data.permissions.shiftExchanges),
+          scheduleManagement: normalizePermissionList(data.permissions.scheduleManagement),
+        }
+      : undefined;
 
     // 驗證必要欄位
-    if (!data.employeeId) {
+    if (!employeeId) {
       return NextResponse.json({ error: '請選擇員工' }, { status: 400 });
     }
 
     // 檢查員工是否存在
     const employee = await prisma.employee.findUnique({
-      where: { id: data.employeeId }
+      where: { id: employeeId }
     });
 
     if (!employee) {
@@ -109,7 +139,7 @@ export async function POST(request: NextRequest) {
 
     // 檢查是否已有權限設定
     const existingPermission = await prisma.attendancePermission.findUnique({
-      where: { employeeId: data.employeeId }
+      where: { employeeId }
     });
 
     if (existingPermission) {
@@ -117,7 +147,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 驗證至少有一個權限
-    const hasPermissions = Object.values(data.permissions).some(perm => 
+    const hasPermissions = permissions && Object.values(permissions).some(perm => 
       Array.isArray(perm) && perm.length > 0
     );
 
@@ -128,8 +158,13 @@ export async function POST(request: NextRequest) {
     // 創建權限設定
     const newPermission = await prisma.attendancePermission.create({
       data: {
-        employeeId: data.employeeId,
-        permissions: data.permissions
+        employeeId,
+        permissions: permissions || {
+          leaveRequests: [],
+          overtimeRequests: [],
+          shiftExchanges: [],
+          scheduleManagement: [],
+        }
       },
       include: {
         employee: {

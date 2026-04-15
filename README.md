@@ -17,7 +17,7 @@ npm install
 npm run dev
 ```
 
-開啟 [http://localhost:3000](http://localhost:3000) 查看結果。
+開啟 [http://localhost:3001](http://localhost:3001) 查看結果。
 
 ## 技術棧
 

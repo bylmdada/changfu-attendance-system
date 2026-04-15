@@ -1,36 +1,111 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
 import { 
   calculateAnnualLeaveDays, 
   calculateAllEmployeesAnnualLeave,
   getEmployeeAnnualLeave 
 } from '@/lib/annual-leave-calculator';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
+import { validateCSRF } from '@/lib/csrf';
+import { parseIntegerQueryParam } from '@/lib/query-params';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parsePositiveIntegerBodyValue(value: unknown, defaultValue?: number) {
+  if (value === undefined || value === null || value === '') {
+    return {
+      value: defaultValue ?? null,
+      isValid: true,
+    };
+  }
+
+  if (typeof value !== 'string' && typeof value !== 'number') {
+    return {
+      value: null,
+      isValid: false,
+    };
+  }
+
+  return parseIntegerQueryParam(String(value), {
+    defaultValue: defaultValue ?? null,
+    min: 1,
+    max: 9999,
+  });
+}
+
+function parseEmployeeIdsBody(value: unknown) {
+  if (value === undefined) {
+    return {
+      value: undefined,
+      isValid: true,
+    };
+  }
+
+  if (!Array.isArray(value)) {
+    return {
+      value: undefined,
+      isValid: false,
+    };
+  }
+
+  const parsedIds: number[] = [];
+  for (const item of value) {
+    const parsedItem = parsePositiveIntegerBodyValue(item);
+    if (!parsedItem.isValid || parsedItem.value === null) {
+      return {
+        value: undefined,
+        isValid: false,
+      };
+    }
+
+    parsedIds.push(parsedItem.value);
+  }
+
+  return {
+    value: parsedIds,
+    isValid: true,
+  };
+}
 
 /**
  * GET - 查詢員工年假詳情或列表
  */
 export async function GET(request: NextRequest) {
   try {
-    // 驗證登入
-    const cookieStore = await cookies();
-    const token = cookieStore.get('auth-token')?.value;
-    if (!token) {
-      return NextResponse.json({ error: '未授權' }, { status: 401 });
-    }
-    const user = await getUserFromToken(token);
+    const user = await getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
 
+    if (user.role !== 'ADMIN' && user.role !== 'HR') {
+      return NextResponse.json({ error: '權限不足' }, { status: 403 });
+    }
+
     const { searchParams } = new URL(request.url);
     const employeeId = searchParams.get('employeeId');
-    const year = parseInt(searchParams.get('year') || new Date().getFullYear().toString());
+    const yearResult = parseIntegerQueryParam(searchParams.get('year'), {
+      defaultValue: new Date().getFullYear(),
+      min: 1,
+      max: 9999,
+    });
+
+    if (!yearResult.isValid || yearResult.value === null) {
+      return NextResponse.json({ error: 'year 參數格式無效' }, { status: 400 });
+    }
+
+    const year = yearResult.value;
 
     if (employeeId) {
       // 查詢單一員工
-      const empId = parseInt(employeeId);
+      const employeeIdResult = parseIntegerQueryParam(employeeId, { min: 1, max: 99999999 });
+      if (!employeeIdResult.isValid || employeeIdResult.value === null) {
+        return NextResponse.json({ error: 'employeeId 參數格式無效' }, { status: 400 });
+      }
+
+      const empId = employeeIdResult.value;
       
       // 取得當前計算值
       const calculation = await getEmployeeAnnualLeave(empId);
@@ -142,13 +217,7 @@ export async function GET(request: NextRequest) {
  */
 export async function POST(request: NextRequest) {
   try {
-    // 驗證登入和權限
-    const cookieStore = await cookies();
-    const token = cookieStore.get('auth-token')?.value;
-    if (!token) {
-      return NextResponse.json({ error: '未授權' }, { status: 401 });
-    }
-    const user = await getUserFromToken(token);
+    const user = await getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
@@ -157,15 +226,41 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
 
-    const body = await request.json();
-    const { year, employeeIds } = body;
-    
-    const targetYear = year || new Date().getFullYear();
+    const csrfResult = await validateCSRF(request);
+    if (!csrfResult.valid) {
+      return NextResponse.json({ error: 'CSRF驗證失敗，請重新操作' }, { status: 403 });
+    }
 
-    if (employeeIds && Array.isArray(employeeIds)) {
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的年假計算資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const body = parseResult.data;
+    if (!isPlainObject(body)) {
+      return NextResponse.json({ error: '請提供有效的年假計算資料' }, { status: 400 });
+    }
+
+    const { year, employeeIds } = body;
+
+    const yearResult = parsePositiveIntegerBodyValue(year, new Date().getFullYear());
+    if (!yearResult.isValid || yearResult.value === null) {
+      return NextResponse.json({ error: 'year 參數格式無效' }, { status: 400 });
+    }
+
+    const targetYear = yearResult.value;
+    const employeeIdsResult = parseEmployeeIdsBody(employeeIds);
+    if (!employeeIdsResult.isValid) {
+      return NextResponse.json({ error: 'employeeIds 參數格式無效' }, { status: 400 });
+    }
+
+    if (employeeIdsResult.value !== undefined) {
       // 計算指定員工
       const results = [];
-      for (const empId of employeeIds) {
+      for (const empId of employeeIdsResult.value) {
         const calculation = await getEmployeeAnnualLeave(empId);
         if (calculation) {
           // 更新資料庫

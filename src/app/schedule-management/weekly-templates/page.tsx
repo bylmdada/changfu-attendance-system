@@ -15,6 +15,7 @@ import {
   ArrowLeft
 } from 'lucide-react';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import Link from 'next/link';
 
 interface DaySchedule {
@@ -162,13 +163,9 @@ export default function WeeklyTemplatesPage() {
   const handleCreateTemplate = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const response = await fetch('/api/schedules/templates', {
+      const response = await fetchJSONWithCSRF('/api/schedules/templates', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        credentials: 'include',
-        body: JSON.stringify(newTemplate)
+        body: newTemplate,
       });
 
       if (response.ok) {
@@ -190,13 +187,9 @@ export default function WeeklyTemplatesPage() {
     if (!editingTemplate) return;
 
     try {
-      const response = await fetch(`/api/schedules/templates/${editingTemplate.id}`, {
+      const response = await fetchJSONWithCSRF(`/api/schedules/templates/${editingTemplate.id}`, {
         method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        credentials: 'include',
-        body: JSON.stringify(editingTemplate)
+        body: editingTemplate,
       });
 
       if (response.ok) {
@@ -217,9 +210,8 @@ export default function WeeklyTemplatesPage() {
     if (!confirm('確認刪除此週班模版？此操作無法撤銷。')) return;
 
     try {
-      const response = await fetch(`/api/schedules/templates/${id}`, {
+      const response = await fetchJSONWithCSRF(`/api/schedules/templates/${id}`, {
         method: 'DELETE',
-        credentials: 'include'
       });
 
       if (response.ok) {

@@ -2,6 +2,17 @@
 
 本指南將協助您在 DigitalOcean VPS 上配置 Cloudflare SSL (Full/Strict 模式)，並固定 Telegram 與 LINE Bot 的 Webhook URL。
 
+> 前提：應用程式已經由 PM2 或其他 process manager 在主機本機 `127.0.0.1:3001` 提供服務；以下 Nginx upstream 皆以 `3001` 為例，與目前專案其他部署設定保持一致。
+
+若尚未啟動應用程式，可先執行：
+
+```bash
+cd ~/apps/changfu-attendance
+PORT=3001 pm2 start npm --name "attendance" -- start
+pm2 save
+curl http://127.0.0.1:3001/api/health
+```
+
 ## 一、Cloudflare SSL 設定
 
 ### 1. 設定 SSL/TLS 模式
@@ -82,7 +93,7 @@ server {
     ssl_ciphers HIGH:!aNULL:!MD5;
 
     location / {
-        proxy_pass http://127.0.0.1:3000;
+        proxy_pass http://127.0.0.1:3001;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection 'upgrade';

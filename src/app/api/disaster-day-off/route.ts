@@ -3,6 +3,8 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { parseIntegerQueryParam } from '@/lib/query-params';
+import { safeParseJSON } from '@/lib/validation';
 
 // 天災類型標籤
 const DISASTER_TYPES = {
@@ -20,6 +22,48 @@ const STOP_WORK_TYPES = {
   PM: '下午停班'
 };
 
+const VALID_DISASTER_TYPES = Object.keys(DISASTER_TYPES);
+const VALID_STOP_WORK_TYPES = Object.keys(STOP_WORK_TYPES);
+const VALID_AFFECTED_SCOPES = ['ALL', 'DEPARTMENTS', 'EMPLOYEES'];
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
+
+function normalizeEmployeeIds(value: unknown): number[] | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+
+  const normalizedIds: number[] = [];
+  for (const item of value) {
+    if (typeof item === 'number') {
+      if (!Number.isSafeInteger(item) || item <= 0) {
+        return null;
+      }
+      normalizedIds.push(item);
+      continue;
+    }
+
+    if (typeof item !== 'string') {
+      return null;
+    }
+
+    const parsedId = parseIntegerQueryParam(item, { min: 1 });
+    if (!parsedId.isValid || parsedId.value === null) {
+      return null;
+    }
+
+    normalizedIds.push(parsedId.value);
+  }
+
+  return normalizedIds;
+}
+
 // GET - 取得天災假記錄列表
 export async function GET(request: NextRequest) {
   try {
@@ -34,20 +78,33 @@ export async function GET(request: NextRequest) {
     }
 
     const { searchParams } = new URL(request.url);
-    const year = searchParams.get('year');
-    const month = searchParams.get('month');
+    const yearParam = searchParams.get('year');
+    const monthParam = searchParams.get('month');
+    const parsedYear = parseIntegerQueryParam(yearParam, { min: 2000, max: 2100 });
+    const parsedMonth = parseIntegerQueryParam(monthParam, { min: 1, max: 12 });
+
+    if (!parsedYear.isValid) {
+      return NextResponse.json({ error: 'year 格式錯誤' }, { status: 400 });
+    }
+
+    if (!parsedMonth.isValid) {
+      return NextResponse.json({ error: 'month 格式錯誤' }, { status: 400 });
+    }
 
     // 建立查詢條件
     const where: Record<string, unknown> = {};
     
-    if (year && month) {
+    if (parsedYear.value !== null && parsedMonth.value !== null) {
+      const year = String(parsedYear.value);
+      const month = String(parsedMonth.value).padStart(2, '0');
       const startDate = `${year}-${month.padStart(2, '0')}-01`;
       const endDate = `${year}-${month.padStart(2, '0')}-31`;
       where.disasterDate = {
         gte: startDate,
         lte: endDate
       };
-    } else if (year) {
+    } else if (parsedYear.value !== null) {
+      const year = String(parsedYear.value);
       where.disasterDate = {
         gte: `${year}-01-01`,
         lte: `${year}-12-31`
@@ -110,17 +167,47 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '無權限' }, { status: 403 });
     }
 
-    const data = await request.json();
-    const { 
-      disasterDate, 
-      numberOfDays = 1,
-      disasterType, 
-      stopWorkType, 
-      affectedScope = 'ALL',
-      affectedDepartments = [],  // 複選部門
-      affectedEmployeeIds = [],  // 複選員工
-      description 
-    } = data;
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的天災假資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const data = parseResult.data;
+    if (!isPlainObject(data)) {
+      return NextResponse.json({ error: '請提供有效的天災假資料' }, { status: 400 });
+    }
+
+    const disasterDate = typeof data.disasterDate === 'string' ? data.disasterDate : '';
+    const numberOfDays = data.numberOfDays;
+    const disasterType = typeof data.disasterType === 'string' ? data.disasterType : '';
+    const stopWorkType = typeof data.stopWorkType === 'string' ? data.stopWorkType : '';
+    const affectedScope = typeof data.affectedScope === 'string' ? data.affectedScope : 'ALL';
+    const description = typeof data.description === 'string' ? data.description : undefined;
+
+    if (!VALID_AFFECTED_SCOPES.includes(affectedScope)) {
+      return NextResponse.json({ error: '無效的影響範圍' }, { status: 400 });
+    }
+
+    const affectedDepartments = affectedScope === 'DEPARTMENTS'
+      ? (isStringArray(data.affectedDepartments) ? data.affectedDepartments : null)
+      : [];
+    const affectedEmployeeIds = affectedScope === 'EMPLOYEES'
+      ? normalizeEmployeeIds(data.affectedEmployeeIds)
+      : [];
+
+    if (affectedScope === 'DEPARTMENTS' && affectedDepartments === null) {
+      return NextResponse.json({ error: 'affectedDepartments 格式錯誤' }, { status: 400 });
+    }
+
+    if (affectedScope === 'EMPLOYEES' && affectedEmployeeIds === null) {
+      return NextResponse.json({ error: 'affectedEmployeeIds 格式錯誤' }, { status: 400 });
+    }
+
+    const normalizedAffectedDepartments = affectedDepartments ?? [];
+    const normalizedAffectedEmployeeIds = affectedEmployeeIds ?? [];
 
     // 驗證必填欄位
     if (!disasterDate || !disasterType || !stopWorkType) {
@@ -133,15 +220,20 @@ export async function POST(request: NextRequest) {
     }
 
     // 驗證天數
-    const days = Math.min(Math.max(1, parseInt(numberOfDays) || 1), 7);
+    const parsedDays = typeof numberOfDays === 'number'
+      ? (Number.isSafeInteger(numberOfDays) ? numberOfDays : null)
+      : typeof numberOfDays === 'string'
+        ? parseIntegerQueryParam(numberOfDays, { min: 1, max: 7 }).value
+        : 1;
+    const days = Math.min(Math.max(1, parsedDays ?? 1), 7);
 
     // 驗證天災類型
-    if (!['TYPHOON', 'EARTHQUAKE', 'RAIN', 'WIND', 'OTHER'].includes(disasterType)) {
+    if (!VALID_DISASTER_TYPES.includes(disasterType)) {
       return NextResponse.json({ error: '無效的天災類型' }, { status: 400 });
     }
 
     // 驗證停班類型
-    if (!['FULL', 'AM', 'PM'].includes(stopWorkType)) {
+    if (!VALID_STOP_WORK_TYPES.includes(stopWorkType)) {
       return NextResponse.json({ error: '無效的停班類型' }, { status: 400 });
     }
 
@@ -182,19 +274,19 @@ export async function POST(request: NextRequest) {
         where: { isActive: true },
         select: { id: true }
       });
-    } else if (affectedScope === 'DEPARTMENTS' && affectedDepartments.length > 0) {
+    } else if (affectedScope === 'DEPARTMENTS' && normalizedAffectedDepartments.length > 0) {
       affectedEmployees = await prisma.employee.findMany({
         where: { 
           isActive: true,
-          department: { in: affectedDepartments }
+          department: { in: normalizedAffectedDepartments }
         },
         select: { id: true }
       });
-    } else if (affectedScope === 'EMPLOYEES' && affectedEmployeeIds.length > 0) {
+    } else if (affectedScope === 'EMPLOYEES' && normalizedAffectedEmployeeIds.length > 0) {
       affectedEmployees = await prisma.employee.findMany({
         where: { 
           isActive: true,
-          id: { in: affectedEmployeeIds.map((id: number | string) => typeof id === 'string' ? parseInt(id) : id) }
+          id: { in: normalizedAffectedEmployeeIds }
         },
         select: { id: true }
       });
@@ -239,8 +331,8 @@ export async function POST(request: NextRequest) {
           disasterType,
           stopWorkType,
           affectedScope,
-          affectedDepartments: affectedScope === 'DEPARTMENTS' ? JSON.stringify(affectedDepartments) : null,
-          affectedEmployeeIds: affectedScope === 'EMPLOYEES' ? JSON.stringify(affectedEmployeeIds) : null,
+          affectedDepartments: affectedScope === 'DEPARTMENTS' ? JSON.stringify(normalizedAffectedDepartments) : null,
+          affectedEmployeeIds: affectedScope === 'EMPLOYEES' ? JSON.stringify(normalizedAffectedEmployeeIds) : null,
           description: description ? `${description}${days > 1 ? ` (${date})` : ''}` : undefined,
           affectedCount: affectedEmployees.length,
           originalSchedules: JSON.stringify(originalSchedulesData),
@@ -329,15 +421,46 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: '無權限' }, { status: 403 });
     }
 
-    const data = await request.json();
-    const { id, disasterType, stopWorkType, description } = data;
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的天災假資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
 
-    if (!id) {
-      return NextResponse.json({ error: '缺少記錄ID' }, { status: 400 });
+    const data = parseResult.data;
+    if (!isPlainObject(data)) {
+      return NextResponse.json({ error: '請提供有效的天災假資料' }, { status: 400 });
+    }
+
+    const parsedId = parseIntegerQueryParam(
+      typeof data.id === 'number' ? String(data.id) : typeof data.id === 'string' ? data.id : null,
+      { min: 1 }
+    );
+
+    if (!parsedId.isValid || parsedId.value === null) {
+      return NextResponse.json({ error: '記錄ID 格式錯誤' }, { status: 400 });
+    }
+
+    const disasterType = typeof data.disasterType === 'string' ? data.disasterType : undefined;
+    const stopWorkType = typeof data.stopWorkType === 'string' ? data.stopWorkType : undefined;
+    const description = typeof data.description === 'string'
+      ? data.description
+      : data.description === null
+        ? null
+        : undefined;
+
+    if (disasterType !== undefined && !VALID_DISASTER_TYPES.includes(disasterType)) {
+      return NextResponse.json({ error: '無效的天災類型' }, { status: 400 });
+    }
+
+    if (stopWorkType !== undefined && !VALID_STOP_WORK_TYPES.includes(stopWorkType)) {
+      return NextResponse.json({ error: '無效的停班類型' }, { status: 400 });
     }
 
     const record = await prisma.disasterDayOff.findUnique({
-      where: { id: parseInt(id) }
+      where: { id: parsedId.value }
     });
 
     if (!record) {
@@ -346,7 +469,7 @@ export async function PUT(request: NextRequest) {
 
     // 更新記錄
     const updatedRecord = await prisma.disasterDayOff.update({
-      where: { id: parseInt(id) },
+      where: { id: parsedId.value },
       data: {
         disasterType: disasterType || record.disasterType,
         stopWorkType: stopWorkType || record.stopWorkType,
@@ -396,13 +519,18 @@ export async function DELETE(request: NextRequest) {
 
     const { searchParams } = new URL(request.url);
     const id = searchParams.get('id');
+    const parsedId = parseIntegerQueryParam(id, { min: 1 });
 
     if (!id) {
       return NextResponse.json({ error: '缺少記錄ID' }, { status: 400 });
     }
 
+    if (!parsedId.isValid || parsedId.value === null) {
+      return NextResponse.json({ error: '記錄ID 格式錯誤' }, { status: 400 });
+    }
+
     const record = await prisma.disasterDayOff.findUnique({
-      where: { id: parseInt(id) }
+      where: { id: parsedId.value }
     });
 
     if (!record) {
@@ -449,7 +577,7 @@ export async function DELETE(request: NextRequest) {
 
     // 刪除記錄
     await prisma.disasterDayOff.delete({
-      where: { id: parseInt(id) }
+      where: { id: parsedId.value }
     });
 
     return NextResponse.json({

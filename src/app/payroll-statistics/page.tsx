@@ -3,6 +3,11 @@
 import { useState, useEffect } from 'react';
 import { BarChart3, TrendingUp, DollarSign, Users, PieChart } from 'lucide-react';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import { buildPayrollStatisticsRequest } from '@/lib/payroll-statistics-client';
+import {
+  calculateAverageMonthlyGrossPay,
+  countMonthsWithPayroll,
+} from '@/lib/payroll-statistics-metrics';
 
 interface PayrollStatistics {
   overall: {
@@ -71,6 +76,7 @@ export default function PayrollStatisticsPage() {
     month: '',
     department: '' // 新增部門篩選
   });
+  const { year, month, department } = filters;
   const [activeTab, setActiveTab] = useState<'overview' | 'analysis' | 'trends'>('overview');
   const [exporting, setExporting] = useState(false);
 
@@ -101,17 +107,12 @@ export default function PayrollStatisticsPage() {
           console.error('獲取部門列表失敗:', deptError);
         }
 
-        const token = localStorage.getItem('token');
-        const url = new URL('/api/payroll/statistics', window.location.origin);
-        if (filters.year) url.searchParams.set('year', filters.year);
-        if (filters.month) url.searchParams.set('month', filters.month);
-        if (filters.department) url.searchParams.set('department', filters.department);
-        
-        const response = await fetch(url.toString(), {
-          headers: {
-            'Authorization': `Bearer ${token}`
-          }
+        const statisticsRequest = buildPayrollStatisticsRequest(window.location.origin, {
+          year,
+          month,
+          department
         });
+        const response = await fetch(statisticsRequest.url, statisticsRequest.options);
 
         if (response.ok) {
           const data = await response.json();
@@ -125,16 +126,16 @@ export default function PayrollStatisticsPage() {
     };
 
     loadStatistics();
-  }, [filters.year, filters.month, filters.department]);
+  }, [year, month, department]);
 
   // 匯出報表功能
   const handleExportReport = async (format: 'excel' | 'pdf') => {
     setExporting(true);
     try {
       const params = new URLSearchParams();
-      params.append('year', filters.year);
-      if (filters.month) params.append('month', filters.month);
-      if (filters.department) params.append('department', filters.department);
+      params.append('year', year);
+      if (month) params.append('month', month);
+      if (department) params.append('department', department);
       params.append('format', format);
 
       const response = await fetch(`/api/reports/export?${params.toString()}`, {
@@ -175,6 +176,11 @@ export default function PayrollStatisticsPage() {
   const formatHours = (hours: number) => {
     return `${hours.toFixed(1)}h`;
   };
+
+  const activePayrollMonthCount = statistics ? countMonthsWithPayroll(statistics.monthlyTrends) : 0;
+  const averageMonthlyGrossPay = statistics
+    ? calculateAverageMonthlyGrossPay(statistics.overall.totalGrossPay, statistics.monthlyTrends)
+    : null;
 
   if (loading) {
     return (
@@ -348,7 +354,7 @@ export default function PayrollStatisticsPage() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
           <div className="bg-white rounded-lg shadow-sm p-6">
             <div className="flex items-center">
-              <div className="flex-shrink-0">
+              <div className="shrink-0">
                 <Users className="h-8 w-8 text-blue-600" />
               </div>
               <div className="ml-4">
@@ -362,7 +368,7 @@ export default function PayrollStatisticsPage() {
 
           <div className="bg-white rounded-lg shadow-sm p-6">
             <div className="flex items-center">
-              <div className="flex-shrink-0">
+              <div className="shrink-0">
                 <DollarSign className="h-8 w-8 text-green-600" />
               </div>
               <div className="ml-4">
@@ -376,7 +382,7 @@ export default function PayrollStatisticsPage() {
 
           <div className="bg-white rounded-lg shadow-sm p-6">
             <div className="flex items-center">
-              <div className="flex-shrink-0">
+              <div className="shrink-0">
                 <TrendingUp className="h-8 w-8 text-yellow-600" />
               </div>
               <div className="ml-4">
@@ -390,7 +396,7 @@ export default function PayrollStatisticsPage() {
 
           <div className="bg-white rounded-lg shadow-sm p-6">
             <div className="flex items-center">
-              <div className="flex-shrink-0">
+              <div className="shrink-0">
                 <BarChart3 className="h-8 w-8 text-purple-600" />
               </div>
               <div className="ml-4">
@@ -771,11 +777,9 @@ export default function PayrollStatisticsPage() {
               <div className="bg-white rounded-lg shadow-sm p-6">
                 <h4 className="text-sm font-medium text-gray-500 mb-2">月均支出</h4>
                 <div className="text-2xl font-bold text-gray-900">
-                  {formatCurrency(statistics.monthlyTrends.length > 0 
-                    ? statistics.overall.totalGrossPay / statistics.monthlyTrends.filter(t => t.totalGrossPay > 0).length
-                    : 0)}
+                  {averageMonthlyGrossPay === null ? 'N/A' : formatCurrency(averageMonthlyGrossPay)}
                 </div>
-                <div className="text-sm text-gray-500 mt-1">{statistics.monthlyTrends.filter(t => t.totalGrossPay > 0).length} 個月有記錄</div>
+                <div className="text-sm text-gray-500 mt-1">{activePayrollMonthCount} 個月有記錄</div>
               </div>
               <div className="bg-white rounded-lg shadow-sm p-6">
                 <h4 className="text-sm font-medium text-gray-500 mb-2">最高月份</h4>

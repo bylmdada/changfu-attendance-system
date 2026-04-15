@@ -5,6 +5,28 @@ import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { createApprovalForRequest } from '@/lib/approval-helper';
 import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
+import { parseIntegerQueryParam } from '@/lib/query-params';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isFinalReviewer(role: string) {
+  return role === 'ADMIN' || role === 'HR';
+}
+
+async function getManagedDepartments(employeeId: number): Promise<string[]> {
+  const records = await prisma.departmentManager.findMany({
+    where: {
+      employeeId,
+      isActive: true,
+    },
+    select: { department: true },
+  });
+
+  return records.map((record) => record.department).filter(Boolean);
+}
 
 // 獲取忘打卡申請列表
 export async function GET(request: NextRequest) {
@@ -34,7 +56,15 @@ export async function GET(request: NextRequest) {
     if (user.role !== 'ADMIN' && user.role !== 'HR') {
       whereClause.employeeId = user.employeeId;
     } else if (employeeId) {
-      whereClause.employeeId = parseInt(employeeId);
+      const parsedEmployeeId = parseIntegerQueryParam(employeeId, { min: 1 });
+      if (!parsedEmployeeId.isValid || parsedEmployeeId.value === null) {
+        return NextResponse.json(
+          { error: 'employeeId 格式錯誤' },
+          { status: 400 }
+        );
+      }
+
+      whereClause.employeeId = parsedEmployeeId.value;
     }
 
     if (status) {
@@ -101,8 +131,28 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const body = await request.json();
-    const { workDate, clockType, requestedTime, reason } = body;
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的忘打卡申請資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const body = parseResult.data;
+    if (!isPlainObject(body)) {
+      return NextResponse.json(
+        { error: '請提供有效的忘打卡申請資料' },
+        { status: 400 }
+      );
+    }
+
+    const { workDate, clockType, requestedTime, reason } = body as {
+      workDate?: string;
+      clockType?: string;
+      requestedTime?: string;
+      reason?: string;
+    };
 
     // 使用當前用戶的 employeeId
     const employeeId = user.employeeId;
@@ -218,31 +268,62 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    // 只有管理員和HR可以審核
-    if (user.role !== 'ADMIN' && user.role !== 'HR') {
+    if (!['ADMIN', 'HR', 'MANAGER'].includes(user.role)) {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
 
-    const body = await request.json();
-    const { id, status, rejectReason } = body;
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的忘打卡申請資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
 
-    if (!id || !status) {
+    const body = parseResult.data;
+    if (!isPlainObject(body)) {
+      return NextResponse.json(
+        { error: '請提供有效的忘打卡申請資料' },
+        { status: 400 }
+      );
+    }
+
+    const { id, status } = body as {
+      id?: number | string;
+      status?: string;
+    };
+    const opinion = typeof body.opinion === 'string' ? body.opinion : undefined;
+    const remarks =
+      typeof body.remarks === 'string'
+        ? body.remarks
+        : typeof body.reason === 'string'
+          ? body.reason
+          : undefined;
+    const rejectReason =
+      typeof body.rejectReason === 'string'
+        ? body.rejectReason
+        : remarks;
+
+    if (!id) {
       return NextResponse.json(
         { error: '缺少必要字段' },
         { status: 400 }
       );
     }
 
-    if (!['APPROVED', 'REJECTED'].includes(status)) {
+    const parsedRequestId = parseIntegerQueryParam(String(id), { min: 1 });
+    if (!parsedRequestId.isValid || parsedRequestId.value === null) {
       return NextResponse.json(
-        { error: '無效的審核狀態' },
+        { error: '申請ID格式錯誤' },
         { status: 400 }
       );
     }
 
+    const requestId = parsedRequestId.value;
+
     // 獲取申請信息
     const request_data = await prisma.missedClockRequest.findUnique({
-      where: { id: parseInt(id) },
+      where: { id: requestId },
       include: {
         employee: true
       }
@@ -255,97 +336,162 @@ export async function PUT(request: NextRequest) {
       );
     }
 
-    if (request_data.status !== 'PENDING') {
+    const includeApprovalContext = {
+      employee: {
+        select: {
+          id: true,
+          employeeId: true,
+          name: true,
+          department: true,
+          position: true
+        }
+      },
+      approvedByUser: {
+        select: {
+          id: true,
+          username: true,
+          employee: {
+            select: {
+              name: true
+            }
+          }
+        }
+      }
+    };
+
+    if (user.role === 'MANAGER') {
+      if (!opinion || !['AGREE', 'DISAGREE'].includes(opinion)) {
+        return NextResponse.json(
+          { error: '請選擇同意或不同意' },
+          { status: 400 }
+        );
+      }
+
+      if (request_data.status !== 'PENDING') {
+        return NextResponse.json(
+          { error: '申請已被處理' },
+          { status: 400 }
+        );
+      }
+
+      const managedDepartments = await getManagedDepartments(user.employeeId);
+      if (
+        managedDepartments.length === 0 ||
+        !request_data.employee?.department ||
+        !managedDepartments.includes(request_data.employee.department)
+      ) {
+        return NextResponse.json(
+          { error: '無權限審核其他部門的忘打卡申請' },
+          { status: 403 }
+        );
+      }
+
+      const reviewedRequest = await prisma.missedClockRequest.update({
+        where: { id: requestId },
+        data: {
+          status: 'PENDING_ADMIN',
+          managerReviewerId: user.employeeId,
+          managerOpinion: opinion,
+          managerNote: remarks || null,
+          managerReviewedAt: new Date(),
+        },
+        include: includeApprovalContext,
+      });
+
+      return NextResponse.json({
+        message: '主管已審核，已轉交管理員決核',
+        request: reviewedRequest,
+      });
+    }
+
+    if (!isFinalReviewer(user.role)) {
+      return NextResponse.json({ error: '權限不足' }, { status: 403 });
+    }
+
+    if (!status || !['APPROVED', 'REJECTED'].includes(status)) {
+      return NextResponse.json(
+        { error: '無效的審核狀態' },
+        { status: 400 }
+      );
+    }
+
+    if (request_data.status !== 'PENDING' && request_data.status !== 'PENDING_ADMIN') {
       return NextResponse.json(
         { error: '申請已被處理' },
         { status: 400 }
       );
     }
 
-    // 更新申請狀態
-    const updatedRequest = await prisma.missedClockRequest.update({
-      where: { id: parseInt(id) },
-      data: {
-        status,
-        approvedBy: user.userId,
-        approvedAt: new Date(),
-        rejectReason: status === 'REJECTED' ? rejectReason : null
-      },
-      include: {
-        employee: {
-          select: {
-            id: true,
-            employeeId: true,
-            name: true,
-            department: true,
-            position: true
-          }
-        },
-        approvedByUser: {
-          select: {
-            id: true,
-            username: true,
-            employee: {
-              select: {
-                name: true
-              }
-            }
-          }
-        }
-      }
-    });
+    const approvedAt = new Date();
 
-    // 如果申請被批准，創建或更新考勤記錄
+    const updateRequestData = {
+      status,
+      approvedBy: user.employeeId,
+      approvedAt,
+      rejectReason: status === 'REJECTED' ? rejectReason || null : null
+    };
+
+    let updatedRequest;
+
     if (status === 'APPROVED') {
-      const workDate = request_data.workDate;
-      const clockType = request_data.clockType;
-      const requestedTime = request_data.requestedTime;
+      updatedRequest = await prisma.$transaction(async (tx) => {
+        const requestUpdate = await tx.missedClockRequest.update({
+          where: { id: requestId },
+          data: updateRequestData,
+          include: includeApprovalContext,
+        });
 
-      // 查找當天的考勤記錄
-      const attendanceRecord = await prisma.attendanceRecord.findFirst({
-        where: {
-          employeeId: request_data.employeeId,
-          workDate: new Date(workDate)
+        const attendanceRecord = await tx.attendanceRecord.findFirst({
+          where: {
+            employeeId: request_data.employeeId,
+            workDate: new Date(request_data.workDate)
+          }
+        });
+
+        if (attendanceRecord) {
+          const updateData: { clockInTime?: string; clockOutTime?: string } = {};
+          if (request_data.clockType === 'CLOCK_IN') {
+            updateData.clockInTime = request_data.requestedTime;
+          } else if (request_data.clockType === 'CLOCK_OUT') {
+            updateData.clockOutTime = request_data.requestedTime;
+          }
+
+          await tx.attendanceRecord.update({
+            where: { id: attendanceRecord.id },
+            data: updateData
+          });
+        } else {
+          const attendanceData: {
+            employeeId: number;
+            workDate: Date;
+            status: string;
+            clockInTime?: string;
+            clockOutTime?: string;
+          } = {
+            employeeId: request_data.employeeId,
+            workDate: new Date(request_data.workDate),
+            status: 'PRESENT'
+          };
+
+          if (request_data.clockType === 'CLOCK_IN') {
+            attendanceData.clockInTime = request_data.requestedTime;
+          } else if (request_data.clockType === 'CLOCK_OUT') {
+            attendanceData.clockOutTime = request_data.requestedTime;
+          }
+
+          await tx.attendanceRecord.create({
+            data: attendanceData
+          });
         }
+
+        return requestUpdate;
       });
-
-      if (attendanceRecord) {
-        // 更新現有記錄
-        const updateData: { clockInTime?: string; clockOutTime?: string } = {};
-        if (clockType === 'CLOCK_IN') {
-          updateData.clockInTime = requestedTime;
-        } else if (clockType === 'CLOCK_OUT') {
-          updateData.clockOutTime = requestedTime;
-        }
-
-        await prisma.attendanceRecord.update({
-          where: { id: attendanceRecord.id },
-          data: updateData
-        });
-      } else {
-        // 創建新的考勤記錄
-        const attendanceData: {
-          employeeId: number;
-          workDate: Date;
-          status: string;
-          clockInTime?: string;
-          clockOutTime?: string;
-        } = {
-          employeeId: request_data.employeeId,
-          workDate: new Date(workDate),
-          status: 'PRESENT'
-        };
-
-        if (clockType === 'CLOCK_IN') {
-          attendanceData.clockInTime = requestedTime;
-        } else if (clockType === 'CLOCK_OUT') {
-          attendanceData.clockOutTime = requestedTime;
-        }
-
-        await prisma.attendanceRecord.create({
-          data: attendanceData
-        });
-      }
+    } else {
+      updatedRequest = await prisma.missedClockRequest.update({
+        where: { id: requestId },
+        data: updateRequestData,
+        include: includeApprovalContext,
+      });
     }
 
     return NextResponse.json({ 
@@ -376,8 +522,23 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const body = await request.json();
-    const { id } = body;
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的忘打卡申請資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const body = parseResult.data;
+    if (!isPlainObject(body)) {
+      return NextResponse.json(
+        { error: '請提供有效的忘打卡申請資料' },
+        { status: 400 }
+      );
+    }
+
+    const { id } = body as { id?: number | string };
 
     if (!id) {
       return NextResponse.json(
@@ -386,9 +547,17 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
+    const parsedRequestId = parseIntegerQueryParam(String(id), { min: 1 });
+    if (!parsedRequestId.isValid || parsedRequestId.value === null) {
+      return NextResponse.json(
+        { error: '申請ID格式錯誤' },
+        { status: 400 }
+      );
+    }
+
     // 檢查申請是否存在
     const existingRequest = await prisma.missedClockRequest.findUnique({
-      where: { id: parseInt(id) }
+      where: { id: parsedRequestId.value }
     });
 
     if (!existingRequest) {
@@ -416,7 +585,7 @@ export async function DELETE(request: NextRequest) {
     }
 
     await prisma.missedClockRequest.delete({
-      where: { id: parseInt(id) }
+      where: { id: parsedRequestId.value }
     });
 
     return NextResponse.json({ message: '申請已刪除' });

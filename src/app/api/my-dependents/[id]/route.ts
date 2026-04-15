@@ -2,6 +2,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
+import { parseIntegerQueryParam } from '@/lib/query-params';
+import { safeParseJSON } from '@/lib/validation';
+
+function parseApplicationId(rawValue: string) {
+  return parseIntegerQueryParam(rawValue, { min: 1, max: 99999999 });
+}
 
 // 取得單一申請詳情
 export async function GET(
@@ -15,7 +21,13 @@ export async function GET(
     }
 
     const { id } = await params;
-    const applicationId = parseInt(id);
+    const applicationIdResult = parseApplicationId(id);
+
+    if (!applicationIdResult.isValid || applicationIdResult.value === null) {
+      return NextResponse.json({ error: '申請ID格式無效' }, { status: 400 });
+    }
+
+    const applicationId = applicationIdResult.value;
 
     // 取得員工資料
     const userRecord = await prisma.user.findUnique({
@@ -92,7 +104,25 @@ export async function PUT(
     }
 
     const { id } = await params;
-    const applicationId = parseInt(id);
+    const applicationIdResult = parseApplicationId(id);
+
+    if (!applicationIdResult.isValid || applicationIdResult.value === null) {
+      return NextResponse.json({ error: '申請ID格式無效' }, { status: 400 });
+    }
+
+    const applicationId = applicationIdResult.value;
+
+    const parsedBody = await safeParseJSON(request);
+    if (!parsedBody.success) {
+      return NextResponse.json({ error: '請求內容格式無效' }, { status: 400 });
+    }
+
+    const dependentName = typeof parsedBody.data?.dependentName === 'string' ? parsedBody.data.dependentName : null;
+    const relationship = typeof parsedBody.data?.relationship === 'string' ? parsedBody.data.relationship : null;
+    const idNumber = typeof parsedBody.data?.idNumber === 'string' ? parsedBody.data.idNumber : null;
+    const birthDate = typeof parsedBody.data?.birthDate === 'string' ? parsedBody.data.birthDate : null;
+    const effectiveDate = typeof parsedBody.data?.effectiveDate === 'string' ? parsedBody.data.effectiveDate : null;
+    const remarks = typeof parsedBody.data?.remarks === 'string' ? parsedBody.data.remarks : null;
 
     // 取得員工資料
     const userRecord = await prisma.user.findUnique({
@@ -120,16 +150,6 @@ export async function PUT(
     if (existingApplication.status !== 'PENDING') {
       return NextResponse.json({ error: '已審核的申請無法編輯' }, { status: 400 });
     }
-
-    const data = await request.json();
-    const { 
-      dependentName, 
-      relationship, 
-      idNumber, 
-      birthDate, 
-      effectiveDate,
-      remarks 
-    } = data;
 
     // 更新申請
     const updatedApplication = await prisma.dependentApplication.update({
@@ -173,7 +193,13 @@ export async function DELETE(
     }
 
     const { id } = await params;
-    const applicationId = parseInt(id);
+    const applicationIdResult = parseApplicationId(id);
+
+    if (!applicationIdResult.isValid || applicationIdResult.value === null) {
+      return NextResponse.json({ error: '申請ID格式無效' }, { status: 400 });
+    }
+
+    const applicationId = applicationIdResult.value;
 
     // 取得員工資料
     const userRecord = await prisma.user.findUnique({

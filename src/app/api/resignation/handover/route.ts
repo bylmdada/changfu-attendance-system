@@ -7,6 +7,30 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
+import { parseIntegerQueryParam } from '@/lib/query-params';
+import { safeParseJSON } from '@/lib/validation';
+
+function parsePositiveIntegerInput(value: unknown): number | null {
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value > 0 ? value : null;
+  }
+
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) {
+    return null;
+  }
+
+  const parsedValue = Number(value);
+  return Number.isSafeInteger(parsedValue) && parsedValue > 0 ? parsedValue : null;
+}
+
+function normalizeOptionalString(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const normalized = value.trim();
+  return normalized ? normalized : undefined;
+}
 
 export async function PUT(request: NextRequest) {
   try {
@@ -26,11 +50,22 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: '無權限操作' }, { status: 403 });
     }
 
-    const data = await request.json();
-    const { itemId, completed, notes, assignedTo } = data;
+    const parsedBody = await safeParseJSON(request);
+    if (!parsedBody.success || !parsedBody.data) {
+      return NextResponse.json({ error: '請求內容格式無效' }, { status: 400 });
+    }
+
+    const itemId = parsePositiveIntegerInput(parsedBody.data.itemId);
+    const completed = parsedBody.data.completed;
+    const notes = normalizeOptionalString(parsedBody.data.notes);
+    const assignedTo = normalizeOptionalString(parsedBody.data.assignedTo);
 
     if (!itemId) {
-      return NextResponse.json({ error: '缺少項目 ID' }, { status: 400 });
+      return NextResponse.json({ error: '項目ID格式無效' }, { status: 400 });
+    }
+
+    if (completed !== undefined && typeof completed !== 'boolean') {
+      return NextResponse.json({ error: 'completed 格式無效' }, { status: 400 });
     }
 
     const item = await prisma.handoverItem.findUnique({
@@ -82,10 +117,21 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '無權限操作' }, { status: 403 });
     }
 
-    const data = await request.json();
-    const { resignationId, category, description, assignedTo } = data;
+    const parsedBody = await safeParseJSON(request);
+    if (!parsedBody.success || !parsedBody.data) {
+      return NextResponse.json({ error: '請求內容格式無效' }, { status: 400 });
+    }
 
-    if (!resignationId || !category || !description) {
+    const resignationId = parsePositiveIntegerInput(parsedBody.data.resignationId);
+    const category = normalizeOptionalString(parsedBody.data.category);
+    const description = normalizeOptionalString(parsedBody.data.description);
+    const assignedTo = normalizeOptionalString(parsedBody.data.assignedTo);
+
+    if (!resignationId) {
+      return NextResponse.json({ error: '離職申請ID格式無效' }, { status: 400 });
+    }
+
+    if (!category || !description) {
       return NextResponse.json({ error: '請填寫必要欄位' }, { status: 400 });
     }
 
@@ -129,14 +175,14 @@ export async function DELETE(request: NextRequest) {
     }
 
     const { searchParams } = new URL(request.url);
-    const itemId = searchParams.get('id');
+    const parsedItemId = parseIntegerQueryParam(searchParams.get('id'), { min: 1 });
 
-    if (!itemId) {
-      return NextResponse.json({ error: '缺少項目 ID' }, { status: 400 });
+    if (!parsedItemId.isValid || parsedItemId.value === null) {
+      return NextResponse.json({ error: '項目ID格式無效' }, { status: 400 });
     }
 
     await prisma.handoverItem.delete({
-      where: { id: parseInt(itemId) }
+      where: { id: parsedItemId.value }
     });
 
     return NextResponse.json({

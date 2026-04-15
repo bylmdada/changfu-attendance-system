@@ -9,6 +9,37 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
+import { parseIntegerQueryParam } from '@/lib/query-params';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function asStringOrNumber(value: unknown): string | null {
+  if (typeof value === 'string' || typeof value === 'number') {
+    return String(value);
+  }
+
+  return null;
+}
+
+function parseRequiredFiniteNumber(value: unknown) {
+  if (value === undefined || value === null || value === '') {
+    return { value: null, isValid: false };
+  }
+
+  if (typeof value !== 'string' && typeof value !== 'number') {
+    return { value: null, isValid: false };
+  }
+
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return { value: null, isValid: false };
+  }
+
+  return { value: parsed, isValid: true };
+}
 
 export async function GET(
   request: NextRequest,
@@ -21,7 +52,13 @@ export async function GET(
     }
 
     const { id } = await params;
-    const disputeId = parseInt(id);
+    const disputeIdResult = parseIntegerQueryParam(id, { min: 1, max: 99999999 });
+
+    if (!disputeIdResult.isValid || disputeIdResult.value === null) {
+      return NextResponse.json({ error: '記錄ID 格式錯誤' }, { status: 400 });
+    }
+
+    const disputeId = disputeIdResult.value;
 
     const dispute = await prisma.payrollDispute.findUnique({
       where: { id: disputeId },
@@ -85,10 +122,33 @@ export async function PUT(
     }
 
     const { id } = await params;
-    const disputeId = parseInt(id);
+    const disputeIdResult = parseIntegerQueryParam(id, { min: 1, max: 99999999 });
 
-    const data = await request.json();
-    const { action, reviewNote, adjustedAmount, adjustInYear, adjustInMonth } = data;
+    if (!disputeIdResult.isValid || disputeIdResult.value === null) {
+      return NextResponse.json({ error: '記錄ID 格式錯誤' }, { status: 400 });
+    }
+
+    const disputeId = disputeIdResult.value;
+
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的審核資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const data = parseResult.data;
+
+    if (!isPlainObject(data)) {
+      return NextResponse.json({ error: '請提供有效的審核資料' }, { status: 400 });
+    }
+
+    const action = typeof data.action === 'string' ? data.action : undefined;
+    const reviewNote = typeof data.reviewNote === 'string' ? data.reviewNote : undefined;
+    const adjustedAmountInput = data.adjustedAmount;
+    const adjustInYearInput = asStringOrNumber(data.adjustInYear);
+    const adjustInMonthInput = asStringOrNumber(data.adjustInMonth);
 
     const dispute = await prisma.payrollDispute.findUnique({
       where: { id: disputeId },
@@ -105,18 +165,41 @@ export async function PUT(
 
     if (action === 'approve') {
       // 核准異議
-      if (!adjustedAmount || !adjustInYear || !adjustInMonth) {
+      if (
+        adjustedAmountInput === undefined ||
+        adjustedAmountInput === null ||
+        adjustedAmountInput === '' ||
+        adjustInYearInput === null ||
+        adjustInYearInput === '' ||
+        adjustInMonthInput === null ||
+        adjustInMonthInput === ''
+      ) {
         return NextResponse.json({ 
           error: '請填寫調整金額和調整月份' 
         }, { status: 400 });
       }
 
+      const adjustedAmountResult = parseRequiredFiniteNumber(adjustedAmountInput);
+      if (!adjustedAmountResult.isValid || adjustedAmountResult.value === null) {
+        return NextResponse.json({ error: 'adjustedAmount 格式錯誤' }, { status: 400 });
+      }
+
+      const adjustInYearResult = parseIntegerQueryParam(adjustInYearInput, { min: 1900, max: 9999 });
+      if (!adjustInYearResult.isValid || adjustInYearResult.value === null) {
+        return NextResponse.json({ error: 'adjustInYear 格式錯誤' }, { status: 400 });
+      }
+
+      const adjustInMonthResult = parseIntegerQueryParam(adjustInMonthInput, { min: 1, max: 12 });
+      if (!adjustInMonthResult.isValid || adjustInMonthResult.value === null) {
+        return NextResponse.json({ error: 'adjustInMonth 格式錯誤' }, { status: 400 });
+      }
+
       // 找到調整計入的薪資記錄
-      let targetPayroll = await prisma.payrollRecord.findFirst({
+      const targetPayroll = await prisma.payrollRecord.findFirst({
         where: {
           employeeId: dispute.employeeId,
-          payYear: parseInt(adjustInYear),
-          payMonth: parseInt(adjustInMonth)
+          payYear: adjustInYearResult.value,
+          payMonth: adjustInMonthResult.value
         }
       });
 
@@ -131,12 +214,12 @@ export async function PUT(
         createdBy: number;
         payrollId?: number;
       } = {
-        type: parseFloat(adjustedAmount) >= 0 ? 'SUPPLEMENT' : 'DEDUCTION',
+        type: adjustedAmountResult.value >= 0 ? 'SUPPLEMENT' : 'DEDUCTION',
         category: dispute.type === 'OVERTIME_MISSING' ? 'OVERTIME' : 
                   dispute.type === 'LEAVE_MISSING' ? 'LEAVE' : 
                   dispute.type === 'ALLOWANCE_MISSING' ? 'ALLOWANCE' : 'OTHER',
         description: getAdjustmentDescription(dispute.type, dispute.payYear, dispute.payMonth),
-        amount: Math.abs(parseFloat(adjustedAmount)),
+        amount: Math.abs(adjustedAmountResult.value),
         originalYear: dispute.payYear,
         originalMonth: dispute.payMonth,
         createdBy: user.employeeId
@@ -152,9 +235,9 @@ export async function PUT(
             reviewedBy: user.employeeId,
             reviewedAt: new Date(),
             reviewNote: reviewNote || null,
-            adjustedAmount: parseFloat(adjustedAmount),
-            adjustInYear: parseInt(adjustInYear),
-            adjustInMonth: parseInt(adjustInMonth)
+            adjustedAmount: adjustedAmountResult.value,
+            adjustInYear: adjustInYearResult.value,
+            adjustInMonth: adjustInMonthResult.value
           }
         });
 
@@ -169,7 +252,7 @@ export async function PUT(
           });
 
           // 更新薪資記錄的金額
-          const adjustAmount = parseFloat(adjustedAmount);
+          const adjustAmount = adjustedAmountResult.value;
           await tx.payrollRecord.update({
             where: { id: targetPayroll.id },
             data: {
@@ -183,8 +266,8 @@ export async function PUT(
       return NextResponse.json({
         success: true,
         message: targetPayroll 
-          ? `已核准，調整 $${Math.abs(parseFloat(adjustedAmount))} 計入 ${adjustInYear}年${adjustInMonth}月薪資`
-          : `已核准，待 ${adjustInYear}年${adjustInMonth}月薪資產生時自動計入`
+          ? `已核准，調整 $${Math.abs(adjustedAmountResult.value)} 計入 ${adjustInYearResult.value}年${adjustInMonthResult.value}月薪資`
+          : `已核准，待 ${adjustInYearResult.value}年${adjustInMonthResult.value}月薪資產生時自動計入`
       });
 
     } else if (action === 'reject') {
@@ -235,7 +318,13 @@ export async function DELETE(
     }
 
     const { id } = await params;
-    const disputeId = parseInt(id);
+    const disputeIdResult = parseIntegerQueryParam(id, { min: 1, max: 99999999 });
+
+    if (!disputeIdResult.isValid || disputeIdResult.value === null) {
+      return NextResponse.json({ error: '記錄ID 格式錯誤' }, { status: 400 });
+    }
+
+    const disputeId = disputeIdResult.value;
 
     const dispute = await prisma.payrollDispute.findUnique({
       where: { id: disputeId }

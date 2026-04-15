@@ -7,10 +7,31 @@ jest.mock('@/lib/database', () => ({
 
 import {
   defaultGPSSettings,
+  isClockLocationPayload,
   validateGpsClockLocation,
   type AllowedLocationLite,
   type ClockLocationPayload,
 } from '@/lib/gps-attendance';
+
+describe('isClockLocationPayload', () => {
+  it('rejects impossible latitude and longitude ranges', () => {
+    expect(
+      isClockLocationPayload({
+        latitude: 95,
+        longitude: 121.564468,
+        accuracy: 15,
+      })
+    ).toBe(false);
+
+    expect(
+      isClockLocationPayload({
+        latitude: 25.033964,
+        longitude: -181,
+        accuracy: 15,
+      })
+    ).toBe(false);
+  });
+});
 
 describe('validateGpsClockLocation', () => {
   const allowedLocations: AllowedLocationLite[] = [
@@ -66,6 +87,10 @@ describe('validateGpsClockLocation', () => {
       code: 'OUT_OF_RANGE',
       nearestLocation: '長福總部',
     });
+    if (result.ok) {
+      throw new Error('Expected location validation to fail');
+    }
+
     expect(result.error).toContain('不在允許的打卡範圍內');
   });
 

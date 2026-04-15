@@ -44,3 +44,8 @@ next-env.d.ts
 
 # Sentry Config File
 .env.sentry-build-plugin
+
+# offline validation artifacts
+ops/comp-leave-import-validation/**/*.db
+ops/comp-leave-import-validation/**/*.db-*
+ops/comp-leave-import-validation/**/*.db.gz

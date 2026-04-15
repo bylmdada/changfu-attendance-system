@@ -4,11 +4,11 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
 import { decrypt } from '@/lib/encryption';
 import * as XLSX from 'xlsx';
+import { isValidCompactDate, parseIntegerQueryParam } from '@/lib/query-params';
 
 interface ExportRecord {
   transferDate: string;
@@ -24,21 +24,48 @@ interface ExportRecord {
  */
 export async function GET(request: NextRequest) {
   try {
-    const cookieStore = await cookies();
-    const token = cookieStore.get('auth-token')?.value;
-    if (!token) {
+    const user = await getUserFromRequest(request);
+    if (!user) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
-    const user = await getUserFromToken(token);
+
     if (!user || (user.role !== 'ADMIN' && user.role !== 'HR')) {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
 
     const { searchParams } = new URL(request.url);
-    const year = parseInt(searchParams.get('year') || new Date().getFullYear().toString());
-    const month = parseInt(searchParams.get('month') || (new Date().getMonth() + 1).toString());
+    const yearResult = parseIntegerQueryParam(searchParams.get('year'), {
+      defaultValue: new Date().getFullYear(),
+      min: 1900,
+      max: 9999,
+    });
+    if (!yearResult.isValid) {
+      return NextResponse.json({ error: '無效的年份參數' }, { status: 400 });
+    }
+
+    const monthResult = parseIntegerQueryParam(searchParams.get('month'), {
+      defaultValue: new Date().getMonth() + 1,
+      min: 1,
+      max: 12,
+    });
+    if (!monthResult.isValid) {
+      return NextResponse.json({ error: '無效的月份參數' }, { status: 400 });
+    }
+
+    const year = yearResult.value!;
+    const month = monthResult.value!;
     const type = searchParams.get('type') || 'salary';  // salary 或 bonus
-    const transferDate = searchParams.get('date') || `${year}${month.toString().padStart(2, '0')}25`;
+
+    if (!['salary', 'bonus'].includes(type)) {
+      return NextResponse.json({ error: '無效的匯出類型參數' }, { status: 400 });
+    }
+
+    const transferDateParam = searchParams.get('date');
+    if (transferDateParam && !isValidCompactDate(transferDateParam)) {
+      return NextResponse.json({ error: '無效的轉帳日期參數' }, { status: 400 });
+    }
+
+    const transferDate = transferDateParam || `${year}${month.toString().padStart(2, '0')}25`;
 
     // 取得員工資料（含銀行帳號）
     const employees = await prisma.employee.findMany({

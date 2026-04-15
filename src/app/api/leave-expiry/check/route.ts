@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { safeParseJSON } from '@/lib/validation';
 
 interface ExpiringLeave {
   type: 'COMP_LEAVE' | 'ANNUAL_LEAVE';
@@ -19,6 +20,10 @@ interface ExpiringLeave {
   status: 'URGENT' | 'WARNING' | 'NORMAL';
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 // GET - 檢查即將到期的假期
 export async function GET(request: NextRequest) {
   try {
@@ -27,15 +32,12 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const user = await getUserFromRequest(request);
+    if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded || !['ADMIN', 'HR'].includes(decoded.role)) {
+    if (!['ADMIN', 'HR'].includes(user.role)) {
       return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
     }
 
@@ -63,7 +65,10 @@ export async function GET(request: NextRequest) {
     const compLeaveTransactions = await prisma.compLeaveTransaction.findMany({
       where: {
         transactionType: 'EARN',
-        isFrozen: true  // 只檢查已確認的
+        isFrozen: true,  // 只檢查已確認的
+        NOT: {
+          referenceType: 'IMPORT'
+        }
       },
       include: {
         employee: {
@@ -77,7 +82,7 @@ export async function GET(request: NextRequest) {
       }
     });
 
-    for (const tx of compLeaveTransactions) {
+    for (const tx of compLeaveTransactions.filter(transaction => transaction.referenceType !== 'IMPORT')) {
       // 計算到期日（建立日期 + 有效月數）
       const expiresAt = new Date(tx.createdAt);
       expiresAt.setMonth(expiresAt.getMonth() + settings.compLeaveExpiryMonths);
@@ -176,15 +181,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'CSRF驗證失敗' }, { status: 403 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const user = await getUserFromRequest(request);
+    if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded || decoded.role !== 'ADMIN') {
+    if (user.role !== 'ADMIN') {
       return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
     }
 
@@ -197,25 +199,40 @@ export async function POST(request: NextRequest) {
       ? JSON.parse(expirySettings.value)
       : { expiryMode: 'NOTIFY_ONLY' };
 
-    const body = await request.json();
-    const { action } = body;
-    // employeeIds 可用於未來的批次處理邏輯
-    const targetEmployeeIds: number[] = body.employeeIds || [];
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的到期處理資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
 
-    const validActions = ['EXPIRE', 'SETTLE', 'EXTEND'];
-    if (!action || !validActions.includes(action)) {
+    const body = parseResult.data;
+    if (!isPlainObject(body)) {
+      return NextResponse.json({ error: '請提供有效的到期處理資料' }, { status: 400 });
+    }
+
+    const action = typeof body.action === 'string' ? body.action : '';
+    const targetEmployeeIds = Array.isArray(body.employeeIds)
+      ? body.employeeIds.filter((employeeId): employeeId is number => typeof employeeId === 'number' && Number.isInteger(employeeId) && employeeId > 0)
+      : [];
+
+    const validActions = ['EXPIRE', 'SETTLE', 'EXTEND'] as const;
+    if (action !== 'EXPIRE' && action !== 'SETTLE' && action !== 'EXTEND') {
       return NextResponse.json({ 
         error: '無效的處理動作',
         validActions 
       }, { status: 400 });
     }
 
+    const expiryAction: (typeof validActions)[number] = action;
+
     // 這裡實作批次處理邏輯
     const processedCount = targetEmployeeIds.length; // 根據選擇的員工數
     const results: { employeeId: number; action: string; result: string }[] = [];
 
     // 根據 action 執行不同操作
-    switch (action) {
+    switch (expiryAction) {
       case 'EXPIRE':
         // 將到期的補休標記為過期（新增 EXPIRE 類型交易）
         // 實作略，根據需求展開
@@ -233,7 +250,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: true,
       message: `已處理 ${processedCount} 筆到期假期`,
-      action,
+      action: expiryAction,
       currentMode: settings.expiryMode,
       results
     });

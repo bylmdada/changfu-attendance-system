@@ -8,6 +8,11 @@ import {
 } from 'lucide-react';
 import SystemNavbar from '@/components/SystemNavbar';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
+import {
+  buildAuthMeRequest,
+  buildEmailNotificationRequest,
+  buildSmtpSettingsRequest,
+} from '@/lib/email-notification-client';
 
 interface NotificationSettings {
   enabled: boolean;
@@ -45,19 +50,15 @@ export default function EmailNotificationPage() {
     };
   } | null>(null);
 
-  const getAuthHeaders = (): HeadersInit => {
-    if (typeof window === 'undefined') return {};
-    const token = localStorage.getItem('token');
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  };
-
   const loadSettings = useCallback(async () => {
     try {
+      const origin = window.location.origin;
+      const authMeRequest = buildAuthMeRequest(origin);
+      const emailNotificationRequest = buildEmailNotificationRequest(origin);
+      const smtpSettingsRequest = buildSmtpSettingsRequest(origin);
+
       // 驗證用戶
-      const userResponse = await fetch('/api/auth/me', {
-        credentials: 'include',
-        headers: getAuthHeaders()
-      });
+      const userResponse = await fetch(authMeRequest.url, authMeRequest.options);
 
       if (userResponse.ok) {
         const userData = await userResponse.json();
@@ -66,10 +67,7 @@ export default function EmailNotificationPage() {
       }
 
       // 載入通知設定
-      const response = await fetch('/api/system-settings/email-notification', {
-        credentials: 'include',
-        headers: getAuthHeaders()
-      });
+      const response = await fetch(emailNotificationRequest.url, emailNotificationRequest.options);
 
       if (response.ok) {
         const data = await response.json();
@@ -87,10 +85,7 @@ export default function EmailNotificationPage() {
       }
 
       // 檢查 SMTP 是否已設定
-      const smtpResponse = await fetch('/api/system-settings/smtp', {
-        credentials: 'include',
-        headers: getAuthHeaders()
-      });
+      const smtpResponse = await fetch(smtpSettingsRequest.url, smtpSettingsRequest.options);
 
       if (smtpResponse.ok) {
         const smtpData = await smtpResponse.json();

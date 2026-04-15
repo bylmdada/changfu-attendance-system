@@ -1,40 +1,79 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { parseIntegerQueryParam } from '@/lib/query-params';
+import { safeParseJSON } from '@/lib/validation';
+import {
+  calculateAnnualLeaveDaysFromYearsOfService,
+  calculateAnnualLeaveExpiryDate,
+} from '@/lib/annual-leave-rules';
+
+function parsePositiveIntegerBodyValue(value: unknown) {
+  if (value === undefined || value === null || value === '') {
+    return { value: null, isValid: false };
+  }
+
+  if (typeof value !== 'string' && typeof value !== 'number') {
+    return { value: null, isValid: false };
+  }
+
+  return parseIntegerQueryParam(String(value), {
+    min: 1,
+    max: 99999999,
+  });
+}
+
+function parseNonNegativeNumber(value: unknown) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 99) {
+    return { value: null, isValid: false };
+  }
+
+  return { value, isValid: true };
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 export async function GET(request: NextRequest) {
   try {
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const user = await getUserFromRequest(request);
+    if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
-    }
-
-    const decoded = await getUserFromToken(token);
-    if (!decoded) {
-      return NextResponse.json({ error: '無效的認證令牌' }, { status: 401 });
     }
 
     const { searchParams } = new URL(request.url);
     const employeeId = searchParams.get('employeeId');
-    const year = searchParams.get('year') || new Date().getFullYear().toString();
+    const yearResult = parseIntegerQueryParam(searchParams.get('year'), {
+      defaultValue: new Date().getFullYear(),
+      min: 1,
+      max: 9999,
+    });
+
+    if (!yearResult.isValid || yearResult.value === null) {
+      return NextResponse.json({ error: 'year 參數格式無效' }, { status: 400 });
+    }
 
     // 建立篩選條件
     const where: {
       employeeId?: number;
       year: number;
     } = {
-      year: parseInt(year)
+      year: yearResult.value
     };
     
     // 如果是一般員工，只能查看自己的年假
-    if (decoded.role !== 'ADMIN' && decoded.role !== 'HR') {
-      where.employeeId = decoded.employeeId;
+    if (user.role !== 'ADMIN' && user.role !== 'HR') {
+      where.employeeId = user.employeeId;
     } else if (employeeId) {
-      where.employeeId = parseInt(employeeId);
+      const employeeIdResult = parseIntegerQueryParam(employeeId, { min: 1, max: 99999999 });
+      if (!employeeIdResult.isValid || employeeIdResult.value === null) {
+        return NextResponse.json({ error: 'employeeId 參數格式無效' }, { status: 400 });
+      }
+
+      where.employeeId = employeeIdResult.value;
     }
 
     const annualLeaves = await prisma.annualLeave.findMany({
@@ -92,68 +131,99 @@ export async function POST(request: NextRequest) {
     }
 
     // 3. 身份驗證
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const user = await getUserFromRequest(request);
+    if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded) {
-      return NextResponse.json({ error: '無效的認證令牌' }, { status: 401 });
-    }
-
     // 只有管理員和HR可以設定年假
-    if (decoded.role !== 'ADMIN' && decoded.role !== 'HR') {
+    if (user.role !== 'ADMIN' && user.role !== 'HR') {
       return NextResponse.json({ error: '無權限執行此操作' }, { status: 403 });
     }
 
-    const { employeeId, year, yearsOfService } = await request.json();
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的年假設定資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const body = parseResult.data;
+
+    if (!isPlainObject(body)) {
+      return NextResponse.json({ error: '請提供有效的年假設定資料' }, { status: 400 });
+    }
+
+    const { employeeId, year, yearsOfService } = body;
 
     if (!employeeId || !year || yearsOfService === undefined) {
       return NextResponse.json({ error: '員工ID、年份和服務年資為必填' }, { status: 400 });
     }
 
-    // 計算年假天數（依據勞動基準法第38條）
-    let totalDays = 0;
-    if (yearsOfService < 0.5) {
-      totalDays = 0;         // 未滿6個月
-    } else if (yearsOfService < 1) {
-      totalDays = 3;         // 6個月以上未滿1年
-    } else if (yearsOfService < 2) {
-      totalDays = 7;         // 1年以上未滿2年
-    } else if (yearsOfService < 3) {
-      totalDays = 10;        // 2年以上未滿3年
-    } else if (yearsOfService < 5) {
-      totalDays = 14;        // 3年以上未滿5年
-    } else if (yearsOfService < 10) {
-      totalDays = 15;        // 5年以上未滿10年
-    } else {
-      // 10年以上：15天 + 每滿1年加1天，最高30天
-      totalDays = Math.min(30, 15 + Math.floor(yearsOfService - 10) + 1);
+    const employeeIdResult = parsePositiveIntegerBodyValue(employeeId);
+    if (!employeeIdResult.isValid || employeeIdResult.value === null) {
+      return NextResponse.json({ error: 'employeeId 參數格式無效' }, { status: 400 });
     }
 
-    // 計算到期日（隔年12月31日）
-    const expiryDate = new Date(year + 1, 11, 31);
+    const yearResult = parsePositiveIntegerBodyValue(year);
+    if (!yearResult.isValid || yearResult.value === null) {
+      return NextResponse.json({ error: 'year 參數格式無效' }, { status: 400 });
+    }
+
+    const yearsOfServiceResult = parseNonNegativeNumber(yearsOfService);
+    if (!yearsOfServiceResult.isValid || yearsOfServiceResult.value === null) {
+      return NextResponse.json({ error: 'yearsOfService 參數格式無效' }, { status: 400 });
+    }
+
+    const employeeIdValue = employeeIdResult.value;
+    const yearValue = yearResult.value;
+    const yearsOfServiceValue = yearsOfServiceResult.value;
+
+    const employee = await prisma.employee.findUnique({
+      where: { id: employeeIdValue },
+      select: { hireDate: true },
+    });
+
+    if (!employee) {
+      return NextResponse.json({ error: '找不到指定的員工' }, { status: 404 });
+    }
+
+    const entitlement = calculateAnnualLeaveDaysFromYearsOfService(yearsOfServiceValue);
+    const totalDays = entitlement.days;
+    const expiryDate = calculateAnnualLeaveExpiryDate(employee.hireDate, yearValue);
+
+    const existingAnnualLeave = await prisma.annualLeave.findUnique({
+      where: {
+        employeeId_year: {
+          employeeId: employeeIdValue,
+          year: yearValue,
+        }
+      },
+      select: {
+        usedDays: true,
+      }
+    });
+
+    const remainingDays = Math.max(0, totalDays - (existingAnnualLeave?.usedDays ?? 0));
 
     const annualLeave = await prisma.annualLeave.upsert({
       where: {
         employeeId_year: {
-          employeeId: parseInt(employeeId),
-          year: parseInt(year)
+          employeeId: employeeIdValue,
+          year: yearValue
         }
       },
       update: {
-        yearsOfService,
+        yearsOfService: entitlement.completedYears,
         totalDays,
-        remainingDays: totalDays,
+        remainingDays,
         expiryDate
       },
       create: {
-        employeeId: parseInt(employeeId),
-        year: parseInt(year),
-        yearsOfService,
+        employeeId: employeeIdValue,
+        year: yearValue,
+        yearsOfService: entitlement.completedYears,
         totalDays,
         remainingDays: totalDays,
         expiryDate

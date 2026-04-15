@@ -3,7 +3,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { Users, Plus, Clock, CheckCircle, XCircle, Send, X, Upload, FileText, Trash2, Image as ImageIcon, File, Edit, AlertTriangle, ChevronDown, ChevronUp, Eye } from 'lucide-react';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
-import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
+import { fetchJSONWithCSRF, fetchWithCSRF } from '@/lib/fetchWithCSRF';
 import ApprovalProgress, { ApprovalReviewRecord } from '@/components/ApprovalProgress';
 
 
@@ -175,9 +175,8 @@ export default function MyDependentsPage() {
       formDataUpload.append('fileType', fileType);
       formDataUpload.append('applicationId', applicationId.toString());
 
-      const response = await fetch('/api/my-dependents/attachments', {
+      const response = await fetchWithCSRF('/api/my-dependents/attachments', {
         method: 'POST',
-        credentials: 'include',
         body: formDataUpload
       });
 

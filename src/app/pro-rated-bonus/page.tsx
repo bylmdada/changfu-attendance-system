@@ -10,6 +10,7 @@ import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Calculator, Users, FileText, AlertCircle, CheckCircle, Clock, Download, Settings } from 'lucide-react';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 
 interface Employee {
   id: number;
@@ -62,19 +63,6 @@ const FESTIVAL_TYPES = [
   { value: 'mid_autumn', label: '中秋節獎金', month: 9 }
 ];
 
-interface CurrentUser {
-  id: number;
-  username: string;
-  role: string;
-  employee?: {
-    id: number;
-    employeeId?: string;
-    name: string;
-    department?: string;
-    position?: string;
-  };
-}
-
 export default function ProRatedBonusPage() {
   const [employees, setEmployees] = useState<Employee[]>([]);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -83,13 +71,6 @@ export default function ProRatedBonusPage() {
   const [loading, setLoading] = useState(false);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [reportData, setReportData] = useState<any>(null);
-  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
-  
-  // 獲取認證 headers
-  const getAuthHeaders = (): HeadersInit => {
-    const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
-    return token ? { 'Authorization': `Bearer ${token}` } : {};
-  };
 
   // 設定狀態
   const [settings, setSettings] = useState({
@@ -99,36 +80,15 @@ export default function ProRatedBonusPage() {
     autoCreateRecords: false
   });
 
-  // 獲取當前用戶
-  useEffect(() => {
-    const fetchCurrentUser = async () => {
-      try {
-        const response = await fetch('/api/auth/me', {
-          credentials: 'include',
-          headers: getAuthHeaders()
-        });
-        if (response.ok) {
-          const data = await response.json();
-          setCurrentUser(data.user);
-        }
-      } catch (error) {
-        console.error('獲取當前用戶失敗:', error);
-      }
-    };
-    fetchCurrentUser();
-  }, []);
-
   // 載入員工列表
   useEffect(() => {
     fetchEmployees();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const fetchEmployees = async () => {
     try {
       const response = await fetch('/api/employees', {
-        credentials: 'include',
-        headers: getAuthHeaders()
+        credentials: 'include'
       });
       if (response.ok) {
         const data = await response.json();
@@ -155,8 +115,7 @@ export default function ProRatedBonusPage() {
       });
 
       const response = await fetch(`/api/pro-rated-bonuses?${params}`, {
-        credentials: 'include',
-        headers: getAuthHeaders()
+        credentials: 'include'
       });
       if (response.ok) {
         const data = await response.json();
@@ -183,8 +142,7 @@ export default function ProRatedBonusPage() {
       });
 
       const response = await fetch(`/api/pro-rated-bonuses?${params}`, {
-        credentials: 'include',
-        headers: getAuthHeaders()
+        credentials: 'include'
       });
       if (response.ok) {
         const data = await response.json();
@@ -214,24 +172,41 @@ export default function ProRatedBonusPage() {
 
     setLoading(true);
     try {
-      const response = await fetch('/api/pro-rated-bonuses', {
+      const requestedEmployeeIds = [...selectedEmployees];
+      const response = await fetchJSONWithCSRF('/api/pro-rated-bonuses', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        credentials: 'include',
-        body: JSON.stringify({
+        body: {
           action: 'batch-calculate-and-create',
           employeeIds: selectedEmployees,
           bonusType: settings.bonusType,
+          festivalType: settings.bonusType === 'FESTIVAL' ? settings.festivalType : undefined,
           year: settings.targetYear,
-          autoCreateRecords: true,
-          createdBy: currentUser?.id || 1
-        })
+          autoCreateRecords: true
+        }
       });
 
       if (response.ok) {
         const data = await response.json();
-        alert(`成功創建 ${data.data.createdRecordsCount} 筆獎金記錄`);
-        setSelectedEmployees([]);
+        const createdRecordsCount = typeof data?.data?.createdRecordsCount === 'number'
+          ? data.data.createdRecordsCount
+          : 0;
+        const failedEmployeeIds = Array.isArray(data?.data?.failedEmployeeIds)
+          ? data.data.failedEmployeeIds.filter((id: unknown): id is number => typeof id === 'number')
+          : [];
+        const successfulEmployeeIds = requestedEmployeeIds.filter(id => !failedEmployeeIds.includes(id));
+
+        if (createdRecordsCount === 0 || successfulEmployeeIds.length === 0) {
+          alert('創建記錄失敗：沒有任何獎金記錄建立成功');
+          return;
+        }
+
+        if (failedEmployeeIds.length > 0) {
+          alert(`成功創建 ${createdRecordsCount} 筆獎金記錄，${failedEmployeeIds.length} 位員工建立失敗`);
+          setSelectedEmployees(failedEmployeeIds);
+        } else {
+          alert(`成功創建 ${createdRecordsCount} 筆獎金記錄`);
+          setSelectedEmployees([]);
+        }
         // 重新載入計算結果
         handleBatchCalculate();
       } else {

@@ -65,12 +65,6 @@ export default function DashboardPage() {
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   });
 
-  const getAuthHeaders = (): HeadersInit => {
-    if (typeof window === 'undefined') return {};
-    const token = localStorage.getItem('token');
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  };
-
   const fetchStats = useCallback(async () => {
     setLoading(true);
     setError('');
@@ -79,7 +73,7 @@ export default function DashboardPage() {
       const [year, month] = selectedMonth.split('-');
       const response = await fetch(
         `/api/dashboard-stats?year=${year}&month=${month}`,
-        { credentials: 'include', headers: getAuthHeaders() }
+        { credentials: 'include' }
       );
 
       if (response.ok) {
@@ -293,7 +287,7 @@ export default function DashboardPage() {
                 {stats.trends.dailyAttendance.map((day, index) => {
                   const percentage = day.total > 0 ? (day.count / day.total) * 100 : 0;
                   return (
-                    <div key={index} className="flex flex-col items-center min-w-[40px]">
+                    <div key={index} className="flex flex-col items-center min-w-10">
                       <div 
                         className="w-8 bg-blue-500 rounded-t transition-all hover:bg-blue-600"
                         style={{ height: `${percentage * 1.5}px` }}

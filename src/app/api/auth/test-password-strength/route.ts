@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { safeParseJSON } from '@/lib/validation';
 
 interface PasswordPolicy {
   minLength: number;
@@ -10,6 +11,24 @@ interface PasswordPolicy {
   preventBirthdate: boolean;
   preventCommonPasswords: boolean;
   customBlockedPasswords: string[];
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isPasswordPolicy(value: unknown): value is PasswordPolicy {
+  return isPlainObject(value)
+    && typeof value.minLength === 'number'
+    && typeof value.requireUppercase === 'boolean'
+    && typeof value.requireLowercase === 'boolean'
+    && typeof value.requireNumbers === 'boolean'
+    && typeof value.requireSpecialChars === 'boolean'
+    && typeof value.preventSequentialChars === 'boolean'
+    && typeof value.preventBirthdate === 'boolean'
+    && typeof value.preventCommonPasswords === 'boolean'
+    && Array.isArray(value.customBlockedPasswords)
+    && value.customBlockedPasswords.every(password => typeof password === 'string');
 }
 
 const COMMON_WEAK_PASSWORDS = [
@@ -26,10 +45,24 @@ const SEQUENTIAL_PATTERNS = [
 
 export async function POST(request: NextRequest) {
   try {
-    const { password, policy }: { password: string; policy: PasswordPolicy } = await request.json();
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '密碼不能為空' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const body = parseResult.data;
+    const password = isPlainObject(body) && typeof body.password === 'string' ? body.password : '';
+    const policy = isPlainObject(body) ? body.policy : null;
 
     if (!password) {
       return NextResponse.json({ error: '密碼不能為空' }, { status: 400 });
+    }
+
+    if (!isPasswordPolicy(policy)) {
+      return NextResponse.json({ error: '密碼政策設定無效' }, { status: 400 });
     }
 
     const results = {

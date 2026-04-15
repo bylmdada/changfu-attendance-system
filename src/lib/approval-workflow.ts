@@ -11,11 +11,12 @@ export interface ApprovalWorkflowConfig {
   approvalLevel: number;       // 1=一階, 2=二階
   requireManager: boolean;     // 是否需主管審核
   finalApprover: string;       // MANAGER 或 ADMIN
+  enableForward: boolean;      // 是否允許轉會
   enableCC: boolean;           // 是否 CC 通知 HR
 }
 
 // 快取設定，避免每次查詢資料庫
-let workflowCache: Map<string, ApprovalWorkflowConfig> = new Map();
+const workflowCache: Map<string, ApprovalWorkflowConfig> = new Map();
 let cacheExpiry: number = 0;
 const CACHE_TTL = 60 * 1000; // 1 分鐘快取
 
@@ -48,6 +49,7 @@ export async function getApprovalWorkflow(
         approvalLevel: 2,
         requireManager: true,
         finalApprover: 'ADMIN',
+        enableForward: false,
         enableCC: false
       };
     }
@@ -58,6 +60,7 @@ export async function getApprovalWorkflow(
       approvalLevel: workflow.approvalLevel,
       requireManager: workflow.requireManager,
       finalApprover: workflow.finalApprover,
+      enableForward: workflow.enableForward,
       enableCC: workflow.enableCC
     };
 
@@ -75,6 +78,7 @@ export async function getApprovalWorkflow(
       approvalLevel: 2,
       requireManager: true,
       finalApprover: 'ADMIN',
+      enableForward: false,
       enableCC: false
     };
   }

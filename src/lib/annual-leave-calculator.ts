@@ -5,6 +5,10 @@
  */
 
 import { prisma } from '@/lib/database';
+import {
+  calculateAnnualLeaveEntitlement,
+  calculateServiceDuration as calculateSharedServiceDuration,
+} from '@/lib/annual-leave-rules';
 
 /**
  * 勞基法特休規定（2017年後）
@@ -47,30 +51,7 @@ export function calculateYearsOfService(hireDate: Date, referenceDate: Date = ne
   months: number;
   totalMonths: number;
 } {
-  const hire = new Date(hireDate);
-  const ref = new Date(referenceDate);
-  
-  let years = ref.getFullYear() - hire.getFullYear();
-  let months = ref.getMonth() - hire.getMonth();
-  
-  // 調整月份
-  if (months < 0) {
-    years--;
-    months += 12;
-  }
-  
-  // 檢查日期是否已過（當月是否已到到職日）
-  if (ref.getDate() < hire.getDate()) {
-    months--;
-    if (months < 0) {
-      years--;
-      months += 12;
-    }
-  }
-  
-  const totalMonths = years * 12 + months;
-  
-  return { years, months, totalMonths };
+  return calculateSharedServiceDuration(hireDate, referenceDate);
 }
 
 /**
@@ -85,42 +66,23 @@ export function calculateAnnualLeaveDays(hireDate: Date, referenceDate: Date = n
   yearsOfService: number;
   monthsOfService: number;
 } {
-  const { years, months, totalMonths } = calculateYearsOfService(hireDate, referenceDate);
+  const { years, months, totalMonths, days } = calculateAnnualLeaveEntitlement(hireDate, referenceDate);
   
-  let days = 0;
   let description = '';
   
   if (totalMonths < 6) {
-    // 未滿6個月：無特休
-    days = 0;
     description = `年資 ${totalMonths} 個月，未滿 6 個月無特休`;
   } else if (totalMonths < 12) {
-    // 6個月 ~ 1年：3天
-    days = 3;
     description = `年資 ${totalMonths} 個月（滿 6 個月未滿 1 年），特休 3 天`;
   } else if (years < 2) {
-    // 1年 ~ 2年：7天
-    days = 7;
     description = `年資 ${years} 年 ${months} 個月（滿 1 年未滿 2 年），特休 7 天`;
   } else if (years < 3) {
-    // 2年 ~ 3年：10天
-    days = 10;
     description = `年資 ${years} 年 ${months} 個月（滿 2 年未滿 3 年），特休 10 天`;
   } else if (years < 5) {
-    // 3年 ~ 5年：14天
-    days = 14;
     description = `年資 ${years} 年 ${months} 個月（滿 3 年未滿 5 年），特休 14 天`;
   } else if (years < 10) {
-    // 5年 ~ 10年：15天
-    days = 15;
     description = `年資 ${years} 年 ${months} 個月（滿 5 年未滿 10 年），特休 15 天`;
   } else {
-    // 10年以上：每年加1天，最多30天
-    // 10年=16天, 11年=17天, ..., 24年以上=30天
-    const baseYears = 10;
-    const baseDays = 16;
-    const extraYears = years - baseYears;
-    days = Math.min(baseDays + extraYears, 30);
     description = `年資 ${years} 年 ${months} 個月（滿 10 年），特休 ${days} 天`;
   }
   

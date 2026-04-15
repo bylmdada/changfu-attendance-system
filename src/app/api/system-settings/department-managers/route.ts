@@ -10,6 +10,29 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
+import { safeParseJSON } from '@/lib/validation';
+
+const BOOLEAN_FIELDS = [
+  'isPrimary',
+  'canApproveLeave',
+  'canApproveOvertime',
+  'canApproveShift',
+  'canApprovePurchase',
+  'canSchedule',
+  'isActive',
+] as const;
+
+function parsePositiveInteger(value: unknown) {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+    return null;
+  }
+
+  return value;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
 
 // GET: 取得所有部門主管
 export async function GET(request: NextRequest) {
@@ -125,19 +148,44 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '僅管理員可新增' }, { status: 403 });
     }
 
-    const data = await request.json();
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      const errorMessage = parseResult.error === 'empty_body'
+        ? '請提供有效的設定資料'
+        : '無效的 JSON 格式';
+
+      return NextResponse.json({ error: errorMessage }, { status: 400 });
+    }
+
+    const data = parseResult.data;
+    if (!isPlainObject(data)) {
+      return NextResponse.json({ error: '請提供有效的設定資料' }, { status: 400 });
+    }
     const { employeeId, department, isPrimary = true } = data;
 
     if (!employeeId || !department) {
       return NextResponse.json({ error: '缺少必要欄位' }, { status: 400 });
     }
 
+    const normalizedEmployeeId = parsePositiveInteger(employeeId);
+    if (!normalizedEmployeeId) {
+      return NextResponse.json({ error: '員工 ID 必須為正整數' }, { status: 400 });
+    }
+
+    if (typeof department !== 'string' || department.trim().length === 0) {
+      return NextResponse.json({ error: '部門名稱格式無效' }, { status: 400 });
+    }
+
+    if (isPrimary !== undefined && typeof isPrimary !== 'boolean') {
+      return NextResponse.json({ error: '主管權限欄位必須為布林值' }, { status: 400 });
+    }
+
     // 檢查是否已存在
     const existing = await prisma.departmentManager.findUnique({
       where: {
         employeeId_department: {
-          employeeId,
-          department
+          employeeId: normalizedEmployeeId,
+          department: department.trim()
         }
       }
     });
@@ -149,15 +197,15 @@ export async function POST(request: NextRequest) {
     // 如果設為正主管，將現有正主管改為副主管
     if (isPrimary) {
       await prisma.departmentManager.updateMany({
-        where: { department, isPrimary: true },
+        where: { department: department.trim(), isPrimary: true },
         data: { isPrimary: false }
       });
     }
 
     const manager = await prisma.departmentManager.create({
       data: {
-        employeeId,
-        department,
+        employeeId: normalizedEmployeeId,
+        department: department.trim(),
         isPrimary
       },
       include: {
@@ -201,15 +249,38 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: '僅管理員可修改' }, { status: 403 });
     }
 
-    const data = await request.json();
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      const errorMessage = parseResult.error === 'empty_body'
+        ? '請提供有效的設定資料'
+        : '無效的 JSON 格式';
+
+      return NextResponse.json({ error: errorMessage }, { status: 400 });
+    }
+
+    const data = parseResult.data;
+    if (!isPlainObject(data)) {
+      return NextResponse.json({ error: '請提供有效的設定資料' }, { status: 400 });
+    }
     const { id, isPrimary, canApproveLeave, canApproveOvertime, canApproveShift, canApprovePurchase, canSchedule, isActive } = data;
 
     if (!id) {
       return NextResponse.json({ error: '缺少 ID' }, { status: 400 });
     }
 
+    const normalizedId = parsePositiveInteger(id);
+    if (!normalizedId) {
+      return NextResponse.json({ error: '主管設定 ID 必須為正整數' }, { status: 400 });
+    }
+
+    for (const field of BOOLEAN_FIELDS) {
+      if (field in data && typeof data[field] !== 'boolean') {
+        return NextResponse.json({ error: '主管權限欄位必須為布林值' }, { status: 400 });
+      }
+    }
+
     const existing = await prisma.departmentManager.findUnique({
-      where: { id }
+      where: { id: normalizedId }
     });
 
     if (!existing) {
@@ -225,7 +296,7 @@ export async function PUT(request: NextRequest) {
     }
 
     const manager = await prisma.departmentManager.update({
-      where: { id },
+      where: { id: normalizedId },
       data: {
         isPrimary: isPrimary ?? existing.isPrimary,
         canApproveLeave: canApproveLeave ?? existing.canApproveLeave,
@@ -266,7 +337,8 @@ export async function DELETE(request: NextRequest) {
     }
 
     const { searchParams } = new URL(request.url);
-    const id = parseInt(searchParams.get('id') || '');
+    const rawId = searchParams.get('id');
+    const id = rawId && /^\d+$/.test(rawId) ? Number(rawId) : null;
 
     if (!id) {
       return NextResponse.json({ error: '缺少 ID' }, { status: 400 });

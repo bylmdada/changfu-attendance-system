@@ -4,8 +4,8 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
+import { getApprovalWorkflow } from '@/lib/approval-workflow';
 
 // 層級標籤映射
 const getLevelLabels = (approvalLevel: number, requireManager: boolean) => {
@@ -13,7 +13,13 @@ const getLevelLabels = (approvalLevel: number, requireManager: boolean) => {
   
   if (requireManager) {
     labels[1] = { name: '一階', role: '部門主管' };
-    labels[2] = { name: '二階', role: '管理員決核' };
+
+    if (approvalLevel >= 3) {
+      labels[2] = { name: '二階', role: 'HR會簽' };
+      labels[3] = { name: '三階', role: '管理員決核' };
+    } else if (approvalLevel >= 2) {
+      labels[2] = { name: '二階', role: '管理員決核' };
+    }
   } else {
     // 不需主管，直接 Admin 審核
     labels[1] = { name: '一階', role: '管理員決核' };
@@ -37,27 +43,16 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: '請指定 type 參數' }, { status: 400 });
     }
 
-    const workflow = await prisma.approvalWorkflow.findUnique({
-      where: { workflowType }
-    });
+    const workflow = await getApprovalWorkflow(workflowType);
 
     if (!workflow) {
-      // 返回預設設定
-      return NextResponse.json({
-        success: true,
-        workflowType,
-        approvalLevel: 2,
-        requireManager: true,
-        maxLevel: 2,
-        labels: {
-          1: { name: '一階', role: '部門主管' },
-          2: { name: '二階', role: '管理員決核' }
-        }
-      });
+      return NextResponse.json({ error: '找不到審核流程設定' }, { status: 404 });
     }
 
     // 根據設定計算實際層級
-    const maxLevel = workflow.requireManager ? 2 : 1;
+    const maxLevel = workflow.requireManager
+      ? Math.min(Math.max(workflow.approvalLevel, 1), 3)
+      : 1;
 
     return NextResponse.json({
       success: true,
@@ -66,6 +61,8 @@ export async function GET(request: NextRequest) {
       approvalLevel: workflow.approvalLevel,
       requireManager: workflow.requireManager,
       finalApprover: workflow.finalApprover,
+      enableForward: workflow.enableForward,
+      enableCC: workflow.enableCC,
       maxLevel,
       labels: getLevelLabels(workflow.approvalLevel, workflow.requireManager)
     });

@@ -6,6 +6,7 @@ import {
   ChevronLeft, ChevronRight, Filter, BarChart3, MapPin
 } from 'lucide-react';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import { escapeCsvValue } from '@/lib/csv';
 
 interface AttendanceRecord {
   id: number;
@@ -303,18 +304,9 @@ export default function AttendanceRecordsPage() {
       return;
     }
 
-    // 處理 CSV 內容中的逗號和換行符號
-    const escapeCSV = (value: string | number) => {
-      const str = String(value);
-      if (str.includes(',') || str.includes('\n') || str.includes('"')) {
-        return `"${str.replace(/"/g, '""')}"`;
-      }
-      return str;
-    };
-
     const csvContent = [
       Object.keys(csvData[0]).join(','),
-      ...csvData.map(row => Object.values(row).map(escapeCSV).join(','))
+      ...csvData.map(row => Object.values(row).map(escapeCsvValue).join(','))
     ].join('\n');
 
     const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -586,7 +578,7 @@ export default function AttendanceRecordsPage() {
                                     </span>
                                   )}
                                   {record.clockInAddress && (
-                                    <div className="text-gray-500 truncate max-w-[200px]" title={record.clockInAddress}>
+                                    <div className="text-gray-500 truncate max-w-50" title={record.clockInAddress}>
                                       {record.clockInAddress}
                                     </div>
                                   )}
@@ -613,7 +605,7 @@ export default function AttendanceRecordsPage() {
                                     </span>
                                   )}
                                   {record.clockOutAddress && (
-                                    <div className="text-gray-500 truncate max-w-[200px]" title={record.clockOutAddress}>
+                                    <div className="text-gray-500 truncate max-w-50" title={record.clockOutAddress}>
                                       {record.clockOutAddress}
                                     </div>
                                   )}

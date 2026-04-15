@@ -41,6 +41,63 @@ export function isTerminalApprovalStatus(status: string): boolean {
   return status === 'APPROVED' || status === 'REJECTED';
 }
 
+export function determineApprovalTransition(
+  currentLevel: number,
+  maxLevel: number,
+  action: 'APPROVE' | 'REJECT' | 'FORWARD',
+  reviewerRole: string,
+  currentStatus: ApprovalStatus
+): { newStatus: ApprovalStatus; newLevel: number } {
+  let newStatus: ApprovalStatus;
+  let newLevel = currentLevel;
+
+  if (action === 'REJECT') {
+    if (reviewerRole === 'HR') {
+      newLevel = 3;
+      newStatus = 'LEVEL3_REVIEWING';
+    } else {
+      newStatus = 'REJECTED';
+    }
+
+    return { newStatus, newLevel };
+  }
+
+  if (action === 'FORWARD') {
+    return {
+      newStatus: currentStatus,
+      newLevel,
+    };
+  }
+
+  if (currentLevel >= maxLevel) {
+    return {
+      newStatus: 'APPROVED',
+      newLevel,
+    };
+  }
+
+  const nextLevel = currentLevel + 1;
+
+  if (nextLevel === 2) {
+    return {
+      newStatus: 'LEVEL2_REVIEWING',
+      newLevel: 2,
+    };
+  }
+
+  if (nextLevel === 3) {
+    return {
+      newStatus: 'LEVEL3_REVIEWING',
+      newLevel: 3,
+    };
+  }
+
+  return {
+    newStatus: 'APPROVED',
+    newLevel,
+  };
+}
+
 export async function ensureApprovalReviewAllowed(
   tx: Prisma.TransactionClient | typeof prisma,
   instance: ReviewableApprovalInstance,
@@ -239,44 +296,13 @@ export async function performReview(params: ReviewParams) {
 
   await ensureApprovalReviewAllowed(prisma, instance, reviewerId);
   
-  // 更新審核實例狀態
-  let newStatus: ApprovalStatus;
-  let newLevel = instance.currentLevel;
-  
-  if (action === 'REJECT') {
-    // 退回：僅一階（部門主管）和三階（管理員）可退回
-    // HR（二階）不同意不會退回，只記錄意見
-    if (reviewerRole === 'HR') {
-      // HR 不同意：記錄但繼續進入三階
-      newLevel = 3;
-      newStatus = 'LEVEL3_REVIEWING';
-    } else {
-      newStatus = 'REJECTED';
-    }
-  } else if (action === 'APPROVE') {
-    if (instance.currentLevel === 1) {
-      // 一階通過 → 進入二階（HR會簽）
-      newLevel = 2;
-      newStatus = 'LEVEL2_REVIEWING';
-    } else if (instance.currentLevel === 2) {
-      // 二階通過（HR同意）→ 進入三階（管理員決核）
-      newLevel = 3;
-      newStatus = 'LEVEL3_REVIEWING';
-    } else if (instance.currentLevel === 3) {
-      // 三階通過 → 最終核准
-      newStatus = 'APPROVED';
-    } else if (instance.currentLevel < instance.maxLevel) {
-      // 其他情況：還有下一階
-      newLevel = instance.currentLevel + 1;
-      newStatus = 'LEVEL2_REVIEWING';
-    } else {
-      // 最終階已通過
-      newStatus = 'APPROVED';
-    }
-  } else {
-    // FORWARD - 維持狀態
-    newStatus = instance.status as ApprovalStatus;
-  }
+  const { newStatus, newLevel } = determineApprovalTransition(
+    instance.currentLevel,
+    instance.maxLevel,
+    action,
+    reviewerRole,
+    instance.status as ApprovalStatus
+  );
   
   const updatedInstance = await prisma.$transaction(async (tx) => {
     await ensureApprovalReviewAllowed(tx, instance, reviewerId);

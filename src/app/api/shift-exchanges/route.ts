@@ -5,6 +5,8 @@ import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { createApprovalForRequest } from '@/lib/approval-helper';
+import { parseIntegerQueryParam } from '@/lib/query-params';
+import { safeParseJSON } from '@/lib/validation';
 
 interface DBItem {
   id: number;
@@ -40,6 +42,10 @@ interface DBItem {
   newShiftType?: string;
   leaveType?: string;
   reason?: string;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function isJSON(str: string) {
@@ -97,8 +103,6 @@ function normalizeItem(it: DBItem) {
 
 // 查詢調班記錄列表
 export async function GET(request: NextRequest) {
-  console.log('📋 [GET] /api/shift-exchanges - 查詢調班記錄');
-  
   try {
     // Rate limiting
     const rateLimitResult = await checkRateLimit(request);
@@ -108,17 +112,12 @@ export async function GET(request: NextRequest) {
 
     const user = await getUserFromRequest(request);
     if (!user) {
-      console.log('❌ [GET] 未授權訪問');
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
-
-    console.log('✅ [GET] 用戶驗證成功:', { userId: user.userId, employeeId: user.employeeId, role: user.role });
 
     const { searchParams } = new URL(request.url);
     const status = searchParams.get('status');
     const requesterIdParam = searchParams.get('requesterId');
-
-    console.log('🔍 [GET] 查詢參數:', { status, requesterIdParam });
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const where: Record<string, any> = {};
@@ -131,10 +130,12 @@ export async function GET(request: NextRequest) {
         { targetEmployeeId: user.employeeId }
       ];
     } else if (requesterIdParam) {
-      where.requesterId = parseInt(requesterIdParam);
+      const requesterIdResult = parseIntegerQueryParam(requesterIdParam, { min: 1, max: 99999999 });
+      if (!requesterIdResult.isValid || requesterIdResult.value === null) {
+        return NextResponse.json({ error: 'requesterId 格式錯誤' }, { status: 400 });
+      }
+      where.requesterId = requesterIdResult.value;
     }
-
-    console.log('🔎 [GET] Prisma 查詢條件:', JSON.stringify(where));
 
     const items = await prisma.shiftExchangeRequest.findMany({
       where,
@@ -170,25 +171,16 @@ export async function GET(request: NextRequest) {
     });
 
     const normalized = items.map(normalizeItem);
-    console.log(`📊 [GET] 找到 ${normalized.length} 筆調班記錄`);
     
     return NextResponse.json(normalized);
   } catch (error) {
-    console.error('❌ [GET] /api/shift-exchanges 錯誤:', error);
+    console.error('Failed to fetch shift exchanges', error);
     return NextResponse.json({ error: '系統錯誤' }, { status: 500 });
   }
 }
 
 // 創建調班申請
 export async function POST(request: NextRequest) {
-  console.error('🚀🚀🚀 [SHIFT-EXCHANGE] POST 請求開始 🚀🚀🚀');
-  console.error('=====================================');
-  console.error('POST /api/shift-exchanges - 創建調班申請');
-  console.error('=====================================');
-  console.error('⏰ 請求時間:', new Date().toISOString());
-  console.error('🌐 請求URL:', request.url);
-  console.error('📧 請求方法:', request.method);
-  
   try {
     // Rate limiting
     const rateLimitResult = await checkRateLimit(request);
@@ -201,35 +193,33 @@ export async function POST(request: NextRequest) {
     if (!csrfResult.valid) {
       return NextResponse.json({ error: 'CSRF token validation failed' }, { status: 403 });
     }
-
-    console.error('✅ [STEP 1] 開始處理 POST 請求');
     
     // 用戶身份驗證
     const user = await getUserFromRequest(request);
     if (!user) {
-      console.error('❌ [STEP 2] 用戶未授權 - 無法獲取用戶信息');
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
-
-    console.error('✅ [STEP 3] 用戶身份驗證成功');
-    console.error('👤 [STEP 4] 用戶信息:', JSON.stringify({
-      userId: user.userId,
-      employeeId: user.employeeId,
-      username: user.username,
-      role: user.role
-    }));
     
     // 解析請求體
-    const body = await request.json().catch(() => ({}));
-    console.error('📝 [STEP 5] 請求體內容:', JSON.stringify(body));
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的調班申請資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const rawBody = parseResult.data;
+    if (!isPlainObject(rawBody)) {
+      return NextResponse.json({ error: '請提供有效的調班申請資料' }, { status: 400 });
+    }
+    const body = rawBody;
 
     // 獲取申請者 ID
     const requesterId = user.employeeId;
-    console.error('🆔 [STEP 6] 申請者 ID:', requesterId);
 
     // 檢測是否為自調班 (前端會送 shiftDate/originalShiftType/newShiftType)
     const isSelfChange = !!(body.shiftDate || (body.originalShiftType && body.newShiftType));
-    console.error('🔄 [STEP 7] 是否為自調班:', isSelfChange);
 
     let data: {
       requesterId: number;
@@ -248,14 +238,6 @@ export async function POST(request: NextRequest) {
       const note = body.reason || body.requestReason || '';
       const leaveType = body.leaveType || ''; // 當選擇FDL時的請假類型
 
-      console.error('📋 [STEP 8A] 自調班數據解析:', {
-        shiftDate,
-        original,
-        next,
-        note,
-        leaveType
-      });
-
       data = {
         requesterId,
         targetEmployeeId: requesterId, // 自調班時目標員工就是自己
@@ -273,17 +255,26 @@ export async function POST(request: NextRequest) {
       };
     } else {
       // 互調班邏輯
-      const targetEmployeeId = body.targetEmployeeId ? Number(body.targetEmployeeId) : requesterId;
+      const targetEmployeeIdResult = parseIntegerQueryParam(
+        body.targetEmployeeId === undefined || body.targetEmployeeId === null || body.targetEmployeeId === ''
+          ? null
+          : String(body.targetEmployeeId),
+        { defaultValue: requesterId, min: 1, max: 99999999 }
+      );
+
+      if (!targetEmployeeIdResult.isValid || targetEmployeeIdResult.value === null) {
+        return NextResponse.json({ error: 'targetEmployeeId 格式錯誤' }, { status: 400 });
+      }
+
+      const targetEmployeeId = targetEmployeeIdResult.value;
       const originalWorkDate = String(body.originalWorkDate || body.shiftDate || body.shiftDateFrom || '');
       const targetWorkDate = String(body.targetWorkDate || body.shiftDate || body.shiftDateTo || originalWorkDate);
-      const requestReason = body.requestReason || body.reason || JSON.stringify(body) || '';
-
-      console.error('📋 [STEP 8B] 互調班數據解析:', {
-        targetEmployeeId,
-        originalWorkDate,
-        targetWorkDate,
-        requestReason
-      });
+      const rawRequestReason = typeof body.requestReason === 'string'
+        ? body.requestReason
+        : typeof body.reason === 'string'
+          ? body.reason
+          : '';
+      const requestReason = rawRequestReason || JSON.stringify(body) || '';
 
       data = {
         requesterId,
@@ -295,8 +286,6 @@ export async function POST(request: NextRequest) {
       };
     }
 
-    console.error('💾 [STEP 9] 準備寫入數據庫的數據:', JSON.stringify(data));
-
     // 檢查凍結狀態
     const originalDateObj = new Date(data.originalWorkDate);
     const targetDateObj = new Date(data.targetWorkDate);
@@ -304,11 +293,6 @@ export async function POST(request: NextRequest) {
 
     if (freezeCheck.isFrozen) {
       const freezeDateStr = freezeCheck.freezeInfo?.freezeDate.toLocaleString('zh-TW');
-      console.error('❌ [STEP 9.5] 凍結檢查失敗:', {
-        originalDate: data.originalWorkDate,
-        freezeDate: freezeDateStr,
-        creator: freezeCheck.freezeInfo?.creator.name
-      });
       return NextResponse.json({
         error: `該月份已被凍結，無法提交調班申請。凍結時間：${freezeDateStr}，操作者：${freezeCheck.freezeInfo?.creator.name}`
       }, { status: 403 });
@@ -319,11 +303,6 @@ export async function POST(request: NextRequest) {
       const targetFreezeCheck = await checkAttendanceFreeze(targetDateObj);
       if (targetFreezeCheck.isFrozen) {
         const freezeDateStr = targetFreezeCheck.freezeInfo?.freezeDate.toLocaleString('zh-TW');
-        console.error('❌ [STEP 9.6] 目標日期凍結檢查失敗:', {
-          targetDate: data.targetWorkDate,
-          freezeDate: freezeDateStr,
-          creator: targetFreezeCheck.freezeInfo?.creator.name
-        });
         return NextResponse.json({
           error: `目標月份已被凍結，無法提交調班申請。凍結時間：${freezeDateStr}，操作者：${targetFreezeCheck.freezeInfo?.creator.name}`
         }, { status: 403 });
@@ -331,7 +310,6 @@ export async function POST(request: NextRequest) {
     }
 
     // 創建調班記錄
-    console.error('🔄 [STEP 10] 開始創建數據庫記錄...');
     const created = await prisma.shiftExchangeRequest.create({
       data,
       include: {
@@ -355,16 +333,6 @@ export async function POST(request: NextRequest) {
         }
       }
     });
-
-    console.error('✅ [STEP 11] 數據庫記錄創建成功');
-    console.error('📄 [STEP 12] 創建的記錄:', JSON.stringify({
-      id: created.id,
-      status: created.status,
-      requesterId: created.requesterId,
-      targetEmployeeId: created.targetEmployeeId,
-      originalWorkDate: created.originalWorkDate,
-      createdAt: created.createdAt
-    }));
     
     // 建立審核實例
     await createApprovalForRequest({
@@ -374,40 +342,15 @@ export async function POST(request: NextRequest) {
       applicantName: created.requester?.name || '未知',
       department: created.requester?.department || null
     });
-    console.error('✅ [STEP 12.5] 審核實例已建立');
-    
-    // 驗證記錄是否真的保存了
-    const verification = await prisma.shiftExchangeRequest.findUnique({
-      where: { id: created.id }
-    });
-    console.error('🔍 [STEP 13] 記錄驗證結果:', verification ? '找到記錄' : '未找到記錄');
-    
-    // 統計總記錄數
-    const totalCount = await prisma.shiftExchangeRequest.count();
-    console.error('📊 [STEP 14] 數據庫中總記錄數:', totalCount);
     
     // 正規化返回數據
     const normalized = normalizeItem(created);
-    console.error('📤 [STEP 15] 準備返回的正規化數據:', JSON.stringify({
-      id: normalized.id,
-      shiftDate: normalized.shiftDate,
-      originalShiftType: normalized.originalShiftType,
-      newShiftType: normalized.newShiftType,
-      reason: normalized.reason,
-      status: normalized.status
-    }));
-    
-    console.error('🎉 [STEP 16] 調班申請處理完成，返回 201 成功響應');
     return NextResponse.json(normalized, { status: 201 });
     
   } catch (error) {
-    console.error('💥 [ERROR] POST /api/shift-exchanges 發生錯誤:', error);
-    console.error('🔍 [ERROR] 錯誤堆棧:', error instanceof Error ? error.stack : 'No stack trace');
-    
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('Failed to create shift exchange', error);
     return NextResponse.json({ 
-      error: '系統錯誤', 
-      details: errorMessage 
+      error: '系統錯誤'
     }, { status: 500 });
   }
 }

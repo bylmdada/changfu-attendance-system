@@ -3,14 +3,82 @@ import { prisma } from '@/lib/database';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { getUserFromRequest } from '@/lib/auth';
+import { safeParseJSON } from '@/lib/validation';
 import { DEPARTMENT_OPTIONS, DEPARTMENT_POSITIONS } from '@/constants/departments';
+
+function parsePositiveInteger(value: unknown) {
+  if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
+    return value;
+  }
+
+  if (typeof value === 'string' && /^\d+$/.test(value.trim())) {
+    return Number(value.trim());
+  }
+
+  return null;
+}
+
+function parseOptionalName(value: unknown) {
+  if (value === undefined) {
+    return { success: true as const };
+  }
+
+  if (typeof value !== 'string') {
+    return { success: false as const };
+  }
+
+  const trimmedValue = value.trim();
+  if (!trimmedValue) {
+    return { success: false as const };
+  }
+
+  return { success: true as const, value: trimmedValue };
+}
+
+function parseOptionalSortOrder(value: unknown) {
+  if (value === undefined) {
+    return { success: true as const };
+  }
+
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    return { success: false as const };
+  }
+
+  return { success: true as const, value };
+}
+
+function parseOptionalBoolean(value: unknown) {
+  if (value === undefined) {
+    return { success: true as const };
+  }
+
+  if (typeof value !== 'boolean') {
+    return { success: false as const };
+  }
+
+  return { success: true as const, value };
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 // 獲取所有部門與職位
 export async function GET(request: NextRequest) {
   try {
+    const userAuth = await getUserFromRequest(request);
+    if (!userAuth || userAuth.role !== 'ADMIN') {
+      return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
+    }
+
     const { searchParams } = new URL(request.url);
     const departmentId = searchParams.get('departmentId');
     const includeInactive = searchParams.get('includeInactive') === 'true';
+
+    const parsedDepartmentId = departmentId ? parsePositiveInteger(departmentId) : null;
+    if (departmentId && parsedDepartmentId === null) {
+      return NextResponse.json({ error: '部門 ID 格式無效' }, { status: 400 });
+    }
     
     // 首先嘗試從資料庫獲取
     const dbDepartments = await prisma.department.findMany({
@@ -58,8 +126,8 @@ export async function GET(request: NextRequest) {
     }
 
     // 如果有指定部門 ID，只返回該部門
-    if (departmentId) {
-      const department = dbDepartments.find(d => d.id === parseInt(departmentId));
+    if (parsedDepartmentId !== null) {
+      const department = dbDepartments.find(d => d.id === parsedDepartmentId);
       if (!department) {
         return NextResponse.json({ error: '部門不存在' }, { status: 404 });
       }
@@ -113,16 +181,35 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
     }
 
-    const body = await request.json();
+    const bodyResult = await safeParseJSON(request);
+
+    if (!bodyResult.success) {
+      return NextResponse.json(
+        {
+          error: bodyResult.error === 'empty_body' ? '請提供有效的設定資料' : '無效的 JSON 格式'
+        },
+        { status: 400 }
+      );
+    }
+
+    const body = bodyResult.data;
+
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json({ error: '請提供有效的設定資料' }, { status: 400 });
+    }
+
     const { action, departmentId, name } = body;
+
+    const parsedDepartmentId = departmentId !== undefined ? parsePositiveInteger(departmentId) : null;
+    const parsedName = parseOptionalName(name);
 
     if (action === 'addDepartment') {
       // 新增部門
-      if (!name?.trim()) {
+      if (!parsedName.success || parsedName.value === undefined) {
         return NextResponse.json({ error: '部門名稱不能為空' }, { status: 400 });
       }
 
-      const existingDept = await prisma.department.findUnique({ where: { name: name.trim() } });
+      const existingDept = await prisma.department.findUnique({ where: { name: parsedName.value } });
       if (existingDept) {
         return NextResponse.json({ error: '部門名稱已存在' }, { status: 400 });
       }
@@ -130,7 +217,7 @@ export async function POST(request: NextRequest) {
       const maxOrder = await prisma.department.aggregate({ _max: { sortOrder: true } });
       const newDepartment = await prisma.department.create({
         data: {
-          name: name.trim(),
+          name: parsedName.value,
           sortOrder: (maxOrder._max.sortOrder || 0) + 1
         },
         include: { positions: true }
@@ -145,31 +232,35 @@ export async function POST(request: NextRequest) {
 
     if (action === 'addPosition') {
       // 新增職位
-      if (!departmentId || !name?.trim()) {
+      if (!departmentId || !parsedName.success || parsedName.value === undefined) {
         return NextResponse.json({ error: '部門 ID 和職位名稱不能為空' }, { status: 400 });
       }
 
-      const department = await prisma.department.findUnique({ where: { id: departmentId } });
+      if (parsedDepartmentId === null) {
+        return NextResponse.json({ error: '部門 ID 格式無效' }, { status: 400 });
+      }
+
+      const department = await prisma.department.findUnique({ where: { id: parsedDepartmentId } });
       if (!department) {
         return NextResponse.json({ error: '部門不存在' }, { status: 404 });
       }
 
       const existingPos = await prisma.position.findFirst({
-        where: { departmentId, name: name.trim() }
+        where: { departmentId: parsedDepartmentId, name: parsedName.value }
       });
       if (existingPos) {
         return NextResponse.json({ error: '該部門已有相同職位' }, { status: 400 });
       }
 
       const maxOrder = await prisma.position.aggregate({
-        where: { departmentId },
+        where: { departmentId: parsedDepartmentId },
         _max: { sortOrder: true }
       });
 
       const newPosition = await prisma.position.create({
         data: {
-          departmentId,
-          name: name.trim(),
+          departmentId: parsedDepartmentId,
+          name: parsedName.value,
           sortOrder: (maxOrder._max.sortOrder || 0) + 1
         }
       });
@@ -203,17 +294,55 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
     }
 
-    const body = await request.json();
+    const bodyResult = await safeParseJSON(request);
+
+    if (!bodyResult.success) {
+      return NextResponse.json(
+        {
+          error: bodyResult.error === 'empty_body' ? '請提供有效的設定資料' : '無效的 JSON 格式'
+        },
+        { status: 400 }
+      );
+    }
+
+    const body = bodyResult.data;
+
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json({ error: '請提供有效的設定資料' }, { status: 400 });
+    }
+
     const { action, id, name, sortOrder, isActive, positions } = body;
 
+    const parsedId = id !== undefined ? parsePositiveInteger(id) : null;
+
     if (action === 'updateDepartment') {
+      if (parsedId === null) {
+        return NextResponse.json({ error: 'ID 格式無效' }, { status: 400 });
+      }
+
+      const parsedName = parseOptionalName(name);
+      const parsedSortOrder = parseOptionalSortOrder(sortOrder);
+      const parsedIsActive = parseOptionalBoolean(isActive);
+
+      if (!parsedName.success) {
+        return NextResponse.json({ error: '部門名稱格式無效' }, { status: 400 });
+      }
+
+      if (!parsedSortOrder.success) {
+        return NextResponse.json({ error: '排序值格式無效' }, { status: 400 });
+      }
+
+      if (!parsedIsActive.success) {
+        return NextResponse.json({ error: '啟用狀態格式無效' }, { status: 400 });
+      }
+
       const updateData: Record<string, unknown> = {};
-      if (name !== undefined) updateData.name = name.trim();
-      if (sortOrder !== undefined) updateData.sortOrder = sortOrder;
-      if (isActive !== undefined) updateData.isActive = isActive;
+      if (parsedName.value !== undefined) updateData.name = parsedName.value;
+      if (parsedSortOrder.value !== undefined) updateData.sortOrder = parsedSortOrder.value;
+      if (parsedIsActive.value !== undefined) updateData.isActive = parsedIsActive.value;
 
       const updated = await prisma.department.update({
-        where: { id },
+        where: { id: parsedId },
         data: updateData,
         include: { positions: { orderBy: { sortOrder: 'asc' } } }
       });
@@ -222,13 +351,33 @@ export async function PUT(request: NextRequest) {
     }
 
     if (action === 'updatePosition') {
+      if (parsedId === null) {
+        return NextResponse.json({ error: 'ID 格式無效' }, { status: 400 });
+      }
+
+      const parsedName = parseOptionalName(name);
+      const parsedSortOrder = parseOptionalSortOrder(sortOrder);
+      const parsedIsActive = parseOptionalBoolean(isActive);
+
+      if (!parsedName.success) {
+        return NextResponse.json({ error: '職位名稱格式無效' }, { status: 400 });
+      }
+
+      if (!parsedSortOrder.success) {
+        return NextResponse.json({ error: '排序值格式無效' }, { status: 400 });
+      }
+
+      if (!parsedIsActive.success) {
+        return NextResponse.json({ error: '啟用狀態格式無效' }, { status: 400 });
+      }
+
       const updateData: Record<string, unknown> = {};
-      if (name !== undefined) updateData.name = name.trim();
-      if (sortOrder !== undefined) updateData.sortOrder = sortOrder;
-      if (isActive !== undefined) updateData.isActive = isActive;
+      if (parsedName.value !== undefined) updateData.name = parsedName.value;
+      if (parsedSortOrder.value !== undefined) updateData.sortOrder = parsedSortOrder.value;
+      if (parsedIsActive.value !== undefined) updateData.isActive = parsedIsActive.value;
 
       const updated = await prisma.position.update({
-        where: { id },
+        where: { id: parsedId },
         data: updateData
       });
 
@@ -241,11 +390,26 @@ export async function PUT(request: NextRequest) {
         return NextResponse.json({ error: '無效的職位排序資料' }, { status: 400 });
       }
 
+      const normalizedPositions = positions.map((pos) => {
+        if (!isPlainObject(pos)) {
+          return null;
+        }
+
+        return {
+          id: parsePositiveInteger(pos.id),
+          sortOrder: typeof pos.sortOrder === 'number' && Number.isInteger(pos.sortOrder) ? pos.sortOrder : null,
+        };
+      });
+
+      if (normalizedPositions.some(pos => pos === null || pos.id === null || pos.sortOrder === null)) {
+        return NextResponse.json({ error: '無效的職位排序資料' }, { status: 400 });
+      }
+
       await prisma.$transaction(
-        positions.map((pos: { id: number; sortOrder: number }) =>
+        normalizedPositions.map((pos) =>
           prisma.position.update({
-            where: { id: pos.id },
-            data: { sortOrder: pos.sortOrder }
+            where: { id: pos!.id as number },
+            data: { sortOrder: pos!.sortOrder as number }
           })
         )
       );
@@ -275,17 +439,43 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
     }
 
-    const body = await request.json();
+    const bodyResult = await safeParseJSON(request);
+
+    if (!bodyResult.success) {
+      return NextResponse.json(
+        {
+          error: bodyResult.error === 'empty_body' ? '請提供有效的設定資料' : '無效的 JSON 格式'
+        },
+        { status: 400 }
+      );
+    }
+
+    const body = bodyResult.data;
+
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json({ error: '請提供有效的設定資料' }, { status: 400 });
+    }
+
     const { action, id, ids } = body;
 
+    const parsedId = id !== undefined ? parsePositiveInteger(id) : null;
+
     if (action === 'deleteDepartment') {
+      if (parsedId === null) {
+        return NextResponse.json({ error: 'ID 格式無效' }, { status: 400 });
+      }
+
       // 刪除部門（會連帶刪除所有職位）
-      await prisma.department.delete({ where: { id } });
+      await prisma.department.delete({ where: { id: parsedId } });
       return NextResponse.json({ success: true, message: '部門刪除成功' });
     }
 
     if (action === 'deletePosition') {
-      await prisma.position.delete({ where: { id } });
+      if (parsedId === null) {
+        return NextResponse.json({ error: 'ID 格式無效' }, { status: 400 });
+      }
+
+      await prisma.position.delete({ where: { id: parsedId } });
       return NextResponse.json({ success: true, message: '職位刪除成功' });
     }
 
@@ -294,9 +484,36 @@ export async function DELETE(request: NextRequest) {
       if (!ids || !Array.isArray(ids)) {
         return NextResponse.json({ error: '無效的職位 ID 列表' }, { status: 400 });
       }
-      
-      await prisma.position.deleteMany({ where: { id: { in: ids } } });
-      return NextResponse.json({ success: true, message: `已刪除 ${ids.length} 個職位` });
+
+      const normalizedIds = ids.map((value: unknown) => parsePositiveInteger(value));
+      if (normalizedIds.some(value => value === null)) {
+        return NextResponse.json({ error: '無效的職位 ID 列表' }, { status: 400 });
+      }
+
+      const requestedIds = normalizedIds as number[];
+      const existingPositions = await prisma.position.findMany({
+        where: { id: { in: requestedIds } },
+        select: { id: true },
+      });
+      const deletedIds = existingPositions.map(position => position.id);
+      const failedIds = requestedIds.filter(requestedId => !deletedIds.includes(requestedId));
+
+      if (deletedIds.length === 0) {
+        return NextResponse.json({ error: '找不到可刪除的職位' }, { status: 400 });
+      }
+
+      const deleteResult = await prisma.position.deleteMany({ where: { id: { in: deletedIds } } });
+      if (deleteResult.count === 0) {
+        return NextResponse.json({ error: '找不到可刪除的職位' }, { status: 400 });
+      }
+
+      return NextResponse.json({
+        success: true,
+        message: `已刪除 ${deleteResult.count} 個職位`,
+        deletedCount: deleteResult.count,
+        deletedIds,
+        failedIds,
+      });
     }
 
     return NextResponse.json({ error: '無效的操作' }, { status: 400 });

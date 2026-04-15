@@ -9,6 +9,44 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
+import { safeParseJSON } from '@/lib/validation';
+
+const VALID_ENROLLMENT_TYPES = new Set(['ENROLL', 'WITHDRAW']);
+const VALID_REPORT_STATUSES = new Set(['PENDING', 'REPORTED', 'COMPLETED']);
+
+function parsePositiveInteger(value: unknown) {
+  if (typeof value === 'number') {
+    return Number.isInteger(value) && value > 0 ? value : null;
+  }
+
+  if (typeof value !== 'string' || value.trim() === '') {
+    return null;
+  }
+
+  const parsedValue = Number(value);
+  if (!Number.isInteger(parsedValue) || parsedValue <= 0) {
+    return null;
+  }
+
+  return parsedValue;
+}
+
+function parseDateValue(value: unknown) {
+  if (typeof value !== 'string' || value.trim() === '') {
+    return null;
+  }
+
+  const parsedDate = new Date(value);
+  if (Number.isNaN(parsedDate.getTime())) {
+    return null;
+  }
+
+  return parsedDate;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -27,13 +65,27 @@ export async function GET(request: NextRequest) {
     const year = searchParams.get('year');
     const month = searchParams.get('month');
 
+    if (type && !VALID_ENROLLMENT_TYPES.has(type)) {
+      return NextResponse.json({ error: '加退保類型無效' }, { status: 400 });
+    }
+
+    if (status && !VALID_REPORT_STATUSES.has(status)) {
+      return NextResponse.json({ error: '申報狀態無效' }, { status: 400 });
+    }
+
     const where: Record<string, unknown> = {};
     if (type) where.type = type;
     if (status) where.reportStatus = status;
     
     if (year && month) {
-      const startDate = new Date(parseInt(year), parseInt(month) - 1, 1);
-      const endDate = new Date(parseInt(year), parseInt(month), 0);
+      const parsedYear = parsePositiveInteger(year);
+      const parsedMonth = parsePositiveInteger(month);
+      if (parsedYear === null || parsedMonth === null || parsedMonth > 12) {
+        return NextResponse.json({ error: '年月篩選格式無效' }, { status: 400 });
+      }
+
+      const startDate = new Date(parsedYear, parsedMonth - 1, 1);
+      const endDate = new Date(parsedYear, parsedMonth, 0);
       where.effectiveDate = {
         gte: startDate,
         lte: endDate
@@ -73,22 +125,55 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '無權限' }, { status: 403 });
     }
 
-    const data = await request.json();
-    const { dependentId, employeeId, dependentName, employeeName, type, effectiveDate, remarks } = data;
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      const errorMessage = parseResult.error === 'empty_body'
+        ? '請提供有效的設定資料'
+        : '無效的 JSON 格式';
 
-    if (!dependentId || !employeeId || !type || !effectiveDate) {
+      return NextResponse.json({ error: errorMessage }, { status: 400 });
+    }
+
+    const data = parseResult.data;
+    if (!isPlainObject(data)) {
+      return NextResponse.json({ error: '請提供有效的設定資料' }, { status: 400 });
+    }
+
+    const { dependentId, employeeId, dependentName, employeeName, type, effectiveDate, remarks } = data;
+    const parsedDependentId = parsePositiveInteger(dependentId);
+    const parsedEmployeeId = parsePositiveInteger(employeeId);
+    const parsedEffectiveDate = parseDateValue(effectiveDate);
+    const normalizedDependentName = typeof dependentName === 'string' ? dependentName : '';
+    const normalizedEmployeeName = typeof employeeName === 'string' ? employeeName : '';
+    const normalizedRemarks = typeof remarks === 'string' ? remarks : null;
+
+    if (
+      !parsedDependentId ||
+      !parsedEmployeeId ||
+      typeof type !== 'string' ||
+      typeof effectiveDate !== 'string' ||
+      effectiveDate.trim() === ''
+    ) {
       return NextResponse.json({ error: '缺少必要欄位' }, { status: 400 });
+    }
+
+    if (!VALID_ENROLLMENT_TYPES.has(type)) {
+      return NextResponse.json({ error: '加退保類型無效' }, { status: 400 });
+    }
+
+    if (!parsedEffectiveDate) {
+      return NextResponse.json({ error: '生效日期格式無效' }, { status: 400 });
     }
 
     const log = await prisma.dependentEnrollmentLog.create({
       data: {
-        dependentId,
-        employeeId,
-        dependentName: dependentName || '',
-        employeeName: employeeName || '',
+        dependentId: parsedDependentId,
+        employeeId: parsedEmployeeId,
+        dependentName: normalizedDependentName,
+        employeeName: normalizedEmployeeName,
         type,
-        effectiveDate: new Date(effectiveDate),
-        remarks,
+        effectiveDate: parsedEffectiveDate,
+        remarks: normalizedRemarks,
         createdBy: user.username
       }
     });
@@ -121,20 +206,43 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: '無權限' }, { status: 403 });
     }
 
-    const data = await request.json();
-    const { id, reportStatus, reportDate } = data;
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      const errorMessage = parseResult.error === 'empty_body'
+        ? '請提供有效的設定資料'
+        : '無效的 JSON 格式';
 
-    if (!id || !reportStatus) {
+      return NextResponse.json({ error: errorMessage }, { status: 400 });
+    }
+
+    const data = parseResult.data;
+    if (!isPlainObject(data)) {
+      return NextResponse.json({ error: '請提供有效的設定資料' }, { status: 400 });
+    }
+
+    const { id, reportStatus, reportDate } = data;
+    const parsedId = parsePositiveInteger(id);
+
+    if (!parsedId || typeof reportStatus !== 'string' || reportStatus.trim() === '') {
       return NextResponse.json({ error: '缺少必要欄位' }, { status: 400 });
+    }
+
+    if (!VALID_REPORT_STATUSES.has(reportStatus)) {
+      return NextResponse.json({ error: '申報狀態無效' }, { status: 400 });
     }
 
     const updateData: Record<string, unknown> = { reportStatus };
     if (reportDate) {
-      updateData.reportDate = new Date(reportDate);
+      const parsedReportDate = parseDateValue(reportDate);
+      if (!parsedReportDate) {
+        return NextResponse.json({ error: '申報日期格式無效' }, { status: 400 });
+      }
+
+      updateData.reportDate = parsedReportDate;
     }
 
     const log = await prisma.dependentEnrollmentLog.update({
-      where: { id },
+      where: { id: parsedId },
       data: updateData
     });
 

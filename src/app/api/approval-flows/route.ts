@@ -1,8 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 // GET - 取得審批流程設定
 export async function GET(request: NextRequest) {
@@ -12,14 +17,12 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const decoded = await getUserFromRequest(request);
+
+    if (!decoded) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
     if (!decoded || !['ADMIN', 'HR'].includes(decoded.role)) {
       return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
     }
@@ -64,30 +67,46 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'CSRF驗證失敗' }, { status: 403 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const decoded = await getUserFromRequest(request);
+
+    if (!decoded) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
     if (!decoded || decoded.role !== 'ADMIN') {
       return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
     }
 
-    const body = await request.json();
-    const { name, resourceType, steps, autoApproveRules, isActive } = body;
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的審批流程設定資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const body = parseResult.data;
+    if (!isPlainObject(body)) {
+      return NextResponse.json({ error: '請提供有效的審批流程設定資料' }, { status: 400 });
+    }
+
+    const name = typeof body.name === 'string' ? body.name : undefined;
+    const resourceType = typeof body.resourceType === 'string' ? body.resourceType : undefined;
+    const steps = body.steps;
+    const autoApproveRules = body.autoApproveRules;
+    const isActive = typeof body.isActive === 'boolean' ? body.isActive : undefined;
 
     if (!name || !resourceType || !steps) {
       return NextResponse.json({ error: '缺少必要欄位' }, { status: 400 });
     }
 
     // 驗證 resourceType
-    const validTypes = ['LEAVE', 'OVERTIME', 'SHIFT_EXCHANGE', 'MISSED_CLOCK'];
-    if (!validTypes.includes(resourceType)) {
+    const validTypes = ['LEAVE', 'OVERTIME', 'SHIFT_EXCHANGE', 'MISSED_CLOCK'] as const;
+    if (!(validTypes as readonly string[]).includes(resourceType)) {
       return NextResponse.json({ error: '無效的資源類型' }, { status: 400 });
     }
+
+    const normalizedResourceType = resourceType as typeof validTypes[number];
 
     // 驗證 steps 格式
     if (!Array.isArray(steps) || steps.length === 0) {
@@ -95,7 +114,7 @@ export async function POST(request: NextRequest) {
     }
 
     const flow = await prisma.approvalFlow.upsert({
-      where: { resourceType },
+      where: { resourceType: normalizedResourceType },
       update: {
         name,
         steps: JSON.stringify(steps),
@@ -104,7 +123,7 @@ export async function POST(request: NextRequest) {
       },
       create: {
         name,
-        resourceType,
+        resourceType: normalizedResourceType,
         steps: JSON.stringify(steps),
         autoApproveRules: autoApproveRules ? JSON.stringify(autoApproveRules) : null,
         isActive: isActive ?? true

@@ -1,12 +1,27 @@
 import { NextResponse } from 'next/server';
+import { generateAuthenticationOptions } from '@simplewebauthn/server';
 import { prisma } from '@/lib/database';
-import crypto from 'crypto';
+import { normalizeStoredCredentialTransports, WEBAUTHN_RP_ID } from '@/lib/webauthn';
+import { safeParseJSON } from '@/lib/validation';
 
-const RP_ID = process.env.WEBAUTHN_RP_ID || 'localhost';
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 export async function POST(request: Request) {
   try {
-    const { username } = await request.json();
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供帳號' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const body = parseResult.data;
+    const username = isPlainObject(body) && typeof body.username === 'string'
+      ? body.username
+      : '';
 
     if (!username) {
       return NextResponse.json({ error: '請提供帳號' }, { status: 400 });
@@ -22,42 +37,31 @@ export async function POST(request: Request) {
     });
 
     if (!user) {
-      return NextResponse.json({ error: '用戶不存在' }, { status: 404 });
+      return NextResponse.json({ error: '無法使用 Face ID / 指紋登入' }, { status: 400 });
+    }
+
+    if (!user.isActive || !user.employee) {
+      return NextResponse.json({ error: '無法使用 Face ID / 指紋登入' }, { status: 400 });
     }
 
     if (user.webauthnCredentials.length === 0) {
-      return NextResponse.json({ 
-        error: '尚未設定 Face ID / 指紋',
-        hasCredentials: false 
-      }, { status: 400 });
+      return NextResponse.json({ error: '無法使用 Face ID / 指紋登入' }, { status: 400 });
     }
 
-    // 生成 challenge
-    const challenge = crypto.randomBytes(32);
-    const challengeBase64 = challenge.toString('base64url');
-
-    // 允許的憑證
     const allowCredentials = user.webauthnCredentials.map(cred => ({
       id: cred.credentialId,
-      type: 'public-key' as const,
-      transports: cred.transports ? JSON.parse(cred.transports) : ['internal']
+      transports: normalizeStoredCredentialTransports(cred.transports)
     }));
 
-    // PublicKeyCredentialRequestOptions
-    const options = {
-      challenge: challengeBase64,
-      rpId: RP_ID,
+    const options = await generateAuthenticationOptions({
+      rpID: WEBAUTHN_RP_ID,
+      allowCredentials,
       timeout: 60000,
       userVerification: 'required',
-      allowCredentials
-    };
-
-    // 儲存 challenge 和 username
-    const response = NextResponse.json({ 
-      options,
-      hasCredentials: true 
     });
-    response.cookies.set('webauthn_auth_challenge', challengeBase64, {
+
+    const response = NextResponse.json({ options });
+    response.cookies.set('webauthn_auth_challenge', options.challenge, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'strict',

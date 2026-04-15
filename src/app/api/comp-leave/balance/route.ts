@@ -1,7 +1,53 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
+import { validateCSRF } from '@/lib/csrf';
 import { checkRateLimit } from '@/lib/rate-limit';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+type CompLeaveTransactionRecord = {
+  id: number;
+  transactionType: string;
+  hours: number;
+  isFrozen: boolean;
+  referenceType: string | null;
+  createdAt: Date;
+};
+
+function isAfterBaseline(
+  transaction: CompLeaveTransactionRecord,
+  baseline: CompLeaveTransactionRecord | null
+) {
+  if (!baseline) {
+    return true;
+  }
+
+  const transactionTime = transaction.createdAt.getTime();
+  const baselineTime = baseline.createdAt.getTime();
+
+  if (transactionTime !== baselineTime) {
+    return transactionTime > baselineTime;
+  }
+
+  return transaction.id > baseline.id;
+}
+
+function getLatestImportBaseline(transactions: CompLeaveTransactionRecord[]) {
+  return transactions
+    .filter(transaction => transaction.transactionType === 'EARN' && transaction.referenceType === 'IMPORT')
+    .sort((left, right) => {
+      const timeDiff = right.createdAt.getTime() - left.createdAt.getTime();
+      if (timeDiff !== 0) {
+        return timeDiff;
+      }
+
+      return right.id - left.id;
+    })[0] ?? null;
+}
 
 // GET - 取得員工補休餘額
 export async function GET(request: NextRequest) {
@@ -12,23 +58,16 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const user = await getUserFromRequest(request);
+    if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded) {
-      return NextResponse.json({ error: '無效的認證令牌' }, { status: 401 });
-    }
-
     const { searchParams } = new URL(request.url);
-    let targetEmployeeId = decoded.employeeId;
+    let targetEmployeeId = user.employeeId;
     
     // 管理員可以查看其他員工
-    if (['ADMIN', 'HR'].includes(decoded.role) && searchParams.get('employeeId')) {
+    if (['ADMIN', 'HR'].includes(user.role) && searchParams.get('employeeId')) {
       targetEmployeeId = parseInt(searchParams.get('employeeId')!);
     }
 
@@ -85,77 +124,119 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const user = await getUserFromRequest(request);
+    if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded || !['ADMIN', 'HR'].includes(decoded.role)) {
+    if (!['ADMIN', 'HR'].includes(user.role)) {
       return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
     }
 
-    const body = await request.json();
-    const { employeeId, yearMonth } = body;
+    const csrfResult = await validateCSRF(request);
+    if (!csrfResult.valid) {
+      return NextResponse.json(
+        { error: csrfResult.error || 'CSRF validation failed' },
+        { status: 403 }
+      );
+    }
 
-    if (!employeeId || !yearMonth) {
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的補休餘額更新資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const body = parseResult.data;
+    if (!isPlainObject(body)) {
+      return NextResponse.json({ error: '請提供有效的補休餘額更新資料' }, { status: 400 });
+    }
+
+    const rawEmployeeId = body.employeeId;
+    const employeeId = typeof rawEmployeeId === 'number'
+      ? rawEmployeeId
+      : typeof rawEmployeeId === 'string' && rawEmployeeId.trim()
+        ? Number(rawEmployeeId)
+        : NaN;
+    const yearMonth = typeof body.yearMonth === 'string' ? body.yearMonth.trim() : '';
+
+    if (!Number.isInteger(employeeId) || employeeId <= 0 || !yearMonth) {
       return NextResponse.json({ error: '缺少必要參數' }, { status: 400 });
     }
 
-    // 將該月份的交易標記為已凍結
-    await prisma.compLeaveTransaction.updateMany({
-      where: {
-        employeeId: parseInt(employeeId),
-        yearMonth,
-        isFrozen: false
-      },
-      data: { isFrozen: true }
-    });
+    const balance = await prisma.$transaction(async (tx) => {
+      await tx.compLeaveTransaction.updateMany({
+        where: {
+          employeeId,
+          yearMonth,
+          isFrozen: false
+        },
+        data: { isFrozen: true }
+      });
 
-    // 重新計算餘額
-    const transactions = await prisma.compLeaveTransaction.findMany({
-      where: { employeeId: parseInt(employeeId) }
-    });
+      const transactions = await tx.compLeaveTransaction.findMany({
+        where: { employeeId }
+      });
 
-    const frozenTransactions = transactions.filter(t => t.isFrozen);
-    const pendingTransactions = transactions.filter(t => !t.isFrozen);
+      const allTransactions = transactions as CompLeaveTransactionRecord[];
+      const frozenTransactions = allTransactions.filter(transaction => transaction.isFrozen);
+      const pendingTransactions = allTransactions.filter(transaction => !transaction.isFrozen);
+      const latestImportBaseline = getLatestImportBaseline(frozenTransactions);
 
-    const totalEarned = frozenTransactions
-      .filter(t => t.transactionType === 'EARN')
-      .reduce((sum, t) => sum + t.hours, 0);
-    
-    const totalUsed = frozenTransactions
-      .filter(t => t.transactionType === 'USE')
-      .reduce((sum, t) => sum + t.hours, 0);
+      const effectiveFrozenTransactions = latestImportBaseline
+        ? frozenTransactions.filter(transaction => {
+            if (transaction.id === latestImportBaseline.id) {
+              return true;
+            }
 
-    const pendingEarn = pendingTransactions
-      .filter(t => t.transactionType === 'EARN')
-      .reduce((sum, t) => sum + t.hours, 0);
+            if (transaction.referenceType === 'IMPORT') {
+              return false;
+            }
 
-    const pendingUse = pendingTransactions
-      .filter(t => t.transactionType === 'USE')
-      .reduce((sum, t) => sum + t.hours, 0);
+            return isAfterBaseline(transaction, latestImportBaseline);
+          })
+        : frozenTransactions;
 
-    // 更新餘額
-    const balance = await prisma.compLeaveBalance.upsert({
-      where: { employeeId: parseInt(employeeId) },
-      update: {
-        totalEarned,
-        totalUsed,
-        balance: totalEarned - totalUsed,
-        pendingEarn,
-        pendingUse
-      },
-      create: {
-        employeeId: parseInt(employeeId),
-        totalEarned,
-        totalUsed,
-        balance: totalEarned - totalUsed,
-        pendingEarn,
-        pendingUse
-      }
+      const effectivePendingTransactions = latestImportBaseline
+        ? pendingTransactions.filter(transaction => isAfterBaseline(transaction, latestImportBaseline))
+        : pendingTransactions;
+
+      const totalEarned = effectiveFrozenTransactions
+        .filter(t => t.transactionType === 'EARN')
+        .reduce((sum, t) => sum + t.hours, 0);
+
+      const totalUsed = effectiveFrozenTransactions
+        .filter(t => t.transactionType === 'USE')
+        .reduce((sum, t) => sum + t.hours, 0);
+
+      const pendingEarn = effectivePendingTransactions
+        .filter(t => t.transactionType === 'EARN')
+        .reduce((sum, t) => sum + t.hours, 0);
+
+      const pendingUse = effectivePendingTransactions
+        .filter(t => t.transactionType === 'USE')
+        .reduce((sum, t) => sum + t.hours, 0);
+
+      return tx.compLeaveBalance.upsert({
+        where: { employeeId },
+        update: {
+          totalEarned,
+          totalUsed,
+          balance: totalEarned - totalUsed,
+          pendingEarn,
+          pendingUse
+        },
+        create: {
+          employeeId,
+          totalEarned,
+          totalUsed,
+          balance: totalEarned - totalUsed,
+          pendingEarn,
+          pendingUse
+        }
+      });
     });
 
     return NextResponse.json({

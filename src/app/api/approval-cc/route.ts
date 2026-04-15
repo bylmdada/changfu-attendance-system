@@ -3,6 +3,12 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { checkRateLimit } from '@/lib/rate-limit';
+import { isReviewerFor, isTerminalApprovalStatus } from '@/lib/approval-service';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 /**
  * 審核 CC API
@@ -122,15 +128,69 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const body = await request.json();
-    const { action } = body;
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json({ error: '無效的 JSON 格式' }, { status: 400 });
+    }
+
+    const body = parseResult.data;
+    const action = isPlainObject(body) && typeof body.action === 'string'
+      ? body.action
+      : undefined;
 
     // CREATE: 建立新 CC
     if (action === 'CREATE') {
-      const { instanceId, ccToEmployeeId, ccToName, ccType, reason } = body;
+      const instanceId = isPlainObject(body) && typeof body.instanceId === 'number'
+        ? body.instanceId
+        : undefined;
+      const ccToEmployeeId = isPlainObject(body) && typeof body.ccToEmployeeId === 'number'
+        ? body.ccToEmployeeId
+        : undefined;
+      const ccToName = isPlainObject(body) && typeof body.ccToName === 'string'
+        ? body.ccToName
+        : undefined;
+      const ccType = isPlainObject(body) && typeof body.ccType === 'string'
+        ? body.ccType
+        : undefined;
+      const reason = isPlainObject(body) && typeof body.reason === 'string'
+        ? body.reason
+        : undefined;
       
       if (!instanceId || !ccToEmployeeId || !ccToName) {
         return NextResponse.json({ error: '缺少必要參數' }, { status: 400 });
+      }
+
+      const instance = await prisma.approvalInstance.findUnique({
+        where: { id: instanceId },
+        select: {
+          id: true,
+          currentLevel: true,
+          department: true,
+          status: true
+        }
+      });
+
+      if (!instance) {
+        return NextResponse.json({ error: '找不到審核項目' }, { status: 404 });
+      }
+
+      if (isTerminalApprovalStatus(instance.status)) {
+        return NextResponse.json({ error: '此審核已完成，無法建立 CC' }, { status: 409 });
+      }
+
+      if (instance.currentLevel === 1) {
+        if (user.role !== 'ADMIN') {
+          if (!instance.department) {
+            return NextResponse.json({ error: '此審核缺少部門資訊，無法建立 CC' }, { status: 400 });
+          }
+
+          const reviewerPermission = await isReviewerFor(user.employeeId, instance.department);
+          if (!reviewerPermission.isReviewer) {
+            return NextResponse.json({ error: '無權為此審核建立 CC' }, { status: 403 });
+          }
+        }
+      } else if (user.role !== 'ADMIN' && user.role !== 'HR') {
+        return NextResponse.json({ error: '無權為此審核建立 CC' }, { status: 403 });
       }
 
       // 取得發起者資訊
@@ -165,7 +225,12 @@ export async function POST(request: NextRequest) {
     }
 
     // RESPOND: 回應 CC
-    const { ccId, response } = body;
+    const ccId = isPlainObject(body) && typeof body.ccId === 'number'
+      ? body.ccId
+      : undefined;
+    const response = isPlainObject(body) && typeof body.response === 'string'
+      ? body.response
+      : undefined;
 
     if (!ccId || !action) {
       return NextResponse.json({ error: '缺少必要參數' }, { status: 400 });

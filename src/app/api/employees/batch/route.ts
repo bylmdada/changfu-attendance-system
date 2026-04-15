@@ -4,6 +4,7 @@ import { prisma } from '@/lib/database';
 import bcrypt from 'bcryptjs';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { safeParseJSON } from '@/lib/validation';
 
 interface EmployeeData {
   employeeId: string;
@@ -27,6 +28,24 @@ interface ImportResult {
   employeeId: string;
   name: string;
   error?: string;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function parsePayrollNumber(value: unknown): number | null {
+  const parsedValue = typeof value === 'number'
+    ? value
+    : typeof value === 'string'
+      ? Number(value)
+      : Number.NaN;
+
+  return Number.isFinite(parsedValue) && parsedValue >= 0 ? parsedValue : null;
+}
+
+function isValidDateInput(value: unknown): value is string {
+  return isNonEmptyString(value) && !Number.isNaN(Date.parse(value));
 }
 
 // POST - 批量匯入員工
@@ -56,8 +75,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
     }
 
-    const body = await request.json();
-    const { employees } = body as { employees: EmployeeData[] };
+    const parsedBody = await safeParseJSON(request);
+    if (!parsedBody.success || !parsedBody.data) {
+      return NextResponse.json({ error: '請求內容格式無效' }, { status: 400 });
+    }
+
+    const { employees } = parsedBody.data as { employees?: EmployeeData[] };
 
     if (!employees || !Array.isArray(employees) || employees.length === 0) {
       return NextResponse.json({ error: '沒有提供員工資料' }, { status: 400 });
@@ -107,19 +130,35 @@ export async function POST(request: NextRequest) {
     for (const emp of employees) {
       try {
         // 如果員工編號為空，自動生成
-        let employeeId = emp.employeeId?.trim() || '';
+        let employeeId = isNonEmptyString(emp.employeeId) ? emp.employeeId.trim() : '';
         if (!employeeId) {
           employeeId = generateEmployeeId();
         }
 
+        const normalizedName = isNonEmptyString(emp.name) ? emp.name.trim() : '';
+        const normalizedDepartment = isNonEmptyString(emp.department) ? emp.department.trim() : '';
+        const normalizedPosition = isNonEmptyString(emp.position) ? emp.position.trim() : '';
+        const normalizedBaseSalary = parsePayrollNumber(emp.baseSalary);
+        const normalizedHourlyRate = parsePayrollNumber(emp.hourlyRate);
+
         // 驗證必填欄位（員工編號已處理，不再檢查）
-        if (!emp.name || !emp.birthday || !emp.hireDate || 
-            !emp.baseSalary || !emp.hourlyRate || !emp.department || !emp.position) {
+        if (!normalizedName || !isValidDateInput(emp.birthday) || !isValidDateInput(emp.hireDate) || normalizedBaseSalary === null || normalizedHourlyRate === null || !normalizedDepartment || !normalizedPosition) {
           results.push({
             success: false,
             employeeId: employeeId || '未知',
-            name: emp.name || '未知',
-            error: '缺少必填欄位（姓名、生日、到職日期、底薪、時薪、部門、職位）'
+            name: normalizedName || '未知',
+            error: '缺少必填欄位或欄位格式無效（姓名、生日、到職日期、底薪、時薪、部門、職位）'
+          });
+          failCount++;
+          continue;
+        }
+
+        if (emp.employeeType !== undefined && emp.employeeType !== 'MONTHLY' && emp.employeeType !== 'HOURLY') {
+          results.push({
+            success: false,
+            employeeId,
+            name: normalizedName,
+            error: '員工類型格式無效'
           });
           failCount++;
           continue;
@@ -157,17 +196,17 @@ export async function POST(request: NextRequest) {
         await prisma.employee.create({
           data: {
             employeeId: employeeId,
-            name: emp.name,
+            name: normalizedName,
             birthday: new Date(emp.birthday),
-            phone: emp.phone || '',
-            address: emp.address || '',
-            emergencyContact: emp.emergencyContact || '',
-            emergencyPhone: emp.emergencyPhone || '',
+            phone: isNonEmptyString(emp.phone) ? emp.phone.trim() : '',
+            address: isNonEmptyString(emp.address) ? emp.address.trim() : '',
+            emergencyContact: isNonEmptyString(emp.emergencyContact) ? emp.emergencyContact.trim() : '',
+            emergencyPhone: isNonEmptyString(emp.emergencyPhone) ? emp.emergencyPhone.trim() : '',
             hireDate: new Date(emp.hireDate),
-            baseSalary: Number(emp.baseSalary),
-            hourlyRate: Number(emp.hourlyRate),
-            department: emp.department,
-            position: emp.position,
+            baseSalary: normalizedBaseSalary,
+            hourlyRate: normalizedHourlyRate,
+            department: normalizedDepartment,
+            position: normalizedPosition,
             employeeType: emp.employeeType === 'HOURLY' ? 'HOURLY' : 'MONTHLY',
             laborInsuranceActive: emp.laborInsuranceActive !== false,
             isActive: true,
@@ -175,7 +214,7 @@ export async function POST(request: NextRequest) {
               create: {
                 username: employeeId,
                 passwordHash: hashedPassword,
-                role: 'USER',
+                role: 'EMPLOYEE',
                 isActive: true
               }
             }
@@ -189,7 +228,7 @@ export async function POST(request: NextRequest) {
         results.push({
           success: true,
           employeeId: employeeId,
-          name: emp.name
+          name: normalizedName
         });
         successCount++;
 

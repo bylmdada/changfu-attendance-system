@@ -3,6 +3,11 @@ import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { CacheManager, globalCache, apiCache, dbCache } from '@/lib/intelligent-cache';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
 
 // 緩存管理 API
 export async function GET(request: NextRequest) {
@@ -100,7 +105,24 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '需要管理員權限執行緩存維護' }, { status: 403 });
     }
 
-    const { action, targets, tags } = await request.json();
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '不支援的維護操作' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const body = parseResult.data;
+    const action = isPlainObject(body) && typeof body.action === 'string'
+      ? body.action
+      : undefined;
+    const targets = isPlainObject(body) && Array.isArray(body.targets)
+      ? body.targets
+      : undefined;
+    const tags = isPlainObject(body) && Array.isArray(body.tags)
+      ? body.tags
+      : undefined;
 
     switch (action) {
       case 'cleanup':

@@ -7,6 +7,10 @@ import { getUserFromRequest } from '@/lib/auth';
 
 export async function POST(request: NextRequest) {
   try {
+    if (process.env.NODE_ENV === 'production') {
+      return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    }
+
     // Rate limiting - this is a sensitive setup operation
     const rateLimitResult = await checkRateLimit(request);
     if (!rateLimitResult.allowed) {

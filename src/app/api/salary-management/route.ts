@@ -8,13 +8,81 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
+import { parseIntegerQueryParam } from '@/lib/query-params';
+import { safeParseJSON } from '@/lib/validation';
 import { 
   adjustSalary, 
   getSalaryHistory, 
-  calculateHourlyRate,
   initializeSalaryHistory,
   AdjustmentType 
 } from '@/lib/salary-utils';
+
+function parsePositiveIntegerInput(value: unknown): number | null {
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value > 0 ? value : null;
+  }
+
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) {
+    return null;
+  }
+
+  const parsed = Number(trimmed);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function parseSalaryAmount(value: unknown): number | null {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!/^\d+(\.\d+)?$/.test(trimmed)) {
+    return null;
+  }
+
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseEffectiveDate(value: unknown): Date | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    return null;
+  }
+
+  const parsed = new Date(trimmed);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function normalizeOptionalString(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function normalizeAdjustmentType(value: unknown): AdjustmentType {
+  if (value === 'INITIAL' || value === 'RAISE' || value === 'PROMOTION' || value === 'ADJUSTMENT') {
+    return value;
+  }
+
+  return 'RAISE';
+}
 
 // GET: 取得薪資資訊
 export async function GET(request: NextRequest) {
@@ -35,9 +103,14 @@ export async function GET(request: NextRequest) {
 
     // 取得單一員工薪資歷史
     if (type === 'history' && employeeId) {
-      const history = await getSalaryHistory(parseInt(employeeId));
+      const parsedEmployeeId = parseIntegerQueryParam(employeeId, { min: 1 });
+      if (!parsedEmployeeId.isValid || parsedEmployeeId.value === null) {
+        return NextResponse.json({ error: '員工ID格式無效' }, { status: 400 });
+      }
+
+      const history = await getSalaryHistory(parsedEmployeeId.value);
       const employee = await prisma.employee.findUnique({
-        where: { id: parseInt(employeeId) },
+        where: { id: parsedEmployeeId.value },
         select: { 
           id: true, 
           employeeId: true, 
@@ -151,7 +224,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '無權限' }, { status: 403 });
     }
 
-    const data = await request.json();
+    const parsedBody = await safeParseJSON(request);
+    if (!parsedBody.success || !parsedBody.data) {
+      return NextResponse.json({ error: '請求內容格式無效' }, { status: 400 });
+    }
+
+    const data = parsedBody.data;
     const { 
       employeeId, 
       effectiveDate, 
@@ -162,9 +240,18 @@ export async function POST(request: NextRequest) {
       action 
     } = data;
 
+    const normalizedEmployeeId = parsePositiveIntegerInput(employeeId);
+    const normalizedReason = normalizeOptionalString(reason);
+    const normalizedNotes = normalizeOptionalString(notes);
+    const normalizedAdjustmentType = normalizeAdjustmentType(adjustmentType);
+
     // 初始化薪資歷史
     if (action === 'initialize') {
-      const result = await initializeSalaryHistory(employeeId, user.employeeId);
+      if (normalizedEmployeeId === null) {
+        return NextResponse.json({ error: '員工ID格式無效' }, { status: 400 });
+      }
+
+      const result = await initializeSalaryHistory(normalizedEmployeeId, user.employeeId);
       if (!result.success) {
         return NextResponse.json({ error: result.error }, { status: 400 });
       }
@@ -180,19 +267,33 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '缺少必要欄位' }, { status: 400 });
     }
 
+    if (normalizedEmployeeId === null) {
+      return NextResponse.json({ error: '員工ID格式無效' }, { status: 400 });
+    }
+
+    const normalizedBaseSalary = parseSalaryAmount(newBaseSalary);
+    if (normalizedBaseSalary === null) {
+      return NextResponse.json({ error: '薪資金額格式無效' }, { status: 400 });
+    }
+
+    const normalizedEffectiveDate = parseEffectiveDate(effectiveDate);
+    if (!normalizedEffectiveDate) {
+      return NextResponse.json({ error: '生效日期格式無效' }, { status: 400 });
+    }
+
     // 驗證金額
-    if (newBaseSalary < 0 || newBaseSalary > 1000000) {
+    if (normalizedBaseSalary < 0 || normalizedBaseSalary > 1000000) {
       return NextResponse.json({ error: '薪資金額不合理' }, { status: 400 });
     }
 
     // 執行調薪
     const result = await adjustSalary({
-      employeeId: parseInt(employeeId),
-      effectiveDate: new Date(effectiveDate),
-      newBaseSalary: parseFloat(newBaseSalary),
-      adjustmentType: (adjustmentType as AdjustmentType) || 'RAISE',
-      reason,
-      notes,
+      employeeId: normalizedEmployeeId,
+      effectiveDate: normalizedEffectiveDate,
+      newBaseSalary: normalizedBaseSalary,
+      adjustmentType: normalizedAdjustmentType,
+      reason: normalizedReason,
+      notes: normalizedNotes,
       approvedById: user.employeeId
     });
 
@@ -202,7 +303,7 @@ export async function POST(request: NextRequest) {
 
     // 取得員工名稱
     const employee = await prisma.employee.findUnique({
-      where: { id: parseInt(employeeId) },
+      where: { id: normalizedEmployeeId },
       select: { name: true }
     });
 
@@ -215,7 +316,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      message: `${employee?.name} 的薪資已${adjustmentTypeNames[adjustmentType] || '調整'}`,
+      message: `${employee?.name} 的薪資已${adjustmentTypeNames[normalizedAdjustmentType] || '調整'}`,
       details: {
         previousSalary: result.previousSalary,
         newBaseSalary: result.newBaseSalary,

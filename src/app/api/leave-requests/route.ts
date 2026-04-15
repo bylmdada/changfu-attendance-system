@@ -1,11 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
 import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { validateLeaveRequest } from '@/lib/leave-rules-validator';
 import { createApprovalForRequest } from '@/lib/approval-helper';
+import { parseIntegerQueryParam } from '@/lib/query-params';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -15,16 +21,9 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const user = await getUserFromRequest(request);
+    if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
-    }
-
-    const decoded = await getUserFromToken(token);
-    if (!decoded) {
-      return NextResponse.json({ error: '無效的認證令牌' }, { status: 401 });
     }
 
     const { searchParams } = new URL(request.url);
@@ -47,16 +46,20 @@ export async function GET(request: NextRequest) {
     } = {};
     
     // 權限檢查：決定可以看到哪些請假記錄
-    if (decoded.role === 'ADMIN' || decoded.role === 'HR') {
+    if (user.role === 'ADMIN' || user.role === 'HR') {
       // ADMIN 和 HR 可以看所有記錄
       if (employeeId) {
-        where.employeeId = parseInt(employeeId);
+        const employeeIdResult = parseIntegerQueryParam(employeeId, { min: 1, max: 99999999 });
+        if (!employeeIdResult.isValid || employeeIdResult.value === null) {
+          return NextResponse.json({ error: 'employeeId 格式錯誤' }, { status: 400 });
+        }
+        where.employeeId = employeeIdResult.value;
       }
     } else {
       // 檢查是否為部門主管
       const managedDepartments = await prisma.departmentManager.findMany({
         where: {
-          employeeId: decoded.employeeId,
+          employeeId: user.employeeId,
           isActive: true
         },
         select: { department: true }
@@ -69,11 +72,15 @@ export async function GET(request: NextRequest) {
         
         // 如果有指定 employeeId，額外過濾
         if (employeeId) {
-          where.employeeId = parseInt(employeeId);
+          const employeeIdResult = parseIntegerQueryParam(employeeId, { min: 1, max: 99999999 });
+          if (!employeeIdResult.isValid || employeeIdResult.value === null) {
+            return NextResponse.json({ error: 'employeeId 格式錯誤' }, { status: 400 });
+          }
+          where.employeeId = employeeIdResult.value;
         }
       } else {
         // 一般員工只能看到自己的記錄
-        where.employeeId = decoded.employeeId;
+        where.employeeId = user.employeeId;
       }
     }
 
@@ -135,19 +142,24 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'CSRF token validation failed' }, { status: 403 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const user = await getUserFromRequest(request);
+    if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded) {
-      return NextResponse.json({ error: '無效的認證令牌' }, { status: 401 });
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的請假申請資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
     }
 
-    const body = await request.json();
+    const body = parseResult.data;
+    if (!isPlainObject(body)) {
+      return NextResponse.json({ error: '請提供有效的請假申請資料' }, { status: 400 });
+    }
+
     const { leaveType, startDate, endDate, reason } = body as { leaveType?: string; startDate?: string; endDate?: string; reason?: string };
 
     // 可選的時間欄位（小時/分鐘）
@@ -206,7 +218,7 @@ export async function POST(request: NextRequest) {
       // 檢查是否有重複的請假申請（以精確時間重疊判斷）
       const existingLeave = await prisma.leaveRequest.findFirst({
         where: {
-          employeeId: decoded.employeeId,
+          employeeId: user.employeeId,
           status: { in: ['PENDING', 'APPROVED'] },
           OR: [
             {
@@ -223,7 +235,7 @@ export async function POST(request: NextRequest) {
 
       // 驗證假別規則
       const leaveValidation = await validateLeaveRequest(
-        decoded.employeeId,
+        user.employeeId,
         leaveType,
         totalDays,
         start.getFullYear()
@@ -235,7 +247,7 @@ export async function POST(request: NextRequest) {
 
       const leaveRequest = await prisma.leaveRequest.create({
         data: {
-          employeeId: decoded.employeeId,
+          employeeId: user.employeeId,
           leaveType,
           startDate: start,
           endDate: end,
@@ -284,7 +296,7 @@ export async function POST(request: NextRequest) {
     // 檢查是否有重複的請假申請（日期重疊）
     const existingLeave = await prisma.leaveRequest.findFirst({
       where: {
-        employeeId: decoded.employeeId,
+        employeeId: user.employeeId,
         status: { in: ['PENDING', 'APPROVED'] },
         OR: [
           {
@@ -301,7 +313,7 @@ export async function POST(request: NextRequest) {
 
     // 驗證假別規則
     const leaveValidation = await validateLeaveRequest(
-      decoded.employeeId,
+      user.employeeId,
       leaveType,
       totalDays,
       start.getFullYear()
@@ -313,7 +325,7 @@ export async function POST(request: NextRequest) {
 
     const leaveRequest = await prisma.leaveRequest.create({
       data: {
-        employeeId: decoded.employeeId,
+        employeeId: user.employeeId,
         leaveType,
         startDate: start,
         endDate: end,

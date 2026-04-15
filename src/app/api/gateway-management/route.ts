@@ -3,6 +3,11 @@ import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { apiGateway } from '@/lib/api-gateway';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
 
 // API Gateway 管理 API
 export async function GET(request: NextRequest) {
@@ -88,7 +93,19 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '需要管理員權限管理 API Gateway' }, { status: 403 });
     }
 
-    const { action, config, routes } = await request.json();
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json({ error: '無效的 JSON 格式' }, { status: 400 });
+    }
+
+    const body = parseResult.data;
+    const action = isPlainObject(body) && typeof body.action === 'string'
+      ? body.action
+      : undefined;
+    const config = isPlainObject(body) ? body.config : undefined;
+    const routes = isPlainObject(body) && Array.isArray(body.routes)
+      ? body.routes
+      : undefined;
 
     switch (action) {
       case 'update-global-config':
@@ -124,10 +141,12 @@ export async function POST(request: NextRequest) {
           });
         }
 
+        const routeCount = routes?.length || 0;
+
         return NextResponse.json({
           success: true,
-          message: `已重新載入 ${routes?.length || 0} 個路由`,
-          data: { routeCount: routes?.length || 0 }
+          message: `已重新載入 ${routeCount} 個路由`,
+          data: { routeCount }
         });
 
       case 'clear-routes':

@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { Calendar, ChevronLeft, ChevronRight, Download, Clock, User, RefreshCw, Gift, Printer } from 'lucide-react';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 
 interface Schedule {
   id: number;
@@ -282,16 +283,14 @@ export default function MySchedulePage() {
       setConfirming(true);
       const yearMonth = `${selectedYear}-${selectedMonth.toString().padStart(2, '0')}`;
       
-      const response = await fetch('/api/schedule-confirmation', {
+      const response = await fetchJSONWithCSRF('/api/schedule-confirmation', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
+        body: {
           action: 'confirm',
           yearMonth,
           comment: confirmComment,
           password: confirmPassword // 新增密碼驗證
-        })
+        }
       });
 
       const data = await response.json();
@@ -315,13 +314,9 @@ export default function MySchedulePage() {
 
   const exportToPDF = async () => {
     try {
-      const response = await fetch('/api/my-schedules/export-pdf', {
+      const response = await fetchJSONWithCSRF('/api/my-schedules/export-pdf', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        credentials: 'include',
-        body: JSON.stringify({
+        body: {
           year: selectedYear,
           month: selectedMonth,
           schedules: schedules,
@@ -330,7 +325,7 @@ export default function MySchedulePage() {
             name: user?.employee?.name || '未知員工',
             department: user?.employee?.department || '未知部門'
           }
-        })
+        }
       });
 
       if (response.ok) {
@@ -713,7 +708,7 @@ export default function MySchedulePage() {
 
           {/* 國定假日年度統計 */}
           {holidayStats && (
-            <div className="mb-6 p-4 bg-gradient-to-r from-red-50 to-orange-50 rounded-lg border border-red-200">
+            <div className="mb-6 rounded-lg border border-red-200 bg-linear-to-r from-red-50 to-orange-50 p-4">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <Gift className="w-5 h-5 text-red-600" />
@@ -745,7 +740,7 @@ export default function MySchedulePage() {
               <div className="mt-3">
                 <div className="w-full bg-gray-200 rounded-full h-2">
                   <div 
-                    className="bg-gradient-to-r from-green-500 to-blue-500 h-2 rounded-full transition-all duration-300"
+                    className="h-2 rounded-full bg-linear-to-r from-green-500 to-blue-500 transition-all duration-300"
                     style={{ width: `${holidayStats.progress}%` }}
                   ></div>
                 </div>

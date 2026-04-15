@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
+import { validateCSRF } from '@/lib/csrf';
+import { safeParseJSON } from '@/lib/validation';
 
 // GPS 权限配置接口
 interface GPSPermissionData {
@@ -23,6 +25,38 @@ interface GPSPermissionRow {
   updated_at: string;
   employee_name?: string;
   employee_code?: string;
+}
+
+function parsePositiveInteger(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
+    return value;
+  }
+
+  if (typeof value === 'string' && /^\d+$/.test(value)) {
+    const parsed = Number(value);
+    if (Number.isInteger(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+
+  return null;
+}
+
+function parseOptionalEmployeeId(value: unknown) {
+  if (value === undefined) {
+    return { value: undefined, isValid: true } as const;
+  }
+
+  if (value === null || value === '') {
+    return { value: null, isValid: true } as const;
+  }
+
+  const parsed = parsePositiveInteger(value);
+  if (parsed === null) {
+    return { value: null, isValid: false } as const;
+  }
+
+  return { value: parsed, isValid: true } as const;
 }
 
 // 获取权限操作（使用原始 SQL 作为备用）
@@ -97,6 +131,9 @@ async function getPermissionOperations() {
         
         const updated = await prisma.$queryRaw`SELECT * FROM gps_attendance_permissions WHERE id = ${id}`;
         const row = (updated as GPSPermissionRow[])[0];
+        if (!row) {
+          return null;
+        }
         return {
           id: row.id,
           employeeId: row.employee_id,
@@ -111,8 +148,11 @@ async function getPermissionOperations() {
       },
       delete: async (id: number) => {
         const toDelete = await prisma.$queryRaw`SELECT * FROM gps_attendance_permissions WHERE id = ${id}`;
-        await prisma.$executeRaw`DELETE FROM gps_attendance_permissions WHERE id = ${id}`;
         const row = (toDelete as GPSPermissionRow[])[0];
+        if (!row) {
+          return null;
+        }
+        await prisma.$executeRaw`DELETE FROM gps_attendance_permissions WHERE id = ${id}`;
         return {
           id: row.id,
           employeeId: row.employee_id,
@@ -133,9 +173,17 @@ async function getPermissionOperations() {
 }
 
 // GET - 获取所有 GPS 权限配置
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
     console.log('GET request to gps-permissions started');
+
+    const user = await getUserFromRequest(request);
+    if (!user || user.role !== 'ADMIN') {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 403 }
+      );
+    }
     
     const operations = await getPermissionOperations();
     const permissions = await operations.findMany();
@@ -159,6 +207,11 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   try {
     console.log('POST request to gps-permissions started');
+
+    const csrfResult = await validateCSRF(request);
+    if (!csrfResult.valid) {
+      return NextResponse.json({ error: 'CSRF token validation failed' }, { status: 403 });
+    }
     
     const user = await getUserFromRequest(request);
     if (!user || user.role !== 'ADMIN') {
@@ -168,18 +221,37 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const body = await request.json();
+    const bodyResult = await safeParseJSON(request);
+    if (!bodyResult.success || !bodyResult.data) {
+      return NextResponse.json(
+        { error: '請求內容格式無效' },
+        { status: 400 }
+      );
+    }
+
+    const body = bodyResult.data;
     console.log('GPS permission data:', body);
 
+    const employeeIdResult = parseOptionalEmployeeId(body.employeeId);
+    if (!employeeIdResult.isValid) {
+      return NextResponse.json(
+        { error: 'employeeId 格式無效' },
+        { status: 400 }
+      );
+    }
+
+    const department = typeof body.department === 'string' ? body.department : null;
+    const employeeId = employeeIdResult.value;
+
     // 验证数据
-    if (!body.employeeId && !body.department) {
+    if (!employeeId && !department) {
       return NextResponse.json(
         { error: 'Either employeeId or department must be specified' },
         { status: 400 }
       );
     }
 
-    if (body.employeeId && body.department) {
+    if (employeeId && department) {
       return NextResponse.json(
         { error: 'Cannot specify both employeeId and department' },
         { status: 400 }
@@ -188,7 +260,11 @@ export async function POST(request: NextRequest) {
 
     const operations = await getPermissionOperations();
     const permission = await operations.create({
-      ...body,
+      employeeId,
+      department,
+      isEnabled: typeof body.isEnabled === 'boolean' ? body.isEnabled : body.isEnabled === undefined,
+      priority: typeof body.priority === 'number' ? body.priority : undefined,
+      reason: typeof body.reason === 'string' ? body.reason : undefined,
       createdBy: user.userId
     });
 
@@ -211,6 +287,11 @@ export async function POST(request: NextRequest) {
 export async function PUT(request: NextRequest) {
   try {
     console.log('PUT request to gps-permissions started');
+
+    const csrfResult = await validateCSRF(request);
+    if (!csrfResult.valid) {
+      return NextResponse.json({ error: 'CSRF token validation failed' }, { status: 403 });
+    }
     
     const user = await getUserFromRequest(request);
     if (!user || user.role !== 'ADMIN') {
@@ -220,18 +301,45 @@ export async function PUT(request: NextRequest) {
       );
     }
 
-    const body = await request.json();
+    const bodyResult = await safeParseJSON(request);
+    if (!bodyResult.success || !bodyResult.data) {
+      return NextResponse.json(
+        { error: '請求內容格式無效' },
+        { status: 400 }
+      );
+    }
+
+    const body = bodyResult.data;
     const { id, ...updateData } = body;
 
-    if (!id) {
+    const permissionId = parsePositiveInteger(id);
+    if (permissionId === null) {
       return NextResponse.json(
         { error: 'Permission ID is required' },
         { status: 400 }
       );
     }
 
+    const employeeIdResult = parseOptionalEmployeeId(updateData.employeeId);
+    if (!employeeIdResult.isValid) {
+      return NextResponse.json(
+        { error: 'employeeId 格式無效' },
+        { status: 400 }
+      );
+    }
+
     const operations = await getPermissionOperations();
-    const permission = await operations.update(id, updateData);
+    const permission = await operations.update(permissionId, {
+      ...updateData,
+      employeeId: employeeIdResult.value,
+    });
+
+    if (!permission) {
+      return NextResponse.json(
+        { error: 'GPS permission not found' },
+        { status: 404 }
+      );
+    }
 
     console.log('GPS permission updated:', permission);
 
@@ -252,6 +360,11 @@ export async function PUT(request: NextRequest) {
 export async function DELETE(request: NextRequest) {
   try {
     console.log('DELETE request to gps-permissions started');
+
+    const csrfResult = await validateCSRF(request);
+    if (!csrfResult.valid) {
+      return NextResponse.json({ error: 'CSRF token validation failed' }, { status: 403 });
+    }
     
     const user = await getUserFromRequest(request);
     if (!user || user.role !== 'ADMIN') {
@@ -261,10 +374,19 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    const body = await request.json();
+    const bodyResult = await safeParseJSON(request);
+    if (!bodyResult.success || !bodyResult.data) {
+      return NextResponse.json(
+        { error: '請求內容格式無效' },
+        { status: 400 }
+      );
+    }
+
+    const body = bodyResult.data;
     const { id } = body;
 
-    if (!id) {
+    const permissionId = parsePositiveInteger(id);
+    if (permissionId === null) {
       return NextResponse.json(
         { error: 'Permission ID is required' },
         { status: 400 }
@@ -272,7 +394,14 @@ export async function DELETE(request: NextRequest) {
     }
 
     const operations = await getPermissionOperations();
-    const permission = await operations.delete(id);
+    const permission = await operations.delete(permissionId);
+
+    if (!permission) {
+      return NextResponse.json(
+        { error: 'GPS permission not found' },
+        { status: 404 }
+      );
+    }
 
     console.log('GPS permission deleted:', permission);
 

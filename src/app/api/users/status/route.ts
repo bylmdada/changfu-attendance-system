@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
 
 // PATCH - 切換使用者帳號狀態（啟用/停用）
 export async function PATCH(request: NextRequest) {
@@ -18,7 +23,22 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
     }
 
-    const { userId, isActive } = await request.json();
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '參數錯誤' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const body = parseResult.data;
+    const userId = isPlainObject(body)
+      && (typeof body.userId === 'string' || typeof body.userId === 'number')
+        ? String(body.userId)
+        : undefined;
+    const isActive = isPlainObject(body) && typeof body.isActive === 'boolean'
+      ? body.isActive
+      : undefined;
 
     if (!userId || typeof isActive !== 'boolean') {
       return NextResponse.json({ error: '參數錯誤' }, { status: 400 });
