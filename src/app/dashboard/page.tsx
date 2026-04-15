@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import Image from 'next/image';
 import { Users, Clock, Calendar, DollarSign, LogOut, Timer, BarChart3, UserPlus, FileText, Key, Megaphone, X, AlertTriangle, ShoppingCart, Heart, Cloud, Wallet, Settings } from 'lucide-react';
 import ResponsiveSidebar from '@/components/ResponsiveSidebar';
+import { clearCSRFToken, fetchWithCSRF } from '@/lib/fetchWithCSRF';
 
 interface Announcement {
   id: number;
@@ -391,7 +392,12 @@ export default function DashboardPage() {
 
   const handleLogout = async () => {
     try {
-      await fetch('/api/auth/logout', { method: 'POST' });
+      const response = await fetchWithCSRF('/api/auth/logout', { method: 'POST' });
+      if (!response.ok) {
+        throw new Error(`logout failed: ${response.status}`);
+      }
+
+      clearCSRFToken();
       window.location.href = '/login';
     } catch (error) {
       console.error('登出失敗:', error);
@@ -457,7 +463,7 @@ export default function DashboardPage() {
           
           {/* 今日打卡狀態 */}
           <div className="mb-8">
-            <div className="bg-gradient-to-r from-blue-600 to-blue-700 rounded-2xl p-6 text-white">
+            <div className="bg-linear-to-r from-blue-600 to-blue-700 rounded-2xl p-6 text-white">
               <h2 className="text-xl font-bold mb-4">今日打卡狀態</h2>
               <div className="grid grid-cols-2 gap-4">
                 <div className="bg-white bg-opacity-30 rounded-lg p-4 border border-white border-opacity-20">
@@ -527,7 +533,7 @@ export default function DashboardPage() {
               <div className={`${announcement.category === 'URGENT' ? 'bg-red-100' : 'bg-red-50'} border-l-4 border-red-400 rounded-r-lg shadow-sm`}>
                 <div className="flex items-start justify-between p-4">
                   <div className="flex items-start">
-                    <div className="flex-shrink-0">
+                    <div className="shrink-0">
                       <AlertTriangle className="w-6 h-6 text-red-400" />
                     </div>
                     <div className="ml-3 flex-1">
@@ -560,7 +566,7 @@ export default function DashboardPage() {
                   </div>
                   <button
                     onClick={() => dismissAnnouncement(announcement.id)}
-                    className="flex-shrink-0 ml-4 text-red-400 hover:text-red-600 transition-colors"
+                    className="shrink-0 ml-4 text-red-400 hover:text-red-600 transition-colors"
                     title="關閉公告"
                   >
                     <X className="w-5 h-5" />
@@ -576,7 +582,7 @@ export default function DashboardPage() {
               <div className="bg-orange-50 border-l-4 border-orange-400 rounded-r-lg shadow-sm">
                 <div className="flex items-start justify-between p-4">
                   <div className="flex items-start">
-                    <div className="flex-shrink-0">
+                    <div className="shrink-0">
                       <Calendar className="w-6 h-6 text-orange-400" />
                     </div>
                     <div className="ml-3 flex-1">
@@ -615,7 +621,7 @@ export default function DashboardPage() {
                 <a href="/employees" className="bg-white overflow-hidden shadow rounded-lg hover:shadow-md transition-shadow cursor-pointer">
                   <div className="p-5">
                     <div className="flex items-center">
-                      <div className="flex-shrink-0 bg-blue-100 rounded-lg p-3">
+                      <div className="shrink-0 bg-blue-100 rounded-lg p-3">
                         <Users className="h-6 w-6 text-blue-600" />
                       </div>
                       <div className="ml-4 flex-1">
@@ -632,7 +638,7 @@ export default function DashboardPage() {
                 <a href="/attendance/records" className="bg-white overflow-hidden shadow rounded-lg hover:shadow-md transition-shadow cursor-pointer">
                   <div className="p-5">
                     <div className="flex items-center">
-                      <div className="flex-shrink-0 bg-red-100 rounded-lg p-3">
+                      <div className="shrink-0 bg-red-100 rounded-lg p-3">
                         <AlertTriangle className="h-6 w-6 text-red-600" />
                       </div>
                       <div className="ml-4 flex-1">
@@ -649,7 +655,7 @@ export default function DashboardPage() {
                 <div className="bg-white overflow-hidden shadow rounded-lg">
                   <div className="p-5">
                     <div className="flex items-center">
-                      <div className="flex-shrink-0 bg-yellow-100 rounded-lg p-3">
+                      <div className="shrink-0 bg-yellow-100 rounded-lg p-3">
                         <Calendar className="h-6 w-6 text-yellow-600" />
                       </div>
                       <div className="ml-4 flex-1">
@@ -680,7 +686,7 @@ export default function DashboardPage() {
                 <div className="bg-white overflow-hidden shadow rounded-lg">
                   <div className="p-5">
                     <div className="flex items-center">
-                      <div className="flex-shrink-0 bg-purple-100 rounded-lg p-3">
+                      <div className="shrink-0 bg-purple-100 rounded-lg p-3">
                         <Timer className="h-6 w-6 text-purple-600" />
                       </div>
                       <div className="ml-4 flex-1">
@@ -713,7 +719,7 @@ export default function DashboardPage() {
                 <a href="/attendance/records" className="bg-white overflow-hidden shadow rounded-lg hover:shadow-md transition-shadow cursor-pointer">
                   <div className="p-5">
                     <div className="flex items-center">
-                      <div className="flex-shrink-0 bg-red-100 rounded-lg p-3">
+                      <div className="shrink-0 bg-red-100 rounded-lg p-3">
                         <AlertTriangle className="h-6 w-6 text-red-600" />
                       </div>
                       <div className="ml-4 flex-1">
@@ -730,7 +736,7 @@ export default function DashboardPage() {
                 <div className="bg-white overflow-hidden shadow rounded-lg">
                   <div className="p-5">
                     <div className="flex items-center">
-                      <div className="flex-shrink-0 bg-yellow-100 rounded-lg p-3">
+                      <div className="shrink-0 bg-yellow-100 rounded-lg p-3">
                         <Calendar className="h-6 w-6 text-yellow-600" />
                       </div>
                       <div className="ml-4 flex-1">
@@ -761,7 +767,7 @@ export default function DashboardPage() {
                 <div className="bg-white overflow-hidden shadow rounded-lg">
                   <div className="p-5">
                     <div className="flex items-center">
-                      <div className="flex-shrink-0 bg-purple-100 rounded-lg p-3">
+                      <div className="shrink-0 bg-purple-100 rounded-lg p-3">
                         <Timer className="h-6 w-6 text-purple-600" />
                       </div>
                       <div className="ml-4 flex-1">
@@ -792,7 +798,7 @@ export default function DashboardPage() {
                 <div className="bg-white overflow-hidden shadow rounded-lg">
                   <div className="p-5">
                     <div className="flex items-center">
-                      <div className="flex-shrink-0 bg-green-100 rounded-lg p-3">
+                      <div className="shrink-0 bg-green-100 rounded-lg p-3">
                         <Calendar className="h-6 w-6 text-green-600" />
                       </div>
                       <div className="ml-4 flex-1">

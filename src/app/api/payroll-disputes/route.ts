@@ -10,6 +10,37 @@ import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { createApprovalForRequest } from '@/lib/approval-helper';
+import { parseIntegerQueryParam } from '@/lib/query-params';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function asStringOrNumber(value: unknown): string | null {
+  if (typeof value === 'string' || typeof value === 'number') {
+    return String(value);
+  }
+
+  return null;
+}
+
+function parseOptionalFiniteNumber(value: unknown) {
+  if (value === undefined || value === null || value === '') {
+    return { value: null, isValid: true };
+  }
+
+  if (typeof value !== 'string' && typeof value !== 'number') {
+    return { value: null, isValid: false };
+  }
+
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return { value: null, isValid: false };
+  }
+
+  return { value: parsed, isValid: true };
+}
 
 // 異議類型
 const DISPUTE_TYPES = [
@@ -30,9 +61,17 @@ export async function GET(request: NextRequest) {
 
     const { searchParams } = new URL(request.url);
     const status = searchParams.get('status');
-    const year = searchParams.get('year');
-    const month = searchParams.get('month');
+    const yearResult = parseIntegerQueryParam(searchParams.get('year'), { min: 1900, max: 9999 });
+    const monthResult = parseIntegerQueryParam(searchParams.get('month'), { min: 1, max: 12 });
     const myOnly = searchParams.get('myOnly') === 'true';
+
+    if (!yearResult.isValid) {
+      return NextResponse.json({ error: 'year 格式錯誤' }, { status: 400 });
+    }
+
+    if (!monthResult.isValid) {
+      return NextResponse.json({ error: 'month 格式錯誤' }, { status: 400 });
+    }
 
     // 建立查詢條件
     const where: Record<string, unknown> = {};
@@ -46,12 +85,12 @@ export async function GET(request: NextRequest) {
       where.status = status;
     }
 
-    if (year) {
-      where.payYear = parseInt(year);
+    if (yearResult.value !== null) {
+      where.payYear = yearResult.value;
     }
 
-    if (month) {
-      where.payMonth = parseInt(month);
+    if (monthResult.value !== null) {
+      where.payMonth = monthResult.value;
     }
 
     const disputes = await prisma.payrollDispute.findMany({
@@ -119,12 +158,44 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
 
-    const data = await request.json();
-    const { payYear, payMonth, type, description, requestedAmount, fileUrl } = data;
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的異議資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const data = parseResult.data;
+
+    if (!isPlainObject(data)) {
+      return NextResponse.json({ error: '請提供有效的異議資料' }, { status: 400 });
+    }
+
+    const payYearInput = asStringOrNumber(data.payYear);
+    const payMonthInput = asStringOrNumber(data.payMonth);
+    const type = typeof data.type === 'string' ? data.type : undefined;
+    const description = typeof data.description === 'string' ? data.description : undefined;
+    const requestedAmountResult = parseOptionalFiniteNumber(data.requestedAmount);
+    const fileUrl = typeof data.fileUrl === 'string' ? data.fileUrl : null;
 
     // 驗證必填欄位
-    if (!payYear || !payMonth || !type || !description) {
+    if (!payYearInput || !payMonthInput || !type || !description) {
       return NextResponse.json({ error: '請填寫所有必填欄位' }, { status: 400 });
+    }
+
+    const payYearResult = parseIntegerQueryParam(payYearInput, { min: 1900, max: 9999 });
+    if (!payYearResult.isValid || payYearResult.value === null) {
+      return NextResponse.json({ error: 'payYear 格式錯誤' }, { status: 400 });
+    }
+
+    const payMonthResult = parseIntegerQueryParam(payMonthInput, { min: 1, max: 12 });
+    if (!payMonthResult.isValid || payMonthResult.value === null) {
+      return NextResponse.json({ error: 'payMonth 格式錯誤' }, { status: 400 });
+    }
+
+    if (!requestedAmountResult.isValid) {
+      return NextResponse.json({ error: 'requestedAmount 格式錯誤' }, { status: 400 });
     }
 
     // 驗證異議類型
@@ -136,8 +207,8 @@ export async function POST(request: NextRequest) {
     const payroll = await prisma.payrollRecord.findFirst({
       where: {
         employeeId: user.employeeId,
-        payYear: parseInt(payYear),
-        payMonth: parseInt(payMonth)
+        payYear: payYearResult.value,
+        payMonth: payMonthResult.value
       }
     });
 
@@ -145,8 +216,8 @@ export async function POST(request: NextRequest) {
     const existingPending = await prisma.payrollDispute.findFirst({
       where: {
         employeeId: user.employeeId,
-        payYear: parseInt(payYear),
-        payMonth: parseInt(payMonth),
+        payYear: payYearResult.value,
+        payMonth: payMonthResult.value,
         status: 'PENDING'
       }
     });
@@ -162,12 +233,12 @@ export async function POST(request: NextRequest) {
       data: {
         employeeId: user.employeeId,
         payrollId: payroll?.id || null,
-        payYear: parseInt(payYear),
-        payMonth: parseInt(payMonth),
+        payYear: payYearResult.value,
+        payMonth: payMonthResult.value,
         type,
         description,
-        requestedAmount: requestedAmount ? parseFloat(requestedAmount) : null,
-        fileUrl: fileUrl || null
+        requestedAmount: requestedAmountResult.value,
+        fileUrl
       },
       include: {
         employee: {

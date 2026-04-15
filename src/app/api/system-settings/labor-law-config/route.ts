@@ -3,6 +3,33 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { checkRateLimit } from '@/lib/rate-limit';
+import { safeParseJSON } from '@/lib/validation';
+
+function parseDateOnly(value: unknown): Date | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) {
+    return null;
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
+    return null;
+  }
+
+  return date;
+}
 
 // GET - 取得目前生效的法規參數設定（勞保與基本工資）
 export async function GET(request: NextRequest) {
@@ -78,39 +105,59 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
     }
 
-    const body = await request.json();
-    const {
-      basicWage,
-      laborInsuranceRate,
-      laborInsuranceMax,
-      laborEmployeeRate,
-      effectiveDate,
-      description
-    } = body;
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      const errorMessage = parseResult.error === 'empty_body'
+        ? '請提供有效的設定資料'
+        : '無效的 JSON 格式';
+
+      return NextResponse.json({ error: errorMessage }, { status: 400 });
+    }
+
+    const body = parseResult.data;
+
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json({ error: '請提供有效的設定資料' }, { status: 400 });
+    }
+
+    const bodyRecord = body as Record<string, unknown>;
+    const basicWage = bodyRecord.basicWage;
+    const laborInsuranceRate = bodyRecord.laborInsuranceRate;
+    const laborInsuranceMax = bodyRecord.laborInsuranceMax;
+    const laborEmployeeRate = bodyRecord.laborEmployeeRate;
+    const effectiveDate = bodyRecord.effectiveDate;
+    const description = bodyRecord.description;
 
     // 驗證必要欄位
     if (!effectiveDate) {
       return NextResponse.json({ error: '請填寫生效日期' }, { status: 400 });
     }
 
-    // 將舊設定設為非作用中
-    await prisma.laborLawConfig.updateMany({
-      where: { isActive: true },
-      data: { isActive: false }
-    });
+    const parsedEffectiveDate = parseDateOnly(effectiveDate);
+    if (!parsedEffectiveDate) {
+      return NextResponse.json({ error: '生效日期格式無效' }, { status: 400 });
+    }
 
-    // 建立新設定
-    const config = await prisma.laborLawConfig.create({
-      data: {
-        basicWage: parseInt(basicWage) || 29500,
-        laborInsuranceRate: parseFloat(laborInsuranceRate) || 0.115,
-        laborInsuranceMax: parseInt(laborInsuranceMax) || 45800,
-        laborEmployeeRate: parseFloat(laborEmployeeRate) || 0.2,
-        effectiveDate: new Date(effectiveDate),
-        description: description || null,
-        isActive: true
-      }
-    });
+    const newConfigData = {
+      basicWage: parseInt(String(basicWage)) || 29500,
+      laborInsuranceRate: parseFloat(String(laborInsuranceRate)) || 0.115,
+      laborInsuranceMax: parseInt(String(laborInsuranceMax)) || 45800,
+      laborEmployeeRate: parseFloat(String(laborEmployeeRate)) || 0.2,
+      effectiveDate: parsedEffectiveDate,
+      description: typeof description === 'string' && description.trim() ? description : null,
+      isActive: true
+    };
+
+    // 使用交易避免舊設定先失效、但新設定建立失敗時留下空白狀態。
+    const [, config] = await prisma.$transaction([
+      prisma.laborLawConfig.updateMany({
+        where: { isActive: true },
+        data: { isActive: false }
+      }),
+      prisma.laborLawConfig.create({
+        data: newConfigData
+      })
+    ]);
 
     return NextResponse.json({
       success: true,

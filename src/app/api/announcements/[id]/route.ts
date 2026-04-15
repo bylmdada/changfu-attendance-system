@@ -1,9 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
+import { validateCSRF } from '@/lib/csrf';
 import { existsSync } from 'fs';
 import { unlink } from 'fs/promises';
 import { join } from 'path';
+import {
+  canUserAccessAnnouncement,
+  parseAnnouncementDate,
+  validateAnnouncementTargetDepartments,
+} from '@/lib/announcement-utils';
+import { parseIntegerQueryParam } from '@/lib/query-params';
 
 // Minimal types to avoid using any
 type AttachmentLite = { id: number; fileName: string; originalName: string; fileSize: number; mimeType: string };
@@ -18,6 +25,8 @@ interface AnnouncementLite {
   isPublished: boolean;
   publishedAt: string | null;
   expiryDate: string | null;
+  targetDepartments?: string | null;
+  isGlobalAnnouncement?: boolean;
   createdAt: string;
   updatedAt: string;
   publisher?: PublisherLite;
@@ -26,7 +35,7 @@ interface AnnouncementLite {
 interface PrismaAnnouncementClient {
   announcement: {
     findUnique: (args: { where: { id: number }; include?: { publisher?: { select: Record<string, boolean> }; attachments?: { select: Record<string, boolean> } } }) => Promise<AnnouncementLite | null>;
-    update: (args: { where: { id: number }; data: Partial<{ title: string; content: string; priority: 'HIGH' | 'NORMAL' | 'LOW'; isPublished: boolean; publishedAt: Date | null; expiryDate: Date | null }> }) => Promise<AnnouncementLite>;
+    update: (args: { where: { id: number }; data: Partial<{ title: string; content: string; priority: 'HIGH' | 'NORMAL' | 'LOW'; category: 'PERSONNEL' | 'POLICY' | 'EVENT' | 'SYSTEM' | 'BENEFITS' | 'URGENT' | 'GENERAL'; isPublished: boolean; publishedAt: Date | null; expiryDate: Date | null; isGlobalAnnouncement: boolean; targetDepartments: string | null }> }) => Promise<AnnouncementLite>;
     delete: (args: { where: { id: number } }) => Promise<AnnouncementLite>;
   };
   announcementAttachment: {
@@ -35,6 +44,15 @@ interface PrismaAnnouncementClient {
 }
 
 const db = prisma as unknown as PrismaAnnouncementClient;
+
+function parseAnnouncementId(rawId: string) {
+  const parsed = parseIntegerQueryParam(rawId, { min: 1, max: 99999999 });
+  if (!parsed.isValid || parsed.value === null) {
+    return null;
+  }
+
+  return parsed.value;
+}
 
 // 獲取單個公告
 export async function GET(
@@ -48,8 +66,8 @@ export async function GET(
     }
 
     const { id: idParam } = await params;
-    const id = parseInt(idParam);
-    if (isNaN(id)) {
+    const id = parseAnnouncementId(idParam);
+    if (id === null) {
       return NextResponse.json({ error: '無效的公告ID' }, { status: 400 });
     }
 
@@ -68,7 +86,17 @@ export async function GET(
     // 員工只能查看已發布且未過期
     if (user.role === 'EMPLOYEE') {
       const notExpired = !announcement.expiryDate || new Date(announcement.expiryDate) > new Date();
-      if (!announcement.isPublished || !notExpired) {
+      const employee = await prisma.employee.findUnique({
+        where: { id: user.employeeId },
+        select: { department: true }
+      });
+      const canView = canUserAccessAnnouncement({
+        isGlobalAnnouncement: announcement.isGlobalAnnouncement,
+        targetDepartments: announcement.targetDepartments,
+        employeeDepartment: employee?.department ?? null,
+      });
+
+      if (!announcement.isPublished || !notExpired || !canView) {
         return NextResponse.json({ error: '無權限查看此公告' }, { status: 403 });
       }
     }
@@ -91,13 +119,28 @@ export async function PUT(
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
 
+    const csrfValidation = await validateCSRF(request);
+    if (!csrfValidation.valid) {
+      return NextResponse.json({ error: csrfValidation.error }, { status: 403 });
+    }
+
     const { id: idParam } = await params;
-    const id = parseInt(idParam);
-    if (isNaN(id)) {
+    const id = parseAnnouncementId(idParam);
+    if (id === null) {
       return NextResponse.json({ error: '無效的公告ID' }, { status: 400 });
     }
 
-    const body = await request.json();
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json({ error: '請求內容不是有效的 JSON' }, { status: 400 });
+    }
+
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json({ error: '請求內容格式無效' }, { status: 400 });
+    }
+
     const { 
       title, 
       content, 
@@ -113,9 +156,43 @@ export async function PUT(
       targetDepartments?: string | null;
     };
 
+    if (title !== undefined && !String(title).trim()) {
+      return NextResponse.json({ error: '標題不能為空' }, { status: 400 });
+    }
+
+    if (content !== undefined && !String(content).trim()) {
+      return NextResponse.json({ error: '內容不能為空' }, { status: 400 });
+    }
+
+    if (priority !== undefined && !['HIGH', 'NORMAL', 'LOW'].includes(priority)) {
+      return NextResponse.json({ error: 'priority 格式無效' }, { status: 400 });
+    }
+
+    if (category !== undefined && !['PERSONNEL', 'POLICY', 'EVENT', 'SYSTEM', 'BENEFITS', 'URGENT', 'GENERAL'].includes(category)) {
+      return NextResponse.json({ error: 'category 格式無效' }, { status: 400 });
+    }
+
     // 驗證部門選擇
     if (isGlobalAnnouncement === false && !targetDepartments) {
       return NextResponse.json({ error: '請至少選擇一個部門，或選擇全部部門發送通告' }, { status: 400 });
+    }
+
+    const normalizedTargetDepartments = isGlobalAnnouncement === true
+      ? null
+      : targetDepartments !== undefined
+        ? validateAnnouncementTargetDepartments(targetDepartments)
+        : null;
+
+    if (normalizedTargetDepartments && normalizedTargetDepartments.error) {
+      return NextResponse.json({ error: normalizedTargetDepartments.error }, { status: 400 });
+    }
+
+    const expiryDateResult = expiryDate !== undefined
+      ? parseAnnouncementDate(expiryDate, '到期日')
+      : { value: null as Date | null };
+
+    if (expiryDateResult.error) {
+      return NextResponse.json({ error: expiryDateResult.error }, { status: 400 });
     }
 
     // 決定 publishedAt 變化
@@ -137,9 +214,11 @@ export async function PUT(
         ...(category !== undefined ? { category } : {}),
         ...(isPublished !== undefined ? { isPublished } : {}),
         ...(publishedAtUpdate !== undefined ? { publishedAt: publishedAtUpdate } : {}),
-        ...(expiryDate !== undefined ? { expiryDate: expiryDate ? new Date(expiryDate) : null } : {}),
+        ...(expiryDate !== undefined ? { expiryDate: expiryDateResult.value } : {}),
         ...(isGlobalAnnouncement !== undefined ? { isGlobalAnnouncement } : {}),
-        ...(targetDepartments !== undefined ? { targetDepartments: isGlobalAnnouncement ? null : targetDepartments } : {})
+        ...(targetDepartments !== undefined || isGlobalAnnouncement === true
+          ? { targetDepartments: isGlobalAnnouncement ? null : normalizedTargetDepartments?.normalized ?? targetDepartments ?? null }
+          : {})
       }
     });
 
@@ -161,9 +240,14 @@ export async function DELETE(
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
 
+    const csrfValidation = await validateCSRF(request);
+    if (!csrfValidation.valid) {
+      return NextResponse.json({ error: csrfValidation.error }, { status: 403 });
+    }
+
     const { id: idParam } = await params;
-    const id = parseInt(idParam);
-    if (isNaN(id)) {
+    const id = parseAnnouncementId(idParam);
+    if (id === null) {
       return NextResponse.json({ error: '無效的公告ID' }, { status: 400 });
     }
 

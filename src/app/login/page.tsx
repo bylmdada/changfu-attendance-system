@@ -5,6 +5,8 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { Eye, EyeOff, Lock, User, Clock, MapPin, AlertCircle } from 'lucide-react';
 import Image from 'next/image';
 import { isMobileClockingDevice, MOBILE_CLOCKING_REQUIRED_MESSAGE } from '@/lib/device-detection';
+import { clearCSRFToken, fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
+import { serializeRegistrationCredential } from '@/lib/webauthn-browser';
 
 // GPS位置狀態類型
 type LocationStatus = 'checking' | 'valid' | 'invalid' | 'error' | 'disabled';
@@ -124,6 +126,7 @@ function QuickClockForm({
   const [checkingEmployee, setCheckingEmployee] = useState(false);
   const [successMessage, setSuccessMessage] = useState('');
   const [attendanceStatus, setAttendanceStatus] = useState<EmployeeAttendanceStatus | null>(null);
+  const [statusLoadedForUsername, setStatusLoadedForUsername] = useState<string | null>(null);
   
   // 超時下班原因選擇狀態
   const [showReasonModal, setShowReasonModal] = useState(false);
@@ -148,7 +151,6 @@ function QuickClockForm({
   });
 
   // Face ID / 指紋相關狀態
-  const [hasFaceId, setHasFaceId] = useState(false);
   const [faceIdLoading, setFaceIdLoading] = useState(false);
   const [showFaceIdSetup, setShowFaceIdSetup] = useState(false);
   const [biometricSupported, setBiometricSupported] = useState(false);
@@ -314,9 +316,10 @@ function QuickClockForm({
   }, [gpsSettings, refreshLocationStatus]);
 
   // 檢查員工今日打卡狀態
-  const checkEmployeeStatus = async (username: string) => {
-    if (!username) {
+  const checkEmployeeStatus = async (username: string, password: string) => {
+    if (!username || !password) {
       setAttendanceStatus(null);
+      setStatusLoadedForUsername(null);
       return;
     }
 
@@ -325,18 +328,21 @@ function QuickClockForm({
       const response = await fetch('/api/attendance/check-today', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username })
+        body: JSON.stringify({ username, password })
       });
 
       if (response.ok) {
         const statusData = await response.json();
         setAttendanceStatus(statusData);
+        setStatusLoadedForUsername(username);
       } else {
         setAttendanceStatus(null);
+        setStatusLoadedForUsername(null);
       }
     } catch (error) {
       console.error('檢查員工狀態失敗:', error);
       setAttendanceStatus(null);
+      setStatusLoadedForUsername(null);
     } finally {
       setCheckingEmployee(false);
     }
@@ -349,15 +355,24 @@ function QuickClockForm({
     if (onError) onError('');
     
     const timeoutId = setTimeout(() => {
-      if (clockData.username.length >= 3) { // 至少3個字符才開始檢查
-        checkEmployeeStatus(clockData.username);
-      } else {
+      if (clockData.username.length < 3) {
         setAttendanceStatus(null);
+        setStatusLoadedForUsername(null);
+        return;
       }
+
+      if (!clockData.password) {
+        if (statusLoadedForUsername !== clockData.username) {
+          setAttendanceStatus(null);
+        }
+        return;
+      }
+
+      checkEmployeeStatus(clockData.username, clockData.password);
     }, 500); // 延遲500ms避免頻繁請求
 
     return () => clearTimeout(timeoutId);
-  }, [clockData.username, onError]);
+  }, [clockData.username, clockData.password, onError, statusLoadedForUsername]);
 
   // 狀態變化時通知父組件
   useEffect(() => {
@@ -389,30 +404,6 @@ function QuickClockForm({
     };
     checkBiometricSupport();
   }, []);
-
-  // 當用戶名改變時檢查是否已設定 Face ID
-  useEffect(() => {
-    const checkFaceId = async () => {
-      if (clockData.username.length >= 3) {
-        try {
-          const response = await fetch('/api/webauthn/check', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username: clockData.username })
-          });
-          if (response.ok) {
-            const data = await response.json();
-            setHasFaceId(data.hasCredentials);
-          }
-        } catch {
-          setHasFaceId(false);
-        }
-      } else {
-        setHasFaceId(false);
-      }
-    };
-    checkFaceId();
-  }, [clockData.username]);
 
   // Face ID 打卡
   const handleFaceIdClock = async (type: 'in' | 'out') => {
@@ -499,8 +490,13 @@ function QuickClockForm({
 
       if (verifyRes.ok) {
         setSuccessMessage(`${result.employee || '員工'} ${type === 'in' ? '上班' : '下班'}打卡成功！`);
-        // 重新檢查狀態
-        await checkEmployeeStatus(clockData.username);
+        setAttendanceStatus((prev) => prev ? {
+          ...prev,
+          hasClockIn: type === 'in' ? true : prev.hasClockIn,
+          hasClockOut: type === 'out' ? true : prev.hasClockOut,
+          clockInTime: type === 'in' ? result.clockInTime : prev.clockInTime,
+          clockOutTime: type === 'out' ? result.clockOutTime : prev.clockOutTime,
+        } : prev);
       } else {
         throw new Error(result.error || '打卡失敗');
       }
@@ -572,21 +568,14 @@ function QuickClockForm({
       }
 
       // 3. 發送註冊結果
-      const response = credential.response as AuthenticatorAttestationResponse;
       const verifyRes = await fetch('/api/webauthn/register-verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          credential: {
+          credential: serializeRegistrationCredential({
             id: credential.id,
-            rawId: btoa(String.fromCharCode(...new Uint8Array(credential.rawId))),
-            response: {
-              clientDataJSON: btoa(String.fromCharCode(...new Uint8Array(response.clientDataJSON))),
-              attestationObject: btoa(String.fromCharCode(...new Uint8Array(response.attestationObject))),
-              transports: response.getTransports?.() || ['internal']
-            },
-            type: credential.type
-          },
+            response: credential.response as AuthenticatorAttestationResponse,
+          }),
           deviceName: navigator.userAgent.includes('iPhone') ? 'iPhone' : 
                       navigator.userAgent.includes('iPad') ? 'iPad' : 
                       navigator.userAgent.includes('Android') ? 'Android 裝置' : '裝置'
@@ -597,7 +586,6 @@ function QuickClockForm({
 
       if (verifyRes.ok) {
         setSuccessMessage('Face ID / 指紋設定成功！下次可直接使用生物識別打卡');
-        setHasFaceId(true);
         setShowFaceIdSetup(false);
       } else {
         throw new Error(result.error || '設定失敗');
@@ -683,7 +671,7 @@ function QuickClockForm({
         setSuccessMessage(successMsg);
         
         // 重新檢查員工狀態以更新打卡記錄顯示
-        await checkEmployeeStatus(clockData.username);
+        await checkEmployeeStatus(clockData.username, clockData.password);
         
         // 如果是下班打卡且超過班表時間，顯示原因選擇對話框
         if (type === 'out' && result.isLateClockOut && result.attendance?.id) {
@@ -719,16 +707,15 @@ function QuickClockForm({
     if (!pendingAttendanceId) return;
     
     try {
-      const response = await fetch('/api/attendance/update-reason', {
+      const response = await fetchJSONWithCSRF('/api/attendance/update-reason', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+        body: {
           attendanceId: pendingAttendanceId,
           lateClockOutReason: reason,
           // 快速打卡模式需要帳密認證
           username: pendingCredentials?.username,
           password: pendingCredentials?.password
-        })
+        }
       });
       
       if (response.ok) {
@@ -1001,76 +988,72 @@ function QuickClockForm({
       {/* Face ID 區塊 */}
       {biometricSupported && clockData.username.length >= 3 && (
         <div className="mt-4 pt-4 border-t border-gray-200">
-          {hasFaceId ? (
-            // 已設定 Face ID - 顯示快速打卡按鈕
-            <div className="space-y-2">
-              <div className="text-xs text-gray-500 text-center mb-2">使用 Face ID / 指紋快速打卡</div>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  onClick={() => handleFaceIdClock('in')}
-                  disabled={faceIdLoading || isMobileClocking !== true || attendanceStatus?.hasClockIn}
-                  className={`py-3 px-3 text-sm font-medium rounded-xl transition-colors flex items-center justify-center gap-2 ${
-                    attendanceStatus?.hasClockIn
-                      ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                      : 'bg-linear-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 text-white shadow-lg'
-                  }`}
-                >
-                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                  </svg>
-                  {faceIdLoading ? '驗證中...' : 'Face ID 上班'}
-                </button>
-                <button
-                  onClick={() => handleFaceIdClock('out')}
-                  disabled={faceIdLoading || isMobileClocking !== true || attendanceStatus?.hasClockOut}
-                  className={`py-3 px-3 text-sm font-medium rounded-xl transition-colors flex items-center justify-center gap-2 ${
-                    attendanceStatus?.hasClockOut
-                      ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                      : 'bg-linear-to-r from-orange-400 to-pink-500 hover:from-orange-500 hover:to-pink-600 text-white shadow-lg'
-                  }`}
-                >
-                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                  </svg>
-                  {faceIdLoading ? '驗證中...' : 'Face ID 下班'}
-                </button>
-              </div>
-            </div>
-          ) : (
-            // 尚未設定 Face ID - 顯示設定按鈕
-            !showFaceIdSetup ? (
+          <div className="space-y-2">
+            <div className="text-xs text-gray-500 text-center mb-2">使用 Face ID / 指紋快速打卡</div>
+            <div className="grid grid-cols-2 gap-2">
               <button
-                onClick={() => setShowFaceIdSetup(true)}
-                className="w-full py-2 text-sm text-blue-600 hover:text-blue-800 flex items-center justify-center gap-1"
+                onClick={() => handleFaceIdClock('in')}
+                disabled={faceIdLoading || isMobileClocking !== true || attendanceStatus?.hasClockIn}
+                className={`py-3 px-3 text-sm font-medium rounded-xl transition-colors flex items-center justify-center gap-2 ${
+                  attendanceStatus?.hasClockIn
+                    ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                    : 'bg-linear-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 text-white shadow-lg'
+                }`}
               >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
                 </svg>
-                設定 Face ID / 指紋登錄
+                {faceIdLoading ? '驗證中...' : 'Face ID 上班'}
               </button>
-            ) : (
-              <div className="bg-blue-50 rounded-xl p-4">
-                <div className="text-sm text-blue-800 mb-3">
-                  請先輸入密碼驗證身份，然後點擊「確認設定」
-                </div>
-                <button
-                  onClick={handleSetupFaceId}
-                  disabled={faceIdLoading || !clockData.password}
-                  className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors disabled:opacity-50"
-                >
-                  {faceIdLoading ? '設定中...' : '確認設定 Face ID'}
-                </button>
-                <button
-                  onClick={() => setShowFaceIdSetup(false)}
-                  className="w-full mt-2 py-2 text-sm text-gray-500 hover:text-gray-700"
-                >
-                  取消
-                </button>
+              <button
+                onClick={() => handleFaceIdClock('out')}
+                disabled={faceIdLoading || isMobileClocking !== true || attendanceStatus?.hasClockOut}
+                className={`py-3 px-3 text-sm font-medium rounded-xl transition-colors flex items-center justify-center gap-2 ${
+                  attendanceStatus?.hasClockOut
+                    ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                    : 'bg-linear-to-r from-orange-400 to-pink-500 hover:from-orange-500 hover:to-pink-600 text-white shadow-lg'
+                }`}
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                </svg>
+                {faceIdLoading ? '驗證中...' : 'Face ID 下班'}
+              </button>
+            </div>
+          </div>
+
+          {!showFaceIdSetup ? (
+            <button
+              onClick={() => setShowFaceIdSetup(true)}
+              className="w-full py-2 text-sm text-blue-600 hover:text-blue-800 flex items-center justify-center gap-1"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+              </svg>
+              尚未設定？點此登錄 Face ID / 指紋
+            </button>
+          ) : (
+            <div className="bg-blue-50 rounded-xl p-4">
+              <div className="text-sm text-blue-800 mb-3">
+                請先輸入密碼驗證身份，然後點擊「確認設定」
               </div>
-            )
+              <button
+                onClick={handleSetupFaceId}
+                disabled={faceIdLoading || !clockData.password}
+                className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors disabled:opacity-50"
+              >
+                {faceIdLoading ? '設定中...' : '確認設定 Face ID'}
+              </button>
+              <button
+                onClick={() => setShowFaceIdSetup(false)}
+                className="w-full mt-2 py-2 text-sm text-gray-500 hover:text-gray-700"
+              >
+                取消
+              </button>
+            </div>
           )}
         </div>
       )}
@@ -1128,13 +1111,12 @@ function LoginPageContent() {
     setError('');
 
     try {
-      const response = await fetch('/api/auth/login', {
+      const response = await fetchJSONWithCSRF('/api/auth/login', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+        body: {
           ...formData,
           totpCode: requires2FA ? totpCode : undefined
-        }),
+        },
       });
 
       const data = await response.json();
@@ -1148,9 +1130,7 @@ function LoginPageContent() {
         }
         
         // 登入成功
-        if (data.token) {
-          localStorage.setItem('token', data.token);
-        }
+        clearCSRFToken();
         router.push('/dashboard');
       } else {
         setError(data.error || '登入失敗');
@@ -1177,7 +1157,7 @@ function LoginPageContent() {
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
       {/* 頂部裝飾條 */}
-      <div className="h-1.5 bg-gradient-to-r from-blue-500 via-cyan-500 to-blue-600" />
+      <div className="h-1.5 bg-linear-to-r from-blue-500 via-cyan-500 to-blue-600" />
       
       {/* 主要內容區 */}
       <div className="flex-1 flex flex-col lg:flex-row">
@@ -1354,8 +1334,8 @@ function LoginPageContent() {
                   ) : (
                     <>
                       {/* 手機版時鐘 - 只在手機上顯示 */}
-                      <div className="lg:hidden text-center bg-gradient-to-br from-blue-50 to-cyan-50 rounded-xl p-4 border border-blue-100 mb-4">
-                        <div className="text-3xl font-mono font-bold bg-gradient-to-r from-blue-600 to-cyan-600 bg-clip-text text-transparent">
+                      <div className="lg:hidden text-center bg-linear-to-br from-blue-50 to-cyan-50 rounded-xl p-4 border border-blue-100 mb-4">
+                        <div className="text-3xl font-mono font-bold bg-linear-to-r from-blue-600 to-cyan-600 bg-clip-text text-transparent">
                           {currentTime.toLocaleTimeString('zh-TW', { 
                             hour: '2-digit', 
                             minute: '2-digit', 
@@ -1430,12 +1410,12 @@ function LoginPageContent() {
                 )}
 
                 {/* 系統時間卡片 */}
-                <div className="text-center bg-gradient-to-br from-blue-50 to-cyan-50 rounded-2xl p-6 border border-blue-100">
+                <div className="text-center bg-linear-to-br from-blue-50 to-cyan-50 rounded-2xl p-6 border border-blue-100">
                   <div className="inline-flex items-center gap-2 px-3 py-1 bg-blue-100 rounded-full text-blue-700 text-xs font-medium mb-3">
                     <Clock className="h-3 w-3" />
                     系統時間
                   </div>
-                  <div className="text-5xl font-mono font-bold bg-gradient-to-r from-blue-600 to-cyan-600 bg-clip-text text-transparent mb-2">
+                  <div className="text-5xl font-mono font-bold bg-linear-to-r from-blue-600 to-cyan-600 bg-clip-text text-transparent mb-2">
                     {currentTime.toLocaleTimeString('zh-TW', { 
                       hour: '2-digit', 
                       minute: '2-digit', 
@@ -1457,7 +1437,7 @@ function LoginPageContent() {
                 {quickClockStatus?.attendanceStatus && (
                   <div className="bg-white rounded-2xl p-5 border border-gray-100 shadow-sm">
                     <div className="flex items-center gap-3 mb-4">
-                      <div className="w-12 h-12 bg-gradient-to-br from-blue-500 to-cyan-500 rounded-full flex items-center justify-center text-white text-xl font-bold">
+                      <div className="w-12 h-12 bg-linear-to-br from-blue-500 to-cyan-500 rounded-full flex items-center justify-center text-white text-xl font-bold">
                         {quickClockStatus.attendanceStatus.employee.name.charAt(0)}
                       </div>
                       <div>
@@ -1637,7 +1617,7 @@ function LoginPageContent() {
 export default function LoginPage() {
   return (
     <Suspense fallback={
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900">
+      <div className="min-h-screen flex items-center justify-center bg-linear-to-br from-slate-900 via-blue-950 to-slate-900">
         <div className="text-white text-lg">載入中...</div>
       </div>
     }>

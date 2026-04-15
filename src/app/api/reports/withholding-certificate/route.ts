@@ -5,6 +5,8 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { LOGO_BASE64 } from '@/lib/logoBase64';
 import { decrypt } from '@/lib/encryption';
+import { escapeHtml } from '@/lib/html';
+import { parseIntegerQueryParam } from '@/lib/query-params';
 
 /**
  * 年度扣繳憑單 API
@@ -29,9 +31,6 @@ async function calculateWithholdingData(employeeId: number, year: number) {
       name: true,
       idNumber: true,
       department: true,
-      birthday: true,
-      address: true,
-      hireDate: true
     }
   });
 
@@ -90,7 +89,10 @@ async function calculateWithholdingData(employeeId: number, year: number) {
 
   return {
     employee: {
-      ...employee,
+      id: employee.id,
+      employeeId: employee.employeeId,
+      name: employee.name,
+      department: employee.department,
       idNumber: maskedIdNumber
     },
     year,
@@ -117,6 +119,10 @@ function generateHTMLCertificate(data: Awaited<ReturnType<typeof calculateWithho
   if (!data) return '';
 
   const { employee, year, totals } = data;
+  const safeEmployeeName = escapeHtml(employee.name);
+  const safeEmployeeId = escapeHtml(employee.employeeId);
+  const safeEmployeeDepartment = escapeHtml(employee.department || '-');
+  const safeEmployeeIdNumber = employee.idNumber ? escapeHtml(employee.idNumber) : null;
 
   return `
 <!DOCTYPE html>
@@ -124,7 +130,7 @@ function generateHTMLCertificate(data: Awaited<ReturnType<typeof calculateWithho
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${year}年度扣繳憑單 - ${employee.name}</title>
+  <title>${year}年度扣繳憑單 - ${safeEmployeeName}</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     @page { size: A4; margin: 8mm; }
@@ -328,15 +334,15 @@ function generateHTMLCertificate(data: Awaited<ReturnType<typeof calculateWithho
     <div class="info-section">
       <div class="info-card">
         <h3>👤 所得人資料</h3>
-        <div class="info-item"><span class="info-label">姓名</span><span class="info-value">${employee.name}</span></div>
-        ${employee.idNumber ? `<div class="info-item"><span class="info-label">身分證字號</span><span class="info-value">${employee.idNumber}</span></div>` : ''}
-        <div class="info-item"><span class="info-label">所屬部門</span><span class="info-value">${employee.department || '-'}</span></div>
+        <div class="info-item"><span class="info-label">姓名</span><span class="info-value">${safeEmployeeName}</span></div>
+        ${safeEmployeeIdNumber ? `<div class="info-item"><span class="info-label">身分證字號</span><span class="info-value">${safeEmployeeIdNumber}</span></div>` : ''}
+        <div class="info-item"><span class="info-label">所屬部門</span><span class="info-value">${safeEmployeeDepartment}</span></div>
       </div>
       <div class="info-card">
         <h3>📊 所得類別</h3>
         <div class="info-item"><span class="info-label">所得代碼</span><span class="info-value">50 - 薪資所得</span></div>
         <div class="info-item"><span class="info-label">服務月數</span><span class="info-value">${data.monthsWorked} 個月</span></div>
-        <div class="info-item"><span class="info-label">員工編號</span><span class="info-value">${employee.employeeId}</span></div>
+        <div class="info-item"><span class="info-label">員工編號</span><span class="info-value">${safeEmployeeId}</span></div>
       </div>
     </div>
 
@@ -421,7 +427,7 @@ function generateHTMLCertificate(data: Awaited<ReturnType<typeof calculateWithho
     <!-- 頁尾 -->
     <div class="footer">
       <div class="confidential-notice">
-        🔒 本扣繳憑單專供 ${employee.name} (${employee.employeeId}) 查閱
+        🔒 本扣繳憑單專供 ${safeEmployeeName} (${safeEmployeeId}) 查閱
       </div>
       <p>製表日期：${new Date().toLocaleDateString('zh-TW')} | 長福會考勤管理系統</p>
     </div>
@@ -438,14 +444,32 @@ export async function GET(request: NextRequest) {
     }
 
     const { searchParams } = new URL(request.url);
-    const year = parseInt(searchParams.get('year') || new Date().getFullYear().toString());
+    const yearResult = parseIntegerQueryParam(searchParams.get('year'), {
+      defaultValue: new Date().getFullYear(),
+      min: 1900,
+      max: 9999,
+    });
+    if (!yearResult.isValid) {
+      return NextResponse.json({ error: '無效的年份參數' }, { status: 400 });
+    }
+
+    const year = yearResult.value!;
     const employeeIdParam = searchParams.get('employeeId');
     const format = searchParams.get('format') || 'json'; // json, html, pdf
+
+    if (!['json', 'html', 'pdf'].includes(format)) {
+      return NextResponse.json({ error: '無效的格式參數' }, { status: 400 });
+    }
 
     // 權限檢查
     let targetEmployeeId: number;
     if (employeeIdParam && (user.role === 'ADMIN' || user.role === 'HR')) {
-      targetEmployeeId = parseInt(employeeIdParam);
+      const employeeIdResult = parseIntegerQueryParam(employeeIdParam, { min: 1 });
+      if (!employeeIdResult.isValid || employeeIdResult.value === null) {
+        return NextResponse.json({ error: '無效的員工編號參數' }, { status: 400 });
+      }
+
+      targetEmployeeId = employeeIdResult.value;
     } else {
       targetEmployeeId = user.employeeId;
     }

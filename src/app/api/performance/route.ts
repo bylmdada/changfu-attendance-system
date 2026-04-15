@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getUserFromRequest } from '@/lib/auth';
+import { validateCSRF } from '@/lib/csrf';
 import { checkRateLimit } from '@/lib/rate-limit';
+import { safeParseJSON } from '@/lib/validation';
 import {
   getSystemPerformance,
   getEndpointPerformance,
@@ -8,6 +10,10 @@ import {
   getPerformanceRecommendations,
   cleanupPerformanceData
 } from '@/lib/performance-monitoring';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
 
 // 獲取性能監控數據
 export async function GET(request: NextRequest) {
@@ -94,7 +100,26 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '需要管理員權限執行性能維護' }, { status: 403 });
     }
 
-    const { action, daysToKeep } = await request.json();
+    const csrfResult = await validateCSRF(request);
+    if (!csrfResult.valid) {
+      return NextResponse.json(
+        { error: csrfResult.error || 'CSRF validation failed' },
+        { status: 403 }
+      );
+    }
+
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json({ error: '無效的 JSON 格式' }, { status: 400 });
+    }
+
+    const body = parseResult.data;
+    const action = isPlainObject(body) && typeof body.action === 'string'
+      ? body.action
+      : undefined;
+    const daysToKeep = isPlainObject(body) && typeof body.daysToKeep === 'number'
+      ? body.daysToKeep
+      : undefined;
 
     switch (action) {
       case 'cleanup':

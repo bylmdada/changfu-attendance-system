@@ -5,28 +5,41 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
 import { prisma } from '@/lib/database';
 import { validateCSRF } from '@/lib/csrf';
+import { parseIntegerQueryParam } from '@/lib/query-params';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
 
 // GET - 取得國定假日補休記錄
 export async function GET(request: NextRequest) {
   try {
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const decoded = await getUserFromRequest(request);
+    if (!decoded) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded) {
-      return NextResponse.json({ error: '無效的認證令牌' }, { status: 401 });
+    const searchParams = request.nextUrl.searchParams;
+    const parsedYear = parseIntegerQueryParam(searchParams.get('year'), {
+      defaultValue: new Date().getFullYear(),
+      min: 2000,
+      max: 2100,
+    });
+    const parsedEmployeeId = parseIntegerQueryParam(searchParams.get('employeeId'), { min: 1 });
+
+    if (!parsedYear.isValid || parsedYear.value === null) {
+      return NextResponse.json({ error: 'year 格式錯誤' }, { status: 400 });
     }
 
-    const searchParams = request.nextUrl.searchParams;
-    const year = parseInt(searchParams.get('year') || new Date().getFullYear().toString());
-    const employeeId = searchParams.get('employeeId');
+    if (!parsedEmployeeId.isValid) {
+      return NextResponse.json({ error: 'employeeId 格式錯誤' }, { status: 400 });
+    }
+
+    const year = parsedYear.value;
 
     // 取得用戶角色
     const user = await prisma.user.findUnique({
@@ -41,10 +54,10 @@ export async function GET(request: NextRequest) {
     // 根據角色決定查詢範圍
     const isAdmin = user.role === 'ADMIN' || user.role === 'HR';
     
-    let whereClause: { year: number; employeeId?: number } = { year };
+    const whereClause: { year: number; employeeId?: number } = { year };
     
-    if (employeeId && isAdmin) {
-      whereClause.employeeId = parseInt(employeeId);
+    if (parsedEmployeeId.value !== null && isAdmin) {
+      whereClause.employeeId = parsedEmployeeId.value;
     } else if (!isAdmin && user.employeeId) {
       whereClause.employeeId = user.employeeId;
     }
@@ -86,16 +99,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: csrfResult.error || 'CSRF驗證失敗' }, { status: 403 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
-      return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
-    }
-
-    const decoded = await getUserFromToken(token);
+    const decoded = await getUserFromRequest(request);
     if (!decoded) {
-      return NextResponse.json({ error: '無效的認證令牌' }, { status: 401 });
+      return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
     // 檢查權限
@@ -108,16 +114,48 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
 
-    const body = await request.json();
-    const { employeeId, holidayId, workedOnDate, compensationDate, status, notes } = body;
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的補休資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
 
-    if (!employeeId || !holidayId) {
+    const body = parseResult.data;
+    if (!isPlainObject(body)) {
+      return NextResponse.json({ error: '請提供有效的補休資料' }, { status: 400 });
+    }
+
+    const parsedEmployeeId = parseIntegerQueryParam(
+      typeof body.employeeId === 'number' ? String(body.employeeId) : typeof body.employeeId === 'string' ? body.employeeId : null,
+      { min: 1 }
+    );
+    const parsedHolidayId = parseIntegerQueryParam(
+      typeof body.holidayId === 'number' ? String(body.holidayId) : typeof body.holidayId === 'string' ? body.holidayId : null,
+      { min: 1 }
+    );
+
+    if (!parsedEmployeeId.isValid) {
+      return NextResponse.json({ error: 'employeeId 格式錯誤' }, { status: 400 });
+    }
+
+    if (!parsedHolidayId.isValid) {
+      return NextResponse.json({ error: 'holidayId 格式錯誤' }, { status: 400 });
+    }
+
+    if (parsedEmployeeId.value === null || parsedHolidayId.value === null) {
       return NextResponse.json({ error: '缺少必要欄位' }, { status: 400 });
     }
 
+    const workedOnDate = typeof body.workedOnDate === 'boolean' ? body.workedOnDate : undefined;
+    const compensationDate = typeof body.compensationDate === 'string' ? body.compensationDate : null;
+    const status = typeof body.status === 'string' ? body.status : undefined;
+    const notes = typeof body.notes === 'string' ? body.notes : null;
+
     // 取得國定假日資訊
     const holiday = await prisma.holiday.findUnique({
-      where: { id: holidayId }
+      where: { id: parsedHolidayId.value }
     });
 
     if (!holiday) {
@@ -128,8 +166,8 @@ export async function POST(request: NextRequest) {
     const compensation = await prisma.holidayCompensation.upsert({
       where: {
         employeeId_holidayId: {
-          employeeId: parseInt(employeeId),
-          holidayId: parseInt(holidayId)
+          employeeId: parsedEmployeeId.value,
+          holidayId: parsedHolidayId.value
         }
       },
       update: {
@@ -140,8 +178,8 @@ export async function POST(request: NextRequest) {
         updatedAt: new Date()
       },
       create: {
-        employeeId: parseInt(employeeId),
-        holidayId: parseInt(holidayId),
+        employeeId: parsedEmployeeId.value,
+        holidayId: parsedHolidayId.value,
         holidayDate: holiday.date,
         holidayName: holiday.name,
         workedOnDate: workedOnDate ?? false,
@@ -171,16 +209,9 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: csrfResult.error || 'CSRF驗證失敗' }, { status: 403 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
-      return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
-    }
-
-    const decoded = await getUserFromToken(token);
+    const decoded = await getUserFromRequest(request);
     if (!decoded) {
-      return NextResponse.json({ error: '無效的認證令牌' }, { status: 401 });
+      return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
     // 檢查權限
@@ -193,16 +224,37 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
 
-    const body = await request.json();
-    const { id, compensationDate } = body;
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的補休資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
 
-    if (!id) {
+    const body = parseResult.data;
+    if (!isPlainObject(body)) {
+      return NextResponse.json({ error: '請提供有效的補休資料' }, { status: 400 });
+    }
+
+    const parsedId = parseIntegerQueryParam(
+      typeof body.id === 'number' ? String(body.id) : typeof body.id === 'string' ? body.id : null,
+      { min: 1 }
+    );
+
+    if (!parsedId.isValid) {
+      return NextResponse.json({ error: '記錄ID 格式錯誤' }, { status: 400 });
+    }
+
+    if (parsedId.value === null) {
       return NextResponse.json({ error: '缺少記錄 ID' }, { status: 400 });
     }
 
+    const compensationDate = typeof body.compensationDate === 'string' ? body.compensationDate : null;
+
     // 更新補休日期
     const compensation = await prisma.holidayCompensation.update({
-      where: { id: parseInt(id) },
+      where: { id: parsedId.value },
       data: {
         compensationDate: compensationDate ? new Date(compensationDate) : null,
         status: compensationDate ? 'TAKEN' : 'PENDING',

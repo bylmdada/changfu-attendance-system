@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { 
   FileText, 
   Download, 
@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import { LOGO_BASE64 } from '@/lib/logoBase64';
+import { escapeCsvValue } from '@/lib/csv';
 
 interface PayrollRecord {
   id: number;
@@ -685,30 +686,21 @@ export default function ReportsPage() {
       '正常工時', '加班工時', '基本薪資', '加班費', '總薪資', '實領薪資'
     ];
     
-    // 處理包含逗號或引號的欄位
-    const escapeCSV = (value: string | number): string => {
-      const str = String(value);
-      if (str.includes(',') || str.includes('"') || str.includes('\n')) {
-        return `"${str.replace(/"/g, '""')}"`;
-      }
-      return str;
-    };
-    
     const csvData = [
-      headers.map(escapeCSV).join(','),
+      headers.map(escapeCsvValue).join(','),
       ...sortedRecords.map(record => [
-        escapeCSV(record.employee.employeeId),
-        escapeCSV(record.employee.name),
-        escapeCSV(record.employee.department || ''),
-        escapeCSV(record.employee.position || ''),
-        record.payYear,
-        record.payMonth,
-        record.regularHours,
-        record.overtimeHours,
-        record.basePay,
-        record.overtimePay,
-        record.grossPay,
-        record.netPay
+        escapeCsvValue(record.employee.employeeId),
+        escapeCsvValue(record.employee.name),
+        escapeCsvValue(record.employee.department || ''),
+        escapeCsvValue(record.employee.position || ''),
+        escapeCsvValue(record.payYear),
+        escapeCsvValue(record.payMonth),
+        escapeCsvValue(record.regularHours),
+        escapeCsvValue(record.overtimeHours),
+        escapeCsvValue(record.basePay),
+        escapeCsvValue(record.overtimePay),
+        escapeCsvValue(record.grossPay),
+        escapeCsvValue(record.netPay)
       ].join(','))
     ].join('\n');
 
@@ -815,6 +807,21 @@ export default function ReportsPage() {
     }
   });
 
+  const displayStats = useMemo(() => {
+    const totalEmployees = filteredRecords.length;
+    const totalGrossPay = filteredRecords.reduce((sum, record) => sum + record.grossPay, 0);
+    const totalNetPay = filteredRecords.reduce((sum, record) => sum + record.netPay, 0);
+    const totalOvertimeHours = filteredRecords.reduce((sum, record) => sum + record.overtimeHours, 0);
+
+    return {
+      totalEmployees,
+      totalGrossPay,
+      totalNetPay,
+      totalOvertimeHours,
+      avgSalary: totalEmployees > 0 ? totalGrossPay / totalEmployees : 0,
+    };
+  }, [filteredRecords]);
+
   // 批量匯出薪資條
   const batchExportPayslips = async () => {
     if (selectedIds.size === 0) return;
@@ -823,6 +830,7 @@ export default function ReportsPage() {
     try {
       const selectedRecords = sortedRecords.filter(r => selectedIds.has(r.id));
       let successCount = 0;
+      const failedIds: number[] = [];
       
       for (const record of selectedRecords) {
         const response = await fetch(`/api/payroll/payslip?payrollId=${record.id}`, {
@@ -845,11 +853,21 @@ export default function ReportsPage() {
           await new Promise(resolve => setTimeout(resolve, 500));
           URL.revokeObjectURL(url);
           successCount++;
+        } else {
+          failedIds.push(record.id);
         }
       }
-      
+
+      if (successCount === 0) {
+        showToast('error', '批量匯出失敗，請稍後再試');
+        return;
+      }
+
       showToast('success', `已成功匯出 ${successCount} 份薪資條`);
-      setSelectedIds(new Set());
+      if (failedIds.length > 0) {
+        showToast('error', `另有 ${failedIds.length} 份薪資條匯出失敗`);
+      }
+      setSelectedIds(new Set(failedIds));
     } catch (error) {
       console.error('批量匯出失敗:', error);
       showToast('error', '批量匯出失敗');
@@ -864,31 +882,22 @@ export default function ReportsPage() {
       '正常工時', '加班工時', '基本薪資', '加班費', '總薪資', '實領薪資'
     ];
     
-    // 處理包含逗號或引號的欄位
-    const escapeCSV = (value: string | number): string => {
-      const str = String(value);
-      if (str.includes(',') || str.includes('"') || str.includes('\n')) {
-        return `"${str.replace(/"/g, '""')}"`;
-      }
-      return str;
-    };
-    
     // 使用 CSV 格式 (Excel 可正常開啟)
     const excelData = [
-      headers.map(escapeCSV).join(','),
+      headers.map(escapeCsvValue).join(','),
       ...sortedRecords.map(record => [
-        escapeCSV(record.employee.employeeId),
-        escapeCSV(record.employee.name),
-        escapeCSV(record.employee.department || ''),
-        escapeCSV(record.employee.position || ''),
-        record.payYear,
-        record.payMonth,
-        record.regularHours,
-        record.overtimeHours,
-        record.basePay,
-        record.overtimePay,
-        record.grossPay,
-        record.netPay
+        escapeCsvValue(record.employee.employeeId),
+        escapeCsvValue(record.employee.name),
+        escapeCsvValue(record.employee.department || ''),
+        escapeCsvValue(record.employee.position || ''),
+        escapeCsvValue(record.payYear),
+        escapeCsvValue(record.payMonth),
+        escapeCsvValue(record.regularHours),
+        escapeCsvValue(record.overtimeHours),
+        escapeCsvValue(record.basePay),
+        escapeCsvValue(record.overtimePay),
+        escapeCsvValue(record.grossPay),
+        escapeCsvValue(record.netPay)
       ].join(','))
     ].join('\n');
 
@@ -1090,7 +1099,7 @@ export default function ReportsPage() {
                 <Users className="h-8 w-8 text-blue-600" />
                 <div className="ml-4">
                   <p className="text-sm font-medium text-gray-600">員工數</p>
-                  <p className="text-2xl font-bold text-gray-900">{stats.totalEmployees}</p>
+                  <p className="text-2xl font-bold text-gray-900">{displayStats.totalEmployees}</p>
                 </div>
               </div>
             </div>
@@ -1103,7 +1112,7 @@ export default function ReportsPage() {
                     <div className="ml-4">
                       <p className="text-sm font-medium text-gray-600">總薪資</p>
                       <p className="text-2xl font-bold text-gray-900">
-                        {stats.totalGrossPay.toLocaleString()}
+                        {displayStats.totalGrossPay.toLocaleString()}
                       </p>
                     </div>
                   </div>
@@ -1114,7 +1123,7 @@ export default function ReportsPage() {
                     <div className="ml-4">
                       <p className="text-sm font-medium text-gray-600">實領總額</p>
                       <p className="text-2xl font-bold text-gray-900">
-                        {stats.totalNetPay.toLocaleString()}
+                        {displayStats.totalNetPay.toLocaleString()}
                       </p>
                     </div>
                   </div>
@@ -1124,7 +1133,7 @@ export default function ReportsPage() {
                     <Calendar className="h-8 w-8 text-orange-600" />
                     <div className="ml-4">
                       <p className="text-sm font-medium text-gray-600">總加班時數</p>
-                      <p className="text-2xl font-bold text-gray-900">{stats.totalOvertimeHours}</p>
+                      <p className="text-2xl font-bold text-gray-900">{displayStats.totalOvertimeHours}</p>
                     </div>
                   </div>
                 </div>
@@ -1134,7 +1143,7 @@ export default function ReportsPage() {
                     <div className="ml-4">
                       <p className="text-sm font-medium text-gray-600">平均薪資</p>
                       <p className="text-2xl font-bold text-gray-900">
-                        {Math.round(stats.avgSalary).toLocaleString()}
+                        {Math.round(displayStats.avgSalary).toLocaleString()}
                       </p>
                     </div>
                   </div>
@@ -1244,7 +1253,7 @@ export default function ReportsPage() {
                     <div className="ml-4">
                       <p className="text-sm font-medium text-gray-600">總薪資</p>
                       <p className="text-2xl font-bold text-gray-900">
-                        {stats.totalGrossPay.toLocaleString()}
+                        {displayStats.totalGrossPay.toLocaleString()}
                       </p>
                     </div>
                   </div>
@@ -1266,7 +1275,7 @@ export default function ReportsPage() {
                     <div className="ml-4">
                       <p className="text-sm font-medium text-gray-600">稅後實領</p>
                       <p className="text-2xl font-bold text-gray-900">
-                        {(stats.totalGrossPay - sortedRecords.reduce((sum, r) => sum + calculateIncomeTax(r.grossPay).withholdingTax, 0)).toLocaleString()}
+                        {(displayStats.totalGrossPay - sortedRecords.reduce((sum, r) => sum + calculateIncomeTax(r.grossPay).withholdingTax, 0)).toLocaleString()}
                       </p>
                     </div>
                   </div>

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 
 // GET - 取得即時加班狀態
@@ -11,16 +11,9 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
-      return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
-    }
-
-    const decoded = await getUserFromToken(token);
+    const decoded = await getUserFromRequest(request);
     if (!decoded) {
-      return NextResponse.json({ error: '無效的認證令牌' }, { status: 401 });
+      return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
     const employeeId = decoded.employeeId;

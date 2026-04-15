@@ -3,29 +3,22 @@
  * POST - 開始設定 2FA（產生密鑰和 QR Code）
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
+import { validateCSRF } from '@/lib/csrf';
 import { generateTOTPSecret, generateQRCode, generateBackupCodes } from '@/lib/totp';
 import { encrypt } from '@/lib/encryption';
 
-export async function POST(_request: NextRequest) {
+export async function POST(request: NextRequest) {
   try {
-    const cookieStore = await cookies();
-    const token = cookieStore.get('auth-token')?.value;
-    
-    if (!token) {
+    const user = await getUserFromRequest(request);
+    if (!user) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
-    
-    const user = await getUserFromToken(token);
-    if (!user) {
-      return NextResponse.json({ error: '無效的 Token' }, { status: 401 });
-    }
 
-    // 只允許 ADMIN 和 HR 設定 2FA
-    if (user.role !== 'ADMIN' && user.role !== 'HR') {
-      return NextResponse.json({ error: '只有管理員和 HR 可以設定雙因素驗證' }, { status: 403 });
+    const csrfResult = await validateCSRF(request);
+    if (!csrfResult.valid) {
+      return NextResponse.json({ error: 'CSRF驗證失敗，請重新操作' }, { status: 403 });
     }
 
     // 取得用戶資料
@@ -36,6 +29,13 @@ export async function POST(_request: NextRequest) {
 
     if (!dbUser) {
       return NextResponse.json({ error: '用戶不存在' }, { status: 404 });
+    }
+
+    if (dbUser.twoFactorEnabled) {
+      return NextResponse.json(
+        { error: '雙因素驗證已啟用，如需重新設定請先停用' },
+        { status: 409 }
+      );
     }
 
     // 產生新的 TOTP 密鑰

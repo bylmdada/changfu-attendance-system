@@ -1,21 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
+import { getTaiwanTodayEnd, getTaiwanTodayStart, toTaiwanDateStr } from '@/lib/timezone';
 
 export async function GET(request: NextRequest) {
   try {
-    // Debug: 檢查 cookies
-    const authToken = request.cookies.get('auth-token')?.value;
-    console.log('📊 [today-summary] Cookie檢查:', { 
-      'auth-token': authToken ? '存在' : '不存在',
-      hasAuthToken: !!authToken
-    });
-
     const userPayload = await getUserFromRequest(request);
-    console.log('📊 [today-summary] 身份驗證:', userPayload ? '成功' : '失敗', userPayload ? { userId: userPayload.userId, role: userPayload.role } : null);
-    
     if (!userPayload) {
-      console.log('❌ [today-summary] 無效的身份驗證 - 返回 401');
       return NextResponse.json({ error: '需要登入' }, { status: 401 });
     }
 
@@ -26,24 +17,22 @@ export async function GET(request: NextRequest) {
       }
     });
 
-    console.log('📊 [today-summary] 用戶查詢:', user ? { id: user.id, isActive: user.isActive, hasEmployee: !!user.employee } : '找不到用戶');
-
     if (!user || !user.isActive || !user.employee) {
-      console.log('❌ [today-summary] 用戶狀態無效 - 返回 401');
       return NextResponse.json({ error: '需要登入' }, { status: 401 });
     }
 
-    const today = new Date();
-    const taiwanToday = new Date(today.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
-    const todayStr = `${taiwanToday.getFullYear()}-${String(taiwanToday.getMonth() + 1).padStart(2, '0')}-${String(taiwanToday.getDate()).padStart(2, '0')}`;
+    const now = new Date();
+    const todayStart = getTaiwanTodayStart(now);
+    const todayEnd = getTaiwanTodayEnd(now);
+    const todayStr = toTaiwanDateStr(now);
 
     // 查詢今日考勤記錄
     const todayRecord = await prisma.attendanceRecord.findFirst({
       where: {
         employeeId: user.employee.id,
         workDate: {
-          gte: new Date(todayStr + 'T00:00:00.000Z'),
-          lt: new Date(todayStr + 'T23:59:59.999Z')
+          gte: todayStart,
+          lt: todayEnd
         }
       }
     });
@@ -78,13 +67,13 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // 如果是管理員，取得所有員工的今日出勤統計
-    if (user.employee.position === 'MANAGER' || user.employee.position === 'ADMIN') {
+    // 只有具備管理權限的角色才能取得全公司今日出勤統計
+    if (user.role === 'ADMIN' || user.role === 'HR') {
       const todayAttendanceCount = await prisma.attendanceRecord.count({
         where: {
           workDate: {
-            gte: new Date(todayStr + 'T00:00:00.000Z'),
-            lt: new Date(todayStr + 'T23:59:59.999Z')
+            gte: todayStart,
+            lt: todayEnd
           },
           status: 'PRESENT'
         }

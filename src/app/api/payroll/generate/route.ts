@@ -9,6 +9,15 @@ import {
   type AttendanceForPayroll
 } from '@/lib/payroll-calculator';
 import { OvertimeType } from '@/lib/overtime-calculator';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function asStringOrNumber(value: unknown): string | number | undefined {
+  return typeof value === 'string' || typeof value === 'number' ? value : undefined;
+}
 
 // 輔助函數：取得國定假日
 async function getHolidaysForMonth(year: number, month: number): Promise<Set<string>> {
@@ -112,14 +121,24 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '無權限執行此操作' }, { status: 403 });
     }
 
-    const { payYear, payMonth, employeeIds, department, includeBonus = true } = await request.json();
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json({ error: '無效的 JSON 格式' }, { status: 400 });
+    }
+
+    const body = parseResult.data;
+    const payYear = isPlainObject(body) ? asStringOrNumber(body.payYear) : undefined;
+    const payMonth = isPlainObject(body) ? asStringOrNumber(body.payMonth) : undefined;
+    const employeeIds = isPlainObject(body) && Array.isArray(body.employeeIds) ? body.employeeIds : undefined;
+    const department = isPlainObject(body) && typeof body.department === 'string' ? body.department : undefined;
+    const includeBonus = isPlainObject(body) && typeof body.includeBonus === 'boolean' ? body.includeBonus : true;
 
     if (!payYear || !payMonth) {
       return NextResponse.json({ error: '年份和月份為必填' }, { status: 400 });
     }
 
-    const year = parseInt(payYear);
-    const month = parseInt(payMonth);
+    const year = Number(payYear);
+    const month = Number(payMonth);
 
     // 取得國定假日
     const holidayDates = await getHolidaysForMonth(year, month);
@@ -300,6 +319,13 @@ export async function POST(request: NextRequest) {
         console.error(`為員工 ${employee.name} 生成薪資記錄失敗:`, error);
         errors.push(`員工 ${employee.name} (${employee.employeeId}) 薪資記錄生成失敗`);
       }
+    }
+
+    if (results.length === 0 && errors.length > 0) {
+      return NextResponse.json({
+        error: errors.length === 1 ? errors[0] : '批量生成薪資記錄失敗，請檢查錯誤明細後再試',
+        errors,
+      }, { status: 400 });
     }
 
     return NextResponse.json({

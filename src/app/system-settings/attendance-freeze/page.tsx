@@ -4,6 +4,10 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Save, AlertTriangle, Lock } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
+import {
+  buildAttendanceFreezeRequest,
+  buildAuthMeRequest,
+} from '@/lib/attendance-freeze-client';
 import SystemNavbar from '@/components/SystemNavbar';
 
 interface AttendanceFreezeSettings {
@@ -40,20 +44,12 @@ export default function AttendanceFreezePage() {
   });
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  // Helper function to get auth headers
-  const getAuthHeaders = (): HeadersInit => {
-    if (typeof window === 'undefined') return {};
-    const token = localStorage.getItem('token');
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  };
-
   useEffect(() => {
     const fetchUser = async () => {
       try {
-        const response = await fetch('/api/auth/me', {
-          credentials: 'include',
-          headers: getAuthHeaders()
-        });
+        const origin = window.location.origin;
+        const authMeRequest = buildAuthMeRequest(origin);
+        const response = await fetch(authMeRequest.url, authMeRequest.options);
         
         if (response.ok) {
           const userData = await response.json();
@@ -84,9 +80,9 @@ export default function AttendanceFreezePage() {
 
   const loadSettings = async () => {
     try {
-      const response = await fetch('/api/system-settings/attendance-freeze', {
-        credentials: 'include'
-      });
+      const origin = window.location.origin;
+      const settingsRequest = buildAttendanceFreezeRequest(origin);
+      const response = await fetch(settingsRequest.url, settingsRequest.options);
       
       if (response.ok) {
         const data = await response.json();

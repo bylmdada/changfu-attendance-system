@@ -1,8 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { getUserFromRequest, getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { parseIntegerQueryParam } from '@/lib/query-params';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 // GET - 獲取調班申請列表
 export async function GET(request: NextRequest) {
@@ -34,7 +40,11 @@ export async function GET(request: NextRequest) {
         { targetEmployeeId: user.employeeId }
       ];
     } else if (employeeId) {
-      whereClause.requesterId = parseInt(employeeId);
+      const employeeIdResult = parseIntegerQueryParam(employeeId, { min: 1, max: 99999999 });
+      if (!employeeIdResult.isValid || employeeIdResult.value === null) {
+        return NextResponse.json({ error: 'employeeId 格式錯誤' }, { status: 400 });
+      }
+      whereClause.requesterId = employeeIdResult.value;
     }
 
     if (status) {
@@ -103,8 +113,33 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const body = await request.json();
-    const { targetEmployeeId, originalWorkDate, targetWorkDate, requestReason } = body;
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的調班申請資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const body = parseResult.data;
+    if (!isPlainObject(body)) {
+      return NextResponse.json({ error: '請提供有效的調班申請資料' }, { status: 400 });
+    }
+
+    const targetEmployeeIdResult = parseIntegerQueryParam(
+      body.targetEmployeeId === undefined || body.targetEmployeeId === null || body.targetEmployeeId === ''
+        ? null
+        : String(body.targetEmployeeId),
+      { min: 1, max: 99999999 }
+    );
+    if (!targetEmployeeIdResult.isValid || targetEmployeeIdResult.value === null) {
+      return NextResponse.json({ error: 'targetEmployeeId 格式錯誤' }, { status: 400 });
+    }
+
+    const targetEmployeeId = targetEmployeeIdResult.value;
+    const originalWorkDate = typeof body.originalWorkDate === 'string' ? body.originalWorkDate : '';
+    const targetWorkDate = typeof body.targetWorkDate === 'string' ? body.targetWorkDate : '';
+    const requestReason = typeof body.requestReason === 'string' ? body.requestReason : '';
 
     // 驗證必填欄位
     if (!targetEmployeeId || !originalWorkDate || !targetWorkDate || !requestReason) {
@@ -114,13 +149,13 @@ export async function POST(request: NextRequest) {
     }
 
     // 不能跟自己調班
-    if (parseInt(targetEmployeeId) === user.employeeId) {
+    if (targetEmployeeId === user.employeeId) {
       return NextResponse.json({ error: '不能與自己調班' }, { status: 400 });
     }
 
     // 檢查目標員工是否存在
     const targetEmployee = await prisma.employee.findUnique({
-      where: { id: parseInt(targetEmployeeId) }
+      where: { id: targetEmployeeId }
     });
 
     if (!targetEmployee) {
@@ -131,7 +166,7 @@ export async function POST(request: NextRequest) {
     const existingRequest = await prisma.shiftExchangeRequest.findFirst({
       where: {
         requesterId: user.employeeId,
-        targetEmployeeId: parseInt(targetEmployeeId),
+        targetEmployeeId,
         originalWorkDate,
         targetWorkDate,
         status: 'PENDING'
@@ -157,7 +192,7 @@ export async function POST(request: NextRequest) {
     // 驗證目標員工在目標日期有班表
     const targetSchedule = await prisma.schedule.findFirst({
       where: {
-        employeeId: parseInt(targetEmployeeId),
+        employeeId: targetEmployeeId,
         workDate: targetWorkDate
       }
     });
@@ -170,7 +205,7 @@ export async function POST(request: NextRequest) {
     const newRequest = await prisma.shiftExchangeRequest.create({
       data: {
         requesterId: user.employeeId,
-        targetEmployeeId: parseInt(targetEmployeeId),
+        targetEmployeeId,
         originalWorkDate,
         targetWorkDate,
         requestReason,
@@ -220,20 +255,41 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: 'CSRF驗證失敗' }, { status: 403 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const user = await getUserFromRequest(request);
+    if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded || (decoded.role !== 'ADMIN' && decoded.role !== 'HR')) {
+    if (user.role !== 'ADMIN' && user.role !== 'HR') {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
 
-    const body = await request.json();
-    const { id, status, adminRemarks } = body;
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的調班審核資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const body = parseResult.data;
+    if (!isPlainObject(body)) {
+      return NextResponse.json({ error: '請提供有效的調班審核資料' }, { status: 400 });
+    }
+
+    const idResult = parseIntegerQueryParam(
+      body.id === undefined || body.id === null || body.id === ''
+        ? null
+        : String(body.id),
+      { min: 1, max: 99999999 }
+    );
+    if (!idResult.isValid || idResult.value === null) {
+      return NextResponse.json({ error: '申請ID 格式錯誤' }, { status: 400 });
+    }
+
+    const id = idResult.value;
+    const status = typeof body.status === 'string' ? body.status : '';
+    const adminRemarks = typeof body.adminRemarks === 'string' ? body.adminRemarks : undefined;
 
     if (!id || !status) {
       return NextResponse.json({ error: '申請ID和審核狀態為必填' }, { status: 400 });
@@ -245,7 +301,7 @@ export async function PUT(request: NextRequest) {
 
     // 查找申請
     const existingRequest = await prisma.shiftExchangeRequest.findUnique({
-      where: { id: parseInt(id) },
+      where: { id },
       include: {
         requester: true,
         targetEmployee: true
@@ -260,66 +316,88 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: '此申請已被處理' }, { status: 400 });
     }
 
-    // 更新申請狀態
-    const updatedRequest = await prisma.shiftExchangeRequest.update({
-      where: { id: parseInt(id) },
-      data: {
-        status,
-        adminRemarks: adminRemarks || null,
-        approvedBy: decoded.employeeId,
-        approvedAt: new Date()
-      },
-      include: {
-        requester: {
-          select: { id: true, employeeId: true, name: true, department: true }
-        },
-        targetEmployee: {
-          select: { id: true, employeeId: true, name: true, department: true }
-        },
-        approver: {
-          select: { id: true, employeeId: true, name: true }
-        }
-      }
-    });
+    let updatedRequest;
 
-    // 如果批准，交換兩人的班表
     if (status === 'APPROVED') {
-      // 獲取兩人的班表
-      const requesterSchedule = await prisma.schedule.findFirst({
-        where: {
-          employeeId: existingRequest.requesterId,
-          workDate: existingRequest.originalWorkDate
-        }
-      });
-
-      const targetSchedule = await prisma.schedule.findFirst({
-        where: {
-          employeeId: existingRequest.targetEmployeeId,
-          workDate: existingRequest.targetWorkDate
-        }
-      });
-
-      if (requesterSchedule && targetSchedule) {
-        // 交換班表 - 更新申請者的班表為目標員工的班型
-        await prisma.schedule.update({
-          where: { id: requesterSchedule.id },
+      updatedRequest = await prisma.$transaction(async (tx) => {
+        const approvedRequest = await tx.shiftExchangeRequest.update({
+          where: { id },
           data: {
-            shiftType: targetSchedule.shiftType,
-            startTime: targetSchedule.startTime,
-            endTime: targetSchedule.endTime
+            status,
+            adminRemarks: adminRemarks || null,
+            approvedBy: user.employeeId,
+            approvedAt: new Date()
+          },
+          include: {
+            requester: {
+              select: { id: true, employeeId: true, name: true, department: true }
+            },
+            targetEmployee: {
+              select: { id: true, employeeId: true, name: true, department: true }
+            },
+            approver: {
+              select: { id: true, employeeId: true, name: true }
+            }
           }
         });
 
-        // 更新目標員工的班表為申請者的班型
-        await prisma.schedule.update({
-          where: { id: targetSchedule.id },
-          data: {
-            shiftType: requesterSchedule.shiftType,
-            startTime: requesterSchedule.startTime,
-            endTime: requesterSchedule.endTime
+        const requesterSchedule = await tx.schedule.findFirst({
+          where: {
+            employeeId: existingRequest.requesterId,
+            workDate: existingRequest.originalWorkDate
           }
         });
-      }
+
+        const targetSchedule = await tx.schedule.findFirst({
+          where: {
+            employeeId: existingRequest.targetEmployeeId,
+            workDate: existingRequest.targetWorkDate
+          }
+        });
+
+        if (requesterSchedule && targetSchedule) {
+          await tx.schedule.update({
+            where: { id: requesterSchedule.id },
+            data: {
+              shiftType: targetSchedule.shiftType,
+              startTime: targetSchedule.startTime,
+              endTime: targetSchedule.endTime
+            }
+          });
+
+          await tx.schedule.update({
+            where: { id: targetSchedule.id },
+            data: {
+              shiftType: requesterSchedule.shiftType,
+              startTime: requesterSchedule.startTime,
+              endTime: requesterSchedule.endTime
+            }
+          });
+        }
+
+        return approvedRequest;
+      });
+    } else {
+      updatedRequest = await prisma.shiftExchangeRequest.update({
+        where: { id },
+        data: {
+          status,
+          adminRemarks: adminRemarks || null,
+          approvedBy: user.employeeId,
+          approvedAt: new Date()
+        },
+        include: {
+          requester: {
+            select: { id: true, employeeId: true, name: true, department: true }
+          },
+          targetEmployee: {
+            select: { id: true, employeeId: true, name: true, department: true }
+          },
+          approver: {
+            select: { id: true, employeeId: true, name: true }
+          }
+        }
+      });
     }
 
     return NextResponse.json({
@@ -346,8 +424,35 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const body = await request.json();
-    const { id } = body;
+    const csrfResult = await validateCSRF(request);
+    if (!csrfResult.valid) {
+      return NextResponse.json({ error: 'CSRF驗證失敗' }, { status: 403 });
+    }
+
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的調班取消資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const body = parseResult.data;
+    if (!isPlainObject(body)) {
+      return NextResponse.json({ error: '請提供有效的調班取消資料' }, { status: 400 });
+    }
+
+    const idResult = parseIntegerQueryParam(
+      body.id === undefined || body.id === null || body.id === ''
+        ? null
+        : String(body.id),
+      { min: 1, max: 99999999 }
+    );
+    if (!idResult.isValid || idResult.value === null) {
+      return NextResponse.json({ error: '申請ID 格式錯誤' }, { status: 400 });
+    }
+
+    const id = idResult.value;
 
     if (!id) {
       return NextResponse.json({ error: '申請ID為必填' }, { status: 400 });
@@ -355,7 +460,7 @@ export async function DELETE(request: NextRequest) {
 
     // 查找申請
     const existingRequest = await prisma.shiftExchangeRequest.findUnique({
-      where: { id: parseInt(id) }
+      where: { id }
     });
 
     if (!existingRequest) {
@@ -374,7 +479,7 @@ export async function DELETE(request: NextRequest) {
     }
 
     await prisma.shiftExchangeRequest.delete({
-      where: { id: parseInt(id) }
+      where: { id }
     });
 
     return NextResponse.json({

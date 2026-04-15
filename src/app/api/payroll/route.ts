@@ -6,6 +6,16 @@ import { Prisma } from '@prisma/client';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { calculatePerfectAttendanceBonus } from '@/lib/perfect-attendance';
+import { buildSuccessPayload } from '@/lib/api-response';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function asStringOrNumber(value: unknown): string | number | undefined {
+  return typeof value === 'string' || typeof value === 'number' ? value : undefined;
+}
 
 function buildEmployeeSelect(includeExtended: boolean): Prisma.EmployeeSelect {
   const employeeModel = Prisma.dmmf.datamodel.models.find(m => m.name === 'Employee');
@@ -77,7 +87,7 @@ export async function GET(request: NextRequest) {
       ]
     });
 
-    return NextResponse.json({ payrollRecords });
+    return NextResponse.json(buildSuccessPayload({ payrollRecords }));
   } catch (error) {
     console.error('獲取薪資記錄失敗:', error);
     return NextResponse.json({ error: '系統錯誤' }, { status: 500 });
@@ -112,19 +122,31 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '無權限執行此操作' }, { status: 403 });
     }
 
-    const { employeeId, payYear, payMonth } = await request.json();
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json({ error: '無效的 JSON 格式' }, { status: 400 });
+    }
+
+    const body = parseResult.data;
+    const employeeId = isPlainObject(body) ? asStringOrNumber(body.employeeId) : undefined;
+    const payYear = isPlainObject(body) ? asStringOrNumber(body.payYear) : undefined;
+    const payMonth = isPlainObject(body) ? asStringOrNumber(body.payMonth) : undefined;
 
     // 驗證必填欄位
     if (!employeeId || !payYear || !payMonth) {
       return NextResponse.json({ error: '員工ID、年份和月份為必填' }, { status: 400 });
     }
 
+    const employeeIdNumber = Number(employeeId);
+    const payYearNumber = Number(payYear);
+    const payMonthNumber = Number(payMonth);
+
     // 檢查是否已存在該月份的薪資記錄
     const existingRecord = await prisma.payrollRecord.findFirst({
       where: {
-        employeeId: parseInt(employeeId),
-        payYear: parseInt(payYear),
-        payMonth: parseInt(payMonth)
+        employeeId: employeeIdNumber,
+        payYear: payYearNumber,
+        payMonth: payMonthNumber
       }
     });
 
@@ -134,7 +156,7 @@ export async function POST(request: NextRequest) {
 
     // 獲取員工資訊
     const employee = await prisma.employee.findUnique({
-      where: { id: parseInt(employeeId) }
+      where: { id: employeeIdNumber }
     });
 
     if (!employee) {
@@ -142,12 +164,12 @@ export async function POST(request: NextRequest) {
     }
 
     // 計算該月份的考勤記錄
-    const startDate = new Date(parseInt(payYear), parseInt(payMonth) - 1, 1);
-    const endDate = new Date(parseInt(payYear), parseInt(payMonth), 0);
+    const startDate = new Date(payYearNumber, payMonthNumber - 1, 1);
+    const endDate = new Date(payYearNumber, payMonthNumber, 0);
 
     const attendanceRecords = await prisma.attendanceRecord.findMany({
       where: {
-        employeeId: parseInt(employeeId),
+        employeeId: employeeIdNumber,
         workDate: {
           gte: startDate,
           lte: endDate
@@ -177,8 +199,8 @@ export async function POST(request: NextRequest) {
     try {
       const paResult = await calculatePerfectAttendanceBonus(
         employee.id,
-        parseInt(payYear),
-        parseInt(payMonth)
+        payYearNumber,
+        payMonthNumber
       );
       if (paResult.eligible) {
         perfectAttendanceBonus = paResult.actualAmount;
@@ -196,8 +218,8 @@ export async function POST(request: NextRequest) {
       const bonusRecords = await prisma.bonusRecord.findMany({
         where: {
           employeeId: employee.id,
-          payrollYear: parseInt(payYear),
-          payrollMonth: parseInt(payMonth)
+          payrollYear: payYearNumber,
+          payrollMonth: payMonthNumber
         }
       });
       
@@ -218,9 +240,9 @@ export async function POST(request: NextRequest) {
 
     // 基本 payload，符合目前 Prisma Client 的型別
     const baseData: Prisma.PayrollRecordUncheckedCreateInput = {
-      employeeId: parseInt(employeeId),
-      payYear: parseInt(payYear),
-      payMonth: parseInt(payMonth),
+      employeeId: employeeIdNumber,
+      payYear: payYearNumber,
+      payMonth: payMonthNumber,
       regularHours: totalRegularHours,
       overtimeHours: totalOvertimeHours,
       basePay,
@@ -246,11 +268,12 @@ export async function POST(request: NextRequest) {
       data: payload,
     });
 
-    return NextResponse.json({
-      success: true,
-      payrollRecord,
-      message: '薪資記錄創建成功'
-    });
+    return NextResponse.json(
+      buildSuccessPayload({
+        payrollRecord,
+        message: '薪資記錄創建成功'
+      })
+    );
   } catch (error) {
     console.error('創建薪資記錄失敗:', error);
     return NextResponse.json({ error: '系統錯誤' }, { status: 500 });

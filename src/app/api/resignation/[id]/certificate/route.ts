@@ -6,6 +6,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
+import { parseIntegerQueryParam } from '@/lib/query-params';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const fontkit = require('fontkit');
@@ -14,6 +15,11 @@ import * as path from 'path';
 
 interface RouteParams {
   params: Promise<{ id: string }>;
+}
+
+function parseRecordId(value: string): number | null {
+  const parsedId = parseIntegerQueryParam(value, { min: 1 });
+  return parsedId.isValid ? parsedId.value : null;
 }
 
 export async function GET(request: NextRequest, { params }: RouteParams) {
@@ -29,7 +35,11 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     }
 
     const { id } = await params;
-    const recordId = parseInt(id);
+    const recordId = parseRecordId(id);
+
+    if (recordId === null) {
+      return NextResponse.json({ error: '離職申請ID格式無效' }, { status: 400 });
+    }
 
     // 取得離職記錄
     const record = await prisma.resignationRecord.findUnique({

@@ -10,6 +10,7 @@
  */
 
 import { prisma } from './database';
+import { safeParseSystemSettingsValue } from './system-settings-json';
 
 // 全勤獎金設定
 export interface PerfectAttendanceConfig {
@@ -52,6 +53,24 @@ export const DEFAULT_PERFECT_ATTENDANCE_CONFIG: PerfectAttendanceConfig = {
   ]
 };
 
+function normalizePerfectAttendanceConfig(
+  config: Partial<PerfectAttendanceConfig> | null | undefined
+): PerfectAttendanceConfig {
+  return {
+    enabled: typeof config?.enabled === 'boolean' ? config.enabled : DEFAULT_PERFECT_ATTENDANCE_CONFIG.enabled,
+    amount:
+      typeof config?.amount === 'number' && Number.isFinite(config.amount)
+        ? config.amount
+        : DEFAULT_PERFECT_ATTENDANCE_CONFIG.amount,
+    applicableDepartments: Array.isArray(config?.applicableDepartments)
+      ? config.applicableDepartments
+      : DEFAULT_PERFECT_ATTENDANCE_CONFIG.applicableDepartments,
+    excludedLeaveTypes: Array.isArray(config?.excludedLeaveTypes)
+      ? config.excludedLeaveTypes
+      : DEFAULT_PERFECT_ATTENDANCE_CONFIG.excludedLeaveTypes,
+  };
+}
+
 // 影響全勤的假別
 const AFFECTED_LEAVE_TYPES = [
   'PERSONAL',    // 事假
@@ -68,13 +87,19 @@ export async function getPerfectAttendanceConfig(): Promise<PerfectAttendanceCon
     });
 
     if (setting?.value) {
-      return JSON.parse(setting.value as string);
+      const parsedValue = safeParseSystemSettingsValue<Partial<PerfectAttendanceConfig>>(
+        setting.value as string,
+        DEFAULT_PERFECT_ATTENDANCE_CONFIG,
+        'perfectAttendanceBonus'
+      );
+
+      return normalizePerfectAttendanceConfig(parsedValue);
     }
   } catch (error) {
     console.warn('讀取全勤獎金設定失敗，使用預設值:', error);
   }
 
-  return DEFAULT_PERFECT_ATTENDANCE_CONFIG;
+  return normalizePerfectAttendanceConfig(DEFAULT_PERFECT_ATTENDANCE_CONFIG);
 }
 
 /**

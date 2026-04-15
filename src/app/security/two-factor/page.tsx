@@ -10,14 +10,13 @@ import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 
 interface TwoFactorStatus {
   enabled: boolean;
-  isAdmin: boolean;
+  required: boolean;
+  role: string;
 }
 
 interface SetupData {
   secret: string;
   qrCode: string;
-  accountName: string;
-  appName: string;
 }
 
 export default function TwoFactorPage() {
@@ -26,29 +25,22 @@ export default function TwoFactorPage() {
   const [status, setStatus] = useState<TwoFactorStatus | null>(null);
   const [setupData, setSetupData] = useState<SetupData | null>(null);
   const [verifyCode, setVerifyCode] = useState('');
-  const [disableCode, setDisableCode] = useState('');
+  const [disablePassword, setDisablePassword] = useState('');
   const [backupCodes, setBackupCodes] = useState<string[]>([]);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [processing, setProcessing] = useState(false);
   const [showSetup, setShowSetup] = useState(false);
   const [showDisable, setShowDisable] = useState(false);
 
-  const getAuthHeaders = (): HeadersInit => {
-    if (typeof window === 'undefined') return {};
-    const token = localStorage.getItem('token');
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  };
-
   const loadStatus = useCallback(async () => {
     try {
-      const response = await fetch('/api/auth/two-factor', {
-        credentials: 'include',
-        headers: getAuthHeaders()
+      const response = await fetch('/api/auth/2fa/status', {
+        credentials: 'include'
       });
 
       if (response.ok) {
         const data = await response.json();
-        setStatus(data.twoFactor);
+        setStatus(data);
       } else if (response.status === 401) {
         router.push('/login');
       }
@@ -68,14 +60,17 @@ export default function TwoFactorPage() {
     setMessage(null);
 
     try {
-      const response = await fetch('/api/auth/two-factor?action=setup', {
-        credentials: 'include',
-        headers: getAuthHeaders()
+      const response = await fetchJSONWithCSRF('/api/auth/2fa/setup', {
+        method: 'POST'
       });
 
       if (response.ok) {
         const data = await response.json();
-        setSetupData(data.setup);
+        setSetupData({
+          secret: data.secret,
+          qrCode: data.qrCode
+        });
+        setBackupCodes(data.backupCodes ?? []);
         setShowSetup(true);
       } else {
         const data = await response.json();
@@ -99,14 +94,12 @@ export default function TwoFactorPage() {
     setMessage(null);
 
     try {
-      const response = await fetchJSONWithCSRF('/api/auth/two-factor', {
+      const response = await fetchJSONWithCSRF('/api/auth/2fa/verify', {
         method: 'POST',
-        body: { action: 'enable', code: verifyCode }
+        body: { code: verifyCode }
       });
 
       if (response.ok) {
-        const data = await response.json();
-        setBackupCodes(data.backupCodes);
         setStatus({ ...status!, enabled: true });
         setShowSetup(false);
         setSetupData(null);
@@ -125,8 +118,8 @@ export default function TwoFactorPage() {
   };
 
   const handleDisable = async () => {
-    if (!disableCode) {
-      setMessage({ type: 'error', text: '請輸入驗證碼或備用碼' });
+    if (!disablePassword) {
+      setMessage({ type: 'error', text: '請輸入密碼確認停用 2FA' });
       return;
     }
 
@@ -134,15 +127,15 @@ export default function TwoFactorPage() {
     setMessage(null);
 
     try {
-      const response = await fetchJSONWithCSRF('/api/auth/two-factor', {
+      const response = await fetchJSONWithCSRF('/api/auth/2fa/disable', {
         method: 'POST',
-        body: { action: 'disable', code: disableCode }
+        body: { password: disablePassword }
       });
 
       if (response.ok) {
         setStatus({ ...status!, enabled: false });
         setShowDisable(false);
-        setDisableCode('');
+        setDisablePassword('');
         setBackupCodes([]);
         setMessage({ type: 'success', text: '2FA 已停用' });
       } else {
@@ -253,6 +246,11 @@ export default function TwoFactorPage() {
                     ? '已啟用 - 您的帳號受到額外保護' 
                     : '未啟用 - 建議啟用以增強帳號安全性'}
                 </p>
+                {status?.required && (
+                  <p className="mt-1 text-xs text-blue-600">
+                    您的角色目前被列為必須完成 2FA 驗證的帳號。
+                  </p>
+                )}
               </div>
             </div>
             
@@ -370,6 +368,7 @@ export default function TwoFactorPage() {
                   setShowSetup(false);
                   setSetupData(null);
                   setVerifyCode('');
+                  setBackupCodes([]);
                 }}
                 className="text-sm text-gray-500 hover:text-gray-700"
               >
@@ -384,20 +383,20 @@ export default function TwoFactorPage() {
           <div className="bg-white rounded-xl shadow-sm border p-6 mb-6">
             <h3 className="text-lg font-semibold text-red-700 mb-4">停用雙因素驗證</h3>
             <p className="text-sm text-gray-600 mb-4">
-              停用 2FA 會降低帳號安全性。請輸入當前的驗證碼或備用碼以確認。
+              停用 2FA 會降低帳號安全性。請輸入目前登入密碼以確認停用。
             </p>
             
             <div className="flex gap-3">
               <input
-                type="text"
-                value={disableCode}
-                onChange={(e) => setDisableCode(e.target.value.toUpperCase())}
-                placeholder="驗證碼或備用碼"
+                type="password"
+                value={disablePassword}
+                onChange={(e) => setDisablePassword(e.target.value)}
+                placeholder="輸入密碼"
                 className="flex-1 px-4 py-2 border rounded-lg focus:ring-2 focus:ring-red-500"
               />
               <button
                 onClick={handleDisable}
-                disabled={processing || !disableCode}
+                disabled={processing || !disablePassword}
                 className="px-6 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50"
               >
                 {processing ? <Loader2 className="w-5 h-5 animate-spin" /> : '確認停用'}
@@ -408,7 +407,7 @@ export default function TwoFactorPage() {
               <button
                 onClick={() => {
                   setShowDisable(false);
-                  setDisableCode('');
+                  setDisablePassword('');
                 }}
                 className="text-sm text-gray-500 hover:text-gray-700"
               >

@@ -40,14 +40,6 @@ export async function optimizeDatabase() {
   }
 }
 
-// 僅在伺服器運行時環境執行優化（避免預渲染問題）
-if (typeof window === 'undefined' && process.env.NODE_ENV !== 'production') {
-  // 延遲執行，避免模組加載時阻塞
-  setImmediate(() => {
-    optimizeDatabase().catch(() => {});
-  });
-}
-
 if (process.env.NODE_ENV !== 'production') {
   globalThis.prisma = prisma;
 }

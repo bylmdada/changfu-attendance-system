@@ -2,7 +2,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 
 // GET - 取得所有員工的補休餘額列表
@@ -13,25 +13,18 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const user = await getUserFromRequest(request);
+    if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
-    }
-
-    const decoded = await getUserFromToken(token);
-    if (!decoded) {
-      return NextResponse.json({ error: '無效的認證令牌' }, { status: 401 });
     }
 
     const { searchParams } = new URL(request.url);
     const department = searchParams.get('department');
 
     // 一般員工只能看自己的
-    if (!['ADMIN', 'HR'].includes(decoded.role)) {
+    if (!['ADMIN', 'HR'].includes(user.role)) {
       const balance = await prisma.compLeaveBalance.findUnique({
-        where: { employeeId: decoded.employeeId },
+        where: { employeeId: user.employeeId },
         include: {
           employee: {
             select: {

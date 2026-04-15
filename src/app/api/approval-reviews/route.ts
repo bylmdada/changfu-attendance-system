@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
+import { isReviewerFor } from '@/lib/approval-service';
+import { getApprovalWorkflow } from '@/lib/approval-workflow';
 
 /**
  * 取得特定申請單的審核歷程 API
@@ -35,13 +37,28 @@ export async function GET(request: NextRequest) {
     });
 
     if (!instance) {
+      const workflow = await getApprovalWorkflow(requestType);
+
       return NextResponse.json({
         success: true,
         currentLevel: 1,
-        maxLevel: 3,
+        maxLevel: workflow?.approvalLevel ?? 2,
         status: 'PENDING',
         reviews: []
       });
+    }
+
+    const isPrivilegedRole = user.role === 'ADMIN' || user.role === 'HR';
+    const isApplicant = user.employeeId === instance.applicantId;
+    let canView = isPrivilegedRole || isApplicant;
+
+    if (!canView && instance.department) {
+      const reviewerPermission = await isReviewerFor(user.employeeId, instance.department);
+      canView = reviewerPermission.isReviewer;
+    }
+
+    if (!canView) {
+      return NextResponse.json({ error: '無權查看此審核歷程' }, { status: 403 });
     }
 
     // 格式化審核記錄

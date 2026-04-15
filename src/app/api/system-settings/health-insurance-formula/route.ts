@@ -1,25 +1,73 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import jwt from 'jsonwebtoken';
+import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { safeParseJSON } from '@/lib/validation';
+
+const DEFAULT_HEALTH_INSURANCE_CONFIG = {
+  id: 0,
+  premiumRate: 0.0517,
+  employeeContributionRatio: 0.30,
+  maxDependents: 3,
+  supplementaryRate: 0.0211,
+  supplementaryThreshold: 4,
+  isActive: true
+};
+
+const DEFAULT_HEALTH_INSURANCE_SALARY_LEVELS = [
+  { level: 1, minSalary: 0, maxSalary: 25000, insuredAmount: 25200 },
+  { level: 2, minSalary: 25001, maxSalary: 30000, insuredAmount: 30300 },
+  { level: 3, minSalary: 30001, maxSalary: 36000, insuredAmount: 36300 },
+  { level: 4, minSalary: 36001, maxSalary: 40000, insuredAmount: 40100 },
+  { level: 5, minSalary: 40001, maxSalary: 44000, insuredAmount: 44000 },
+  { level: 6, minSalary: 44001, maxSalary: 50000, insuredAmount: 50800 },
+  { level: 7, minSalary: 50001, maxSalary: 55000, insuredAmount: 55800 },
+  { level: 8, minSalary: 55001, maxSalary: 60000, insuredAmount: 60100 },
+  { level: 9, minSalary: 60001, maxSalary: 70000, insuredAmount: 69100 },
+  { level: 10, minSalary: 70001, maxSalary: 80000, insuredAmount: 78800 },
+  { level: 11, minSalary: 80001, maxSalary: 90000, insuredAmount: 87600 },
+  { level: 12, minSalary: 90001, maxSalary: 100000, insuredAmount: 96200 },
+  { level: 13, minSalary: 100001, maxSalary: 110000, insuredAmount: 105500 },
+  { level: 14, minSalary: 110001, maxSalary: 120000, insuredAmount: 115500 },
+  { level: 15, minSalary: 120001, maxSalary: 999999999, insuredAmount: 182000 }
+];
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parseSalaryLevelEntry(value: unknown) {
+  if (!isPlainObject(value)) {
+    return { success: false as const, error: '薪資級距資料格式無效' };
+  }
+
+  const { level, minSalary, maxSalary, insuredAmount } = value;
+
+  if (
+    typeof level !== 'number' || !Number.isInteger(level) || level < 1 ||
+    typeof minSalary !== 'number' || !Number.isFinite(minSalary) || minSalary < 0 ||
+    typeof maxSalary !== 'number' || !Number.isFinite(maxSalary) || maxSalary < minSalary ||
+    typeof insuredAmount !== 'number' || !Number.isFinite(insuredAmount) || insuredAmount < 0
+  ) {
+    return { success: false as const, error: '薪資級距資料格式無效' };
+  }
+
+  return {
+    success: true as const,
+    value: {
+      level,
+      minSalary,
+      maxSalary,
+      insuredAmount,
+    },
+  };
+}
 
 // 驗證 admin 權限
 async function verifyAdmin(request: NextRequest) {
   try {
-    const token = request.cookies.get('auth-token')?.value;
-    if (!token) {
-      return null;
-    }
-
-    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as { userId: number };
-    const user = await prisma.user.findUnique({
-      where: { id: decoded.userId },
-      include: {
-        employee: true
-      }
-    });
-
+    const user = await getUserFromRequest(request);
     return user?.role === 'ADMIN' ? user : null;
   } catch {
     return null;
@@ -46,74 +94,14 @@ export async function GET(request: NextRequest) {
     });
 
     if (!config) {
-      // 如果沒有配置，創建預設配置
-      const defaultConfig = await prisma.healthInsuranceConfig.create({
-        data: {
-          premiumRate: 0.0517, // 5.17%
-          employeeContributionRatio: 0.30, // 30%
-          maxDependents: 3,
-          supplementaryRate: 0.0211, // 2.11%
-          supplementaryThreshold: 4, // 4倍
-          effectiveDate: new Date(),
-          isActive: true
-        },
-        include: {
-          salaryLevels: true
-        }
-      });
-
-      // 創建預設薪資級距
-      const defaultSalaryLevels = [
-        { level: 1, minSalary: 0, maxSalary: 25000, insuredAmount: 25200 },
-        { level: 2, minSalary: 25001, maxSalary: 30000, insuredAmount: 30300 },
-        { level: 3, minSalary: 30001, maxSalary: 36000, insuredAmount: 36300 },
-        { level: 4, minSalary: 36001, maxSalary: 40000, insuredAmount: 40100 },
-        { level: 5, minSalary: 40001, maxSalary: 44000, insuredAmount: 44000 },
-        { level: 6, minSalary: 44001, maxSalary: 50000, insuredAmount: 50800 },
-        { level: 7, minSalary: 50001, maxSalary: 55000, insuredAmount: 55800 },
-        { level: 8, minSalary: 55001, maxSalary: 60000, insuredAmount: 60100 },
-        { level: 9, minSalary: 60001, maxSalary: 70000, insuredAmount: 69100 },
-        { level: 10, minSalary: 70001, maxSalary: 80000, insuredAmount: 78800 },
-        { level: 11, minSalary: 80001, maxSalary: 90000, insuredAmount: 87600 },
-        { level: 12, minSalary: 90001, maxSalary: 100000, insuredAmount: 96200 },
-        { level: 13, minSalary: 100001, maxSalary: 110000, insuredAmount: 105500 },
-        { level: 14, minSalary: 110001, maxSalary: 120000, insuredAmount: 115500 },
-        { level: 15, minSalary: 120001, maxSalary: 999999999, insuredAmount: 182000 }
-      ];
-
-      for (const salaryLevel of defaultSalaryLevels) {
-        await prisma.healthInsuranceSalaryLevel.create({
-          data: {
-            ...salaryLevel,
-            configId: defaultConfig.id
-          }
-        });
-      }
-
-      // 重新取得完整資料
-      const fullConfig = await prisma.healthInsuranceConfig.findUnique({
-        where: { id: defaultConfig.id },
-        include: {
-          salaryLevels: {
-            orderBy: { level: 'asc' }
-          }
-        }
-      });
-
+      // 尚未初始化時直接回傳預設值，避免 GET 產生 hidden write 與首讀競態
       return NextResponse.json({
         success: true,
         config: {
-          id: fullConfig!.id,
-          premiumRate: fullConfig!.premiumRate,
-          employeeContributionRatio: fullConfig!.employeeContributionRatio,
-          maxDependents: fullConfig!.maxDependents,
-          supplementaryRate: fullConfig!.supplementaryRate,
-          supplementaryThreshold: fullConfig!.supplementaryThreshold,
-          effectiveDate: fullConfig!.effectiveDate.toISOString().split('T')[0],
-          isActive: fullConfig!.isActive
+          ...DEFAULT_HEALTH_INSURANCE_CONFIG,
+          effectiveDate: new Date().toISOString().split('T')[0]
         },
-        salaryLevels: fullConfig!.salaryLevels.map(level => ({
-          id: level.id,
+        salaryLevels: DEFAULT_HEALTH_INSURANCE_SALARY_LEVELS.map(level => ({
           level: level.level,
           minSalary: level.minSalary,
           maxSalary: level.maxSalary,
@@ -187,7 +175,22 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
     }
 
-    const data = await request.json();
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的設定資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const data = parseResult.data;
+
+    if (!isPlainObject(data)) {
+      return NextResponse.json(
+        { error: '請提供有效的設定資料' },
+        { status: 400 }
+      );
+    }
     
     // 4. 資料大小驗證
     const jsonString = JSON.stringify(data);
@@ -197,10 +200,67 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
-    const { config, salaryLevels } = data;
+    const { config, salaryLevels } = data as {
+      config?: {
+        id?: number;
+        premiumRate?: number;
+        employeeContributionRatio?: number;
+        maxDependents?: number;
+        supplementaryRate?: number;
+        supplementaryThreshold?: number;
+        effectiveDate?: string;
+        isActive?: boolean;
+      };
+      salaryLevels?: Array<{
+        level: number;
+        minSalary: number;
+        maxSalary: number;
+        insuredAmount: number;
+      }>;
+    };
+
+    const normalizedConfig = config ? {
+      id: typeof config.id === 'number' ? config.id : null,
+      premiumRate: typeof config.premiumRate === 'number' ? config.premiumRate : null,
+      employeeContributionRatio: typeof config.employeeContributionRatio === 'number' ? config.employeeContributionRatio : null,
+      maxDependents: typeof config.maxDependents === 'number' ? config.maxDependents : DEFAULT_HEALTH_INSURANCE_CONFIG.maxDependents,
+      supplementaryRate: typeof config.supplementaryRate === 'number' ? config.supplementaryRate : DEFAULT_HEALTH_INSURANCE_CONFIG.supplementaryRate,
+      supplementaryThreshold: typeof config.supplementaryThreshold === 'number' ? config.supplementaryThreshold : DEFAULT_HEALTH_INSURANCE_CONFIG.supplementaryThreshold,
+      effectiveDate: typeof config.effectiveDate === 'string' ? config.effectiveDate : '',
+      isActive: typeof config.isActive === 'boolean' ? config.isActive : true,
+    } : null;
+
+    if (salaryLevels !== undefined && !Array.isArray(salaryLevels)) {
+      return NextResponse.json(
+        { error: '薪資級距資料格式無效' },
+        { status: 400 }
+      );
+    }
+
+    const normalizedSalaryLevels = Array.isArray(salaryLevels)
+      ? salaryLevels.map((level) => parseSalaryLevelEntry(level))
+      : [];
+
+    const validatedSalaryLevels: Array<{
+      level: number;
+      minSalary: number;
+      maxSalary: number;
+      insuredAmount: number;
+    }> = [];
+
+    for (const result of normalizedSalaryLevels) {
+      if (!result.success) {
+        return NextResponse.json(
+          { error: result.error },
+          { status: 400 }
+        );
+      }
+
+      validatedSalaryLevels.push(result.value);
+    }
 
     // 驗證必填欄位
-    if (!config || !config.premiumRate || !config.employeeContributionRatio || !config.effectiveDate) {
+    if (!normalizedConfig || normalizedConfig.premiumRate === null || normalizedConfig.employeeContributionRatio === null || !normalizedConfig.effectiveDate) {
       return NextResponse.json(
         { error: '請填寫所有必填欄位' },
         { status: 400 }
@@ -208,26 +268,37 @@ export async function POST(request: NextRequest) {
     }
 
     // 驗證費率範圍
-    if (config.premiumRate < 0 || config.premiumRate > 0.1) {
+    if (normalizedConfig.premiumRate < 0 || normalizedConfig.premiumRate > 0.1) {
       return NextResponse.json(
         { error: '健保費率必須在 0% 到 10% 之間' },
         { status: 400 }
       );
     }
 
-    if (config.employeeContributionRatio < 0 || config.employeeContributionRatio > 1) {
+    if (normalizedConfig.employeeContributionRatio < 0 || normalizedConfig.employeeContributionRatio > 1) {
       return NextResponse.json(
         { error: '員工負擔比例必須在 0% 到 100% 之間' },
         { status: 400 }
       );
     }
 
+    const validatedConfig = {
+      id: normalizedConfig.id,
+      premiumRate: normalizedConfig.premiumRate,
+      employeeContributionRatio: normalizedConfig.employeeContributionRatio,
+      maxDependents: normalizedConfig.maxDependents,
+      supplementaryRate: normalizedConfig.supplementaryRate,
+      supplementaryThreshold: normalizedConfig.supplementaryThreshold,
+      effectiveDate: normalizedConfig.effectiveDate,
+      isActive: normalizedConfig.isActive,
+    };
+
     // 驗證薪資級距
-    if (salaryLevels && salaryLevels.length > 0) {
+    if (validatedSalaryLevels.length > 0) {
       // 檢查級距是否有重疊
-      for (let i = 0; i < salaryLevels.length - 1; i++) {
-        const current = salaryLevels[i];
-        const next = salaryLevels[i + 1];
+      for (let i = 0; i < validatedSalaryLevels.length - 1; i++) {
+        const current = validatedSalaryLevels[i];
+        const next = validatedSalaryLevels[i + 1];
         
         if (current.maxSalary >= next.minSalary) {
           return NextResponse.json(
@@ -242,43 +313,43 @@ export async function POST(request: NextRequest) {
     const result = await prisma.$transaction(async (tx) => {
       // 如果是更新現有配置
       let savedConfig;
-      if (config.id) {
+      if (validatedConfig.id !== null) {
         // 更新配置
         savedConfig = await tx.healthInsuranceConfig.update({
-          where: { id: config.id },
+          where: { id: validatedConfig.id },
           data: {
-            premiumRate: config.premiumRate,
-            employeeContributionRatio: config.employeeContributionRatio,
-            maxDependents: config.maxDependents,
-            supplementaryRate: config.supplementaryRate,
-            supplementaryThreshold: config.supplementaryThreshold,
-            effectiveDate: new Date(config.effectiveDate),
-            isActive: config.isActive
+            premiumRate: validatedConfig.premiumRate,
+            employeeContributionRatio: validatedConfig.employeeContributionRatio,
+            maxDependents: validatedConfig.maxDependents,
+            supplementaryRate: validatedConfig.supplementaryRate,
+            supplementaryThreshold: validatedConfig.supplementaryThreshold,
+            effectiveDate: new Date(validatedConfig.effectiveDate),
+            isActive: validatedConfig.isActive
           }
         });
 
         // 刪除舊的薪資級距
         await tx.healthInsuranceSalaryLevel.deleteMany({
-          where: { configId: config.id }
+          where: { configId: validatedConfig.id }
         });
       } else {
         // 新建配置
         savedConfig = await tx.healthInsuranceConfig.create({
           data: {
-            premiumRate: config.premiumRate,
-            employeeContributionRatio: config.employeeContributionRatio,
-            maxDependents: config.maxDependents,
-            supplementaryRate: config.supplementaryRate,
-            supplementaryThreshold: config.supplementaryThreshold,
-            effectiveDate: new Date(config.effectiveDate),
-            isActive: config.isActive
+            premiumRate: validatedConfig.premiumRate,
+            employeeContributionRatio: validatedConfig.employeeContributionRatio,
+            maxDependents: validatedConfig.maxDependents,
+            supplementaryRate: validatedConfig.supplementaryRate,
+            supplementaryThreshold: validatedConfig.supplementaryThreshold,
+            effectiveDate: new Date(validatedConfig.effectiveDate),
+            isActive: validatedConfig.isActive
           }
         });
       }
 
       // 新增薪資級距
-      if (salaryLevels && salaryLevels.length > 0) {
-        for (const level of salaryLevels) {
+      if (validatedSalaryLevels.length > 0) {
+        for (const level of validatedSalaryLevels) {
           await tx.healthInsuranceSalaryLevel.create({
             data: {
               configId: savedConfig.id,

@@ -292,7 +292,7 @@ export async function invalidateConfirmation(
         select: { name: true }
       });
 
-      const [year, month] = yearMonth.split('-');
+      const [, month] = yearMonth.split('-');
       
       await prisma.notification.create({
         data: {

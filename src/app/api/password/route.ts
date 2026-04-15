@@ -1,8 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { getUserFromToken, hashPassword, verifyPassword, validatePassword } from '@/lib/auth';
+import { getUserFromRequest, hashPassword, verifyPassword, validatePassword } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
 
 // 修改自己的密碼
 export async function PUT(request: NextRequest) {
@@ -19,19 +24,26 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: 'CSRF token validation failed' }, { status: 403 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const decoded = await getUserFromRequest(request);
+    if (!decoded) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded) {
-      return NextResponse.json({ error: '無效的認證令牌' }, { status: 401 });
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '當前密碼和新密碼為必填' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
     }
 
-    const { currentPassword, newPassword } = await request.json();
+    const body = parseResult.data;
+    if (!isPlainObject(body)) {
+      return NextResponse.json({ error: '當前密碼和新密碼為必填' }, { status: 400 });
+    }
+
+    const currentPassword = typeof body.currentPassword === 'string' ? body.currentPassword : '';
+    const newPassword = typeof body.newPassword === 'string' ? body.newPassword : '';
 
     if (!currentPassword || !newPassword) {
       return NextResponse.json({ error: '當前密碼和新密碼為必填' }, { status: 400 });
@@ -95,19 +107,35 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'CSRF token validation failed' }, { status: 403 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const decoded = await getUserFromRequest(request);
+
+    if (!decoded) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded || (decoded.role !== 'ADMIN' && decoded.role !== 'HR')) {
+    if (decoded.role !== 'ADMIN' && decoded.role !== 'HR') {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
 
-    const { userId, newPassword } = await request.json();
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '用戶ID和新密碼為必填' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const body = parseResult.data;
+    if (!isPlainObject(body)) {
+      return NextResponse.json({ error: '用戶ID和新密碼為必填' }, { status: 400 });
+    }
+
+    const userId = typeof body.userId === 'string'
+      ? body.userId.trim()
+      : typeof body.userId === 'number'
+        ? String(body.userId)
+        : '';
+    const newPassword = typeof body.newPassword === 'string' ? body.newPassword : '';
 
     if (!userId || !newPassword) {
       return NextResponse.json({ error: '用戶ID和新密碼為必填' }, { status: 400 });

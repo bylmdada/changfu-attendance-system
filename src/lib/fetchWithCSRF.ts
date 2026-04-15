@@ -9,6 +9,24 @@ let cachedCSRFToken: string | null = null;
 let tokenExpiry: number = 0;
 const TOKEN_CACHE_DURATION = 23 * 60 * 60 * 1000; // 23小時（token 24小時過期）
 
+async function isCSRFErrorResponse(response: Response): Promise<boolean> {
+  if (response.status !== 403) {
+    return false;
+  }
+
+  try {
+    const payload = await response.clone().json();
+    const text = [payload?.error, payload?.details]
+      .filter((value): value is string => typeof value === 'string')
+      .join(' ')
+      .toLowerCase();
+
+    return text.includes('csrf');
+  } catch {
+    return false;
+  }
+}
+
 /**
  * 獲取 CSRF Token
  */
@@ -90,8 +108,29 @@ export async function fetchWithCSRF(
       'x-csrf-token': csrfToken
     };
   }
-  
-  return fetch(url, fetchOptions);
+
+  const response = await fetch(url, fetchOptions);
+
+  if (CSRF_METHODS.includes(method) && await isCSRFErrorResponse(response)) {
+    clearCSRFToken();
+
+    const freshToken = await getCSRFToken();
+    if (!freshToken) {
+      return response;
+    }
+
+    const retryHeaders = {
+      ...((fetchOptions.headers as Record<string, string> | undefined) || {}),
+      'x-csrf-token': freshToken,
+    };
+
+    return fetch(url, {
+      ...fetchOptions,
+      headers: retryHeaders,
+    });
+  }
+
+  return response;
 }
 
 /**

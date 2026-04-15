@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
+import { parseIntegerQueryParam } from '@/lib/query-params';
 
 // GET - 預覽離職結算（不實際執行）
 export async function GET(request: NextRequest) {
@@ -11,15 +12,12 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const decoded = await getUserFromRequest(request);
+    if (!decoded) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded || !['ADMIN', 'HR'].includes(decoded.role)) {
+    if (!['ADMIN', 'HR'].includes(decoded.role)) {
       return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
     }
 
@@ -30,9 +28,16 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: '缺少員工 ID' }, { status: 400 });
     }
 
+    const parsedEmployeeId = parseIntegerQueryParam(employeeId, { min: 1 });
+    if (!parsedEmployeeId.isValid || parsedEmployeeId.value === null) {
+      return NextResponse.json({ error: '員工ID格式無效' }, { status: 400 });
+    }
+
+    const normalizedEmployeeId = parsedEmployeeId.value;
+
     // 檢查員工是否存在
     const employee = await prisma.employee.findUnique({
-      where: { id: parseInt(employeeId) },
+      where: { id: normalizedEmployeeId },
       select: {
         id: true,
         employeeId: true,
@@ -51,7 +56,7 @@ export async function GET(request: NextRequest) {
 
     // 檢查是否已結算過
     const existingSettlement = await prisma.resignationSettlement.findUnique({
-      where: { employeeId: parseInt(employeeId) }
+      where: { employeeId: normalizedEmployeeId }
     });
 
     if (existingSettlement) {
@@ -63,7 +68,7 @@ export async function GET(request: NextRequest) {
 
     // ==================== 1. 補休餘額計算 ====================
     const compBalance = await prisma.compLeaveBalance.findUnique({
-      where: { employeeId: parseInt(employeeId) }
+      where: { employeeId: normalizedEmployeeId }
     });
 
     const compLeaveConfirmed = compBalance ? (compBalance.totalEarned - compBalance.totalUsed) : 0;
@@ -74,7 +79,7 @@ export async function GET(request: NextRequest) {
     const currentYear = new Date().getFullYear();
     const annualLeaves = await prisma.annualLeave.findMany({
       where: {
-        employeeId: parseInt(employeeId),
+        employeeId: normalizedEmployeeId,
         year: currentYear
       },
       select: {

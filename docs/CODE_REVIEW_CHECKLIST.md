@@ -1,0 +1,245 @@
+# Code Review Checklist
+
+最後更新：2026-04-11
+
+## 已修復並驗證
+
+- [x] Leave approval / cancellation route 補上 manager department-scope guard
+- [x] Annual leave recalculation 保留 `usedDays`，不再錯誤重設 `remainingDays`
+- [x] Comp-leave import 補上 CSRF 保護
+- [x] Overtime review / cancellation 補上 manager department-scope guard
+- [x] Overtime batch route 修正狀態與 `approvedBy` 寫入一致性
+- [x] Shift exchange review / cancellation 補上 manager department-scope guard
+- [x] Payroll statistics backend 正確套用 `department` 篩選
+- [x] Payslip management 與 payslip generation / download 使用一致的 template key
+- [x] Missed-clock cancellation 補上 manager department-scope guard
+- [x] Missed-clock batch approve 補上 manager department-scope guard
+- [x] Attendance report 將 `SUPERVISOR` 視野限縮到 manageable departments
+- [x] Dashboard stats 將 `SUPERVISOR` 視野限縮到 manageable departments
+- [x] Dependent statistics `monthlyStats[].estimatedPremium` 改為依健保設定與投保級距估算，不再固定回傳 `0`
+- [x] Generic batch approve route 補上 `SUPERVISOR` department-scope guard，避免跨部門批次核准 leave / overtime / shift exchange
+- [x] Overtime request list GET 對非 `ADMIN` / `HR` 改套 manageable departments，避免 manager/supervisor 未帶條件時讀到全公司申請
+- [x] Attendance today-summary 改用使用者角色而非員工職稱決定是否回傳全公司出勤統計，避免僅因 `position = MANAGER` 外洩公司級資料
+- [x] Holiday compensation stats 忽略非 `ADMIN` / `HR` 查詢上的 `employeeId` 覆寫，避免一般使用者讀取他人個人補休統計
+- [x] Annual-leave calculate GET 補上 `ADMIN` / `HR` 角色限制，避免一般使用者透過 `employeeId` 或未帶條件查詢讀取他人或全員年假計算與歷史資料
+- [x] 2FA route 改為統一走 `getUserFromRequest`，不再混用僅讀 `auth-token` 的舊 cookie 路徑
+- [x] `auth/me` 與 `auth/verify` 改用可保留失效原因的共享 auth helper，修正 `SESSION_INVALID` 分支實際不可達與 `verify` 只認單一 cookie 的分岔
+- [x] `password`、`notification-settings`、`push-subscription` 改為統一走 request-based auth，避免只接受 `auth-token` / Bearer 的手刻雙軌解析
+- [x] `audit-logs`、`resignation-settlement`（含 `preview`）、`batch-approve`、`attendance-freeze` 收斂到共享 request-based auth，移除手刻 cookie / Bearer 解析與不必要的 legacy fallback
+- [x] `purchase-requests`、`holiday-compensations` 改為統一走 request-based auth；`overtime-requests` 移除重複 token fallback，保留共享 session auth 與快速帳密模式兩條必要路徑
+- [x] `overtime-status`、`overtime-alerts`、`overtime-clock` 與 `missed-clock-requests/[id]/cancel`、`shift-exchange-requests/[id]/cancel` 全部收斂到共享 request-based auth，移除手刻 Bearer / cookie 解析
+- [x] `holiday-compensations/stats`、`dashboard-stats`、`missed-clock-requests/[id]/void`、`shift-exchange-requests/[id]/void` 全部收斂到共享 request-based auth，補上統計/作廢端點的 guard 測試
+- [x] `annual-leave/calculate`、`announcements/attachments/[id]`、`schedules/copy`、`cron/overtime-warning` 收斂到共享 request-based auth，並修正 `overtime-warning` 在未設定 `CRON_SECRET` 時會直接略過管理權限驗證的繞過風險
+- [x] `system-settings/smtp`、`system-settings/payslip-email`、`system-settings/health-insurance-formula` 的 GET 改為只回傳 in-memory 預設值，不再於首讀時隱性建立設定資料
+- [x] `system-settings/approval-workflows` 與 `system-settings/payslip-management` 補齊設定一致性：GET 不再隱性建立 reminder/template，`approval-workflows` PUT 會持久化 `enableForward` / `enableCC`，`payslip-management` 首次建立 `isDefault` 範本時會正確保留預設標記
+- [x] `system-settings/labor-law-config`、`system-settings/leave-rules-config` 補齊設定寫入一致性：GET 限制為 `ADMIN` 存取，POST 改用 transaction 先停用舊 active 設定再建立新版本，避免留下多筆 active config
+- [x] `system-settings/bonus-management` 收斂到共享 request-based admin auth，並為 `eligibilityRules`、`paymentSchedule` 等持久化 JSON 欄位加入安全解析 fallback，避免髒資料直接造成 500
+- [x] `system-settings/bonus-config` 補齊共享 request-based admin auth / CSRF guard 測試，並驗證 malformed JSON fallback 與 partial update 保留既有欄位的設定一致性
+- [x] `bonuses` route 補齊 GET / POST / PUT / DELETE guard 測試，驗證非管理角色拒絕、mutating requests 需通過 CSRF，且 `createdBy` 一律取自 authenticated `employeeId`
+- [x] `system-settings/email-notification`、`clock-time-restriction`、`overtime-limit`、`clock-reason-prompt` 對持久化 JSON 設定統一加入安全 fallback 解析，並在更新時改為合併既有設定，避免髒資料 500 與部分欄位更新時被重設為硬編碼預設值；另修正 `overtime-limit` 在未帶 `monthlyLimit` 時未正確檢查 `warningThreshold` 的驗證漏洞
+- [x] `system-settings/gps-attendance`、`leave-expiry`、`overtime-calculation` 對持久化 JSON 設定補上共享安全 fallback 解析，並將 POST/PUT 類更新改為保留既有未提交欄位，避免髒資料造成 500 與 partial update 把其他設定重設為預設值
+- [x] `system-settings/prorated-bonus`、`supplementary-premium` 對持久化 JSON 設定補上共享安全 fallback 解析，並將更新改為先讀既有設定再合併 request body，避免 malformed DB 值造成 500 與 partial update 把未提交欄位重設為預設值；另補 `supplementary-premium.salaryIncludeItems` 巢狀欄位保留邏輯
+- [x] `system-settings/attendance-freeze`、`password-policy` 對持久化 JSON 設定補上共享安全 fallback 解析，並將更新改為保留既有未提交欄位，避免 malformed DB 值造成 500 與後續調整單一欄位時覆寫整份設定
+- [x] `system-settings/dependent-history`、`dependent-enrollment` 補上 query/body 驗證：非法 `dependentId`、`year/month`、`type`、`reportStatus`、日期格式會回傳 400，且 `dependent-history` 查詢 `limit` 會限制在 200 筆內，避免 Prisma 吃到無效條件或無上限拉取
+- [x] `system-settings/holidays` 補上 `year`、`date`、`id` 驗證：非法年份/日期/假日 ID 會回傳 400，不再把 `NaN` 年份或無效日期直接帶進 Prisma 查詢、建立、批量匯入與刪除
+- [x] `system-settings/health-insurance-dependents` 補上 `employeeId`、`id`、日期欄位驗證：非法員工 ID、眷屬 ID、生日 / 加保日 / 退保日 會回傳 400，避免把 `NaN` 與無效日期直接送進 Prisma 查詢或寫入健保眷屬資料
+- [x] `system-settings/password-exceptions` 補上 `employeeId`、`id`、`expiresAt` 驗證：非法員工 ID、例外 ID、到期日格式會回傳 400，避免把 `NaN` 或無效日期直接帶進 Prisma 查詢、建立與刪除
+- [x] `system-settings/department-positions` 補上 query/body ID 驗證：非法 `departmentId`、`id`、`ids[]` 會回傳 400，避免把字串或 `NaN` 直接帶進部門 / 職位查詢、更新、刪除與批次排序
+- [x] `system-settings/perfect-attendance-bonus` 補上設定陣列內容驗證：`applicableDepartments`、`excludedLeaveTypes` 含非字串或空字串時會回傳 400，避免髒資料寫入全勤設定並污染後續計算與 Prisma `in` 條件
+- [x] `system-settings/notification-settings` 補上欄位型別驗證：通知開關欄位只接受布林值，`annualLeaveExpiryDays` 只接受 0 到 365 的整數，避免把錯誤型別直接寫進系統通知設定
+- [x] `system-settings/manager-deputies` 補上 ID / 日期驗證：新增與更新代理人時，非法主管 ID、代理員工 ID、代理設定 ID 與無效日期字串都會回傳 400，避免把錯誤輸入直接送進 Prisma create/update
+- [x] `system-settings/department-managers` 補上 ID / 權限欄位驗證：新增主管時非法員工 ID 會回傳 400；更新主管時非法主管設定 ID 與非布林權限欄位會被阻擋，避免 500/404 偏差與髒資料更新
+- [x] `system-settings/approval-overdue` 補上型別白名單驗證：逾期處理開關欄位只接受布林值，`autoEscalateHours` / `autoRejectDays` 只接受整數，避免字串與 coercion 值直接寫入 scheduler 設定
+- [x] `system-settings/password-reset` GET 改為讀取 `system_settings.password_reset_settings` 並安全解析 JSON，避免忘記密碼頁面即使已有設定仍永遠停留在硬編碼的「聯繫管理員 / 關閉 Email 重設」模式
+- [x] `system-settings/smtp/test` 發信失敗時改為只回傳通用錯誤訊息，並將 server log 收斂為安全欄位，避免 SMTP 帳號 / 主機 / 認證細節透過 response 或日誌外洩
+- [x] `payroll/send-email` 發信失敗時改為只回傳與持久化通用錯誤訊息，並將 server log 收斂為安全欄位，避免 nodemailer / SMTP 認證細節透過 batch 結果、寄送歷史或日誌外洩
+- [x] `src/app/payroll-statistics/page.tsx` 的「月均支出」改為只在存在有效薪資月份時才計算，避免 `monthlyTrends` 陣列非空但所有月份薪資皆為 `0` 時發生除以 `0`，並將無有效月份的 fallback 顯示收斂為 `N/A`
+- [x] `src/app/api/system-settings/manager-deputies/route.ts` 的 partial update 不再把未提交的 `startDate` / `endDate` 清成 `null`；同時補上 `isActive` 布林值驗證與 DELETE `id` 的嚴格數字解析，避免局部更新誤清空資料與 `parseInt` 寬鬆 coercion
+- [x] `src/lib/auth.ts` 移除未使用的 `validateSessionPayload` 包裝函式，清掉最後一個已知 build warning，讓 production build 基線恢復為無已知 lint 噪音
+
+## 已檢查，暫無新高風險問題
+
+- [x] `src/app/api/reports/export/route.ts`
+- [x] `src/app/api/reports/withholding-certificate/route.ts`
+- [x] `src/app/api/reports/bank-transfer/route.ts`
+- [x] `src/app/api/reports/tax-declaration/route.ts`
+- [x] `src/app/api/reports/insurance-payment/route.ts`
+- [x] `src/app/api/reports/yuanta-transfer/route.ts`
+- [x] `src/app/api/system-settings/login-logs/route.ts`
+- [x] `src/app/api/system-settings/approval-overdue/route.ts`
+- [x] `src/app/api/system-settings/department-managers/route.ts`
+- [x] `src/app/api/system-settings/manager-deputies/route.ts`
+- [x] `src/app/api/system-settings/password-reset/route.ts`
+- [x] `src/app/api/system-settings/smtp/test/route.ts`
+- [x] `src/app/api/attendance-freeze/route.ts`
+- [x] `src/app/api/audit-logs/route.ts`
+- [x] `src/app/api/batch-approve/route.ts`
+- [x] `src/app/api/schedule-confirmation/route.ts`
+- [x] `src/app/api/push-subscription/route.ts`
+- [x] `src/app/api/pro-rated-bonuses/route.ts`
+- [x] `src/app/api/bonuses/route.ts`
+- [x] `src/app/api/purchase-requests/route.ts`
+- [x] `src/app/api/payroll/route.ts`
+- [x] `src/app/api/payroll/send-email/route.ts`
+- [x] `src/app/api/holiday-compensations/route.ts`
+- [x] `src/app/api/holiday-compensations/stats/route.ts`
+- [x] `src/app/api/resignation-settlement/route.ts`
+- [x] `src/app/api/resignation-settlement/preview/route.ts`
+- [x] `src/app/api/overtime-requests/route.ts`
+- [x] `src/app/api/overtime-status/route.ts`
+- [x] `src/app/api/overtime-alerts/route.ts`
+- [x] `src/app/api/overtime-clock/route.ts`
+- [x] `src/app/api/dashboard-stats/route.ts`
+- [x] `src/app/api/annual-leave/calculate/route.ts`
+- [x] `src/app/api/announcements/attachments/[id]/route.ts`
+- [x] `src/app/api/missed-clock-requests/[id]/cancel/route.ts`
+- [x] `src/app/api/missed-clock-requests/[id]/void/route.ts`
+- [x] `src/app/api/cron/overtime-warning/route.ts`
+- [x] `src/app/api/schedules/copy/route.ts`
+- [x] `src/app/api/shift-exchange-requests/[id]/cancel/route.ts`
+- [x] `src/app/api/shift-exchange-requests/[id]/void/route.ts`
+- [x] `src/app/api/schedules/search/route.ts`
+- [x] `src/app/api/missed-clock-requests/route.ts`
+- [x] `src/app/api/schedules/route.ts`
+- [x] `src/app/api/auth/2fa/status/route.ts`
+- [x] `src/app/api/auth/2fa/setup/route.ts`
+- [x] `src/app/api/auth/2fa/verify/route.ts`
+- [x] `src/app/api/auth/2fa/disable/route.ts`
+- [x] `src/app/api/auth/me/route.ts`
+- [x] `src/app/api/auth/verify/route.ts`
+- [x] `src/app/api/password/route.ts`
+- [x] `src/app/api/notification-settings/route.ts`
+- [x] `src/app/api/push-subscription/route.ts`
+- [x] `src/app/api/system-settings/smtp/route.ts`
+- [x] `src/app/api/system-settings/payslip-email/route.ts`
+- [x] `src/app/api/system-settings/health-insurance-formula/route.ts`
+- [x] `src/app/api/system-settings/approval-workflows/route.ts`
+- [x] `src/app/api/system-settings/payslip-management/route.ts`
+- [x] `src/app/api/system-settings/labor-law-config/route.ts`
+- [x] `src/app/api/system-settings/leave-rules-config/route.ts`
+- [x] `src/app/api/system-settings/bonus-management/route.ts`
+- [x] `src/app/api/system-settings/bonus-config/route.ts`
+- [x] `src/app/api/system-settings/email-notification/route.ts`
+- [x] `src/app/api/system-settings/clock-time-restriction/route.ts`
+- [x] `src/app/api/system-settings/overtime-limit/route.ts`
+- [x] `src/app/api/system-settings/clock-reason-prompt/route.ts`
+- [x] `src/app/api/system-settings/gps-attendance/route.ts`
+- [x] `src/app/api/system-settings/leave-expiry/route.ts`
+- [x] `src/app/api/system-settings/overtime-calculation/route.ts`
+- [x] `src/app/api/system-settings/prorated-bonus/route.ts`
+- [x] `src/app/api/system-settings/supplementary-premium/route.ts`
+- [x] `src/app/api/system-settings/attendance-freeze/route.ts`
+- [x] `src/app/api/system-settings/password-policy/route.ts`
+- [x] `src/app/api/system-settings/holidays/route.ts`
+- [x] `src/app/api/system-settings/health-insurance-dependents/route.ts`
+- [x] `src/app/api/system-settings/password-exceptions/route.ts`
+- [x] `src/app/api/system-settings/department-positions/route.ts`
+- [x] `src/app/api/system-settings/perfect-attendance-bonus/route.ts`
+- [x] `src/app/api/system-settings/notification-settings/route.ts`
+- [x] `src/app/api/system-settings/manager-deputies/route.ts`
+- [x] `src/app/api/system-settings/department-managers/route.ts`
+- [x] `src/app/api/system-settings/approval-overdue/route.ts`
+- [x] `src/app/api/system-settings/schedule-confirm/route.ts`
+- [x] `src/app/api/system-settings/dependent-statistics/route.ts`
+- [x] `src/app/api/system-settings/dependent-history/route.ts`
+- [x] `src/app/api/system-settings/dependent-enrollment/route.ts`
+- [x] `src/app/salary-transfer/page.tsx`
+
+## 本輪驗證紀錄
+
+- [x] Focused Jest: `src/app/api/system-settings/dependent-statistics/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/payroll/send-email/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/system-settings/password-reset/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/system-settings/smtp/test/__tests__/route.test.ts`
+- [x] Focused Jest: `src/lib/__tests__/email.test.ts`
+- [x] Focused Jest: `src/app/api/batch-approve/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/overtime-requests/__tests__/authorization-list.test.ts`
+- [x] Focused Jest: `src/app/api/attendance/today-summary/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/holiday-compensations/stats/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/annual-leave/calculate/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/auth/2fa/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/auth/2fa/setup/__tests__/route.test.ts`
+- [x] Focused Jest: `src/lib/__tests__/auth-session.test.ts`
+- [x] Focused Jest: `src/app/api/auth/me/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/auth/verify/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/password/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/notification-settings/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/push-subscription/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/audit-logs/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/resignation-settlement/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/attendance-freeze/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/purchase-requests/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/holiday-compensations/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/overtime-requests/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/overtime-status/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/overtime-alerts/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/overtime-clock/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/dashboard-stats/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/announcements/attachments/[id]/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/missed-clock-requests/[id]/cancel/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/missed-clock-requests/[id]/void/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/schedules/copy/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/cron/overtime-warning/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/shift-exchange-requests/[id]/cancel/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/shift-exchange-requests/[id]/void/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/system-settings/smtp/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/system-settings/payslip-email/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/system-settings/health-insurance-formula/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/system-settings/approval-workflows/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/system-settings/payslip-management/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/system-settings/labor-law-config/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/system-settings/leave-rules-config/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/system-settings/bonus-management/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/system-settings/bonus-config/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/bonuses/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/system-settings/email-notification/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/system-settings/clock-time-restriction/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/system-settings/overtime-limit/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/system-settings/clock-reason-prompt/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/system-settings/gps-attendance/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/system-settings/leave-expiry/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/system-settings/overtime-calculation/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/system-settings/prorated-bonus/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/system-settings/supplementary-premium/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/system-settings/attendance-freeze/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/system-settings/password-policy/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/system-settings/holidays/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/system-settings/health-insurance-dependents/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/system-settings/password-exceptions/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/system-settings/department-positions/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/system-settings/perfect-attendance-bonus/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/system-settings/notification-settings/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/system-settings/manager-deputies/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/system-settings/department-managers/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/reports/attendance/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/reports/overtime-statistics/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/reports/export/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/reports/insurance-payment/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/reports/bank-transfer/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/reports/tax-declaration/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/reports/withholding-certificate/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/reports/yuanta-transfer/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/system-settings/approval-overdue/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/system-settings/dependent-history/__tests__/route.test.ts`
+- [x] Focused Jest: `src/app/api/system-settings/dependent-enrollment/__tests__/route.test.ts`
+- [x] Re-validated dependent statistics route: `npx jest src/app/api/system-settings/dependent-statistics/__tests__/route.test.ts --runInBand`（1 test passed on 2026-04-11）
+- [x] Re-validated SMTP leak fix: `npx jest src/app/api/system-settings/smtp/test/__tests__/route.test.ts --runInBand`（2 tests passed on 2026-04-10）
+- [x] Re-validated shared email sanitization: `npx jest src/lib/__tests__/email.test.ts --runInBand`（1 test passed on 2026-04-11）
+- [x] Re-validated reports query guards: `npx jest src/app/api/reports/attendance/__tests__/route.test.ts src/app/api/reports/overtime-statistics/__tests__/route.test.ts --runInBand`（2 suites / 9 tests passed on 2026-04-11）
+- [x] Re-validated remaining report export query guards: `npx jest src/app/api/reports/export/__tests__/route.test.ts src/app/api/reports/insurance-payment/__tests__/route.test.ts src/app/api/reports/bank-transfer/__tests__/route.test.ts src/app/api/reports/tax-declaration/__tests__/route.test.ts src/app/api/reports/withholding-certificate/__tests__/route.test.ts src/app/api/reports/yuanta-transfer/__tests__/route.test.ts --runInBand`（6 suites / 21 tests passed on 2026-04-11）
+- [x] Re-validated bank transfer account export: `npx jest src/app/api/reports/bank-transfer/__tests__/route.test.ts --runInBand`（1 suite / 4 tests passed on 2026-04-11）
+- [x] Minimized withholding certificate JSON employee payload to a whitelist (`id`, `employeeId`, `name`, `department`, masked `idNumber`) so unused `birthday` / `address` / `hireDate` no longer leak through API responses
+- [x] Removed unused `baseSalary` / `hireDate` overfetch from `src/app/api/reports/export/route.ts` and unused `hireDate` overfetch from `src/app/api/reports/insurance-payment/route.ts`; revalidated with: `npx jest src/app/api/reports/withholding-certificate/__tests__/route.test.ts src/app/api/reports/export/__tests__/route.test.ts src/app/api/reports/insurance-payment/__tests__/route.test.ts --runInBand`（3 suites / 11 tests passed on 2026-04-11）
+- [x] Re-validated payroll statistics frontend fallback fix: `npx jest src/lib/__tests__/payroll-statistics-metrics.test.ts src/lib/__tests__/payroll-statistics-client.test.ts --runInBand`（2 suites / 5 tests passed on 2026-04-11）
+- [x] Fixed `src/app/reports/page.tsx` statistics-card mismatch: the summary cards now derive from the currently filtered record set (`filteredRecords`) instead of the unfiltered fetch payload, so department/search filters stay consistent with the visible table plus CSV/Excel exports; revalidated with `npm run build` on 2026-04-11
+- [x] Fixed `src/app/api/dashboard-stats/route.ts` department attendance-rate mismatch: department `rate` now uses only clocked-in records, matching the returned `attended` count instead of counting every attendance row including null `clockInTime`; revalidated with `npx jest src/app/api/dashboard-stats/__tests__/route.test.ts --runInBand`（1 suite / 3 tests passed on 2026-04-11）and `npm run build`
+- [x] Fixed `src/app/api/system-settings/approval-overdue/route.ts` manual `forceRun` mismatch: the POST route now passes `forceRun` into `processOverdueApprovals`, and `src/lib/approval-scheduler.ts` only skips disabled runs when `forceRun` is not set, so manual execution finally matches the API contract instead of always short-circuiting on `settings.enabled`; revalidated with `npm test -- --runTestsByPath src/app/api/system-settings/approval-overdue/__tests__/route.test.ts`（1 suite / 5 tests passed on 2026-04-11）and `npm run build`
+- [x] Re-validated manager deputies partial-update guard: `npm test -- --runTestsByPath src/app/api/system-settings/manager-deputies/__tests__/route.test.ts`（1 suite / 6 tests passed on 2026-04-11）
+- [x] `npm run build` on 2026-04-11 passes with no known remaining lint warnings in the reviewed changeset
+- [x] Production build: `npm run build`
+
+## 建議下一輪掃描目標
+
+- [ ] `src/app/api/system-settings/*` 其餘統計 / 設定路由的一致性與角色限制
+- [ ] `src/app/api/reports/*` 匯出路由更深層的資料最小揭露、欄位必要性與部門 scoping 檢查（query validation 已完成）
+- [ ] 前端頁面是否存在依賴錯誤 fallback 值但未被目前測試覆蓋的統計欄位

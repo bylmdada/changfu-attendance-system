@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
+import { escapeHtml } from '@/lib/html';
+import { parseIntegerQueryParam } from '@/lib/query-params';
 
 export async function GET(request: NextRequest) {
   try {
@@ -22,9 +24,19 @@ export async function GET(request: NextRequest) {
     }
 
     const { searchParams } = new URL(request.url);
-    const year = searchParams.get('year');
-    const month = searchParams.get('month');
+        const year = searchParams.get('year');
+        const month = searchParams.get('month');
     const department = searchParams.get('department');
+
+        const yearResult = parseIntegerQueryParam(year, { min: 1900, max: 9999 });
+        if (!yearResult.isValid) {
+            return NextResponse.json({ error: '無效的年份參數' }, { status: 400 });
+        }
+
+        const monthResult = parseIntegerQueryParam(month, { min: 1, max: 12 });
+        if (!monthResult.isValid) {
+            return NextResponse.json({ error: '無效的月份參數' }, { status: 400 });
+        }
 
     // 建立篩選條件
     const where: {
@@ -35,12 +47,12 @@ export async function GET(request: NextRequest) {
       };
     } = {};
 
-    if (year) {
-      where.payYear = parseInt(year);
+        if (yearResult.value !== null) {
+            where.payYear = yearResult.value;
     }
 
-    if (month) {
-      where.payMonth = parseInt(month);
+        if (monthResult.value !== null) {
+            where.payMonth = monthResult.value;
     }
 
     if (department) {
@@ -72,9 +84,7 @@ export async function GET(request: NextRequest) {
             name: true,
             department: true,
             position: true,
-            baseSalary: true,
             hourlyRate: true,
-            hireDate: true
           }
         }
       },
@@ -139,9 +149,7 @@ function generatePayrollHTML(payrollRecords: Array<{
     name: string;
     department: string | null;
     position: string | null;
-    baseSalary: number;
     hourlyRate: number;
-    hireDate: Date;
   };
 }>, summary: {
   year: string | null;
@@ -155,6 +163,9 @@ function generatePayrollHTML(payrollRecords: Array<{
 }) {
   const title = `薪資報表 - ${summary.year || '全部'}年${summary.month ? `${summary.month}月` : ''}`;
   const exportDate = new Date().toLocaleDateString('zh-TW');
+    const safeTitle = escapeHtml(title);
+    const safeExportDate = escapeHtml(exportDate);
+    const safeDepartment = summary.department ? escapeHtml(summary.department) : null;
 
   return `
 <!DOCTYPE html>
@@ -162,7 +173,7 @@ function generatePayrollHTML(payrollRecords: Array<{
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>${title}</title>
+        <title>${safeTitle}</title>
     <style>
         body {
             font-family: 'Microsoft JhengHei', Arial, sans-serif;
@@ -373,9 +384,9 @@ function generatePayrollHTML(payrollRecords: Array<{
 </head>
 <body>
     <div class="header">
-        <h1>${title}</h1>
-        <p>匯出日期：${exportDate}</p>
-        ${summary.department ? `<p>部門：${summary.department}</p>` : ''}
+        <h1>${safeTitle}</h1>
+        <p>匯出日期：${safeExportDate}</p>
+        ${safeDepartment ? `<p>部門：${safeDepartment}</p>` : ''}
     </div>
 
     <div class="summary">
@@ -420,12 +431,16 @@ function generatePayrollHTML(payrollRecords: Array<{
           const incomeTax = recordData.incomeTax || 0;
           const totalDeductions = recordData.totalDeductions || (record.grossPay - record.netPay);
           const otherDeductions = Math.max(0, totalDeductions - laborInsurance - healthInsurance - supplementaryInsurance - incomeTax);
+          const safeEmployeeName = escapeHtml(record.employee.name);
+          const safeEmployeeId = escapeHtml(record.employee.employeeId);
+          const safeEmployeeDepartment = escapeHtml(record.employee.department || '-');
+          const safeEmployeePosition = escapeHtml(record.employee.position || '-');
           
           return `
             <div class="employee-card">
                 <div class="employee-header">
-                    <h3>${record.employee.name} (員編: ${record.employee.employeeId})</h3>
-                    <p>部門: ${record.employee.department || '-'} | 職位: ${record.employee.position || '-'}</p>
+                    <h3>${safeEmployeeName} (員編: ${safeEmployeeId})</h3>
+                    <p>部門: ${safeEmployeeDepartment} | 職位: ${safeEmployeePosition}</p>
                     <p>薪資期間: ${record.payYear}年${record.payMonth}月</p>
                 </div>
                 

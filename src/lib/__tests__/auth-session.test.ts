@@ -9,7 +9,12 @@ jest.mock('@/lib/database', () => ({
 }));
 
 import jwt from 'jsonwebtoken';
-import { getUserFromRequest, getUserFromToken, type JWTPayload } from '@/lib/auth';
+import {
+  getAuthResultFromRequest,
+  getUserFromRequest,
+  getUserFromToken,
+  type JWTPayload
+} from '@/lib/auth';
 
 describe('auth session validation', () => {
   const payload: JWTPayload = {
@@ -70,6 +75,26 @@ describe('auth session validation', () => {
         isActive: true,
         currentSessionId: true
       }
+    });
+  });
+
+  it('surfaces session invalidation as a distinct auth failure reason', async () => {
+    jest.spyOn(jwt, 'verify').mockReturnValue(payload as never);
+    mockPrisma.user.findUnique.mockResolvedValue({
+      id: 1,
+      isActive: true,
+      currentSessionId: 'session-2'
+    });
+
+    const request = new Request('http://localhost/api/test', {
+      headers: {
+        authorization: 'Bearer stale-token'
+      }
+    });
+
+    await expect(getAuthResultFromRequest(request)).resolves.toEqual({
+      user: null,
+      reason: 'session_invalid'
     });
   });
 });

@@ -13,6 +13,17 @@ export interface JWTPayload {
   exp?: number;
 }
 
+export type AuthFailureReason =
+  | 'missing_token'
+  | 'invalid_token'
+  | 'expired_token'
+  | 'session_invalid';
+
+export interface AuthResult {
+  user: JWTPayload | null;
+  reason: AuthFailureReason | null;
+}
+
 export async function hashPassword(password: string): Promise<string> {
   return bcrypt.hash(password, 12);
 }
@@ -58,21 +69,33 @@ export function generateToken(payload: Omit<JWTPayload, 'iat' | 'exp'>): string 
   return jwt.sign(payload, secret, { expiresIn: '8h' });
 }
 
-export function verifyToken(token: string): JWTPayload | null {
+function verifyTokenDetailed(token: string): Pick<AuthResult, 'user' | 'reason'> {
   try {
     const secret = process.env.JWT_SECRET;
     if (!secret) {
       throw new Error('JWT_SECRET environment variable is required for security');
     }
-    return jwt.verify(token, secret) as JWTPayload;
-  } catch {
-    return null;
+
+    return {
+      user: jwt.verify(token, secret) as JWTPayload,
+      reason: null
+    };
+  } catch (error) {
+    if (error instanceof jwt.TokenExpiredError) {
+      return { user: null, reason: 'expired_token' };
+    }
+
+    return { user: null, reason: 'invalid_token' };
   }
 }
 
-async function validateSessionPayload(payload: JWTPayload): Promise<JWTPayload | null> {
+export function verifyToken(token: string): JWTPayload | null {
+  return verifyTokenDetailed(token).user;
+}
+
+async function validateSessionResult(payload: JWTPayload): Promise<AuthResult> {
   if (!payload.sessionId) {
-    return null;
+    return { user: null, reason: 'invalid_token' };
   }
 
   const user = await prisma.user.findUnique({
@@ -85,14 +108,14 @@ async function validateSessionPayload(payload: JWTPayload): Promise<JWTPayload |
   });
 
   if (!user || !user.isActive) {
-    return null;
+    return { user: null, reason: 'invalid_token' };
   }
 
   if (!user.currentSessionId || user.currentSessionId !== payload.sessionId) {
-    return null;
+    return { user: null, reason: 'session_invalid' };
   }
 
-  return payload;
+  return { user: payload, reason: null };
 }
 
 function parseCookieHeader(cookieHeader: string | null | undefined): Record<string, string> {
@@ -146,20 +169,33 @@ export function extractTokenFromRequest(request: NextRequest | Request): string 
 }
 
 export async function getUserFromToken(token: string): Promise<JWTPayload | null> {
-  const payload = verifyToken(token);
-  if (!payload) {
-    return null;
+  const result = await getAuthResultFromToken(token);
+  return result.user;
+}
+
+export async function getAuthResultFromToken(token: string): Promise<AuthResult> {
+  const verification = verifyTokenDetailed(token);
+  if (!verification.user) {
+    return verification;
   }
 
-  return validateSessionPayload(payload);
+  return validateSessionResult(verification.user);
 }
 
 export async function getUserFromRequest(request: NextRequest | Request): Promise<JWTPayload | null> {
+  const result = await getAuthResultFromRequest(request);
+  return result.user;
+}
+
+export async function getAuthResultFromRequest(request: NextRequest | Request): Promise<AuthResult> {
   try {
     const token = extractTokenFromRequest(request);
-    if (!token) return null;
-    return getUserFromToken(token);
+    if (!token) {
+      return { user: null, reason: 'missing_token' };
+    }
+
+    return getAuthResultFromToken(token);
   } catch {
-    return null;
+    return { user: null, reason: 'invalid_token' };
   }
 }

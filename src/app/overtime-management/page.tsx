@@ -1119,7 +1119,9 @@ export default function OvertimeManagementPage() {
           apiEndpoint="/api/overtime-requests/batch"
           onSuccess={fetchOvertimeRequests}
           onClear={() => setSelectedIds([])}
+          onSelectionChange={setSelectedIds}
           itemName="加班申請"
+          requireRejectReason={false}
         />
       )}
 

@@ -2,9 +2,74 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import * as XLSX from 'xlsx';
+import { validateCSRF } from '@/lib/csrf';
+
+function parseFiniteNonNegativeNumber(value: unknown, defaultValue = 0) {
+  if (value === undefined || value === null || value === '') {
+    return { value: defaultValue, isValid: true };
+  }
+
+  const parsed = typeof value === 'number' ? value : Number(String(value));
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return { value: null, isValid: false };
+  }
+
+  return { value: parsed, isValid: true };
+}
+
+function parseImportYearValue(value: unknown) {
+  if (typeof value === 'number') {
+    if (!Number.isInteger(value) || value < 2000 || value > 2100) {
+      return { value: null, isValid: false };
+    }
+
+    return { value, isValid: true };
+  }
+
+  if (typeof value !== 'string') {
+    return { value: null, isValid: false };
+  }
+
+  const trimmedValue = value.trim();
+  if (!/^\d+$/.test(trimmedValue)) {
+    return { value: null, isValid: false };
+  }
+
+  const parsed = Number(trimmedValue);
+  if (!Number.isInteger(parsed) || parsed < 2000 || parsed > 2100) {
+    return { value: null, isValid: false };
+  }
+
+  return { value: parsed, isValid: true };
+}
+
+function parseExpiryDateValue(value: unknown, year: number) {
+  if (value === undefined || value === null || value === '') {
+    return { value: new Date(year + 1, 5, 30), isValid: true };
+  }
+
+  let parsedDate: Date;
+
+  if (typeof value === 'number') {
+    const excelDate = XLSX.SSF.parse_date_code(value);
+    if (!excelDate || !excelDate.y || !excelDate.m || !excelDate.d) {
+      return { value: null, isValid: false };
+    }
+
+    parsedDate = new Date(excelDate.y, excelDate.m - 1, excelDate.d);
+  } else {
+    parsedDate = new Date(String(value));
+  }
+
+  if (Number.isNaN(parsedDate.getTime())) {
+    return { value: null, isValid: false };
+  }
+
+  return { value: parsedDate, isValid: true };
+}
 
 // POST - 批量匯入特休假餘額
 export async function POST(request: NextRequest) {
@@ -15,15 +80,17 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const csrfValidation = await validateCSRF(request);
+    if (!csrfValidation.valid) {
+      return NextResponse.json({ error: `CSRF驗證失敗: ${csrfValidation.error}` }, { status: 403 });
+    }
+
+    const user = await getUserFromRequest(request);
+    if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded || !['ADMIN', 'HR'].includes(decoded.role)) {
+    if (!['ADMIN', 'HR'].includes(user.role)) {
       return NextResponse.json({ error: '需要管理員或人資權限' }, { status: 403 });
     }
 
@@ -103,25 +170,7 @@ export async function POST(request: NextRequest) {
 
       try {
         const employeeIdStr = String(row[headerIndexes.employeeId] || '').trim();
-        const year = parseInt(String(row[headerIndexes.year] || ''));
-        const usedDays = parseFloat(String(row[headerIndexes.usedDays] || '0'));
-        const remainingDays = parseFloat(String(row[headerIndexes.remainingDays] || '0'));
-        
-        // 解析到期日
-        let expiryDate: Date;
-        const expiryValue = row[headerIndexes.expiryDate];
-        if (expiryValue) {
-          if (typeof expiryValue === 'number') {
-            // Excel 日期序列值
-            expiryDate = XLSX.SSF.parse_date_code(expiryValue) as unknown as Date;
-            expiryDate = new Date(expiryDate);
-          } else {
-            expiryDate = new Date(String(expiryValue));
-          }
-        } else {
-          // 預設為年底 + 6個月
-          expiryDate = new Date(year + 1, 5, 30);
-        }
+        const yearResult = parseImportYearValue(row[headerIndexes.year]);
 
         if (!employeeIdStr) {
           results.errors.push(`第 ${rowNum} 行：員工編號為空`);
@@ -136,11 +185,38 @@ export async function POST(request: NextRequest) {
           continue;
         }
 
-        if (isNaN(year) || year < 2000 || year > 2100) {
+        if (!yearResult.isValid || yearResult.value === null) {
           results.errors.push(`第 ${rowNum} 行：年度格式不正確`);
           results.failed++;
           continue;
         }
+
+        const year = yearResult.value;
+
+        const usedDaysResult = parseFiniteNonNegativeNumber(row[headerIndexes.usedDays], 0);
+        if (!usedDaysResult.isValid || usedDaysResult.value === null) {
+          results.errors.push(`第 ${rowNum} 行：已使用天數格式不正確`);
+          results.failed++;
+          continue;
+        }
+
+        const remainingDaysResult = parseFiniteNonNegativeNumber(row[headerIndexes.remainingDays]);
+        if (!remainingDaysResult.isValid || remainingDaysResult.value === null) {
+          results.errors.push(`第 ${rowNum} 行：剩餘天數格式不正確`);
+          results.failed++;
+          continue;
+        }
+
+        const expiryDateResult = parseExpiryDateValue(row[headerIndexes.expiryDate], year);
+        if (!expiryDateResult.isValid || expiryDateResult.value === null) {
+          results.errors.push(`第 ${rowNum} 行：到期日格式不正確`);
+          results.failed++;
+          continue;
+        }
+
+        const usedDays = usedDaysResult.value;
+        const remainingDays = remainingDaysResult.value;
+        const expiryDate = expiryDateResult.value;
 
         // 計算年資
         const hireDate = new Date(employee.hireDate);
@@ -195,15 +271,12 @@ export async function POST(request: NextRequest) {
 // GET - 下載匯入範本
 export async function GET(request: NextRequest) {
   try {
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const user = await getUserFromRequest(request);
+    if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded || !['ADMIN', 'HR'].includes(decoded.role)) {
+    if (!['ADMIN', 'HR'].includes(user.role)) {
       return NextResponse.json({ error: '需要管理員或人資權限' }, { status: 403 });
     }
 

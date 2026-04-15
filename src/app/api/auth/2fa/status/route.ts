@@ -3,22 +3,14 @@
  * GET - 取得用戶 2FA 狀態
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
 
-export async function GET(_request: NextRequest) {
+export async function GET(request: NextRequest) {
   try {
-    const cookieStore = await cookies();
-    const token = cookieStore.get('auth-token')?.value;
-    
-    if (!token) {
-      return NextResponse.json({ error: '未授權' }, { status: 401 });
-    }
-    
-    const user = await getUserFromToken(token);
+    const user = await getUserFromRequest(request);
     if (!user) {
-      return NextResponse.json({ error: '無效的 Token' }, { status: 401 });
+      return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
 
     // 取得用戶 2FA 狀態

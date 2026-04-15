@@ -30,7 +30,8 @@ export function getTaiwanTodayEnd(now?: Date): Date {
 
 /** 取得台灣時區的年份 */
 export function getTaiwanYear(d?: Date): number {
-  return getTaiwanNow().getFullYear();
+  const tw = new Date((d || new Date()).toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
+  return tw.getFullYear();
 }
 
 /** 取得台灣時區的 YYYY-MM 字串 */

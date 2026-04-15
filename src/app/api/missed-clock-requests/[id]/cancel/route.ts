@@ -1,8 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { parseIntegerQueryParam } from '@/lib/query-params';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+async function getManagedDepartments(employeeId: number): Promise<string[]> {
+  const records = await prisma.departmentManager.findMany({
+    where: {
+      employeeId,
+      isActive: true,
+    },
+    select: { department: true },
+  });
+
+  return records.map((record) => record.department).filter(Boolean);
+}
 
 // POST: 員工申請撤銷補卡
 export async function POST(
@@ -20,30 +38,44 @@ export async function POST(
       return NextResponse.json({ error: 'CSRF 驗證失敗' }, { status: 403 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const decoded = await getUserFromRequest(request);
+    if (!decoded) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded) {
-      return NextResponse.json({ error: '無效的認證' }, { status: 401 });
+    const { id } = await params;
+    const parsedRequestId = parseIntegerQueryParam(id, { min: 1 });
+    if (!parsedRequestId.isValid || parsedRequestId.value === null) {
+      return NextResponse.json({ error: '申請ID格式錯誤' }, { status: 400 });
+    }
+    const requestId = parsedRequestId.value;
+
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的補卡撤銷資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
     }
 
-    const { id } = await params;
-    const requestId = parseInt(id);
+    const body = parseResult.data;
+    if (!isPlainObject(body)) {
+      return NextResponse.json({ error: '請提供有效的補卡撤銷資料' }, { status: 400 });
+    }
 
-    const body = await request.json();
-    const { reason } = body;
+    const reason = typeof body.reason === 'string' ? body.reason : undefined;
 
     if (!reason || reason.trim() === '') {
       return NextResponse.json({ error: '請填寫撤銷原因' }, { status: 400 });
     }
 
     const missedClockRequest = await prisma.missedClockRequest.findUnique({
-      where: { id: requestId }
+      where: { id: requestId },
+      include: {
+        employee: {
+          select: { department: true },
+        },
+      },
     });
 
     if (!missedClockRequest) {
@@ -97,26 +129,46 @@ export async function PUT(
       return NextResponse.json({ error: 'CSRF 驗證失敗' }, { status: 403 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const decoded = await getUserFromRequest(request);
+    if (!decoded) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded || !['ADMIN', 'MANAGER'].includes(decoded.role)) {
+    if (!['ADMIN', 'MANAGER'].includes(decoded.role)) {
       return NextResponse.json({ error: '需要主管或管理員權限' }, { status: 403 });
     }
 
     const { id } = await params;
-    const requestId = parseInt(id);
+    const parsedRequestId = parseIntegerQueryParam(id, { min: 1 });
+    if (!parsedRequestId.isValid || parsedRequestId.value === null) {
+      return NextResponse.json({ error: '申請ID格式錯誤' }, { status: 400 });
+    }
+    const requestId = parsedRequestId.value;
 
-    const body = await request.json();
-    const { action, opinion, note } = body;
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的補卡撤銷資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const body = parseResult.data;
+    if (!isPlainObject(body)) {
+      return NextResponse.json({ error: '請提供有效的補卡撤銷資料' }, { status: 400 });
+    }
+
+    const action = typeof body.action === 'string' ? body.action : undefined;
+    const opinion = typeof body.opinion === 'string' ? body.opinion : undefined;
+    const note = typeof body.note === 'string' ? body.note : undefined;
 
     const missedClockRequest = await prisma.missedClockRequest.findUnique({
-      where: { id: requestId }
+      where: { id: requestId },
+      include: {
+        employee: {
+          select: { department: true },
+        },
+      },
     });
 
     if (!missedClockRequest) {
@@ -129,7 +181,16 @@ export async function PUT(
 
     // 主管審核
     if (decoded.role === 'MANAGER' && missedClockRequest.cancellationStatus === 'PENDING_MANAGER') {
-      if (!['AGREE', 'DISAGREE'].includes(opinion)) {
+      const managedDepartments = await getManagedDepartments(decoded.employeeId);
+      if (
+        managedDepartments.length === 0 ||
+        !missedClockRequest.employee?.department ||
+        !managedDepartments.includes(missedClockRequest.employee.department)
+      ) {
+        return NextResponse.json({ error: '無權限審核此部門的補卡撤銷申請' }, { status: 403 });
+      }
+
+      if (!['AGREE', 'DISAGREE'].includes(opinion ?? '')) {
         return NextResponse.json({ error: '請選擇同意或不同意' }, { status: 400 });
       }
 
@@ -154,7 +215,7 @@ export async function PUT(
     if (decoded.role === 'ADMIN' && 
         (missedClockRequest.cancellationStatus === 'PENDING_ADMIN' || 
          missedClockRequest.cancellationStatus === 'PENDING_MANAGER')) {
-      if (!['APPROVE', 'REJECT'].includes(action)) {
+      if (!['APPROVE', 'REJECT'].includes(action ?? '')) {
         return NextResponse.json({ error: '請選擇核准或駁回' }, { status: 400 });
       }
 

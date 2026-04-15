@@ -1,54 +1,55 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { cookies } from 'next/headers';
-import crypto from 'crypto';
-import { getActiveAllowedLocations, getGPSSettingsFromDB, type ClockLocationPayload, validateGpsClockLocation } from '@/lib/gps-attendance';
+import { verifyAuthenticationResponse, type AuthenticationResponseJSON } from '@simplewebauthn/server';
+import { getActiveAllowedLocations, getGPSSettingsFromDB, isClockLocationPayload, validateGpsClockLocation } from '@/lib/gps-attendance';
 import { isMobileClockingDevice, MOBILE_CLOCKING_REQUIRED_MESSAGE } from '@/lib/device-detection';
+import { convertSpkiPublicKeyToCose, getExpectedWebAuthnOrigins, normalizeBase64url, WEBAUTHN_RP_ID } from '@/lib/webauthn';
+import { safeParseJSON } from '@/lib/validation';
 
-// Base64URL 解碼
-function base64urlToBuffer(base64url: string): Buffer {
-  const base64 = base64url.replace(/-/g, '+').replace(/_/g, '/');
-  const padLen = (4 - (base64.length % 4)) % 4;
-  return Buffer.from(base64 + '='.repeat(padLen), 'base64');
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-// 驗證簽名（簡化版，僅驗證格式）
-async function verifySignature(
-  authData: Buffer,
-  clientDataHash: Buffer,
-  signature: Buffer,
-  publicKeyBase64: string
-): Promise<boolean> {
-  try {
-    // 組合要驗證的資料
-    const signedData = Buffer.concat([authData, clientDataHash]);
-    
-    // 解碼公鑰
-    const publicKeyBuffer = base64urlToBuffer(publicKeyBase64);
-    
-    // 簡化驗證：檢查簽名長度合理
-    // 完整實作需要使用 crypto.verify 搭配 COSE 公鑰解析
-    if (signature.length < 64) {
-      return false;
-    }
-    
-    // 計算 signedData hash 確保資料完整
-    const hash = crypto.createHash('sha256').update(signedData).digest();
-    
-    // 開發階段：驗證通過（生產環境需要完整的簽名驗證）
-    console.log('WebAuthn 驗證:', {
-      authDataLength: authData.length,
-      clientDataHashLength: clientDataHash.length,
-      signatureLength: signature.length,
-      publicKeyLength: publicKeyBuffer.length,
-      dataHashLength: hash.length
-    });
-    
-    return true;
-  } catch (error) {
-    console.error('簽名驗證錯誤:', error);
-    return false;
+function mapAuthenticationErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : '未知錯誤';
+
+  if (message.includes('Unexpected authentication response challenge')) {
+    return 'Challenge 驗證失敗';
   }
+
+  if (message.includes('Unexpected authentication response type')) {
+    return 'Type 驗證失敗';
+  }
+
+  if (message.includes('Unexpected authentication response origin')) {
+    return '來源驗證失敗';
+  }
+
+  if (message.includes('Unexpected RP ID hash')) {
+    return 'RP ID 驗證失敗';
+  }
+
+  if (
+    message.includes('User verification')
+    || message.includes('User not present')
+  ) {
+    return '生物識別驗證失敗';
+  }
+
+  if (message.includes('Response counter value')) {
+    return '可能的重放攻擊';
+  }
+
+  if (
+    message.includes('ECDSA')
+    || message.includes('ASN1')
+    || message.includes('signature')
+  ) {
+    return '簽名驗證失敗';
+  }
+
+  return message;
 }
 
 export async function POST(request: Request) {
@@ -67,27 +68,72 @@ export async function POST(request: Request) {
 
     const expectedChallenge = challengeCookie.value;
     const username = usernameCookie.value;
+    const requestOrigin = new URL(request.url).origin;
+    const expectedOrigins = getExpectedWebAuthnOrigins(requestOrigin);
 
-    const { credential, clockType, location } = await request.json() as {
-      credential: {
-        id: string;
-        response: {
-          clientDataJSON: string;
-          authenticatorData: string;
-          signature: string;
-        };
-      };
-      clockType?: 'in' | 'out';
-      location?: ClockLocationPayload;
-    };
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json({ error: '無效的 JSON 格式' }, { status: 400 });
+    }
 
-    if (!credential || !credential.id || !credential.response) {
+    const body = parseResult.data;
+
+    if (!isPlainObject(body)) {
       return NextResponse.json({ error: '無效的憑證資料' }, { status: 400 });
+    }
+
+    const credential = isPlainObject(body.credential) ? body.credential : null;
+    const credentialResponse = credential && isPlainObject(credential.response)
+      ? credential.response
+      : null;
+    const clockType = body.clockType === 'in' || body.clockType === 'out'
+      ? body.clockType
+      : undefined;
+
+    if (body.location !== undefined && body.location !== null && !isClockLocationPayload(body.location)) {
+      return NextResponse.json({ error: 'GPS定位資料格式錯誤' }, { status: 400 });
+    }
+
+    const location = body.location === undefined || body.location === null
+      ? undefined
+      : body.location;
+    const credentialId = typeof credential?.id === 'string' ? credential.id : '';
+    const credentialRawId = typeof credential?.rawId === 'string' ? credential.rawId : undefined;
+    const credentialType = typeof credential?.type === 'string' ? credential.type : undefined;
+    const clientExtensionResults = isPlainObject(credential?.clientExtensionResults)
+      ? credential.clientExtensionResults
+      : {};
+    const clientDataJSON = typeof credentialResponse?.clientDataJSON === 'string'
+      ? credentialResponse.clientDataJSON
+      : '';
+    const authenticatorData = typeof credentialResponse?.authenticatorData === 'string'
+      ? credentialResponse.authenticatorData
+      : '';
+    const signature = typeof credentialResponse?.signature === 'string'
+      ? credentialResponse.signature
+      : '';
+
+    const normalizedCredentialId = normalizeBase64url(credentialId || credentialRawId || '');
+    const normalizedRawId = credentialRawId ? normalizeBase64url(credentialRawId) : undefined;
+    const normalizedClientDataJSON = normalizeBase64url(clientDataJSON);
+    const normalizedAuthenticatorData = normalizeBase64url(authenticatorData);
+    const normalizedSignature = normalizeBase64url(signature);
+
+    if (!credential || !normalizedCredentialId || !credentialResponse) {
+      return NextResponse.json({ error: '無效的憑證資料' }, { status: 400 });
+    }
+
+    if (credentialType && credentialType !== 'public-key') {
+      return NextResponse.json({ error: '無效的憑證類型' }, { status: 400 });
+    }
+
+    if (credentialId && normalizedRawId && normalizedCredentialId !== normalizedRawId) {
+      return NextResponse.json({ error: '憑證 ID 不一致' }, { status: 400 });
     }
 
     // 查詢憑證
     const storedCredential = await prisma.webAuthnCredential.findUnique({
-      where: { credentialId: credential.id },
+      where: { credentialId: normalizedCredentialId },
       include: {
         user: {
           include: {
@@ -101,53 +147,59 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: '憑證不存在' }, { status: 404 });
     }
 
+    if (!storedCredential.user.isActive || !storedCredential.user.employee) {
+      return NextResponse.json({ error: '帳號已停用，請聯繫管理員' }, { status: 401 });
+    }
+
     // 確認是同一用戶
     if (storedCredential.user.username !== username) {
       return NextResponse.json({ error: '憑證與用戶不匹配' }, { status: 403 });
     }
 
-    // 解析 clientDataJSON
-    const clientDataJSON = base64urlToBuffer(credential.response.clientDataJSON);
-    const clientData = JSON.parse(clientDataJSON.toString('utf-8'));
+    let credentialPublicKey: Uint8Array;
 
-    // 驗證 challenge
-    if (clientData.challenge !== expectedChallenge) {
-      return NextResponse.json({ error: 'Challenge 驗證失敗' }, { status: 400 });
+    try {
+      credentialPublicKey = convertSpkiPublicKeyToCose(storedCredential.publicKey);
+    } catch (error) {
+      console.error('WebAuthn 公鑰轉換錯誤:', error);
+      return NextResponse.json({ error: '驗證設定錯誤' }, { status: 500 });
     }
 
-    // 驗證 type
-    if (clientData.type !== 'webauthn.get') {
-      return NextResponse.json({ error: 'Type 驗證失敗' }, { status: 400 });
+    const authenticationResponse: AuthenticationResponseJSON = {
+      id: normalizedCredentialId,
+      rawId: normalizedRawId || normalizedCredentialId,
+      type: 'public-key',
+      clientExtensionResults,
+      response: {
+        clientDataJSON: normalizedClientDataJSON,
+        authenticatorData: normalizedAuthenticatorData,
+        signature: normalizedSignature,
+      },
+    };
+
+    let verification;
+
+    try {
+      verification = await verifyAuthenticationResponse({
+        response: authenticationResponse,
+        expectedChallenge,
+        expectedOrigin: expectedOrigins,
+        expectedRPID: WEBAUTHN_RP_ID,
+        requireUserVerification: true,
+        credential: {
+          id: storedCredential.credentialId,
+          publicKey: new Uint8Array(credentialPublicKey),
+          counter: storedCredential.counter || 0,
+        },
+      });
+    } catch (error) {
+      return NextResponse.json(
+        { error: mapAuthenticationErrorMessage(error) },
+        { status: 400 }
+      );
     }
 
-    // 解析 authenticatorData
-    const authData = base64urlToBuffer(credential.response.authenticatorData);
-    const signature = base64urlToBuffer(credential.response.signature);
-    const clientDataHash = crypto.createHash('sha256').update(clientDataJSON).digest();
-
-    // 驗證計數器（防重放攻擊）
-    const receivedCounter = authData.readUInt32BE(33);
-    const storedCounter = storedCredential.counter || 0;
-    
-    // 只有當計數器明顯倒退（不是相等或輕微問題）時才阻止
-    // 有些驗證器在取消/重試時不會增加計數器
-    if (receivedCounter < storedCounter && receivedCounter !== 0) {
-      console.warn('計數器異常:', { received: receivedCounter, stored: storedCounter });
-      // 只在生產環境且計數器明顯異常時阻止
-      if (process.env.NODE_ENV === 'production' && (storedCounter - receivedCounter) > 5) {
-        return NextResponse.json({ error: '可能的重放攻擊' }, { status: 400 });
-      }
-    }
-
-    // 驗證簽名
-    const isValid = await verifySignature(
-      authData,
-      clientDataHash,
-      signature,
-      storedCredential.publicKey
-    );
-
-    if (!isValid) {
+    if (!verification.verified) {
       return NextResponse.json({ error: '簽名驗證失敗' }, { status: 400 });
     }
 
@@ -155,7 +207,7 @@ export async function POST(request: Request) {
     await prisma.webAuthnCredential.update({
       where: { id: storedCredential.id },
       data: {
-        counter: receivedCounter,
+        counter: verification.authenticationInfo.newCounter,
         lastUsedAt: new Date()
       }
     });

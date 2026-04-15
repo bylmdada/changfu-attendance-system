@@ -10,9 +10,47 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { parseIntegerQueryParam } from '@/lib/query-params';
+import { safeParseJSON } from '@/lib/validation';
 
 interface RouteParams {
   params: Promise<{ id: string }>;
+}
+
+function parseRecordId(value: string) {
+  const parsedId = parseIntegerQueryParam(value, { min: 1 });
+  if (!parsedId.isValid || parsedId.value === null) {
+    return null;
+  }
+
+  return parsedId.value;
+}
+
+function parseDateInput(value: unknown): Date | null {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return null;
+  }
+
+  const [year, month, day] = value.split('-').map(Number);
+  const parsedUtcDate = new Date(Date.UTC(year, month - 1, day));
+  if (
+    parsedUtcDate.getUTCFullYear() !== year ||
+    parsedUtcDate.getUTCMonth() !== month - 1 ||
+    parsedUtcDate.getUTCDate() !== day
+  ) {
+    return null;
+  }
+
+  return new Date(value);
+}
+
+function normalizeOptionalString(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const normalized = value.trim();
+  return normalized ? normalized : undefined;
 }
 
 export async function GET(request: NextRequest, { params }: RouteParams) {
@@ -23,7 +61,10 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     }
 
     const { id } = await params;
-    const recordId = parseInt(id);
+    const recordId = parseRecordId(id);
+    if (recordId === null) {
+      return NextResponse.json({ error: '離職申請ID格式無效' }, { status: 400 });
+    }
 
     const record = await prisma.resignationRecord.findUnique({
       where: { id: recordId },
@@ -90,8 +131,17 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     }
 
     const { id } = await params;
-    const recordId = parseInt(id);
-    const data = await request.json();
+    const recordId = parseRecordId(id);
+    if (recordId === null) {
+      return NextResponse.json({ error: '離職申請ID格式無效' }, { status: 400 });
+    }
+
+    const parsedBody = await safeParseJSON(request);
+    if (!parsedBody.success || !parsedBody.data) {
+      return NextResponse.json({ error: '請求內容格式無效' }, { status: 400 });
+    }
+
+    const data = parsedBody.data;
 
     const record = await prisma.resignationRecord.findUnique({
       where: { id: recordId }
@@ -103,7 +153,10 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
 
     // 管理員/HR：審核操作
     if (user.role === 'ADMIN' || user.role === 'HR') {
-      const { action, rejectionReason, actualDate, notes } = data;
+      const action = typeof data.action === 'string' ? data.action : undefined;
+      const rejectionReason = normalizeOptionalString(data.rejectionReason);
+      const notes = normalizeOptionalString(data.notes);
+      const actualDate = data.actualDate;
 
       if (action === 'approve') {
         // 核准
@@ -163,11 +216,16 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
 
       } else if (action === 'complete') {
         // 完成離職
+        const parsedActualDate = actualDate === undefined ? new Date() : parseDateInput(actualDate);
+        if (!parsedActualDate) {
+          return NextResponse.json({ error: '實際離職日格式無效' }, { status: 400 });
+        }
+
         const updated = await prisma.resignationRecord.update({
           where: { id: recordId },
           data: {
             status: 'COMPLETED',
-            actualDate: actualDate ? new Date(actualDate) : new Date()
+            actualDate: parsedActualDate
           },
           include: { employee: true }
         });
@@ -188,12 +246,23 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
 
     // 員工：更新申請內容（僅限 PENDING 狀態）
     if (record.employeeId === user.employeeId && record.status === 'PENDING') {
-      const { expectedDate, reason, reasonType, notes } = data;
+      const expectedDate = data.expectedDate;
+      const reason = normalizeOptionalString(data.reason);
+      const reasonType = normalizeOptionalString(data.reasonType);
+      const notes = normalizeOptionalString(data.notes);
+      let parsedExpectedDate: Date | undefined;
+
+      if (expectedDate !== undefined) {
+        parsedExpectedDate = parseDateInput(expectedDate) ?? undefined;
+        if (!parsedExpectedDate) {
+          return NextResponse.json({ error: '預計離職日格式無效' }, { status: 400 });
+        }
+      }
 
       const updated = await prisma.resignationRecord.update({
         where: { id: recordId },
         data: {
-          expectedDate: expectedDate ? new Date(expectedDate) : undefined,
+          expectedDate: parsedExpectedDate,
           reason,
           reasonType,
           notes
@@ -230,7 +299,10 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
     }
 
     const { id } = await params;
-    const recordId = parseInt(id);
+    const recordId = parseRecordId(id);
+    if (recordId === null) {
+      return NextResponse.json({ error: '離職申請ID格式無效' }, { status: 400 });
+    }
 
     const record = await prisma.resignationRecord.findUnique({
       where: { id: recordId }

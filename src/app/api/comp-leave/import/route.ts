@@ -2,9 +2,10 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import * as XLSX from 'xlsx';
+import { validateCSRF } from '@/lib/csrf';
 
 // POST - 批量匯入補休餘額
 export async function POST(request: NextRequest) {
@@ -15,15 +16,17 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const csrfValidation = await validateCSRF(request);
+    if (!csrfValidation.valid) {
+      return NextResponse.json({ error: `CSRF驗證失敗: ${csrfValidation.error}` }, { status: 403 });
+    }
+
+    const user = await getUserFromRequest(request);
+    if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded || !['ADMIN', 'HR'].includes(decoded.role)) {
+    if (!['ADMIN', 'HR'].includes(user.role)) {
       return NextResponse.json({ error: '需要管理員或人資權限' }, { status: 403 });
     }
 
@@ -130,6 +133,14 @@ export async function POST(request: NextRequest) {
 
         // 使用交易確保資料一致性
         await prisma.$transaction(async (tx) => {
+          // 匯入代表最新快照，先移除舊的匯入基準避免重複累加。
+          await tx.compLeaveTransaction.deleteMany({
+            where: {
+              employeeId: employee.id,
+              referenceType: 'IMPORT'
+            }
+          });
+
           // 建立或更新補休餘額
           await tx.compLeaveBalance.upsert({
             where: { employeeId: employee.id },
@@ -186,15 +197,12 @@ export async function POST(request: NextRequest) {
 // GET - 下載匯入範本
 export async function GET(request: NextRequest) {
   try {
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const user = await getUserFromRequest(request);
+    if (!user) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded || !['ADMIN', 'HR'].includes(decoded.role)) {
+    if (!['ADMIN', 'HR'].includes(user.role)) {
       return NextResponse.json({ error: '需要管理員或人資權限' }, { status: 403 });
     }
 

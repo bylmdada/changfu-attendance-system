@@ -3,11 +3,63 @@ import { prisma } from '@/lib/database';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { getUserFromRequest } from '@/lib/auth';
+import { safeParseJSON } from '@/lib/validation';
+
+function parsePositiveInteger(value: unknown) {
+  if (typeof value === 'number') {
+    return Number.isInteger(value) && value > 0 ? value : null;
+  }
+
+  if (typeof value !== 'string' || value.trim() === '') {
+    return null;
+  }
+
+  const parsedValue = Number(value);
+  if (!Number.isInteger(parsedValue) || parsedValue <= 0) {
+    return null;
+  }
+
+  return parsedValue;
+}
+
+function parseOptionalDate(value: unknown) {
+  if (value === undefined || value === null || value === '') {
+    return null;
+  }
+
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const parsedDate = new Date(value);
+  if (Number.isNaN(parsedDate.getTime())) {
+    return undefined;
+  }
+
+  return parsedDate;
+}
+
+async function requireAdmin(request: NextRequest) {
+  const userAuth = await getUserFromRequest(request);
+  if (!userAuth) {
+    return NextResponse.json({ error: '未授權' }, { status: 401 });
+  }
+
+  if (userAuth.role !== 'ADMIN') {
+    return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
+  }
+
+  return null;
+}
 
 // GET - 取得密碼例外列表
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    // 這裡應該要檢查用戶權限，簡化起見直接返回數據
+    const authError = await requireAdmin(request);
+    if (authError) {
+      return authError;
+    }
+
     const exceptions = await prisma.passwordException.findMany({
       include: {
         employee: {
@@ -84,7 +136,25 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
     }
 
-    const body = await request.json();
+    const bodyResult = await safeParseJSON(request);
+
+    if (!bodyResult.success) {
+      return NextResponse.json(
+        {
+          error: bodyResult.error === 'empty_body' ? '請提供有效的設定資料' : '無效的 JSON 格式'
+        },
+        { status: 400 }
+      );
+    }
+
+    const body = bodyResult.data;
+
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json(
+        { error: '請提供有效的設定資料' },
+        { status: 400 }
+      );
+    }
     
     // 4. 資料大小驗證
     const jsonString = JSON.stringify(body);
@@ -95,7 +165,12 @@ export async function POST(request: NextRequest) {
       );
     }
     
-    const { employeeId, exceptionType, reason, expiresAt } = body;
+    const employeeId = body.employeeId;
+    const exceptionType = body.exceptionType;
+    const reason = body.reason;
+    const expiresAt = body.expiresAt;
+    const parsedEmployeeId = parsePositiveInteger(employeeId);
+    const parsedExpiresAt = parseOptionalDate(expiresAt);
 
     if (!employeeId || !exceptionType || !reason) {
       return NextResponse.json(
@@ -104,9 +179,30 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if (!parsedEmployeeId) {
+      return NextResponse.json(
+        { error: '員工ID格式無效' },
+        { status: 400 }
+      );
+    }
+
+    if (typeof exceptionType !== 'string' || typeof reason !== 'string') {
+      return NextResponse.json(
+        { error: '例外類型和原因格式無效' },
+        { status: 400 }
+      );
+    }
+
+    if (expiresAt && parsedExpiresAt === undefined) {
+      return NextResponse.json(
+        { error: '到期日期格式無效' },
+        { status: 400 }
+      );
+    }
+
     // 檢查員工是否存在
     const employee = await prisma.employee.findFirst({
-      where: { id: parseInt(employeeId) }
+      where: { id: parsedEmployeeId }
     });
 
     if (!employee) {
@@ -119,7 +215,7 @@ export async function POST(request: NextRequest) {
     // 檢查是否已經有相同類型的例外
     const existingException = await prisma.passwordException.findFirst({
       where: {
-        employeeId: parseInt(employeeId),
+        employeeId: parsedEmployeeId,
         exceptionType: exceptionType,
         isActive: true
       }
@@ -134,11 +230,11 @@ export async function POST(request: NextRequest) {
 
     const exception = await prisma.passwordException.create({
       data: {
-        employeeId: parseInt(employeeId),
+        employeeId: parsedEmployeeId,
         exceptionType,
         reason,
-        expiresAt: expiresAt ? new Date(expiresAt) : null,
-        createdBy: 1, // 這裡應該從token中取得當前用戶ID
+        expiresAt: parsedExpiresAt ?? null,
+        createdBy: userAuth.userId,
         isActive: true
       },
       include: {
@@ -181,8 +277,41 @@ export async function POST(request: NextRequest) {
 // DELETE - 刪除密碼例外
 export async function DELETE(request: NextRequest) {
   try {
-    const body = await request.json();
+    const authError = await requireAdmin(request);
+    if (authError) {
+      return authError;
+    }
+
+    const csrfResult = await validateCSRF(request);
+    if (!csrfResult.valid) {
+      return NextResponse.json(
+        { error: 'CSRF驗證失敗，請重新操作' },
+        { status: 403 }
+      );
+    }
+
+    const bodyResult = await safeParseJSON(request);
+
+    if (!bodyResult.success) {
+      return NextResponse.json(
+        {
+          error: bodyResult.error === 'empty_body' ? '請提供有效的設定資料' : '無效的 JSON 格式'
+        },
+        { status: 400 }
+      );
+    }
+
+    const body = bodyResult.data;
+
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json(
+        { error: '請提供有效的設定資料' },
+        { status: 400 }
+      );
+    }
+
     const { id } = body;
+    const parsedId = parsePositiveInteger(id);
 
     if (!id) {
       return NextResponse.json(
@@ -191,8 +320,15 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
+    if (!parsedId) {
+      return NextResponse.json(
+        { error: '例外ID格式無效' },
+        { status: 400 }
+      );
+    }
+
     await prisma.passwordException.delete({
-      where: { id: parseInt(id) }
+      where: { id: parsedId }
     });
 
     return NextResponse.json({ 

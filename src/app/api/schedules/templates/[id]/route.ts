@@ -2,7 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
 import { getUserFromRequest } from '@/lib/auth';
-import { prisma } from '@/lib/database';
+import { validateCSRF } from '@/lib/csrf';
+import {
+  getManageableDepartments,
+  hasFullScheduleManagementAccess
+} from '@/lib/schedule-management-permissions';
+import { parseIntegerQueryParam } from '@/lib/query-params';
+import { safeParseJSON } from '@/lib/validation';
 
 interface DaySchedule {
   shiftType: string;
@@ -27,6 +33,23 @@ interface WeeklyTemplate {
   sunday: DaySchedule;
   createdAt?: string;
   updatedAt?: string;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isDaySchedule(value: unknown): value is DaySchedule {
+  if (!isPlainObject(value)) {
+    return false;
+  }
+
+  return (
+    typeof value.shiftType === 'string' &&
+    typeof value.startTime === 'string' &&
+    typeof value.endTime === 'string' &&
+    typeof value.breakTime === 'number'
+  );
 }
 
 // 資料檔案路徑
@@ -72,43 +95,8 @@ function saveTemplates(templates: WeeklyTemplate[]): void {
   }
 }
 
-// 取得用戶可管理的部門
-async function getUserManagedDepartments(user: { role: string; employeeId: number }): Promise<string[]> {
-  if (user.role === 'ADMIN' || user.role === 'HR') {
-    return ['*'];
-  }
-
-  const departments: string[] = [];
-
-  const employee = await prisma.employee.findUnique({
-    where: { id: user.employeeId },
-    select: { department: true }
-  });
-  if (employee?.department) {
-    departments.push(employee.department);
-  }
-
-  const permission = await prisma.attendancePermission.findUnique({
-    where: { employeeId: user.employeeId }
-  });
-
-  if (permission) {
-    const perms = permission.permissions as { scheduleManagement?: { enabled?: boolean; managedLocations?: string[] } };
-    if (perms.scheduleManagement?.enabled && perms.scheduleManagement?.managedLocations) {
-      for (const loc of perms.scheduleManagement.managedLocations) {
-        if (!departments.includes(loc)) {
-          departments.push(loc);
-        }
-      }
-    }
-  }
-
-  return departments;
-}
-
 // 檢查是否可編輯/刪除模版
 function canManageTemplate(template: WeeklyTemplate, managedDepartments: string[]): boolean {
-  if (managedDepartments.includes('*')) return true;
   if (template.department === null) return false; // 通用模版只有 ADMIN/HR 可編輯
   return managedDepartments.includes(template.department);
 }
@@ -124,10 +112,40 @@ export async function PUT(
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
 
+    const csrfResult = await validateCSRF(request);
+    if (!csrfResult.valid) {
+      return NextResponse.json({ error: 'CSRF token validation failed' }, { status: 403 });
+    }
+
     const { id } = await params;
-    const templateId = parseInt(id);
-    const body = await request.json();
-    const { name, description, department, monday, tuesday, wednesday, thursday, friday, saturday, sunday } = body;
+    const templateIdResult = parseIntegerQueryParam(id, { min: 1, max: 99999999 });
+    if (!templateIdResult.isValid || templateIdResult.value === null) {
+      return NextResponse.json({ error: '無效的模版ID' }, { status: 400 });
+    }
+    const templateId = templateIdResult.value;
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error === 'empty_body' ? '請提供有效的模版資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const body = parseResult.data;
+    if (!isPlainObject(body)) {
+      return NextResponse.json({ error: '請提供有效的模版資料' }, { status: 400 });
+    }
+
+    const name = typeof body.name === 'string' ? body.name : undefined;
+    const description = typeof body.description === 'string' ? body.description : undefined;
+    const department = typeof body.department === 'string' ? body.department : body.department === null ? null : undefined;
+    const monday = body.monday;
+    const tuesday = body.tuesday;
+    const wednesday = body.wednesday;
+    const thursday = body.thursday;
+    const friday = body.friday;
+    const saturday = body.saturday;
+    const sunday = body.sunday;
 
     if (!name) {
       return NextResponse.json({ error: '缺少模版名稱' }, { status: 400 });
@@ -143,15 +161,15 @@ export async function PUT(
     }
 
     const existingTemplate = templates[templateIndex];
-    const managedDepartments = await getUserManagedDepartments(user);
+    const managedDepartments = await getManageableDepartments(user);
+    const isAdmin = hasFullScheduleManagementAccess(user);
 
     // 權限檢查
-    if (!canManageTemplate(existingTemplate, managedDepartments)) {
+    if (!isAdmin && !canManageTemplate(existingTemplate, managedDepartments)) {
       return NextResponse.json({ error: '無權限編輯此模版' }, { status: 403 });
     }
 
     // 檢查部門變更權限
-    const isAdmin = managedDepartments.includes('*');
     let newDepartment = existingTemplate.department;
     
     if (department !== undefined) {
@@ -170,11 +188,10 @@ export async function PUT(
     // 驗證每日班表資料
     const weekdays = { monday, tuesday, wednesday, thursday, friday, saturday, sunday };
     for (const [day, schedule] of Object.entries(weekdays)) {
-      if (!schedule || typeof schedule !== 'object') {
+      if (!isDaySchedule(schedule)) {
         return NextResponse.json({ error: `${day} 班表資料格式錯誤` }, { status: 400 });
       }
-      const s = schedule as DaySchedule;
-      if (!s.shiftType) {
+      if (!schedule.shiftType) {
         return NextResponse.json({ error: `${day} 缺少班別類型` }, { status: 400 });
       }
     }
@@ -185,13 +202,13 @@ export async function PUT(
       name,
       description: description || '',
       department: newDepartment,
-      monday,
-      tuesday,
-      wednesday,
-      thursday,
-      friday,
-      saturday,
-      sunday,
+      monday: monday as DaySchedule,
+      tuesday: tuesday as DaySchedule,
+      wednesday: wednesday as DaySchedule,
+      thursday: thursday as DaySchedule,
+      friday: friday as DaySchedule,
+      saturday: saturday as DaySchedule,
+      sunday: sunday as DaySchedule,
       updatedAt: new Date().toISOString()
     };
 
@@ -220,12 +237,18 @@ export async function DELETE(
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
 
-    const { id } = await params;
-    const templateId = parseInt(id);
+    const csrfResult = await validateCSRF(request);
+    if (!csrfResult.valid) {
+      return NextResponse.json({ error: 'CSRF token validation failed' }, { status: 403 });
+    }
 
-    if (!templateId) {
+    const { id } = await params;
+    const templateIdResult = parseIntegerQueryParam(id, { min: 1, max: 99999999 });
+
+    if (!templateIdResult.isValid || templateIdResult.value === null) {
       return NextResponse.json({ error: '無效的模版ID' }, { status: 400 });
     }
+    const templateId = templateIdResult.value;
 
     // 載入現有模版
     const templates = loadTemplates();
@@ -237,10 +260,11 @@ export async function DELETE(
     }
 
     const templateToDelete = templates[templateIndex];
-    const managedDepartments = await getUserManagedDepartments(user);
+    const managedDepartments = await getManageableDepartments(user);
+    const isAdmin = hasFullScheduleManagementAccess(user);
 
     // 權限檢查
-    if (!canManageTemplate(templateToDelete, managedDepartments)) {
+    if (!isAdmin && !canManageTemplate(templateToDelete, managedDepartments)) {
       return NextResponse.json({ error: '無權限刪除此模版' }, { status: 403 });
     }
 

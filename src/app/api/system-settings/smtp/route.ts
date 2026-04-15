@@ -2,6 +2,18 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
+import { safeParseJSON } from '@/lib/validation';
+
+const DEFAULT_SMTP_SETTINGS = {
+  id: 0,
+  smtpHost: '',
+  smtpPort: 587,
+  smtpSecure: true,
+  smtpUser: '',
+  smtpPassword: '',
+  fromEmail: '',
+  fromName: '長福考勤系統'
+};
 
 export async function GET(request: NextRequest) {
   try {
@@ -10,27 +22,13 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: '無權限訪問' }, { status: 403 });
     }
 
-    // 取得或建立預設設定
-    let settings = await prisma.smtpSettings.findFirst();
-    
-    if (!settings) {
-      settings = await prisma.smtpSettings.create({
-        data: {
-          smtpHost: '',
-          smtpPort: 587,
-          smtpSecure: true,
-          smtpUser: '',
-          smtpPassword: '',
-          fromEmail: '',
-          fromName: '長福考勤系統'
-        }
-      });
-    }
+    // 讀取現有設定，若尚未設定則回傳預設值，避免 GET 產生隱性寫入
+    const settings = await prisma.smtpSettings.findFirst();
 
     // 隱藏密碼
     const safeSettings = {
-      ...settings,
-      smtpPassword: settings.smtpPassword ? '********' : ''
+      ...(settings ?? DEFAULT_SMTP_SETTINGS),
+      smtpPassword: settings?.smtpPassword ? '********' : ''
     };
 
     return NextResponse.json({ settings: safeSettings });
@@ -52,8 +50,38 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '無權限訪問' }, { status: 403 });
     }
 
-    const body = await request.json();
-    const { smtpHost, smtpPort, smtpSecure, smtpUser, smtpPassword, fromEmail, fromName } = body;
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      if (parseResult.error === 'empty_body') {
+        return NextResponse.json({ error: '請提供有效的設定資料' }, { status: 400 });
+      }
+
+      return NextResponse.json({ error: '無效的 JSON 格式' }, { status: 400 });
+    }
+
+    const body = parseResult.data;
+
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json({ error: '請提供有效的設定資料' }, { status: 400 });
+    }
+
+    const {
+      smtpHost,
+      smtpPort,
+      smtpSecure,
+      smtpUser,
+      smtpPassword,
+      fromEmail,
+      fromName,
+    } = body as {
+      smtpHost?: unknown;
+      smtpPort?: unknown;
+      smtpSecure?: unknown;
+      smtpUser?: unknown;
+      smtpPassword?: unknown;
+      fromEmail?: unknown;
+      fromName?: unknown;
+    };
 
     // 取得現有設定
     const existing = await prisma.smtpSettings.findFirst();
@@ -67,16 +95,16 @@ export async function POST(request: NextRequest) {
       fromEmail: string;
       fromName: string;
     } = {
-      smtpHost: smtpHost || '',
-      smtpPort: smtpPort || 587,
-      smtpSecure: smtpSecure ?? true,
-      smtpUser: smtpUser || '',
-      fromEmail: fromEmail || '',
-      fromName: fromName || '長福考勤系統'
+      smtpHost: typeof smtpHost === 'string' ? smtpHost : '',
+      smtpPort: typeof smtpPort === 'number' ? smtpPort : 587,
+      smtpSecure: typeof smtpSecure === 'boolean' ? smtpSecure : true,
+      smtpUser: typeof smtpUser === 'string' ? smtpUser : '',
+      fromEmail: typeof fromEmail === 'string' ? fromEmail : '',
+      fromName: typeof fromName === 'string' ? fromName : '長福考勤系統'
     };
 
     // 只有當密碼不是遮罩值時才更新
-    if (smtpPassword && smtpPassword !== '********') {
+    if (typeof smtpPassword === 'string' && smtpPassword !== '' && smtpPassword !== '********') {
       updateData.smtpPassword = smtpPassword;
     }
 
@@ -90,7 +118,7 @@ export async function POST(request: NextRequest) {
       settings = await prisma.smtpSettings.create({
         data: {
           ...updateData,
-          smtpPassword: smtpPassword || ''
+          smtpPassword: typeof smtpPassword === 'string' ? smtpPassword : ''
         }
       });
     }

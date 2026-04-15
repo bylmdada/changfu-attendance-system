@@ -9,6 +9,11 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { toTaiwanDateStr } from '@/lib/timezone';
 import { validateCSRF } from '@/lib/csrf';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -111,16 +116,37 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: '無權限' }, { status: 403 });
     }
 
-    const data = await request.json();
-    const { id, action, reviewNote } = data;
+    const parsedBody = await safeParseJSON(request);
+    if (!parsedBody.success) {
+      const error = parsedBody.error === 'empty_body'
+        ? '請提供有效的眷屬申請審核資料'
+        : '無效的 JSON 格式';
+      return NextResponse.json({ error }, { status: 400 });
+    }
 
-    if (!id || !action) {
+    if (!isPlainObject(parsedBody.data)) {
+      return NextResponse.json({ error: '請提供有效的眷屬申請審核資料' }, { status: 400 });
+    }
+
+    const data = parsedBody.data;
+    const rawId = data.id;
+    const id = typeof rawId === 'number'
+      ? rawId
+      : typeof rawId === 'string' && rawId.trim()
+        ? Number(rawId)
+        : NaN;
+    const action = typeof data.action === 'string' ? data.action : '';
+    const reviewNote = typeof data.reviewNote === 'string' ? data.reviewNote : undefined;
+
+    if (!Number.isInteger(id) || id <= 0 || !action) {
       return NextResponse.json({ error: '缺少必要欄位' }, { status: 400 });
     }
 
-    if (!['APPROVE', 'REJECT'].includes(action)) {
+    if (action !== 'APPROVE' && action !== 'REJECT') {
       return NextResponse.json({ error: '無效的操作' }, { status: 400 });
     }
+
+    const reviewAction: 'APPROVE' | 'REJECT' = action;
 
     // 取得申請
     const application = await prisma.dependentApplication.findUnique({
@@ -135,7 +161,7 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: '此申請已審核' }, { status: 400 });
     }
 
-    const newStatus = action === 'APPROVE' ? 'APPROVED' : 'REJECTED';
+    const newStatus = reviewAction === 'APPROVE' ? 'APPROVED' : 'REJECTED';
 
     // 更新申請狀態
     await prisma.dependentApplication.update({
@@ -149,7 +175,7 @@ export async function PUT(request: NextRequest) {
     });
 
     // 如果通過，執行對應操作
-    if (action === 'APPROVE') {
+    if (reviewAction === 'APPROVE') {
       if (application.applicationType === 'ADD') {
         // 新增眷屬
         await prisma.healthInsuranceDependent.create({

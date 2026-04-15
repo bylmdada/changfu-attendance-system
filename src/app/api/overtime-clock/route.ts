@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 // 取得台灣時區的今日起始時間（UTC）
 function getTaiwanTodayStart(now: Date): Date {
@@ -29,20 +34,29 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
 
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '') ||
-                  request.cookies.get('auth-token')?.value;
-    
-    if (!token) {
+    const decoded = await getUserFromRequest(request);
+    if (!decoded) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    const decoded = await getUserFromToken(token);
-    if (!decoded) {
-      return NextResponse.json({ error: '無效的認證令牌' }, { status: 401 });
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      return NextResponse.json({ error: '無效的 JSON 格式' }, { status: 400 });
     }
 
-    const body = await request.json();
-    const { clockType, latitude, longitude, accuracy } = body;
+    const body = parseResult.data;
+    const clockType = isPlainObject(body) && typeof body.clockType === 'string'
+      ? body.clockType
+      : undefined;
+    const latitude = isPlainObject(body) && typeof body.latitude === 'number'
+      ? body.latitude
+      : undefined;
+    const longitude = isPlainObject(body) && typeof body.longitude === 'number'
+      ? body.longitude
+      : undefined;
+    const accuracy = isPlainObject(body) && typeof body.accuracy === 'number'
+      ? body.accuracy
+      : undefined;
 
     if (!clockType || !['START', 'END'].includes(clockType)) {
       return NextResponse.json({ error: '無效的打卡類型' }, { status: 400 });

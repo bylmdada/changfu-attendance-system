@@ -20,6 +20,11 @@ import {
   Smartphone,
   CreditCard
 } from 'lucide-react';
+import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
+import {
+  buildAuthMeRequest,
+  buildLogoutRequest,
+} from '@/lib/admin-session-client';
 import SystemNavbar from '@/components/SystemNavbar';
 import ResponsiveSidebar from '@/components/ResponsiveSidebar';
 
@@ -39,20 +44,11 @@ export default function SystemSettingsPage() {
   } | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Helper function to get auth headers
-  const getAuthHeaders = (): HeadersInit => {
-    if (typeof window === 'undefined') return {};
-    const token = localStorage.getItem('token');
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  };
-
   useEffect(() => {
     const fetchUser = async () => {
       try {
-        const response = await fetch('/api/auth/me', {
-          credentials: 'include',
-          headers: getAuthHeaders()
-        });
+        const request = buildAuthMeRequest(window.location.origin);
+        const response = await fetch(request.url, request.options);
         
         if (response.ok) {
           const userData = await response.json();
@@ -82,25 +78,14 @@ export default function SystemSettingsPage() {
 
   const handleLogout = async () => {
     try {
-      await fetch('/api/auth/logout', {
-        method: 'POST',
-        credentials: 'include',
-        headers: {
-          'Content-Type': 'application/json',
-          ...getAuthHeaders()
-        }
+      const request = buildLogoutRequest(window.location.origin);
+      await fetchJSONWithCSRF(request.url, {
+        method: request.options.method,
       });
-      
-      if (typeof window !== 'undefined') {
-        localStorage.removeItem('token');
-      }
       
       router.push('/login');
     } catch (error) {
       console.error('登出失敗:', error);
-      if (typeof window !== 'undefined') {
-        localStorage.removeItem('token');
-      }
       router.push('/login');
     }
   };

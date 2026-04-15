@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
+import { validateCSRF } from '@/lib/csrf';
+import { safeParseJSON } from '@/lib/validation';
 
 /**
  * 班表確認機制設定 API
@@ -78,8 +80,38 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '無權限' }, { status: 403 });
     }
 
-    const body = await request.json();
+    const csrfResult = await validateCSRF(request);
+    if (!csrfResult.valid) {
+      return NextResponse.json({ error: 'CSRF驗證失敗，請重新操作' }, { status: 403 });
+    }
+
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      const errorMessage = parseResult.error === 'empty_body'
+        ? '請提供有效的設定資料'
+        : '無效的 JSON 格式';
+
+      return NextResponse.json({ error: errorMessage }, { status: 400 });
+    }
+
+    const body = parseResult.data;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json({ error: '請提供有效的設定資料' }, { status: 400 });
+    }
+
     const { enabled, blockClock, enableReminder } = body;
+
+    if (enabled !== undefined && typeof enabled !== 'boolean') {
+      return NextResponse.json({ error: '啟用狀態必須是布林值' }, { status: 400 });
+    }
+
+    if (blockClock !== undefined && typeof blockClock !== 'boolean') {
+      return NextResponse.json({ error: '阻止打卡設定必須是布林值' }, { status: 400 });
+    }
+
+    if (enableReminder !== undefined && typeof enableReminder !== 'boolean') {
+      return NextResponse.json({ error: '提醒功能設定必須是布林值' }, { status: 400 });
+    }
 
     const updates = [];
 

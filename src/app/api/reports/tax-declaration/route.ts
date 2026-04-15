@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
 import { prisma } from '@/lib/database';
-import { getUserFromToken } from '@/lib/auth';
+import { getUserFromRequest } from '@/lib/auth';
+import { toCsvRow } from '@/lib/csv';
+import { parseIntegerQueryParam } from '@/lib/query-params';
 
 /**
  * 所得稅申報資料匯出 API
@@ -10,19 +11,30 @@ import { getUserFromToken } from '@/lib/auth';
 
 export async function GET(request: NextRequest) {
   try {
-    const cookieStore = await cookies();
-    const token = cookieStore.get('auth-token')?.value;
-    if (!token) {
+    const user = await getUserFromRequest(request);
+    if (!user) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
-    const user = await getUserFromToken(token);
     if (!user || (user.role !== 'ADMIN' && user.role !== 'HR')) {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
 
     const { searchParams } = new URL(request.url);
-    const year = parseInt(searchParams.get('year') || new Date().getFullYear().toString());
+    const yearResult = parseIntegerQueryParam(searchParams.get('year'), {
+      defaultValue: new Date().getFullYear(),
+      min: 1900,
+      max: 9999,
+    });
+    if (!yearResult.isValid) {
+      return NextResponse.json({ error: '無效的年份參數' }, { status: 400 });
+    }
+
+    const year = yearResult.value!;
     const format = searchParams.get('format') || 'json';
+
+    if (!['json', 'csv'].includes(format)) {
+      return NextResponse.json({ error: '無效的格式參數' }, { status: 400 });
+    }
 
     // 取得該年度所有薪資記錄
     const payrollRecords = await prisma.payrollRecord.findMany({
@@ -126,15 +138,23 @@ export async function GET(request: NextRequest) {
       ];
 
       const csvRows = [
-        headers.join(','),
-        ...records.map(r => [
+        toCsvRow(headers),
+        ...records.map(r => toCsvRow([
           r.employeeId, r.name, r.department, r.hireDate, r.months,
           r.totalBasePay, r.totalOvertimePay, r.totalGrossPay,
           r.totalLaborInsurance, r.totalHealthInsurance, r.totalIncomeTax,
           r.taxableIncome, r.totalNetPay
-        ].join(',')),
+        ])),
         '',
-        `合計,,,,,,,${summary.totalGrossPay},${summary.totalLaborInsurance},${summary.totalHealthInsurance},${summary.totalIncomeTax},${summary.totalTaxableIncome},`
+        toCsvRow([
+          '合計', '', '', '', '', '', '',
+          summary.totalGrossPay,
+          summary.totalLaborInsurance,
+          summary.totalHealthInsurance,
+          summary.totalIncomeTax,
+          summary.totalTaxableIncome,
+          ''
+        ])
       ];
 
       const csvContent = '\uFEFF' + csvRows.join('\n');

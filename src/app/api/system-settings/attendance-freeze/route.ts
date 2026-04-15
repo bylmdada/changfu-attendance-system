@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import jwt from 'jsonwebtoken';
+import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { safeParseSystemSettingsValue } from '@/lib/system-settings-json';
+import { safeParseJSON } from '@/lib/validation';
 
 interface AttendanceFreezeSettings {
   freezeDay: number;
@@ -11,20 +13,42 @@ interface AttendanceFreezeSettings {
   description: string;
 }
 
+const SETTINGS_KEY = 'attendance_freeze';
+
+const DEFAULT_SETTINGS: AttendanceFreezeSettings = {
+  freezeDay: 5,
+  freezeTime: '18:00',
+  isEnabled: true,
+  description: '每月5日下午6點後，前一個月的考勤記錄將被凍結，無法修改。',
+};
+
+function getDefaultSettings(): AttendanceFreezeSettings {
+  return { ...DEFAULT_SETTINGS };
+}
+
+async function getStoredSettings(): Promise<AttendanceFreezeSettings> {
+  const existingSettings = await prisma.systemSettings.findFirst({
+    where: { key: SETTINGS_KEY }
+  });
+
+  if (!existingSettings) {
+    return getDefaultSettings();
+  }
+
+  return {
+    ...getDefaultSettings(),
+    ...safeParseSystemSettingsValue<Partial<AttendanceFreezeSettings>>(
+      existingSettings.value,
+      {},
+      SETTINGS_KEY
+    ),
+  };
+}
+
 // 驗證管理員權限
 async function verifyAdmin(request: NextRequest) {
   try {
-    const token = request.cookies.get('auth-token')?.value;
-    if (!token) {
-      return null;
-    }
-
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key') as { userId: number };
-    const user = await prisma.user.findUnique({
-      where: { id: decoded.userId },
-      include: { employee: true }
-    });
-
+    const user = await getUserFromRequest(request);
     if (!user || user.role !== 'ADMIN') {
       return null;
     }
@@ -43,26 +67,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: '無效的認證令牌' }, { status: 401 });
     }
 
-    // 查找現有設定
-    const existingSettings = await prisma.systemSettings.findFirst({
-      where: { key: 'attendance_freeze' }
-    });
-
-    let settings: AttendanceFreezeSettings = {
-      freezeDay: 5,
-      freezeTime: '18:00',
-      isEnabled: true,
-      description: '每月5日下午6點後，前一個月的考勤記錄將被凍結，無法修改。'
-    };
-
-    if (existingSettings) {
-      try {
-        const parsedValue = JSON.parse(existingSettings.value);
-        settings = { ...settings, ...parsedValue };
-      } catch (error) {
-        console.error('解析設定值失敗:', error);
-      }
-    }
+    const settings = await getStoredSettings();
 
     return NextResponse.json({
       success: true,
@@ -113,7 +118,16 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
     }
 
-    const body = await request.json();
+    const bodyResult = await safeParseJSON(request);
+
+    if (!bodyResult.success) {
+      return NextResponse.json(
+        { error: bodyResult.error === 'empty_body' ? '請提供有效的設定資料' : '無效的 JSON 格式' },
+        { status: 400 }
+      );
+    }
+
+    const body = bodyResult.data;
     
     // 4. 資料大小驗證 (防止資源耗盡)
     const jsonString = JSON.stringify(body);
@@ -123,7 +137,21 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
-    const { freezeDay, freezeTime, isEnabled, description }: AttendanceFreezeSettings = body;
+
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json(
+        { error: '請提供有效的設定資料' },
+        { status: 400 }
+      );
+    }
+
+    const bodyRecord = body as Record<string, unknown>;
+
+    const existingSettings = await getStoredSettings();
+    const freezeDay = bodyRecord.freezeDay === undefined ? existingSettings.freezeDay : bodyRecord.freezeDay;
+    const freezeTime = bodyRecord.freezeTime === undefined ? existingSettings.freezeTime : bodyRecord.freezeTime;
+    const isEnabled = bodyRecord.isEnabled === undefined ? existingSettings.isEnabled : bodyRecord.isEnabled;
+    const description = bodyRecord.description === undefined ? existingSettings.description : bodyRecord.description;
 
     // 驗證輸入
     if (typeof freezeDay !== 'number' || freezeDay < 1 || freezeDay > 31) {
@@ -133,7 +161,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (!freezeTime || !/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/.test(freezeTime)) {
+    if (typeof freezeTime !== 'string' || !/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/.test(freezeTime)) {
       return NextResponse.json(
         { error: '凍結時間格式不正確' },
         { status: 400 }
@@ -147,6 +175,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if (typeof description !== 'string') {
+      return NextResponse.json(
+        { error: '描述必須是字串' },
+        { status: 400 }
+      );
+    }
+
     const settings: AttendanceFreezeSettings = {
       freezeDay,
       freezeTime,
@@ -156,13 +191,13 @@ export async function POST(request: NextRequest) {
 
     // 更新或創建設定
     await prisma.systemSettings.upsert({
-      where: { key: 'attendance_freeze' },
+      where: { key: SETTINGS_KEY },
       update: {
         value: JSON.stringify(settings),
         updatedAt: new Date()
       },
       create: {
-        key: 'attendance_freeze',
+        key: SETTINGS_KEY,
         value: JSON.stringify(settings),
         description: '考勤凍結設定'
       }

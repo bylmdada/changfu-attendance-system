@@ -1,24 +1,43 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getAuthResultFromRequest } from '@/lib/auth';
 import { prisma } from '@/lib/database';
-import jwt from 'jsonwebtoken';
 
 export async function GET(request: NextRequest) {
   try {
-    // 從 cookie 中獲取 token
-    const token = request.cookies.get('auth-token')?.value;
+    const authResult = await getAuthResultFromRequest(request);
 
-    if (!token) {
+    if (authResult.reason === 'missing_token') {
       return NextResponse.json(
         { error: '未找到驗證令牌' },
         { status: 401 }
       );
     }
 
-    // 驗證 JWT token
-    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as { 
-      userId: number; 
-      sessionId?: string;
-    };
+    if (authResult.reason === 'session_invalid') {
+      return NextResponse.json(
+        {
+          error: '您已在其他裝置登入，此會話已失效',
+          code: 'SESSION_INVALID'
+        },
+        { status: 401 }
+      );
+    }
+
+    if (authResult.reason === 'expired_token') {
+      return NextResponse.json(
+        { error: '驗證令牌已過期' },
+        { status: 401 }
+      );
+    }
+
+    const decoded = authResult.user;
+
+    if (!decoded) {
+      return NextResponse.json(
+        { error: '無效的驗證令牌' },
+        { status: 401 }
+      );
+    }
 
     // 查詢用戶資料
     const user = await prisma.user.findUnique({
@@ -85,20 +104,6 @@ export async function GET(request: NextRequest) {
 
   } catch (error) {
     console.error('驗證失敗:', error);
-    
-    if (error instanceof jwt.JsonWebTokenError) {
-      return NextResponse.json(
-        { error: '無效的驗證令牌' },
-        { status: 401 }
-      );
-    }
-
-    if (error instanceof jwt.TokenExpiredError) {
-      return NextResponse.json(
-        { error: '驗證令牌已過期' },
-        { status: 401 }
-      );
-    }
 
     return NextResponse.json(
       { error: '伺服器錯誤' },

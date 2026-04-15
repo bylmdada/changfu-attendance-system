@@ -4,6 +4,30 @@ import { prisma } from '@/lib/database';
 import bcrypt from 'bcryptjs';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { parseIntegerQueryParam } from '@/lib/query-params';
+import { safeParseJSON } from '@/lib/validation';
+
+function parseEmployeeIdParam(rawValue: string) {
+  return parseIntegerQueryParam(rawValue, { min: 1 });
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function parsePayrollNumber(value: unknown): number | null {
+  const parsedValue = typeof value === 'number'
+    ? value
+    : typeof value === 'string'
+      ? Number(value)
+      : Number.NaN;
+
+  return Number.isFinite(parsedValue) && parsedValue >= 0 ? parsedValue : null;
+}
+
+function isValidDateInput(value: unknown): value is string {
+  return isNonEmptyString(value) && !Number.isNaN(Date.parse(value));
+}
 
 // PUT - 更新員工
 export async function PUT(
@@ -44,12 +68,19 @@ export async function PUT(
     }
 
     const { id: idParam } = await params;
-    const employeeId = parseInt(idParam);
-    if (isNaN(employeeId)) {
+    const employeeIdResult = parseEmployeeIdParam(idParam);
+    if (!employeeIdResult.isValid || employeeIdResult.value === null) {
       return NextResponse.json({ error: '無效的員工ID' }, { status: 400 });
     }
 
-    const data = await request.json();
+    const employeeId = employeeIdResult.value;
+
+    const parsedBody = await safeParseJSON(request);
+    if (!parsedBody.success || !parsedBody.data) {
+      return NextResponse.json({ error: '請求內容格式無效' }, { status: 400 });
+    }
+
+    const data = parsedBody.data;
     
     // 檢查員工是否存在
     const existingEmployee = await prisma.employee.findUnique({
@@ -63,18 +94,24 @@ export async function PUT(
 
     // 如果只是更新 isActive 狀態（部分更新）
     if (data.isActive !== undefined && Object.keys(data).length === 1) {
+      if (typeof data.isActive !== 'boolean') {
+        return NextResponse.json({ error: 'isActive 參數格式無效' }, { status: 400 });
+      }
+
+      const isActive = data.isActive;
+
       const result = await prisma.$transaction(async (tx) => {
         // 更新員工狀態
         const updatedEmployee = await tx.employee.update({
           where: { id: employeeId },
-          data: { isActive: data.isActive }
+          data: { isActive }
         });
 
         // 如果有關聯用戶，同步更新用戶狀態
         if (existingEmployee.user) {
           await tx.user.update({
             where: { id: existingEmployee.user.id },
-            data: { isActive: data.isActive }
+            data: { isActive }
           });
         }
 
@@ -108,16 +145,34 @@ export async function PUT(
       role // 新增角色欄位
     } = data;
 
+    const normalizedEmpId = isNonEmptyString(empId) ? empId.trim() : '';
+    const normalizedName = isNonEmptyString(name) ? name.trim() : '';
+    const normalizedDepartment = isNonEmptyString(department) ? department.trim() : '';
+    const normalizedPosition = isNonEmptyString(position) ? position.trim() : '';
+    const normalizedUsername = isNonEmptyString(username) ? username.trim() : '';
+    const normalizedPassword = isNonEmptyString(password) ? password : '';
+    const normalizedBaseSalary = parsePayrollNumber(baseSalary);
+    const normalizedHourlyRate = parsePayrollNumber(hourlyRate);
+    const normalizedRole = typeof role === 'string' ? role : undefined;
+
     // 驗證必填欄位
-    if (!empId || !name || !birthday || !hireDate || !baseSalary || !hourlyRate || !department || !position) {
-      return NextResponse.json({ error: '缺少必要欄位' }, { status: 400 });
+    if (!normalizedEmpId || !normalizedName || !isValidDateInput(birthday) || !isValidDateInput(hireDate) || normalizedBaseSalary === null || normalizedHourlyRate === null || !normalizedDepartment || !normalizedPosition) {
+      return NextResponse.json({ error: '缺少必要欄位或欄位格式無效' }, { status: 400 });
+    }
+
+    if (createAccount !== undefined && typeof createAccount !== 'boolean') {
+      return NextResponse.json({ error: 'createAccount 參數格式無效' }, { status: 400 });
+    }
+
+    if (normalizedRole !== undefined && !['EMPLOYEE', 'HR', 'ADMIN'].includes(normalizedRole)) {
+      return NextResponse.json({ error: 'role 參數格式無效' }, { status: 400 });
     }
 
     // 檢查員工編號是否重複（排除當前員工）
-    if (empId !== existingEmployee.employeeId) {
+    if (normalizedEmpId !== existingEmployee.employeeId) {
       const duplicateEmpId = await prisma.employee.findFirst({
         where: {
-          employeeId: empId,
+          employeeId: normalizedEmpId,
           id: { not: employeeId }
         }
       });
@@ -133,31 +188,31 @@ export async function PUT(
       const updatedEmployee = await tx.employee.update({
         where: { id: employeeId },
         data: {
-          employeeId: empId,
-          name,
+          employeeId: normalizedEmpId,
+          name: normalizedName,
           birthday: new Date(birthday),
-          phone,
-          address,
-          emergencyContact,
-          emergencyPhone,
+          phone: isNonEmptyString(phone) ? phone.trim() : '',
+          address: isNonEmptyString(address) ? address.trim() : '',
+          emergencyContact: isNonEmptyString(emergencyContact) ? emergencyContact.trim() : '',
+          emergencyPhone: isNonEmptyString(emergencyPhone) ? emergencyPhone.trim() : '',
           hireDate: new Date(hireDate),
-          baseSalary: parseInt(baseSalary),
-          hourlyRate: parseInt(hourlyRate),
-          department,
-          position
+          baseSalary: normalizedBaseSalary,
+          hourlyRate: normalizedHourlyRate,
+          department: normalizedDepartment,
+          position: normalizedPosition
         }
       });
 
       // 處理帳號資訊
       if (createAccount) {
-        if (!username || !password) {
-          throw new Error('帳號和密碼為必填項');
+        if (!normalizedUsername || !normalizedPassword) {
+          throw new Error('建立帳號時必須提供 username 和 password');
         }
 
         // 檢查用戶名是否重複（排除當前用戶）
         const duplicateUsername = await tx.user.findFirst({
           where: {
-            username,
+            username: normalizedUsername,
             id: existingEmployee.user ? { not: existingEmployee.user.id } : undefined
           }
         });
@@ -166,22 +221,22 @@ export async function PUT(
           throw new Error('用戶名已存在');
         }
 
-        const hashedPassword = await bcrypt.hash(password, 10);
+        const hashedPassword = await bcrypt.hash(normalizedPassword, 10);
 
         if (existingEmployee.user) {
           // 更新現有用戶（包含角色）
           const updateData: { username: string; passwordHash?: string; role?: string } = {
-            username
+            username: normalizedUsername
           };
           
           // 只有當提供密碼時才更新密碼
-          if (password) {
+          if (normalizedPassword) {
             updateData.passwordHash = hashedPassword;
           }
           
           // 更新角色（如果有提供）
-          if (role && ['EMPLOYEE', 'HR', 'ADMIN'].includes(role)) {
-            updateData.role = role;
+          if (normalizedRole) {
+            updateData.role = normalizedRole;
           }
           
           await tx.user.update({
@@ -192,7 +247,7 @@ export async function PUT(
           // 創建新用戶
           await tx.user.create({
             data: {
-              username,
+              username: normalizedUsername,
               passwordHash: hashedPassword,
               role: 'EMPLOYEE',
               employeeId: updatedEmployee.id,
@@ -203,12 +258,12 @@ export async function PUT(
       } else {
         // createAccount = false 時
         // 如果已有用戶帳號，仍然更新角色（如果有提供）
-        if (existingEmployee.user && role && ['EMPLOYEE', 'HR', 'ADMIN'].includes(role)) {
+        if (existingEmployee.user && normalizedRole) {
           await tx.user.update({
             where: { id: existingEmployee.user.id },
-            data: { role }
+            data: { role: normalizedRole }
           });
-          console.log(`✅ 角色已更新: ${existingEmployee.user.username} → ${role}`);
+          console.log(`✅ 角色已更新: ${existingEmployee.user.username} → ${normalizedRole}`);
         }
       }
 
@@ -256,10 +311,12 @@ export async function DELETE(
     }
 
     const { id: idParam } = await params;
-    const employeeId = parseInt(idParam);
-    if (isNaN(employeeId)) {
+    const employeeIdResult = parseEmployeeIdParam(idParam);
+    if (!employeeIdResult.isValid || employeeIdResult.value === null) {
       return NextResponse.json({ error: '無效的員工ID' }, { status: 400 });
     }
+
+    const employeeId = employeeIdResult.value;
 
     // 檢查員工是否存在
     const existingEmployee = await prisma.employee.findUnique({
@@ -320,10 +377,12 @@ export async function GET(
     }
 
     const { id: idParam } = await params;
-    const employeeId = parseInt(idParam);
-    if (isNaN(employeeId)) {
+    const employeeIdResult = parseEmployeeIdParam(idParam);
+    if (!employeeIdResult.isValid || employeeIdResult.value === null) {
       return NextResponse.json({ error: '無效的員工ID' }, { status: 400 });
     }
+
+    const employeeId = employeeIdResult.value;
 
     const employee = await prisma.employee.findUnique({
       where: { id: employeeId },

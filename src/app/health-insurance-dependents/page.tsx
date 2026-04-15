@@ -31,7 +31,7 @@ interface DependentSummary {
 
 export default function HealthInsuranceDependentsPage() {
   const router = useRouter();
-  const [user, setUser] = useState<{
+  const [, setUser] = useState<{
     id: number;
     username: string;
     role: string;
@@ -117,19 +117,11 @@ export default function HealthInsuranceDependentsPage() {
   }>>([]);
   const [applicationStats, setApplicationStats] = useState({ pending: 0, approved: 0, rejected: 0 });
 
-  // Helper function to get auth headers
-  const getAuthHeaders = (): HeadersInit => {
-    if (typeof window === 'undefined') return {};
-    const token = localStorage.getItem('token');
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  };
-
   useEffect(() => {
     const fetchUser = async () => {
       try {
         const response = await fetch('/api/auth/me', {
-          credentials: 'include',
-          headers: getAuthHeaders()
+          credentials: 'include'
         });
         
         if (response.ok) {

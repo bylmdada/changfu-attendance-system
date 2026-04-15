@@ -12,6 +12,11 @@ import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { systemMonitor } from '@/lib/system-maintenance';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
 
 // 系統維護與監控 API - 獲取系統狀態
 export async function GET(request: NextRequest) {
@@ -226,8 +231,24 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '需要管理員權限執行維護操作' }, { status: 403 });
     }
 
-    const body = await request.json();
-    const { action } = body;
+    const parsedBody = await safeParseJSON(request);
+    if (!parsedBody.success) {
+      const error = parsedBody.error === 'empty_body'
+        ? '請提供有效的系統維護操作資料'
+        : '無效的 JSON 格式';
+      return NextResponse.json({ error }, { status: 400 });
+    }
+
+    if (!isPlainObject(parsedBody.data)) {
+      return NextResponse.json({ error: '請提供有效的系統維護操作資料' }, { status: 400 });
+    }
+
+    const body = parsedBody.data;
+    const action = typeof body.action === 'string' ? body.action : '';
+
+    if (!action) {
+      return NextResponse.json({ error: '需要提供有效的操作類型' }, { status: 400 });
+    }
 
     switch (action) {
       case 'start-monitoring':
@@ -260,7 +281,7 @@ export async function POST(request: NextRequest) {
 
       case 'run-maintenance-task':
         // 執行指定維護任務
-        const { taskId } = body;
+        const taskId = typeof body.taskId === 'string' ? body.taskId : '';
         
         if (!taskId) {
           return NextResponse.json({ error: '需要提供任務 ID' }, { status: 400 });
@@ -276,7 +297,8 @@ export async function POST(request: NextRequest) {
 
       case 'emergency-maintenance':
         // 緊急維護模式
-        const { maintenanceType, duration } = body;
+        const maintenanceType = typeof body.maintenanceType === 'string' ? body.maintenanceType : '';
+        const duration = typeof body.duration === 'number' ? body.duration : 30;
         
         if (!maintenanceType) {
           return NextResponse.json({ error: '需要指定維護類型' }, { status: 400 });
@@ -284,7 +306,7 @@ export async function POST(request: NextRequest) {
 
         // 發送維護通知
         const startTime = new Date();
-        const endTime = new Date(startTime.getTime() + (duration || 30) * 60 * 1000);
+        const endTime = new Date(startTime.getTime() + duration * 60 * 1000);
 
         // 使用通知模板發送維護通知 (這裡簡化實現)
         await systemMonitor.performHealthCheck(); // 觸發維護檢查
@@ -301,7 +323,7 @@ export async function POST(request: NextRequest) {
 
       case 'clear-issues':
         // 清除已解決的問題
-        const { issueIds } = body;
+        const issueIds = Array.isArray(body.issueIds) ? body.issueIds : null;
         
         if (!issueIds || !Array.isArray(issueIds)) {
           return NextResponse.json({ error: '需要提供問題 ID 陣列' }, { status: 400 });

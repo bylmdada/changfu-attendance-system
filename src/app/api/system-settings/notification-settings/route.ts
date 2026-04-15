@@ -8,6 +8,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
+import { safeParseJSON } from '@/lib/validation';
 
 // 預設設定
 const DEFAULT_SETTINGS = {
@@ -19,6 +20,15 @@ const DEFAULT_SETTINGS = {
   annualLeaveExpiryNotify: true,
   annualLeaveExpiryDays: 30,
 };
+
+const BOOLEAN_FIELDS = [
+  'emailEnabled',
+  'inAppEnabled',
+  'leaveApprovalNotify',
+  'overtimeApprovalNotify',
+  'shiftApprovalNotify',
+  'annualLeaveExpiryNotify',
+] as const;
 
 export async function GET(request: NextRequest) {
   try {
@@ -59,7 +69,51 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '無權限' }, { status: 403 });
     }
 
-    const data = await request.json();
+    const bodyResult = await safeParseJSON(request);
+
+    if (!bodyResult.success) {
+      return NextResponse.json(
+        {
+          error: bodyResult.error === 'empty_body' ? '請提供有效的設定資料' : '無效的 JSON 格式'
+        },
+        { status: 400 }
+      );
+    }
+
+    const data = bodyResult.data;
+
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      return NextResponse.json({ error: '請提供有效的設定資料' }, { status: 400 });
+    }
+
+    for (const field of BOOLEAN_FIELDS) {
+      if (field in data && typeof data[field] !== 'boolean') {
+        return NextResponse.json({ error: '通知開關欄位必須為布林值' }, { status: 400 });
+      }
+    }
+
+    const annualLeaveExpiryDays = data.annualLeaveExpiryDays;
+
+    if (
+      annualLeaveExpiryDays !== undefined && (
+        typeof annualLeaveExpiryDays !== 'number' ||
+        !Number.isInteger(annualLeaveExpiryDays) ||
+        annualLeaveExpiryDays < 0 ||
+        annualLeaveExpiryDays > 365
+      )
+    ) {
+      return NextResponse.json({ error: '年假到期提醒天數必須為 0 到 365 的整數' }, { status: 400 });
+    }
+
+    const emailEnabled = typeof data.emailEnabled === 'boolean' ? data.emailEnabled : undefined;
+    const inAppEnabled = typeof data.inAppEnabled === 'boolean' ? data.inAppEnabled : undefined;
+    const leaveApprovalNotify = typeof data.leaveApprovalNotify === 'boolean' ? data.leaveApprovalNotify : undefined;
+    const overtimeApprovalNotify = typeof data.overtimeApprovalNotify === 'boolean' ? data.overtimeApprovalNotify : undefined;
+    const shiftApprovalNotify = typeof data.shiftApprovalNotify === 'boolean' ? data.shiftApprovalNotify : undefined;
+    const annualLeaveExpiryNotify = typeof data.annualLeaveExpiryNotify === 'boolean' ? data.annualLeaveExpiryNotify : undefined;
+    const normalizedAnnualLeaveExpiryDays = typeof annualLeaveExpiryDays === 'number'
+      ? annualLeaveExpiryDays
+      : undefined;
 
     // 查找現有設定
     const existing = await prisma.systemNotificationSettings.findFirst();
@@ -69,25 +123,25 @@ export async function POST(request: NextRequest) {
       settings = await prisma.systemNotificationSettings.update({
         where: { id: existing.id },
         data: {
-          emailEnabled: data.emailEnabled ?? existing.emailEnabled,
-          inAppEnabled: data.inAppEnabled ?? existing.inAppEnabled,
-          leaveApprovalNotify: data.leaveApprovalNotify ?? existing.leaveApprovalNotify,
-          overtimeApprovalNotify: data.overtimeApprovalNotify ?? existing.overtimeApprovalNotify,
-          shiftApprovalNotify: data.shiftApprovalNotify ?? existing.shiftApprovalNotify,
-          annualLeaveExpiryNotify: data.annualLeaveExpiryNotify ?? existing.annualLeaveExpiryNotify,
-          annualLeaveExpiryDays: data.annualLeaveExpiryDays ?? existing.annualLeaveExpiryDays,
+          emailEnabled: emailEnabled ?? existing.emailEnabled,
+          inAppEnabled: inAppEnabled ?? existing.inAppEnabled,
+          leaveApprovalNotify: leaveApprovalNotify ?? existing.leaveApprovalNotify,
+          overtimeApprovalNotify: overtimeApprovalNotify ?? existing.overtimeApprovalNotify,
+          shiftApprovalNotify: shiftApprovalNotify ?? existing.shiftApprovalNotify,
+          annualLeaveExpiryNotify: annualLeaveExpiryNotify ?? existing.annualLeaveExpiryNotify,
+          annualLeaveExpiryDays: normalizedAnnualLeaveExpiryDays ?? existing.annualLeaveExpiryDays,
         },
       });
     } else {
       settings = await prisma.systemNotificationSettings.create({
         data: {
-          emailEnabled: data.emailEnabled ?? DEFAULT_SETTINGS.emailEnabled,
-          inAppEnabled: data.inAppEnabled ?? DEFAULT_SETTINGS.inAppEnabled,
-          leaveApprovalNotify: data.leaveApprovalNotify ?? DEFAULT_SETTINGS.leaveApprovalNotify,
-          overtimeApprovalNotify: data.overtimeApprovalNotify ?? DEFAULT_SETTINGS.overtimeApprovalNotify,
-          shiftApprovalNotify: data.shiftApprovalNotify ?? DEFAULT_SETTINGS.shiftApprovalNotify,
-          annualLeaveExpiryNotify: data.annualLeaveExpiryNotify ?? DEFAULT_SETTINGS.annualLeaveExpiryNotify,
-          annualLeaveExpiryDays: data.annualLeaveExpiryDays ?? DEFAULT_SETTINGS.annualLeaveExpiryDays,
+          emailEnabled: emailEnabled ?? DEFAULT_SETTINGS.emailEnabled,
+          inAppEnabled: inAppEnabled ?? DEFAULT_SETTINGS.inAppEnabled,
+          leaveApprovalNotify: leaveApprovalNotify ?? DEFAULT_SETTINGS.leaveApprovalNotify,
+          overtimeApprovalNotify: overtimeApprovalNotify ?? DEFAULT_SETTINGS.overtimeApprovalNotify,
+          shiftApprovalNotify: shiftApprovalNotify ?? DEFAULT_SETTINGS.shiftApprovalNotify,
+          annualLeaveExpiryNotify: annualLeaveExpiryNotify ?? DEFAULT_SETTINGS.annualLeaveExpiryNotify,
+          annualLeaveExpiryDays: normalizedAnnualLeaveExpiryDays ?? DEFAULT_SETTINGS.annualLeaveExpiryDays,
         },
       });
     }

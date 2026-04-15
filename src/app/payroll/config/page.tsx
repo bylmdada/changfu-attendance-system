@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { Plus, Edit, Trash2, Settings, X } from 'lucide-react';
+import { fetchJSONWithCSRF, fetchWithCSRF } from '@/lib/fetchWithCSRF';
 
 interface PayrollItemConfig {
   id: number;
@@ -34,10 +35,10 @@ export default function PayrollConfigPage() {
 
   const fetchConfigs = async () => {
     try {
-      const response = await fetch('/api/payroll/config');
+      const response = await fetchWithCSRF('/api/payroll/config');
       if (response.ok) {
         const data = await response.json();
-        setConfigs(data.configs);
+        setConfigs(data.configs || data.data?.configs || []);
       }
     } catch (error) {
       console.error('獲取配置失敗:', error);
@@ -56,10 +57,9 @@ export default function PayrollConfigPage() {
 
       const method = editingConfig ? 'PUT' : 'POST';
 
-      const response = await fetch(url, {
+      const response = await fetchJSONWithCSRF(url, {
         method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData)
+        body: formData
       });
 
       if (response.ok) {
@@ -67,6 +67,9 @@ export default function PayrollConfigPage() {
         setShowForm(false);
         setEditingConfig(null);
         resetForm();
+      } else {
+        const errorData = await response.json().catch(() => null);
+        console.error('保存配置失敗:', errorData?.error || response.statusText);
       }
     } catch (error) {
       console.error('保存配置失敗:', error);
@@ -87,15 +90,18 @@ export default function PayrollConfigPage() {
   };
 
   const handleDelete = async (id: number) => {
-    if (!confirm('確定要刪除此配置嗎？')) return;
+    if (!confirm('確定要停用此配置嗎？')) return;
 
     try {
-      const response = await fetch(`/api/payroll/config/${id}`, {
+      const response = await fetchJSONWithCSRF(`/api/payroll/config/${id}`, {
         method: 'DELETE'
       });
 
       if (response.ok) {
         await fetchConfigs();
+      } else {
+        const errorData = await response.json().catch(() => null);
+        console.error('刪除配置失敗:', errorData?.error || response.statusText);
       }
     } catch (error) {
       console.error('刪除配置失敗:', error);

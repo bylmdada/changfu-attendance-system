@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
+import { validateCSRF } from '@/lib/csrf';
+import { safeParseSystemSettingsValue } from '@/lib/system-settings-json';
+import { safeParseJSON } from '@/lib/validation';
 
 interface ClockReasonPromptSettings {
   enabled: boolean;
@@ -18,6 +21,46 @@ const DEFAULT_SETTINGS: ClockReasonPromptSettings = {
   excludeApprovedOvertime: true
 };
 
+function parseThresholdValue(
+  value: unknown,
+  label: '提早上班閾值' | '延後下班閾值'
+): { value?: number; error?: string } {
+  if (value === undefined) {
+    return {};
+  }
+
+  let parsedValue: number;
+
+  if (typeof value === 'number' && Number.isInteger(value)) {
+    parsedValue = value;
+  } else if (typeof value === 'string' && /^\d+$/.test(value.trim())) {
+    parsedValue = Number(value.trim());
+  } else {
+    return { error: `${label}需在 1-120 分鐘之間` };
+  }
+
+  if (parsedValue < 1 || parsedValue > 120) {
+    return { error: `${label}需在 1-120 分鐘之間` };
+  }
+
+  return { value: parsedValue };
+}
+
+function parseBooleanValue(
+  value: unknown,
+  label: '啟用狀態' | '是否排除假日' | '是否排除核准加班'
+): { value?: boolean; error?: string } {
+  if (value === undefined) {
+    return {};
+  }
+
+  if (typeof value !== 'boolean') {
+    return { error: `${label}必須為布林值` };
+  }
+
+  return { value };
+}
+
 // GET - 取得設定
 export async function GET(request: NextRequest) {
   try {
@@ -26,13 +69,19 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
+    if (user.role !== 'ADMIN') {
+      return NextResponse.json({ error: '權限不足' }, { status: 403 });
+    }
+
     const setting = await prisma.systemSettings.findUnique({
       where: { key: 'clock_reason_prompt' }
     });
 
-    const settings: ClockReasonPromptSettings = setting 
-      ? JSON.parse(setting.value) 
-      : DEFAULT_SETTINGS;
+    const settings = safeParseSystemSettingsValue(
+      setting?.value,
+      DEFAULT_SETTINGS,
+      'clock_reason_prompt'
+    );
 
     return NextResponse.json({ success: true, settings });
   } catch (error) {
@@ -49,13 +98,74 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
 
-    const body = await request.json();
+    const csrfResult = await validateCSRF(request);
+    if (!csrfResult.valid) {
+      return NextResponse.json({ error: 'CSRF驗證失敗，請重新操作' }, { status: 403 });
+    }
+
+    const parsedBody = await safeParseJSON(request);
+
+    if (!parsedBody.success) {
+      return NextResponse.json({ error: '請提供有效的設定資料' }, { status: 400 });
+    }
+
+    const body = parsedBody.data;
+
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json({ error: '請提供有效的設定資料' }, { status: 400 });
+    }
+
+    const bodyRecord = body as Record<string, unknown>;
+
+    const earlyThresholdResult = parseThresholdValue(
+      bodyRecord.earlyClockInThreshold,
+      '提早上班閾值'
+    );
+    if (earlyThresholdResult.error) {
+      return NextResponse.json({ error: earlyThresholdResult.error }, { status: 400 });
+    }
+
+    const lateThresholdResult = parseThresholdValue(
+      bodyRecord.lateClockOutThreshold,
+      '延後下班閾值'
+    );
+    if (lateThresholdResult.error) {
+      return NextResponse.json({ error: lateThresholdResult.error }, { status: 400 });
+    }
+
+    const enabledResult = parseBooleanValue(bodyRecord.enabled, '啟用狀態');
+    if (enabledResult.error) {
+      return NextResponse.json({ error: enabledResult.error }, { status: 400 });
+    }
+
+    const excludeHolidaysResult = parseBooleanValue(bodyRecord.excludeHolidays, '是否排除假日');
+    if (excludeHolidaysResult.error) {
+      return NextResponse.json({ error: excludeHolidaysResult.error }, { status: 400 });
+    }
+
+    const excludeApprovedOvertimeResult = parseBooleanValue(
+      bodyRecord.excludeApprovedOvertime,
+      '是否排除核准加班'
+    );
+    if (excludeApprovedOvertimeResult.error) {
+      return NextResponse.json({ error: excludeApprovedOvertimeResult.error }, { status: 400 });
+    }
+
+    const existingSetting = await prisma.systemSettings.findUnique({
+      where: { key: 'clock_reason_prompt' }
+    });
+    const baseSettings = safeParseSystemSettingsValue(
+      existingSetting?.value,
+      DEFAULT_SETTINGS,
+      'clock_reason_prompt'
+    );
+
     const settings: ClockReasonPromptSettings = {
-      enabled: body.enabled ?? DEFAULT_SETTINGS.enabled,
-      earlyClockInThreshold: body.earlyClockInThreshold ?? DEFAULT_SETTINGS.earlyClockInThreshold,
-      lateClockOutThreshold: body.lateClockOutThreshold ?? DEFAULT_SETTINGS.lateClockOutThreshold,
-      excludeHolidays: body.excludeHolidays ?? DEFAULT_SETTINGS.excludeHolidays,
-      excludeApprovedOvertime: body.excludeApprovedOvertime ?? DEFAULT_SETTINGS.excludeApprovedOvertime
+      enabled: enabledResult.value ?? baseSettings.enabled,
+      earlyClockInThreshold: earlyThresholdResult.value ?? baseSettings.earlyClockInThreshold,
+      lateClockOutThreshold: lateThresholdResult.value ?? baseSettings.lateClockOutThreshold,
+      excludeHolidays: excludeHolidaysResult.value ?? baseSettings.excludeHolidays,
+      excludeApprovedOvertime: excludeApprovedOvertimeResult.value ?? baseSettings.excludeApprovedOvertime
     };
 
     // 驗證閾值

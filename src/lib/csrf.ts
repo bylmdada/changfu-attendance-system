@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { randomBytes, createHash } from 'crypto';
 import { prisma } from './database';
+import { extractTokenFromRequest, verifyToken } from './auth';
 
 // 配置
 const CSRF_TOKEN_LENGTH = 32;
@@ -58,17 +59,17 @@ export async function validateCSRFToken(sessionId: string, token: string): Promi
 
 // 從請求中獲取會話ID
 function getSessionId(request: NextRequest): string | null {
-  // 嘗試從JWT令牌獲取用戶ID作為會話ID
-  const authToken = request.headers.get('authorization')?.replace('Bearer ', '') ||
-                   request.cookies.get('auth-token')?.value;
-  
+  const authToken = extractTokenFromRequest(request);
+
   if (authToken) {
-    try {
-      // 簡單解析JWT payload (不驗證簽名，僅獲取用戶ID)
-      const payload = JSON.parse(Buffer.from(authToken.split('.')[1], 'base64').toString());
+    const payload = verifyToken(authToken);
+
+    if (payload?.sessionId) {
+      return `session_${payload.sessionId}`;
+    }
+
+    if (payload?.userId) {
       return `user_${payload.userId}`;
-    } catch {
-      // JWT解析失敗，使用IP作為備選
     }
   }
   

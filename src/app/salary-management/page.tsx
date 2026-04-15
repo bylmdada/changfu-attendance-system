@@ -14,6 +14,10 @@ import {
   X
 } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
+import {
+  buildAuthMeRequest,
+  buildSalaryManagementListRequest,
+} from '@/lib/admin-session-client';
 import SystemNavbar from '@/components/SystemNavbar';
 import ResponsiveSidebar from '@/components/ResponsiveSidebar';
 
@@ -89,20 +93,11 @@ export default function SalaryManagementPage() {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  // Helper function to get auth headers
-  const getAuthHeaders = (): HeadersInit => {
-    if (typeof window === 'undefined') return {};
-    const token = localStorage.getItem('token');
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  };
-
   useEffect(() => {
     const fetchUser = async () => {
       try {
-        const response = await fetch('/api/auth/me', {
-          credentials: 'include',
-          headers: getAuthHeaders()
-        });
+        const authMeRequest = buildAuthMeRequest(window.location.origin);
+        const response = await fetch(authMeRequest.url, authMeRequest.options);
         
         if (response.ok) {
           const userData = await response.json();
@@ -133,9 +128,8 @@ export default function SalaryManagementPage() {
   async function loadEmployees() {
     try {
       setLoading(true);
-      const res = await fetch('/api/salary-management?type=list', {
-        credentials: 'include'
-      });
+      const request = buildSalaryManagementListRequest(window.location.origin);
+      const res = await fetch(request.url, request.options);
       
       if (res.status === 401) {
         router.push('/login');

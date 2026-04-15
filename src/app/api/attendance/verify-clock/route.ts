@@ -3,8 +3,14 @@ import { prisma } from '@/lib/database';
 import { verifyPassword } from '@/lib/auth';
 import { checkClockRateLimit, recordFailedClockAttempt, clearFailedAttempts, getClientIP } from '@/lib/rate-limit';
 import { canEmployeeClockIn } from '@/lib/schedule-confirm-service';
-import { getActiveAllowedLocations, getGPSSettingsFromDB, validateGpsClockLocation } from '@/lib/gps-attendance';
+import { getActiveAllowedLocations, getGPSSettingsFromDB, isClockLocationPayload, validateGpsClockLocation } from '@/lib/gps-attendance';
 import { isMobileClockingDevice, MOBILE_CLOCKING_REQUIRED_MESSAGE } from '@/lib/device-detection';
+import { getTaiwanTodayEnd, getTaiwanTodayStart, toTaiwanDateStr } from '@/lib/timezone';
+import { safeParseJSON } from '@/lib/validation';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -12,10 +18,33 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: MOBILE_CLOCKING_REQUIRED_MESSAGE }, { status: 403 });
     }
 
-    const body = await request.json();
-    const { username, password, location } = body;
+    const parseResult = await safeParseJSON(request);
+    if (!parseResult.success) {
+      const errorMessage = parseResult.error === 'empty_body'
+        ? '缺少必要參數'
+        : '無效的 JSON 格式';
+
+      return NextResponse.json({ error: errorMessage }, { status: 400 });
+    }
+
+    const body = parseResult.data;
+    if (!isPlainObject(body)) {
+      return NextResponse.json({ error: '缺少必要參數' }, { status: 400 });
+    }
+
+    if (body.location !== undefined && body.location !== null && !isClockLocationPayload(body.location)) {
+      return NextResponse.json({ error: 'GPS定位資料格式錯誤' }, { status: 400 });
+    }
+
+    const username = typeof body.username === 'string' ? body.username : '';
+    const password = typeof body.password === 'string' ? body.password : '';
+    const location = body.location === undefined || body.location === null ? null : body.location;
     // 支援兩種參數名：type (前端快速打卡) 和 clockType (原有系統)
-    const clockType = body.type || body.clockType;
+    const clockType = typeof body.type === 'string'
+      ? body.type
+      : typeof body.clockType === 'string'
+        ? body.clockType
+        : undefined;
 
     // 🔒 速率限制檢查
     const rateLimitResult = await checkClockRateLimit(request, username);
@@ -41,8 +70,9 @@ export async function POST(request: NextRequest) {
     
     if (restrictionSettings.enabled) {
       const checkTime = new Date();
+      const taiwanNow = new Date(checkTime.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
       // 使用台灣時區 (UTC+8) 取得當前小時，避免伺服器 UTC 時區造成誤判
-      const taiwanHour = new Date(checkTime.toLocaleString('en-US', { timeZone: 'Asia/Taipei' })).getHours();
+      const taiwanHour = taiwanNow.getHours();
       const currentHour = taiwanHour;
       const startHour = restrictionSettings.restrictedStartHour;
       const endHour = restrictionSettings.restrictedEndHour;
@@ -108,6 +138,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '帳號或密碼錯誤' }, { status: 401 });
     }
 
+    if (!user.isActive) {
+      console.log('❌ 帳號已停用:', username);
+      recordFailedClockAttempt(username);
+      return NextResponse.json({ error: '帳號已停用，請聯繫管理員' }, { status: 401 });
+    }
+
     // 驗證密碼
     const isPasswordValid = await verifyPassword(password, user.passwordHash);
     if (!isPasswordValid) {
@@ -126,9 +162,9 @@ export async function POST(request: NextRequest) {
 
     // 獲取今日日期和當前時間（使用台灣時區）
     const now = new Date();
-    const taiwanDate = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
-    const todayStart = new Date(Date.UTC(taiwanDate.getFullYear(), taiwanDate.getMonth(), taiwanDate.getDate()) - 8 * 60 * 60 * 1000);
-    const todayEnd = new Date(todayStart.getTime() + 24 * 60 * 60 * 1000);
+    const taiwanNow = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
+    const todayStart = getTaiwanTodayStart(now);
+    const todayEnd = getTaiwanTodayEnd(now);
     const currentTime = now.toISOString();
 
     // 📝 班表確認檢查（只對上班打卡檢查）
@@ -214,7 +250,7 @@ export async function POST(request: NextRequest) {
       });
 
       // 查詢今日班表以判斷是否超時下班
-      const todayStr = now.toISOString().slice(0, 10); // 格式：YYYY-MM-DD
+      const todayStr = toTaiwanDateStr(now);
       const todaySchedule = await prisma.schedule.findFirst({
         where: {
           employeeId: user.employee.id,
@@ -224,20 +260,26 @@ export async function POST(request: NextRequest) {
 
       // 判斷是否超過班表下班時間
       let isLateClockOut = false;
+      let lateClockOutMinutes = 0;
       if (todaySchedule && todaySchedule.endTime) {
         const [scheduleEndHour, scheduleEndMin] = todaySchedule.endTime.split(':').map(Number);
-        const clockOutHour = now.getHours();
-        const clockOutMin = now.getMinutes();
+        const clockOutHour = taiwanNow.getHours();
+        const clockOutMin = taiwanNow.getMinutes();
+        lateClockOutMinutes = (clockOutHour * 60 + clockOutMin) - (scheduleEndHour * 60 + scheduleEndMin);
         
         // 打卡時間超過班表結束時間 = 超時下班
-        if (clockOutHour > scheduleEndHour || 
-            (clockOutHour === scheduleEndHour && clockOutMin > scheduleEndMin)) {
+        if (lateClockOutMinutes > 0) {
           isLateClockOut = true;
         }
       }
 
       // 取得前端傳來的超時原因（如果有）
-      const clockOutReason = body.lateClockOutReason || body.clockOutReason || null;
+      const rawClockOutReason = typeof body.lateClockOutReason === 'string'
+        ? body.lateClockOutReason
+        : typeof body.clockOutReason === 'string'
+          ? body.clockOutReason
+          : '';
+      const clockOutReason = rawClockOutReason || null;
 
       let attendance;
 
@@ -281,6 +323,25 @@ export async function POST(request: NextRequest) {
           }
         });
 
+        let reasonPromptData = null;
+        try {
+          const reasonPromptSetting = await prisma.systemSettings.findUnique({
+            where: { key: 'clock_reason_prompt' }
+          });
+          const settings = reasonPromptSetting ? JSON.parse(reasonPromptSetting.value) : { enabled: false };
+
+          if (settings.enabled && todaySchedule?.endTime && lateClockOutMinutes >= Number(settings.lateClockOutThreshold ?? 0)) {
+            reasonPromptData = {
+              type: 'LATE_OUT',
+              minutesDiff: Math.floor(lateClockOutMinutes),
+              scheduledTime: todaySchedule.endTime,
+              recordId: attendance.id
+            };
+          }
+        } catch {
+          console.warn('檢查延後打卡設定失敗');
+        }
+
         console.log('✅ 下班打卡成功（更新記錄）:', attendance, '超時下班:', isLateClockOut);
 
         return NextResponse.json({ 
@@ -292,7 +353,9 @@ export async function POST(request: NextRequest) {
           employee: user.employee.name,
           attendance: attendance,
           isLateClockOut: isLateClockOut,
-          scheduleEndTime: todaySchedule?.endTime || null
+          scheduleEndTime: todaySchedule?.endTime || null,
+          requiresReason: !!reasonPromptData,
+          reasonPrompt: reasonPromptData
         });
 
       } else {
@@ -318,6 +381,25 @@ export async function POST(request: NextRequest) {
           }
         });
 
+        let reasonPromptData = null;
+        try {
+          const reasonPromptSetting = await prisma.systemSettings.findUnique({
+            where: { key: 'clock_reason_prompt' }
+          });
+          const settings = reasonPromptSetting ? JSON.parse(reasonPromptSetting.value) : { enabled: false };
+
+          if (settings.enabled && todaySchedule?.endTime && lateClockOutMinutes >= Number(settings.lateClockOutThreshold ?? 0)) {
+            reasonPromptData = {
+              type: 'LATE_OUT',
+              minutesDiff: Math.floor(lateClockOutMinutes),
+              scheduledTime: todaySchedule.endTime,
+              recordId: attendance.id
+            };
+          }
+        } catch {
+          console.warn('檢查延後打卡設定失敗');
+        }
+
         console.log('✅ 下班打卡成功（新建記錄）:', attendance, '超時下班:', isLateClockOut);
 
         return NextResponse.json({ 
@@ -329,7 +411,9 @@ export async function POST(request: NextRequest) {
           employee: user.employee.name,
           attendance: attendance,
           isLateClockOut: isLateClockOut,
-          scheduleEndTime: todaySchedule?.endTime || null
+          scheduleEndTime: todaySchedule?.endTime || null,
+          requiresReason: !!reasonPromptData,
+          reasonPrompt: reasonPromptData
         });
       }
     }

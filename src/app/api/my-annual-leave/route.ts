@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
+import { parseIntegerQueryParam } from '@/lib/query-params';
 
 // 計算勞基法應給天數（依年資）
 function calculateLegalDays(years: number): number {
@@ -131,7 +132,12 @@ export async function GET(request: NextRequest) {
     // 個人模式或查看特定員工
     let targetEmpId = user.employeeId;
     if (isAdmin && targetEmployeeId) {
-      targetEmpId = parseInt(targetEmployeeId);
+      const targetEmployeeIdResult = parseIntegerQueryParam(targetEmployeeId, { min: 1, max: 99999999 });
+      if (!targetEmployeeIdResult.isValid || targetEmployeeIdResult.value === null) {
+        return NextResponse.json({ error: 'employeeId 參數格式無效' }, { status: 400 });
+      }
+
+      targetEmpId = targetEmployeeIdResult.value;
     }
 
     // 取得員工基本資訊
