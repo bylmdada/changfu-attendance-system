@@ -139,6 +139,14 @@ export async function POST(request: NextRequest) {
     });
 
     if (!gpsValidation.ok) {
+      console.warn('Attendance clock GPS validation rejected', {
+        userId,
+        code: gpsValidation.code,
+        accuracy: location?.accuracy ?? null,
+        nearestLocation: gpsValidation.nearestLocation ?? null,
+        nearestDistance: gpsValidation.nearestDistance ?? null,
+      });
+
       return NextResponse.json(
         {
           error: gpsValidation.error,

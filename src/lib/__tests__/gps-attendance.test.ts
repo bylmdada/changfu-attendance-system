@@ -106,4 +106,54 @@ describe('validateGpsClockLocation', () => {
       code: 'VALID',
     });
   });
+
+  it('allows clocking when location is slightly outside the radius but within configured variance', () => {
+    const result = validateGpsClockLocation({
+      gpsSettings: {
+        ...defaultGPSSettings,
+        maxDistanceVariance: 30,
+      },
+      location: {
+        latitude: 25.035085,
+        longitude: 121.564468,
+        accuracy: 12,
+      },
+      allowedLocations: [
+        {
+          ...allowedLocations[0],
+          radius: 100,
+        },
+      ],
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      code: 'VALID',
+    });
+  });
+
+  it('still rejects clocking when location exceeds both radius and variance', () => {
+    const result = validateGpsClockLocation({
+      gpsSettings: {
+        ...defaultGPSSettings,
+        maxDistanceVariance: 10,
+      },
+      location: {
+        latitude: 25.0354,
+        longitude: 121.564468,
+        accuracy: 12,
+      },
+      allowedLocations: [
+        {
+          ...allowedLocations[0],
+          radius: 100,
+        },
+      ],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'OUT_OF_RANGE',
+    });
+  });
 });

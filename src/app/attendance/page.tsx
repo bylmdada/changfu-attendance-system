@@ -55,6 +55,15 @@ interface AllowedLocation {
   wifiOnly?: boolean;
 }
 
+interface GPSSettings {
+  enabled: boolean;
+  requiredAccuracy: number;
+  allowOfflineMode: boolean;
+  maxDistanceVariance: number;
+  verificationTimeout: number;
+  requireAddressInfo: boolean;
+}
+
 type LocationStatus = 'checking' | 'valid' | 'invalid' | 'error' | 'disabled';
 
 interface LocationCheckResult {
@@ -85,6 +94,14 @@ export default function AttendancePage() {
   const [allowedLocations, setAllowedLocations] = useState<AllowedLocation[]>([]);
   const [isLocationRequired, setIsLocationRequired] = useState(true);
   const [locationError, setLocationError] = useState<string>('');
+  const [gpsSettings, setGpsSettings] = useState<GPSSettings>({
+    enabled: true,
+    requiredAccuracy: 50,
+    allowOfflineMode: false,
+    maxDistanceVariance: 20,
+    verificationTimeout: 30,
+    requireAddressInfo: true,
+  });
 
   // WiFi SSID 驗證狀態
   const [showWifiSelector, setShowWifiSelector] = useState(false);
@@ -333,6 +350,22 @@ export default function AttendancePage() {
     setIsMobileClocking(isMobileClockingDevice(navigator.userAgent));
   }, []);
 
+  const loadGPSSettings = useCallback(async () => {
+    try {
+      const response = await fetch('/api/system-settings/gps-attendance');
+      if (!response.ok) {
+        return;
+      }
+
+      const data = await response.json();
+      if (data.settings) {
+        setGpsSettings(data.settings);
+      }
+    } catch (error) {
+      console.error('載入GPS設定失敗:', error);
+    }
+  }, []);
+
   // GPS 相關函數 - 帶進度追蹤
   const getCurrentPosition = (): Promise<LocationData> => {
     return new Promise((resolve, reject) => {
@@ -345,7 +378,7 @@ export default function AttendancePage() {
       setIsGpsChecking(true);
       setGpsProgress(0);
       const startTime = Date.now();
-      const timeout = 15000;
+      const timeout = Math.max(gpsSettings.verificationTimeout, 5) * 1000;
       
       // 進度更新計時器
       const progressInterval = setInterval(() => {
@@ -402,7 +435,7 @@ export default function AttendancePage() {
         {
           enableHighAccuracy: true,
           timeout: timeout,
-          maximumAge: 30000
+          maximumAge: 0
         }
       );
     });
@@ -431,8 +464,9 @@ export default function AttendancePage() {
       if (!location.isActive) continue;
       
       const distance = calculateDistance(lat, lng, location.latitude, location.longitude);
+      const effectiveRadius = location.radius + Math.max(gpsSettings.maxDistanceVariance, 0);
       
-      if (distance <= location.radius) {
+      if (distance <= effectiveRadius) {
         return { isValid: true, nearestLocation: location, distance };
       }
       
@@ -444,6 +478,32 @@ export default function AttendancePage() {
 
     return { isValid: false, nearestLocation, distance: minDistance };
   };
+
+  const validateLocationWithServer = useCallback(async (location: LocationData): Promise<{
+    status: LocationStatus;
+    error: string;
+  }> => {
+    const response = await fetch('/api/attendance/location-validation', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ location }),
+      credentials: 'include',
+    });
+
+    const data = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      return {
+        status: (data?.status as LocationStatus | undefined) || 'error',
+        error: data?.error || 'GPS驗證服務異常，請稍後再試',
+      };
+    }
+
+    return {
+      status: (data?.status as LocationStatus | undefined) || 'error',
+      error: data?.error || '',
+    };
+  }, []);
 
   const loadAllowedLocations = useCallback(async () => {
     try {
@@ -490,20 +550,6 @@ export default function AttendancePage() {
 
   const checkLocation = async (): Promise<LocationCheckResult> => {
     try {
-      // 獲取GPS設定
-      const gpsSettingsResponse = await fetch('/api/system-settings/gps-attendance');
-      let gpsSettings = {
-        enabled: true,
-        requiredAccuracy: 50,
-        allowOfflineMode: false,
-        requireAddressInfo: true
-      };
-      
-      if (gpsSettingsResponse.ok) {
-        const data = await gpsSettingsResponse.json();
-        gpsSettings = data.settings;
-      }
-
       if (!gpsSettings.enabled) {
         setLocationStatus('disabled');
         setIsLocationRequired(false);
@@ -515,30 +561,17 @@ export default function AttendancePage() {
       setLocationError('');
       
       const position = await getCurrentPosition();
-      
-      // 檢查GPS精確度
-      if (position.accuracy > gpsSettings.requiredAccuracy) {
-        const error = `GPS精確度不足（${Math.round(position.accuracy)}m > ${gpsSettings.requiredAccuracy}m），請移動到GPS訊號較好的位置`;
-        setLocationStatus('invalid');
-        setLocationError(error);
-        return { isValid: false, error, location: position };
+      setCurrentLocation(position);
+
+      const validation = await validateLocationWithServer(position);
+      setLocationStatus(validation.status);
+      setLocationError(validation.error);
+
+      if (validation.status === 'valid' || validation.status === 'disabled') {
+        return { isValid: true, location: position };
       }
 
-      setCurrentLocation(position);
-      
-      const locationCheck = isWithinAllowedRange(position.latitude, position.longitude);
-      
-      if (locationCheck.isValid) {
-        setLocationStatus('valid');
-        return { isValid: true, location: position };
-      } else {
-        const distance = locationCheck.distance ? Math.round(locationCheck.distance) : 0;
-        const nearestName = locationCheck.nearestLocation?.name || '允許地點';
-        const error = `您不在允許的打卡範圍內。距離最近的${nearestName}約${distance}米`;
-        setLocationStatus('invalid');
-        setLocationError(error);
-        return { isValid: false, error, location: position };
-      }
+      return { isValid: false, error: validation.error, location: position };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'GPS定位失敗';
       setLocationStatus('error');
@@ -599,8 +632,9 @@ export default function AttendancePage() {
 
   useEffect(() => {
     void loadTodayStatus();
+    void loadGPSSettings();
     void loadAllowedLocations();
-  }, [loadAllowedLocations, loadTodayStatus]);
+  }, [loadAllowedLocations, loadGPSSettings, loadTodayStatus]);
 
   const handleClock = async (type: 'in' | 'out') => {
     if (isMobileClocking !== true) {
