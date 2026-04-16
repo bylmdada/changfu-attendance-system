@@ -190,8 +190,9 @@ export function validateGpsClockLocation({
       allowedLocation.latitude,
       allowedLocation.longitude
     );
+    const effectiveRadius = allowedLocation.radius + Math.max(gpsSettings.maxDistanceVariance, 0);
 
-    if (distance <= allowedLocation.radius) {
+    if (distance <= effectiveRadius) {
       return { ok: true, code: 'VALID' };
     }
 
