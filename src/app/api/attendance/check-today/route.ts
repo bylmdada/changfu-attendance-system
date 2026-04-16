@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { verifyPassword } from '@/lib/auth';
-import { checkClockRateLimit, clearFailedAttempts, recordFailedClockAttempt } from '@/lib/rate-limit';
+import { checkClockRateLimit } from '@/lib/rate-limit';
 import { safeParseJSON } from '@/lib/validation';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -49,7 +49,6 @@ export async function POST(request: NextRequest) {
     });
 
     if (!user) {
-      await recordFailedClockAttempt(username);
       return NextResponse.json({ error: '帳號或密碼錯誤' }, { status: 401 });
     }
 
@@ -58,17 +57,13 @@ export async function POST(request: NextRequest) {
     }
 
     if (!user.isActive) {
-      await recordFailedClockAttempt(username);
       return NextResponse.json({ error: '帳號已停用，請聯繫管理員' }, { status: 401 });
     }
 
     const isValidPassword = await verifyPassword(password, user.passwordHash);
     if (!isValidPassword) {
-      await recordFailedClockAttempt(username);
       return NextResponse.json({ error: '帳號或密碼錯誤' }, { status: 401 });
     }
-
-    await clearFailedAttempts(username);
 
     // 獲取今日日期（使用台灣時區）
     const now = new Date();

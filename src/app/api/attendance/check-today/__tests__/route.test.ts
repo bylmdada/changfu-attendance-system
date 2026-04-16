@@ -27,12 +27,14 @@ jest.mock('@/lib/rate-limit', () => ({
 import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/database';
 import { verifyPassword } from '@/lib/auth';
-import { checkClockRateLimit } from '@/lib/rate-limit';
+import { checkClockRateLimit, clearFailedAttempts, recordFailedClockAttempt } from '@/lib/rate-limit';
 import { POST } from '../route';
 
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockVerifyPassword = verifyPassword as jest.MockedFunction<typeof verifyPassword>;
 const mockCheckClockRateLimit = checkClockRateLimit as jest.MockedFunction<typeof checkClockRateLimit>;
+const mockRecordFailedClockAttempt = recordFailedClockAttempt as jest.MockedFunction<typeof recordFailedClockAttempt>;
+const mockClearFailedAttempts = clearFailedAttempts as jest.MockedFunction<typeof clearFailedAttempts>;
 
 describe('attendance check-today auth guard', () => {
   beforeEach(() => {
@@ -130,5 +132,59 @@ describe('attendance check-today auth guard', () => {
     expect(response.status).toBe(401);
     expect(payload.error).toBe('帳號已停用，請聯繫管理員');
     expect(mockVerifyPassword).not.toHaveBeenCalled();
+    expect(mockRecordFailedClockAttempt).not.toHaveBeenCalled();
+    expect(mockClearFailedAttempts).not.toHaveBeenCalled();
+  });
+
+  it('does not increment failed_clock when background status checks receive a bad password', async () => {
+    mockPrisma.user.findUnique.mockResolvedValue({
+      id: 1,
+      username: 'alice',
+      isActive: true,
+      passwordHash: 'hash',
+      employee: { id: 9, employeeId: 'E009', name: 'Alice', department: 'HR', position: 'Clerk' }
+    } as never);
+    mockVerifyPassword.mockResolvedValue(false);
+
+    const request = new NextRequest('http://localhost/api/attendance/check-today', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'alice', password: 'wrong-password' })
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(401);
+    expect(payload.error).toBe('帳號或密碼錯誤');
+    expect(mockRecordFailedClockAttempt).not.toHaveBeenCalled();
+    expect(mockClearFailedAttempts).not.toHaveBeenCalled();
+  });
+
+  it('does not clear failed_clock when background status checks succeed', async () => {
+    mockPrisma.user.findUnique.mockResolvedValue({
+      id: 1,
+      username: 'alice',
+      isActive: true,
+      passwordHash: 'hash',
+      employee: { id: 9, employeeId: 'E009', name: 'Alice', department: 'HR', position: 'Clerk' }
+    } as never);
+    mockVerifyPassword.mockResolvedValue(true);
+    mockPrisma.attendanceRecord.findFirst.mockResolvedValue(null as never);
+    mockPrisma.attendanceRecord.findMany.mockResolvedValue([] as never);
+    mockPrisma.schedule.findFirst.mockResolvedValue(null as never);
+    mockPrisma.schedule.findMany.mockResolvedValue([] as never);
+
+    const request = new NextRequest('http://localhost/api/attendance/check-today', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'alice', password: 'secret' })
+    });
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(200);
+    expect(mockRecordFailedClockAttempt).not.toHaveBeenCalled();
+    expect(mockClearFailedAttempts).not.toHaveBeenCalled();
   });
 });
