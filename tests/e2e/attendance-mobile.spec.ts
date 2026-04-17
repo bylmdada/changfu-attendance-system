@@ -15,6 +15,10 @@ test.describe('mobile attendance clock-out regression', () => {
     let verifyClockPayload: Record<string, unknown> | null = null;
     let clockReasonPayload: Record<string, unknown> | null = null;
 
+    await page.addInitScript(() => {
+      window.localStorage.setItem('attendance_remembered_username', 'stale-worker');
+    });
+
     await context.route('**/api/auth/me', async (route) => {
       await route.fulfill(
         jsonResponse({
@@ -108,6 +112,7 @@ test.describe('mobile attendance clock-out regression', () => {
 
     await expect(page.getByRole('heading', { name: '下班打卡確認' })).toBeVisible();
     await expect(page.getByPlaceholder('請輸入您的帳號')).toHaveValue('worker1');
+    await expect(page.getByPlaceholder('請輸入您的帳號')).not.toHaveValue('stale-worker');
 
     await page.getByPlaceholder('請輸入您的密碼').fill('secret123');
     await page.getByRole('button', { name: '確認打卡' }).click();
