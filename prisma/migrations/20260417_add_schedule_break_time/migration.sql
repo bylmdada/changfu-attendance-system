@@ -1,0 +1,1 @@
+ALTER TABLE "schedules" ADD COLUMN "break_time" INTEGER NOT NULL DEFAULT 0;

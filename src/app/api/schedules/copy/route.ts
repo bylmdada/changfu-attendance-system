@@ -111,7 +111,8 @@ export async function POST(request: NextRequest) {
               workDate: targetWorkDateStr,
               shiftType: schedule.shiftType,
               startTime: schedule.startTime,
-              endTime: schedule.endTime
+              endTime: schedule.endTime,
+              breakTime: schedule.breakTime
             }
           });
           createdCount++;
@@ -222,7 +223,8 @@ export async function POST(request: NextRequest) {
             data: {
               shiftType: schedule.shiftType,
               startTime: schedule.startTime,
-              endTime: schedule.endTime
+              endTime: schedule.endTime,
+              breakTime: schedule.breakTime
             }
           });
           createdCount++;
@@ -236,7 +238,8 @@ export async function POST(request: NextRequest) {
             workDate: targetWorkDateStr,
             shiftType: schedule.shiftType,
             startTime: schedule.startTime,
-            endTime: schedule.endTime
+            endTime: schedule.endTime,
+            breakTime: schedule.breakTime
           }
         });
         createdCount++;

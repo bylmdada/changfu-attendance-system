@@ -130,6 +130,7 @@ export async function GET(request: NextRequest) {
       date: s.workDate,
       startTime: s.startTime,
       endTime: s.endTime,
+      breakTime: s.breakTime,
       shiftType: s.shiftType,
       status: 'active',
       employee: s.employee
@@ -194,6 +195,7 @@ export async function POST(request: NextRequest) {
     const startTime = typeof body.startTime === 'string' ? body.startTime : undefined;
     const endTime = typeof body.endTime === 'string' ? body.endTime : undefined;
     const shiftType = typeof body.shiftType === 'string' ? body.shiftType : 'normal';
+    const breakTime = typeof body.breakTime === 'number' ? body.breakTime : undefined;
     const scheduleDate = date || workDate; // 支援 date 和 workDate 兩種欄位名
 
     // 休假類型不需要時間
@@ -267,7 +269,8 @@ export async function POST(request: NextRequest) {
         workDate: scheduleDate,
         startTime: startTime || '',
         endTime: endTime || '',
-        shiftType
+        shiftType,
+        breakTime: breakTime ?? 0
       },
       include: {
         employee: {
@@ -296,6 +299,7 @@ export async function POST(request: NextRequest) {
         date: newSchedule.workDate,
         startTime: newSchedule.startTime,
         endTime: newSchedule.endTime,
+        breakTime: newSchedule.breakTime,
         shiftType: newSchedule.shiftType,
         status: 'active'
       }
@@ -347,6 +351,7 @@ export async function PUT(request: NextRequest) {
     const startTime = typeof body.startTime === 'string' ? body.startTime : undefined;
     const endTime = typeof body.endTime === 'string' ? body.endTime : undefined;
     const shiftType = typeof body.shiftType === 'string' ? body.shiftType : undefined;
+    const breakTime = typeof body.breakTime === 'number' ? body.breakTime : undefined;
 
     if (!id) {
       return NextResponse.json(
@@ -385,7 +390,8 @@ export async function PUT(request: NextRequest) {
       data: {
         ...(startTime && { startTime }),
         ...(endTime && { endTime }),
-        ...(shiftType && { shiftType })
+        ...(shiftType && { shiftType }),
+        ...(breakTime !== undefined && { breakTime })
       },
       include: {
         employee: {

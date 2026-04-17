@@ -107,6 +107,7 @@ export async function GET(request: NextRequest) {
         shiftType: s.shiftType,
         startTime: s.startTime,
         endTime: s.endTime,
+        breakTime: s.breakTime,
         employee: s.employee
       }))
     });

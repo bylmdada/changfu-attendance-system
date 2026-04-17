@@ -247,6 +247,7 @@ export async function POST(request: NextRequest) {
       shiftType: string;
       startTime: string;
       endTime: string;
+      breakTime: number;
     }> = [];
 
     for (const employee of employees) {
@@ -266,7 +267,8 @@ export async function POST(request: NextRequest) {
             workDate: dateInfo.date,
             shiftType: daySchedule.shiftType,
             startTime: hasTime ? (daySchedule.startTime || '') : '',
-            endTime: hasTime ? (daySchedule.endTime || '') : ''
+            endTime: hasTime ? (daySchedule.endTime || '') : '',
+            breakTime: hasTime ? (daySchedule.breakTime || 0) : 0
           });
         }
       }

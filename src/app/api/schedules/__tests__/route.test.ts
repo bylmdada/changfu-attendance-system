@@ -83,6 +83,7 @@ describe('schedules route regressions', () => {
       workDate: '2026-04-05',
       startTime: '09:00',
       endTime: '18:00',
+      breakTime: 60,
       shiftType: 'normal',
       employee: {
         employeeId: 'E001',
@@ -126,6 +127,7 @@ describe('schedules route regressions', () => {
         workDate: '2026-04-05',
         startTime: '09:00',
         endTime: '18:00',
+        breakTime: 60,
         shiftType: 'normal'
       }),
       headers: {
@@ -138,6 +140,14 @@ describe('schedules route regressions', () => {
 
     expect(response.status).toBe(201);
     expect(payload.success).toBe(true);
+    expect(payload.schedule.breakTime).toBe(60);
+    expect(mockPrisma.schedule.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          breakTime: 60,
+        })
+      })
+    );
     expect(mockInvalidateConfirmation).toHaveBeenCalledWith(1, '2026-04');
   });
 

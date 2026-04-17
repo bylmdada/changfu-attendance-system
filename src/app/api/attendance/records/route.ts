@@ -3,6 +3,16 @@ import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { prisma } from '@/lib/database';
 import { parseIntegerQueryParam } from '@/lib/query-params';
+import { toTaiwanDateStr } from '@/lib/timezone';
+import { getStoredOrCalculatedAttendanceHours } from '@/lib/work-hours';
+
+function toWorkDateKey(value: Date | string) {
+  if (value instanceof Date) {
+    return toTaiwanDateStr(value);
+  }
+
+  return value;
+}
 
 function parseDateQueryParam(rawValue: string | null) {
   if (rawValue === null || rawValue === '') {
@@ -203,7 +213,7 @@ export async function GET(request: NextRequest) {
     }
 
     // 獲取相關的班表資料
-    const workDates = records.map(r => r.workDate.toISOString().split('T')[0]);
+    const workDates = records.map(r => toTaiwanDateStr(r.workDate));
     const employeeIds = [...new Set(records.map(r => r.employeeId))];
     
     const schedules = await prisma.schedule.findMany({
@@ -214,10 +224,10 @@ export async function GET(request: NextRequest) {
     });
 
     // 建立班表查詢 Map
-    const scheduleMap = new Map<string, { startTime: string; endTime: string }>();
+    const scheduleMap = new Map<string, { startTime: string; endTime: string; breakTime: number }>();
     schedules.forEach(s => {
-      const key = `${s.employeeId}-${s.workDate}`;
-      scheduleMap.set(key, { startTime: s.startTime, endTime: s.endTime });
+      const key = `${s.employeeId}-${toWorkDateKey(s.workDate)}`;
+      scheduleMap.set(key, { startTime: s.startTime, endTime: s.endTime, breakTime: s.breakTime });
     });
 
     // 最低工時門檻（小時）
@@ -264,13 +274,17 @@ export async function GET(request: NextRequest) {
 
     // 格式化記錄
     const formattedRecords = records.map(record => {
-      const workDateStr = record.workDate.toISOString().split('T')[0];
+      const workDateStr = toTaiwanDateStr(record.workDate);
       const scheduleKey = `${record.employeeId}-${workDateStr}`;
       const schedule = scheduleMap.get(scheduleKey);
       
       // 判斷狀態
       let displayStatus: string;
-      const totalHours = (record.regularHours || 0) + (record.overtimeHours || 0);
+      const hours = getStoredOrCalculatedAttendanceHours({
+        ...record,
+        breakTime: schedule?.breakTime || 0,
+      });
+      const totalHours = hours.totalHours;
       const hasClockIn = !!record.clockInTime;
       const hasClockOut = !!record.clockOutTime;
       const hasSchedule = !!schedule;
@@ -319,8 +333,8 @@ export async function GET(request: NextRequest) {
         workDate: record.workDate.toISOString(),
         clockInTime: record.clockInTime?.toISOString() || null,
         clockOutTime: record.clockOutTime?.toISOString() || null,
-        regularHours: record.regularHours || 0,
-        overtimeHours: record.overtimeHours || 0,
+        regularHours: hours.regularHours,
+        overtimeHours: hours.overtimeHours,
         status: displayStatus,
         createdAt: record.createdAt.toISOString(),
         employee: record.employee,
@@ -352,11 +366,40 @@ export async function GET(request: NextRequest) {
       ? formattedRecords.filter(r => matchesRequestedStatus(r.status, status))
       : await prisma.attendanceRecord.findMany({
           where,
-          select: { regularHours: true, overtimeHours: true }
+          select: {
+            employeeId: true,
+            workDate: true,
+            clockInTime: true,
+            clockOutTime: true,
+            regularHours: true,
+            overtimeHours: true,
+          }
         });
 
-    const totalRegularHours = summarySource.reduce((sum, r) => sum + (r.regularHours || 0), 0);
-    const totalOvertimeHours = summarySource.reduce((sum, r) => sum + (r.overtimeHours || 0), 0);
+    const totalRegularHours = summarySource.reduce((sum, record) => {
+      if ('status' in record) {
+        return sum + record.regularHours;
+      }
+
+      const workDateStr = toTaiwanDateStr(record.workDate);
+      const schedule = scheduleMap.get(`${record.employeeId}-${workDateStr}`);
+      return sum + getStoredOrCalculatedAttendanceHours({
+        ...record,
+        breakTime: schedule?.breakTime || 0,
+      }).regularHours;
+    }, 0);
+    const totalOvertimeHours = summarySource.reduce((sum, record) => {
+      if ('status' in record) {
+        return sum + record.overtimeHours;
+      }
+
+      const workDateStr = toTaiwanDateStr(record.workDate);
+      const schedule = scheduleMap.get(`${record.employeeId}-${workDateStr}`);
+      return sum + getStoredOrCalculatedAttendanceHours({
+        ...record,
+        breakTime: schedule?.breakTime || 0,
+      }).overtimeHours;
+    }, 0);
 
     console.log(`✅ 返回考勤記錄: ${finalRecords.length} 筆 (總共 ${total} 筆)`);
 

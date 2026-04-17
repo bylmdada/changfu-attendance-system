@@ -1,30 +1,4 @@
-/**
- * 工時計算測試範例
- * 
- * 安裝測試依賴後執行：npm run test
- * 
- * 注意：需要先執行以下命令安裝 Jest：
- * npm install -D jest @types/jest ts-jest --force
- */
-
-// 工時計算函數（從 verify-clock 提取，便於測試）
-export function calculateWorkHours(clockInTime: Date, clockOutTime: Date): {
-  totalHours: number;
-  regularHours: number;
-  overtimeHours: number;
-} {
-  const workHours = (clockOutTime.getTime() - clockInTime.getTime()) / (1000 * 60 * 60);
-  
-  // 標準工時8小時，超過的算加班
-  const regularHours = Math.min(Math.max(workHours, 0), 8);
-  const overtimeHours = Math.max(0, workHours - 8);
-  
-  return {
-    totalHours: parseFloat(workHours.toFixed(2)),
-    regularHours: parseFloat(regularHours.toFixed(2)),
-    overtimeHours: parseFloat(overtimeHours.toFixed(2))
-  };
-}
+import { calculateAttendanceHours } from '@/lib/work-hours';
 
 // 正常工時測試
 describe('工時計算', () => {
@@ -32,7 +6,7 @@ describe('工時計算', () => {
     const clockIn = new Date('2024-01-15T09:00:00');
     const clockOut = new Date('2024-01-15T17:00:00');
     
-    const result = calculateWorkHours(clockIn, clockOut);
+    const result = calculateAttendanceHours(clockIn, clockOut);
     
     expect(result.totalHours).toBe(8);
     expect(result.regularHours).toBe(8);
@@ -43,7 +17,7 @@ describe('工時計算', () => {
     const clockIn = new Date('2024-01-15T09:00:00');
     const clockOut = new Date('2024-01-15T19:00:00'); // 10 小時
     
-    const result = calculateWorkHours(clockIn, clockOut);
+    const result = calculateAttendanceHours(clockIn, clockOut);
     
     expect(result.totalHours).toBe(10);
     expect(result.regularHours).toBe(8);
@@ -54,7 +28,7 @@ describe('工時計算', () => {
     const clockIn = new Date('2024-01-15T09:00:00');
     const clockOut = new Date('2024-01-15T13:00:00');
     
-    const result = calculateWorkHours(clockIn, clockOut);
+    const result = calculateAttendanceHours(clockIn, clockOut);
     
     expect(result.totalHours).toBe(4);
     expect(result.regularHours).toBe(4);
@@ -65,7 +39,7 @@ describe('工時計算', () => {
     const clockIn = new Date('2024-01-15T09:00:00');
     const clockOut = new Date('2024-01-15T21:00:00');
     
-    const result = calculateWorkHours(clockIn, clockOut);
+    const result = calculateAttendanceHours(clockIn, clockOut);
     
     expect(result.totalHours).toBe(12);
     expect(result.regularHours).toBe(8);
@@ -76,11 +50,30 @@ describe('工時計算', () => {
     const clockIn = new Date('2024-01-15T09:00:00');
     const clockOut = new Date('2024-01-16T01:00:00'); // 16 小時
     
-    const result = calculateWorkHours(clockIn, clockOut);
+    const result = calculateAttendanceHours(clockIn, clockOut);
     
     expect(result.totalHours).toBe(16);
     expect(result.regularHours).toBe(8);
     expect(result.overtimeHours).toBe(8);
+  });
+
+  test('缺少上下班時間時回傳 0', () => {
+    const result = calculateAttendanceHours(new Date('2024-01-15T09:00:00'), null);
+
+    expect(result.totalHours).toBe(0);
+    expect(result.regularHours).toBe(0);
+    expect(result.overtimeHours).toBe(0);
+  });
+
+  test('會扣除班表休息時間', () => {
+    const clockIn = new Date('2024-01-15T09:00:00');
+    const clockOut = new Date('2024-01-15T18:00:00');
+
+    const result = calculateAttendanceHours(clockIn, clockOut, undefined, 60);
+
+    expect(result.totalHours).toBe(8);
+    expect(result.regularHours).toBe(8);
+    expect(result.overtimeHours).toBe(0);
   });
 });
 
