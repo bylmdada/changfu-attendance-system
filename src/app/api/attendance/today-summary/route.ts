@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { getTaiwanTodayEnd, getTaiwanTodayStart, toTaiwanDateStr } from '@/lib/timezone';
+import { calculateAttendanceHours } from '@/lib/work-hours';
 
 export async function GET(request: NextRequest) {
   try {
@@ -46,26 +47,14 @@ export async function GET(request: NextRequest) {
     });
 
     // 計算工作時數
-    let workHours = 0;
-    let overtimeHours = 0;
-    
-    if (todayRecord && todayRecord.clockInTime && todayRecord.clockOutTime) {
-      const clockIn = new Date(todayRecord.clockInTime);
-      const clockOut = new Date(todayRecord.clockOutTime);
-      const totalMinutes = (clockOut.getTime() - clockIn.getTime()) / (1000 * 60);
-      
-      if (totalMinutes > 0) {
-        // 扣除休息時間 (假設1小時)
-        const workMinutes = Math.max(0, totalMinutes - 60);
-        workHours = Math.round((workMinutes / 60) * 100) / 100;
-        
-        // 計算加班時數 (超過8小時的部分)
-        if (workHours > 8) {
-          overtimeHours = Math.round((workHours - 8) * 100) / 100;
-          workHours = 8;
-        }
-      }
-    }
+    const hours = calculateAttendanceHours(
+      todayRecord?.clockInTime,
+      todayRecord?.clockOutTime,
+      undefined,
+      todaySchedule?.breakTime || 0
+    );
+    const workHours = hours.regularHours;
+    const overtimeHours = hours.overtimeHours;
 
     // 只有具備管理權限的角色才能取得全公司今日出勤統計
     if (user.role === 'ADMIN' || user.role === 'HR') {
@@ -92,7 +81,8 @@ export async function GET(request: NextRequest) {
           schedule: todaySchedule ? {
             shiftType: todaySchedule.shiftType,
             startTime: todaySchedule.startTime,
-            endTime: todaySchedule.endTime
+            endTime: todaySchedule.endTime,
+            breakTime: todaySchedule.breakTime
           } : null,
           attendance: todayRecord ? {
             clockInTime: todayRecord.clockInTime?.toISOString() || null,
@@ -103,7 +93,7 @@ export async function GET(request: NextRequest) {
           workSummary: {
             regularHours: workHours,
             overtimeHours: overtimeHours,
-            totalHours: workHours + overtimeHours
+            totalHours: hours.totalHours
           }
         }
       });
@@ -122,7 +112,8 @@ export async function GET(request: NextRequest) {
         schedule: todaySchedule ? {
           shiftType: todaySchedule.shiftType,
           startTime: todaySchedule.startTime,
-          endTime: todaySchedule.endTime
+          endTime: todaySchedule.endTime,
+          breakTime: todaySchedule.breakTime
         } : null,
         attendance: todayRecord ? {
           clockInTime: todayRecord.clockInTime?.toISOString() || null,
@@ -133,7 +124,7 @@ export async function GET(request: NextRequest) {
         workSummary: {
           regularHours: workHours,
           overtimeHours: overtimeHours,
-          totalHours: workHours + overtimeHours
+          totalHours: hours.totalHours
         }
       }
     });

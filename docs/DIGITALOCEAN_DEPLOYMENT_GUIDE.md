@@ -191,6 +191,8 @@ npm run build
 
 ### 3.3.1 正式環境推薦：本機 build 後同步 `.next`
 
+> 若這次版本包含 Prisma schema 變更，僅同步 `.next` 不夠；還需要同步 `prisma/schema.prisma`、對應 migration 目錄，並在 VPS 上執行 `npx prisma generate` 與 `npx prisma migrate deploy`。本次 `Schedule.breakTime` 版本可直接參考 [SCHEDULE_BREAKTIME_RELEASE_CHECKLIST.md](./SCHEDULE_BREAKTIME_RELEASE_CHECKLIST.md)。
+
 在本機執行：
 
 ```bash

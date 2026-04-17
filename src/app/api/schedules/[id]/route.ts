@@ -110,6 +110,7 @@ export async function GET(
         date: schedule.workDate,
         startTime: schedule.startTime,
         endTime: schedule.endTime,
+        breakTime: schedule.breakTime,
         shiftType: schedule.shiftType,
         status: 'active',
         employee: schedule.employee
@@ -189,6 +190,7 @@ export async function PUT(
     const endTime = typeof body.endTime === 'string' ? body.endTime : undefined;
     const shiftType = typeof body.shiftType === 'string' ? body.shiftType : undefined;
     const workDate = typeof body.workDate === 'string' ? body.workDate : undefined;
+    const breakTime = typeof body.breakTime === 'number' ? body.breakTime : undefined;
 
     // 非工作班別（NH/RD/rd/FDL/TD）應強制清空時間
     const noTimeShiftTypes = ['NH', 'RD', 'rd', 'FDL', 'TD'];
@@ -200,6 +202,7 @@ export async function PUT(
       endTime?: string;
       shiftType?: string;
       workDate?: string;
+      breakTime?: number;
     } = {};
 
     if (shiftType) {
@@ -207,6 +210,9 @@ export async function PUT(
     }
     if (workDate) {
       updateData.workDate = workDate;
+    }
+    if (breakTime !== undefined) {
+      updateData.breakTime = breakTime;
     }
 
     // 處理時間欄位：非工作班別強制清空，否則按傳入值更新
@@ -250,6 +256,7 @@ export async function PUT(
         date: updatedSchedule.workDate,
         startTime: updatedSchedule.startTime,
         endTime: updatedSchedule.endTime,
+        breakTime: updatedSchedule.breakTime,
         shiftType: updatedSchedule.shiftType
       }
     });

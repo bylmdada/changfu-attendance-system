@@ -8,6 +8,7 @@ import { isMobileClockingDevice, MOBILE_CLOCKING_REQUIRED_MESSAGE } from '@/lib/
 import { getActiveAllowedLocations, getGPSSettingsFromDB, isClockLocationPayload, validateGpsClockLocation } from '@/lib/gps-attendance';
 import { getTaiwanTodayEnd, getTaiwanTodayStart, toTaiwanDateStr } from '@/lib/timezone';
 import { safeParseJSON } from '@/lib/validation';
+import { calculateAttendanceHours } from '@/lib/work-hours';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -182,6 +183,15 @@ export async function POST(request: NextRequest) {
       }
     });
 
+    const todayStr = toTaiwanDateStr(now);
+    const todaySchedule = await prisma.schedule.findFirst({
+      where: {
+        employeeId: user.employee.id,
+        workDate: todayStr,
+        shiftType: { not: 'OFF' }
+      }
+    });
+
     if (type === 'in') {
       // 上班打卡
       // 檢查是否已經打過上班卡
@@ -232,15 +242,6 @@ export async function POST(request: NextRequest) {
         const settings = reasonPromptSetting ? JSON.parse(reasonPromptSetting.value) : { enabled: false };
         
         if (settings.enabled) {
-          const todayStr = toTaiwanDateStr(now);
-          const todaySchedule = await prisma.schedule.findFirst({
-            where: {
-              employeeId: user.employee.id,
-              workDate: todayStr,
-              shiftType: { not: 'OFF' }
-            }
-          });
-
           if (todaySchedule?.startTime) {
             const scheduledStart = new Date(todaySchedule.startTime);
             const clockInTime = new Date(currentTime);
@@ -278,7 +279,6 @@ export async function POST(request: NextRequest) {
         if (existingAttendance.clockOutTime) {
           return NextResponse.json({ error: '今日已打過下班卡' }, { status: 400 });
         }
-        
         // 計算工作時間（如果有上班打卡時間）
         let regularHours = 0;
         let overtimeHours = 0;
@@ -286,11 +286,15 @@ export async function POST(request: NextRequest) {
         if (existingAttendance.clockInTime) {
           const clockInTime = new Date(existingAttendance.clockInTime);
           const clockOutTime = new Date(currentTime);
-          const workHours = (clockOutTime.getTime() - clockInTime.getTime()) / (1000 * 60 * 60);
-          
-          // 標準工時8小時，超過的算加班
-          regularHours = Math.min(workHours, 8);
-          overtimeHours = Math.max(0, workHours - 8);
+          const hours = calculateAttendanceHours(
+            clockInTime,
+            clockOutTime,
+            undefined,
+            todaySchedule?.breakTime || 0
+          );
+
+          regularHours = hours.regularHours;
+          overtimeHours = hours.overtimeHours;
         }
 
         // 更新現有記錄

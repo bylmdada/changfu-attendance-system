@@ -118,8 +118,8 @@ describe('attendance records route guards', () => {
     ] as never);
 
     mockPrisma.schedule.findMany.mockResolvedValue([
-      { employeeId: 100, workDate: '2026-04-10', startTime: '09:00', endTime: '18:00' },
-      { employeeId: 101, workDate: '2026-04-09', startTime: '09:00', endTime: '18:00' }
+      { employeeId: 100, workDate: '2026-04-10', startTime: '09:00', endTime: '18:00', breakTime: 0 },
+      { employeeId: 101, workDate: '2026-04-09', startTime: '09:00', endTime: '18:00', breakTime: 0 }
     ] as never);
 
     const response = await GET(new NextRequest('http://localhost/api/attendance/records?page=1&pageSize=1&status=異常'));
@@ -131,5 +131,129 @@ describe('attendance records route guards', () => {
     expect(payload.records[0].status).toBe('異常');
     expect(payload.pagination.total).toBe(1);
     expect(payload.pagination.totalPages).toBe(1);
+  });
+
+  it('recalculates regular and overtime hours from clock times so stale stored values do not leak to the records page', async () => {
+    mockPrisma.attendanceRecord.count.mockResolvedValue(1 as never);
+    mockPrisma.attendanceRecord.findMany
+      .mockResolvedValueOnce([
+        {
+          id: 3,
+          employeeId: 102,
+          workDate: new Date('2026-04-08T00:00:00.000Z'),
+          clockInTime: new Date('2026-04-08T09:00:00.000Z'),
+          clockOutTime: new Date('2026-04-08T18:00:00.000Z'),
+          regularHours: 9,
+          overtimeHours: 0,
+          status: 'PRESENT',
+          createdAt: new Date('2026-04-08T18:05:00.000Z'),
+          clockInLatitude: null,
+          clockInLongitude: null,
+          clockInAccuracy: null,
+          clockInAddress: null,
+          clockOutLatitude: null,
+          clockOutLongitude: null,
+          clockOutAccuracy: null,
+          clockOutAddress: null,
+          employee: {
+            id: 102,
+            employeeId: 'E102',
+            name: '舊資料員工',
+            department: '製造部',
+            position: 'Staff'
+          }
+        }
+      ] as never)
+      .mockResolvedValueOnce([
+        {
+          employeeId: 102,
+          workDate: new Date('2026-04-08T00:00:00.000Z'),
+          clockInTime: new Date('2026-04-08T09:00:00.000Z'),
+          clockOutTime: new Date('2026-04-08T18:00:00.000Z'),
+          regularHours: 9,
+          overtimeHours: 0,
+        }
+      ] as never);
+
+    mockPrisma.schedule.findMany.mockResolvedValue([
+      {
+        employeeId: 102,
+        workDate: new Date('2026-04-08T00:00:00.000Z'),
+        startTime: '09:00',
+        endTime: '18:00',
+        breakTime: 60,
+      }
+    ] as never);
+
+    const response = await GET(new NextRequest('http://localhost/api/attendance/records?page=1&pageSize=10'));
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.records[0].regularHours).toBe(8);
+    expect(payload.records[0].overtimeHours).toBe(0);
+    expect(payload.summary.totalRegularHours).toBe(8);
+    expect(payload.summary.totalOvertimeHours).toBe(0);
+  });
+
+  it('matches schedules by Taiwan work date so break time is deducted even when the stored UTC date lands on the previous day', async () => {
+    mockPrisma.attendanceRecord.count.mockResolvedValue(1 as never);
+    mockPrisma.attendanceRecord.findMany
+      .mockResolvedValueOnce([
+        {
+          id: 4,
+          employeeId: 103,
+          workDate: new Date('2026-04-16T16:00:00.000Z'),
+          clockInTime: new Date('2026-04-17T00:02:00.000Z'),
+          clockOutTime: new Date('2026-04-17T07:32:36.000Z'),
+          regularHours: 7.51,
+          overtimeHours: 0,
+          status: 'PRESENT',
+          createdAt: new Date('2026-04-17T07:35:00.000Z'),
+          clockInLatitude: null,
+          clockInLongitude: null,
+          clockInAccuracy: null,
+          clockInAddress: null,
+          clockOutLatitude: null,
+          clockOutLongitude: null,
+          clockOutAccuracy: null,
+          clockOutAddress: null,
+          employee: {
+            id: 103,
+            employeeId: '0001',
+            name: '李明峰',
+            department: '製造部',
+            position: 'Staff'
+          }
+        }
+      ] as never)
+      .mockResolvedValueOnce([
+        {
+          employeeId: 103,
+          workDate: new Date('2026-04-16T16:00:00.000Z'),
+          clockInTime: new Date('2026-04-17T00:02:00.000Z'),
+          clockOutTime: new Date('2026-04-17T07:32:36.000Z'),
+          regularHours: 7.51,
+          overtimeHours: 0,
+        }
+      ] as never);
+
+    mockPrisma.schedule.findMany.mockResolvedValue([
+      {
+        employeeId: 103,
+        workDate: '2026-04-17',
+        startTime: '09:00',
+        endTime: '18:00',
+        breakTime: 60,
+      }
+    ] as never);
+
+    const response = await GET(new NextRequest('http://localhost/api/attendance/records?page=1&pageSize=10'));
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.records[0].regularHours).toBe(6.51);
+    expect(payload.records[0].overtimeHours).toBe(0);
+    expect(payload.summary.totalRegularHours).toBe(6.51);
+    expect(payload.summary.totalOvertimeHours).toBe(0);
   });
 });

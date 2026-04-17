@@ -7,6 +7,7 @@ import { getActiveAllowedLocations, getGPSSettingsFromDB, isClockLocationPayload
 import { isMobileClockingDevice, MOBILE_CLOCKING_REQUIRED_MESSAGE } from '@/lib/device-detection';
 import { getTaiwanTodayEnd, getTaiwanTodayStart, toTaiwanDateStr } from '@/lib/timezone';
 import { safeParseJSON } from '@/lib/validation';
+import { calculateAttendanceHours } from '@/lib/work-hours';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -299,16 +300,22 @@ export async function POST(request: NextRequest) {
 
         // 計算工作時間（如果有上班打卡時間）
         let regularHours = 0;
-        const overtimeHours = 0; // 加班時數由申請流程計算，打卡不自動計算
+        let overtimeHours = 0;
         let workHours = 0;
         
         if (existingAttendance.clockInTime) {
           const clockInTime = new Date(existingAttendance.clockInTime);
           const clockOutTime = new Date(currentTime);
-          workHours = (clockOutTime.getTime() - clockInTime.getTime()) / (1000 * 60 * 60);
-          
-          // 全部計為正常工時，加班須透過申請流程
-          regularHours = workHours;
+          const hours = calculateAttendanceHours(
+            clockInTime,
+            clockOutTime,
+            undefined,
+            todaySchedule?.breakTime || 0
+          );
+
+          workHours = hours.totalHours;
+          regularHours = hours.regularHours;
+          overtimeHours = hours.overtimeHours;
         }
 
         // GPS 位置數據 - 已恢復功能
