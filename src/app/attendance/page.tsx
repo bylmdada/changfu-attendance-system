@@ -174,13 +174,13 @@ export default function AttendancePage() {
   }, []);
 
   useEffect(() => {
-    if (!verificationData.username && !savedUsername && loggedInUsername) {
+    if (!verificationData.username && loggedInUsername) {
       setVerificationData((prev) => ({
         ...prev,
         username: loggedInUsername
       }));
     }
-  }, [loggedInUsername, savedUsername, verificationData.username]);
+  }, [loggedInUsername, verificationData.username]);
 
   // 檢查使用者是否已註冊 WebAuthn 憑證
   const checkWebAuthnCredential = useCallback(async (username: string) => {
