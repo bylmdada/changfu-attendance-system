@@ -95,6 +95,7 @@ export default function AttendancePage() {
   // GPS 相關狀態
   const [locationStatus, setLocationStatus] = useState<LocationStatus>('checking');
   const [currentLocation, setCurrentLocation] = useState<LocationData | null>(null);
+  const [pendingClockLocation, setPendingClockLocation] = useState<LocationData | null>(null);
   const [allowedLocations, setAllowedLocations] = useState<AllowedLocation[]>([]);
   const [isLocationRequired, setIsLocationRequired] = useState(true);
   const [locationError, setLocationError] = useState<string>('');
@@ -146,6 +147,10 @@ export default function AttendancePage() {
     setToast({ type, message });
     setTimeout(() => setToast(null), 5000);
   };
+
+  const getTrustedCurrentLocation = () => (
+    locationStatus === 'valid' ? (currentLocation ?? undefined) : undefined
+  );
 
   // 客戶端掛載後設定時間
   useEffect(() => {
@@ -384,22 +389,72 @@ export default function AttendancePage() {
       setGpsProgress(0);
       const startTime = Date.now();
       const timeout = Math.max(gpsSettings.verificationTimeout, 5) * 1000;
+      let resolved = false;
+      let watchId: number | null = null;
+      let timeoutId: number | null = null;
+      let bestPosition: GeolocationPosition | null = null;
+      let lastErrorMessage = 'GPS定位超時。請移到訊號較好的位置';
       
       // 進度更新計時器
-      const progressInterval = setInterval(() => {
+      const progressInterval = window.setInterval(() => {
         const elapsed = Date.now() - startTime;
         const progress = Math.min((elapsed / timeout) * 100, 95);
         setGpsProgress(progress);
       }, 100);
 
+      const cleanup = () => {
+        window.clearInterval(progressInterval);
+        if (timeoutId !== null) {
+          window.clearTimeout(timeoutId);
+        }
+        if (watchId !== null) {
+          navigator.geolocation.clearWatch(watchId);
+        }
+      };
+
+      const resolveWithPosition = (position: GeolocationPosition) => {
+        if (resolved) {
+          return;
+        }
+
+        resolved = true;
+        cleanup();
+        setGpsProgress(100);
+        setIsGpsChecking(false);
+        resolve({
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          accuracy: position.coords.accuracy
+        });
+      };
+
+      const rejectWithMessage = (message: string) => {
+        if (resolved) {
+          return;
+        }
+
+        resolved = true;
+        cleanup();
+        setIsGpsChecking(false);
+        setGpsProgress(0);
+        reject(new Error(message));
+      };
+
+      const updateBestPosition = (position: GeolocationPosition) => {
+        if (!bestPosition || position.coords.accuracy < bestPosition.coords.accuracy) {
+          bestPosition = position;
+        }
+
+        if (position.coords.accuracy <= gpsSettings.requiredAccuracy) {
+          resolveWithPosition(position);
+        }
+      };
+
       // 檢查權限狀態 (如果瀏覽器支援)
       if ('permissions' in navigator) {
         navigator.permissions.query({ name: 'geolocation' }).then((result) => {
           if (result.state === 'denied') {
-            clearInterval(progressInterval);
-            setIsGpsChecking(false);
-            setGpsProgress(0);
-            reject(new Error('GPS定位權限被拒絕。請在瀏覽器設定中允許此網站使用位置資訊，然後重新整理頁面。'));
+            rejectWithMessage('GPS定位權限被拒絕。請在瀏覽器設定中允許此網站使用位置資訊，然後重新整理頁面。');
             return;
           }
         }).catch(() => {
@@ -407,26 +462,17 @@ export default function AttendancePage() {
         });
       }
 
-      navigator.geolocation.getCurrentPosition(
+      watchId = navigator.geolocation.watchPosition(
         (position) => {
-          clearInterval(progressInterval);
-          setGpsProgress(100);
-          setIsGpsChecking(false);
-          resolve({
-            latitude: position.coords.latitude,
-            longitude: position.coords.longitude,
-            accuracy: position.coords.accuracy
-          });
+          updateBestPosition(position);
         },
         (error) => {
-          clearInterval(progressInterval);
-          setIsGpsChecking(false);
-          setGpsProgress(0);
-          
           let errorMessage = 'GPS定位失敗';
           switch (error.code) {
             case error.PERMISSION_DENIED:
               errorMessage = 'GPS定位權限被拒絕。請允許瀏覽器存取您的位置資訊';
+              rejectWithMessage(errorMessage);
+              return;
               break;
             case error.POSITION_UNAVAILABLE:
               errorMessage = 'GPS位置不可用。請確認GPS已開啟';
@@ -435,7 +481,8 @@ export default function AttendancePage() {
               errorMessage = 'GPS定位超時。請移到訊號較好的位置';
               break;
           }
-          reject(new Error(errorMessage));
+
+          lastErrorMessage = errorMessage;
         },
         {
           enableHighAccuracy: true,
@@ -443,6 +490,23 @@ export default function AttendancePage() {
           maximumAge: 0
         }
       );
+
+      timeoutId = window.setTimeout(() => {
+        if (bestPosition) {
+          const roundedAccuracy = Math.round(bestPosition.coords.accuracy);
+          if (bestPosition.coords.accuracy <= gpsSettings.requiredAccuracy) {
+            resolveWithPosition(bestPosition);
+            return;
+          }
+
+          rejectWithMessage(
+            `GPS精確度不足（±${roundedAccuracy}公尺，需在±${gpsSettings.requiredAccuracy}公尺內），請移動到GPS訊號較好的位置`
+          );
+          return;
+        }
+
+        rejectWithMessage(lastErrorMessage);
+      }, timeout);
     });
   };
 
@@ -577,9 +641,13 @@ export default function AttendancePage() {
         return { isValid: true, location: position };
       }
 
+      setPendingClockLocation(null);
+
       return { isValid: false, error: validation.error, location: position };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'GPS定位失敗';
+      setCurrentLocation(null);
+      setPendingClockLocation(null);
       setLocationStatus('error');
       setLocationError(message);
       return { isValid: false, error: message };
@@ -649,7 +717,9 @@ export default function AttendancePage() {
     }
 
     const locationRequired = isGpsLocationRequired(gpsSettings);
-    let verifiedLocation = currentLocation ?? undefined;
+    let verifiedLocation = getTrustedCurrentLocation();
+    setPendingClockLocation(null);
+    setSelectedWifiSsid('');
 
     // 先進行 GPS 驗證（如果需要）
     if (locationRequired) {
@@ -661,6 +731,8 @@ export default function AttendancePage() {
 
       verifiedLocation = locationCheck.location ?? verifiedLocation;
     }
+
+    setPendingClockLocation(verifiedLocation ?? null);
 
     // 檢查員工所在位置是否需要 WiFi 驗證
     // 只有當該位置啟用 WiFi 驗證時才要求
@@ -724,6 +796,7 @@ export default function AttendancePage() {
   const handleWifiCancel = () => {
     setShowWifiSelector(false);
     setPendingClockType(null);
+    setPendingClockLocation(null);
     setSelectedWifiSsid('');
   };
 
@@ -735,7 +808,7 @@ export default function AttendancePage() {
     
     try {
       const locationRequired = isGpsLocationRequired(gpsSettings);
-      let verifiedLocation = currentLocation ?? undefined;
+      let verifiedLocation = pendingClockLocation ?? getTrustedCurrentLocation();
 
       if (locationRequired && !verifiedLocation) {
         const locationCheck = await checkLocation();
@@ -745,6 +818,7 @@ export default function AttendancePage() {
         }
 
         verifiedLocation = locationCheck.location;
+        setPendingClockLocation(verifiedLocation ?? null);
       }
 
       // 準備打卡數據，包含GPS位置信息
@@ -786,6 +860,7 @@ export default function AttendancePage() {
       if (response.ok) {
         showToast('success', data.message);
         loadTodayStatus();
+        setPendingClockLocation(null);
         
         // 檢查是否需要填寫提早/延後打卡原因
         if (data.requiresReason && data.reasonPrompt) {
@@ -808,6 +883,7 @@ export default function AttendancePage() {
   const handleVerificationCancel = () => {
     setShowVerificationModal(false);
     setPendingClockType(null);
+    setPendingClockLocation(null);
     setVerificationData({ username: '', password: '' });
   };
 

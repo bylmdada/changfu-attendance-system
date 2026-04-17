@@ -86,18 +86,20 @@ su - deploy
 
 ### 2.1 安裝 Node.js 20 LTS
 
+> 重要：目前正式環境實際使用的是 Node `20.19.6`。如果您採用「本機 build，僅同步 `.next` 到 VPS」的部署方式，本機建置機器也必須使用相同的 Node 主版號，最好直接使用 `20.19.6`。曾發生過本機用 Node 25 建置、遠端用 Node 20 執行，導致首頁出現 500，但 `/api/health` 仍正常的情況。
+
 ```bash
 # 安裝 nvm
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | bash
 source ~/.bashrc
 
-# 安裝 Node.js 20
-nvm install 20
-nvm use 20
-nvm alias default 20
+# 安裝 Node.js 20（建議直接固定到正式環境版本）
+nvm install 20.19.6
+nvm use 20.19.6
+nvm alias default 20.19.6
 
 # 驗證
-node -v  # 應顯示 v20.x.x
+node -v  # 建議顯示 v20.19.6
 npm -v
 ```
 
@@ -154,6 +156,13 @@ scp ./prisma/dev.db deploy@YOUR_VPS_IP:~/apps/changfu-attendance/prisma/prod.db
 
 ### 3.3 安裝依賴並建置
 
+> 正式環境目前有兩種可行路徑：
+>
+> 1. 直接在 VPS 上 `npm run build`
+> 2. 在本機用與 VPS 相同的 Node 版本 build，再只同步 `.next`
+>
+> 目前正式站實際採用第 2 種，因為 1GB VPS 對 Next.js 15 的建置較容易遇到記憶體壓力。若走第 2 種，請務必確保本機 Node 版本與 VPS 一致。
+
 ```bash
 cd ~/apps/changfu-attendance
 
@@ -176,9 +185,58 @@ NODE_ENV=production
 # 資料庫遷移
 npx prisma migrate deploy
 
-# 建置專案
+# 建置專案（只有在 VPS 本機建置時執行）
 npm run build
 ```
+
+### 3.3.1 正式環境推薦：本機 build 後同步 `.next`
+
+在本機執行：
+
+```bash
+cd /path/to/changfu-attendance-system
+
+# 必須先切到與 VPS 相同的 Node 版本
+source ~/.nvm/nvm.sh
+nvm use 20.19.6
+
+# 重新建置
+npm run build
+
+# 僅同步 Next.js build artifact
+rsync -avz --delete .next/ deploy@YOUR_VPS_IP:~/apps/changfu-attendance/.next/
+
+# 重啟正式服務
+ssh deploy@YOUR_VPS_IP 'source ~/.nvm/nvm.sh && pm2 restart attendance'
+```
+
+建議同步後立即驗證：
+
+```bash
+ssh deploy@YOUR_VPS_IP 'curl -i http://127.0.0.1:3000/api/health'
+curl -i https://your-domain.com/api/health
+curl -I https://your-domain.com
+```
+
+### 3.3.2 常見錯誤：首頁 500，但健康檢查正常
+
+若您遇到：
+
+- `https://your-domain.com` 回 500
+- `https://your-domain.com/api/health` 回 200
+- `pm2 logs attendance` 出現類似 `getIsPossibleServerAction is not a function`
+
+通常代表 `.next` build artifact 與遠端 Node 執行環境不相容。優先檢查：
+
+```bash
+# 本機
+node -v
+
+# 遠端
+ssh deploy@YOUR_VPS_IP 'source ~/.nvm/nvm.sh && node -v'
+```
+
+若版本不同，請用遠端同版 Node 重新在本機 build，再重新同步 `.next`。
 
 ### 3.4 使用 PM2 啟動
 
