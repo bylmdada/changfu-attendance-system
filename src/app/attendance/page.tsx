@@ -72,6 +72,10 @@ interface LocationCheckResult {
   location?: LocationData;
 }
 
+function isGpsLocationRequired(settings: GPSSettings): boolean {
+  return settings.enabled && !settings.allowOfflineMode;
+}
+
 export default function AttendancePage() {
   const [todayStatus, setTodayStatus] = useState<TodayAttendance | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -360,6 +364,7 @@ export default function AttendancePage() {
       const data = await response.json();
       if (data.settings) {
         setGpsSettings(data.settings);
+        setIsLocationRequired(isGpsLocationRequired(data.settings));
       }
     } catch (error) {
       console.error('載入GPS設定失敗:', error);
@@ -515,7 +520,6 @@ export default function AttendancePage() {
         const data = await response.json();
         const locations = data.locations || [];
         setAllowedLocations(locations);
-        setIsLocationRequired(data.isRequired || false);
 
         // 解析 WiFi 設定
         const allSsids: string[] = [];
@@ -550,7 +554,9 @@ export default function AttendancePage() {
 
   const checkLocation = async (): Promise<LocationCheckResult> => {
     try {
-      if (!gpsSettings.enabled) {
+      const locationRequired = isGpsLocationRequired(gpsSettings);
+
+      if (!locationRequired) {
         setLocationStatus('disabled');
         setIsLocationRequired(false);
         return { isValid: true, location: currentLocation ?? undefined };
@@ -642,10 +648,11 @@ export default function AttendancePage() {
       return;
     }
 
+    const locationRequired = isGpsLocationRequired(gpsSettings);
     let verifiedLocation = currentLocation ?? undefined;
 
     // 先進行 GPS 驗證（如果需要）
-    if (isLocationRequired) {
+    if (locationRequired) {
       const locationCheck = await checkLocation();
       if (!locationCheck.isValid) {
         showToast('error', `打卡失敗：${locationCheck.error || 'GPS定位失敗'}`);
@@ -727,9 +734,10 @@ export default function AttendancePage() {
     setShowVerificationModal(false);
     
     try {
+      const locationRequired = isGpsLocationRequired(gpsSettings);
       let verifiedLocation = currentLocation ?? undefined;
 
-      if (isLocationRequired && !verifiedLocation) {
+      if (locationRequired && !verifiedLocation) {
         const locationCheck = await checkLocation();
         if (!locationCheck.isValid) {
           showToast('error', locationCheck.error || 'GPS定位失敗');
