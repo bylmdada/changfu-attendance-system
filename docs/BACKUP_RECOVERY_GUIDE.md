@@ -9,6 +9,7 @@
 | 備份目標 | 2 個 Google Drive |
 | 本地保留 | 7 天 |
 | 雲端保留 | 30 天 |
+| 回滾備份保留 | VPS 本機最近 3 份 |
 
 ---
 
@@ -39,6 +40,17 @@
 ssh deploy@188.166.229.128 'crontab -l'
 ```
 
+### 版控來源
+
+```bash
+# repo 內正式腳本
+scripts/backup-database.sh
+
+# 同步到正式 VPS
+scp scripts/backup-database.sh deploy@188.166.229.128:/home/deploy/backup-database.sh
+ssh deploy@188.166.229.128 'chmod +x /home/deploy/backup-database.sh && bash -n /home/deploy/backup-database.sh'
+```
+
 ---
 
 ## 🔧 手動備份指令
@@ -57,6 +69,9 @@ ssh deploy@188.166.229.128 'tail -20 /home/deploy/backup.log'
 
 # 查看本地備份
 ssh deploy@188.166.229.128 'ls -lh /home/deploy/backups/'
+
+# 查看 pre-deploy 回滾備份
+ssh deploy@188.166.229.128 'find /home/deploy/backups -maxdepth 1 -type f \( -name "changfu-predeploy_*.tar.gz" -o -name "prod_pre_deploy_*.db" \) | sort'
 
 # 查看 Google Drive 備份
 ssh deploy@188.166.229.128 'rclone ls gdrive1:changfu-backups/'
@@ -153,6 +168,16 @@ ssh deploy@188.166.229.128 'find /home/deploy/backups -name "*.gz" -mtime +7 -de
 # 清理 Google Drive 超過 30 天的備份
 ssh deploy@188.166.229.128 'rclone delete --min-age 30d gdrive1:changfu-backups/'
 ssh deploy@188.166.229.128 'rclone delete --min-age 30d gdrive2:changfu-backups/'
+
+# pre-deploy 回滾備份保留最近 3 份（正式環境已由 /home/deploy/backup-database.sh 自動處理）
+ssh deploy@188.166.229.128 'find /home/deploy/backups -maxdepth 1 -type f -name "changfu-predeploy_*.tar.gz" | sort | head -n -3 | xargs -r rm -f'
+ssh deploy@188.166.229.128 'find /home/deploy/backups -maxdepth 1 -type f -name "prod_pre_deploy_*.db" | sort | head -n -3 | xargs -r rm -f'
+
+### 目前正式環境保留策略
+
+- `/home/deploy/backup-database.sh` 每天建立 `attendance_YYYYMMDD_HHMMSS.db.gz`，本機保留 7 天，Google Drive 保留 30 天。
+- `/home/deploy/backups` 內的 `changfu-predeploy_*.tar.gz` 與 `prod_pre_deploy_*.db` 會各自只保留最近 3 份，超出的舊檔在每日備份腳本執行時自動清理。
+- repo 內的正式版本位於 `scripts/backup-database.sh`，正式環境如需調整策略，應先修改 repo，再同步到 VPS。
 ```
 
 ### 重新授權 Google Drive

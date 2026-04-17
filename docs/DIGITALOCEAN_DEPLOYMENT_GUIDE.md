@@ -268,37 +268,11 @@ rclone config
 # n → synology → webdav → https://YOUR_BEESTATION_IP:5006
 ```
 
-### 5.4 建立備份腳本
+### 5.4 同步版控中的備份腳本
 
 ```bash
-nano ~/backup.sh
-```
-
-```bash
-#!/bin/bash
-DATE=$(date +%Y%m%d_%H%M%S)
-BACKUP_DIR="/tmp/attendance_backup"
-DB_PATH="$HOME/apps/changfu-attendance/prisma/prod.db"
-BACKUP_NAME="attendance_backup_$DATE.tar.gz"
-
-mkdir -p $BACKUP_DIR
-cp $DB_PATH $BACKUP_DIR/
-cd $BACKUP_DIR && tar -czf $BACKUP_NAME prod.db
-
-# 上傳
-rclone copy $BACKUP_NAME gdrive:AttendanceBackups/
-rclone copy $BACKUP_NAME synology:AttendanceBackups/
-
-# 清理
-rm -rf $BACKUP_DIR
-rclone delete gdrive:AttendanceBackups/ --min-age 30d
-rclone delete synology:AttendanceBackups/ --min-age 30d
-
-echo "✅ 備份完成: $BACKUP_NAME"
-```
-
-```bash
-chmod +x ~/backup.sh
+scp scripts/backup-database.sh deploy@YOUR_DROPLET_IP:/home/deploy/backup-database.sh
+ssh deploy@YOUR_DROPLET_IP 'chmod +x /home/deploy/backup-database.sh && bash -n /home/deploy/backup-database.sh'
 ```
 
 ### 5.5 設定每日自動執行
@@ -306,7 +280,7 @@ chmod +x ~/backup.sh
 ```bash
 crontab -e
 # 加入：
-0 3 * * * /home/deploy/backup.sh >> /home/deploy/backup.log 2>&1
+0 19 * * * /home/deploy/backup-database.sh
 ```
 
 ---
