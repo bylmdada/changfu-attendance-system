@@ -44,39 +44,19 @@ ssh-copy-id -i ~/.ssh/id_rsa_nas.pub your-user@192.168.1.100
 
 ## 設定備份腳本
 
-### 1. 編輯備份腳本設定
+### 1. 使用 repo 內正式腳本
+
+正式環境的 source of truth 已改為 repo 內的 `scripts/backup-database.sh`。
 
 ```bash
-nano /var/www/changfu-attendance-system/scripts/backup.sh
+scp scripts/backup-database.sh deploy@YOUR_SERVER_IP:/home/deploy/backup-database.sh
+ssh deploy@YOUR_SERVER_IP 'chmod +x /home/deploy/backup-database.sh && bash -n /home/deploy/backup-database.sh'
 ```
 
-修改以下設定：
-```bash
-# 專案路徑
-PROJECT_DIR="/var/www/changfu-attendance-system"
-
-# NAS 設定
-NAS_ENABLED=true
-NAS_USER="your-nas-user"
-NAS_HOST="192.168.1.100"
-NAS_BACKUP_PATH="/volume1/backup/changfu-attendance"
-
-# Google Drive 設定
-GDRIVE_ENABLED=true
-GDRIVE_REMOTE="gdrive"
-GDRIVE_PATH="changfu-backup"
-```
-
-### 2. 設定執行權限
+### 2. 測試備份腳本
 
 ```bash
-chmod +x /var/www/changfu-attendance-system/scripts/backup.sh
-```
-
-### 3. 測試備份腳本
-
-```bash
-sudo /var/www/changfu-attendance-system/scripts/backup.sh
+ssh deploy@YOUR_SERVER_IP '/home/deploy/backup-database.sh'
 ```
 
 ---
@@ -95,11 +75,10 @@ sudo crontab -e
 # 長福考勤系統 - 自動備份
 # ========================================
 
-# 每日凌晨 2:00 執行完整備份
-0 2 * * * /var/www/changfu-attendance-system/scripts/backup.sh >> /var/log/changfu-backup.log 2>&1
+# 每日台灣時間凌晨 03:00 執行（UTC 19:00）
+0 19 * * * /home/deploy/backup-database.sh
 
-# 每 6 小時執行一次備份（更頻繁保護）
-# 0 */6 * * * /var/www/changfu-attendance-system/scripts/backup.sh >> /var/log/changfu-backup.log 2>&1
+# 如需調整保留策略，請先修改 repo 內的 scripts/backup-database.sh 再同步
 ```
 
 ### 儲存並退出

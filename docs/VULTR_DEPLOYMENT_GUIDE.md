@@ -240,56 +240,14 @@ rclone config
 # pass: 你的密碼
 ```
 
-### 5.4 建立備份腳本
+### 5.4 同步版控中的備份腳本
 
 ```bash
-nano ~/backup.sh
-```
-
-**內容**：
-```bash
-#!/bin/bash
-
-# 設定變數
-DATE=$(date +%Y%m%d_%H%M%S)
-BACKUP_DIR="/tmp/attendance_backup"
-DB_PATH="$HOME/apps/changfu-attendance/prisma/prod.db"
-BACKUP_NAME="attendance_backup_$DATE.tar.gz"
-
-# 建立備份目錄
-mkdir -p $BACKUP_DIR
-
-# 備份資料庫
-cp $DB_PATH $BACKUP_DIR/
-
-# 壓縮
-cd $BACKUP_DIR
-tar -czf $BACKUP_NAME prod.db
-
-# 上傳到 Google Drive
-rclone copy $BACKUP_NAME gdrive:AttendanceBackups/ --progress
-
-# 上傳到 Synology BeeStation
-rclone copy $BACKUP_NAME synology:AttendanceBackups/ --progress
-
-# 清理暫存
-rm -rf $BACKUP_DIR
-
-# 刪除 30 天前的備份（Google Drive）
-rclone delete gdrive:AttendanceBackups/ --min-age 30d
-
-# 刪除 30 天前的備份（Synology）
-rclone delete synology:AttendanceBackups/ --min-age 30d
-
-echo "✅ 備份完成: $BACKUP_NAME"
-```
-
-```bash
-# 設定執行權限
-chmod +x ~/backup.sh
+scp scripts/backup-database.sh deploy@YOUR_VULTR_IP:/home/deploy/backup-database.sh
+ssh deploy@YOUR_VULTR_IP 'chmod +x /home/deploy/backup-database.sh && bash -n /home/deploy/backup-database.sh'
 
 # 測試執行
-./backup.sh
+ssh deploy@YOUR_VULTR_IP '/home/deploy/backup-database.sh'
 ```
 
 ### 5.5 設定每日自動執行
@@ -297,8 +255,8 @@ chmod +x ~/backup.sh
 ```bash
 crontab -e
 
-# 加入以下行（每天凌晨 3:00 執行）
-0 3 * * * /home/deploy/backup.sh >> /home/deploy/backup.log 2>&1
+# 加入以下行（每天台灣時間凌晨 3:00 執行，UTC 19:00）
+0 19 * * * /home/deploy/backup-database.sh
 ```
 
 ---
@@ -378,6 +336,6 @@ rclone config reconnect gdrive:
 ```bash
 # 停止應用後再備份
 pm2 stop attendance
-./backup.sh
+/home/deploy/backup-database.sh
 pm2 start attendance
 ```
