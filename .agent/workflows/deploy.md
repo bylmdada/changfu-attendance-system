@@ -13,6 +13,7 @@ description: 部署到 DigitalOcean VPS（Cloudflare SSL + Namecheap 網域）
 - **Node**: 透過 nvm 管理（SSH 需先 source ~/.nvm/nvm.sh）
 - **程序管理**: PM2（程序名稱: attendance）
 - **VPS RAM**: 1GB（不建議在 VPS 上 build）
+- **正式環境埠號**: 3000（Nginx 目前代理到 localhost:3000）
 
 ---
 
@@ -123,4 +124,4 @@ ssh deploy@188.166.229.128 "source ~/.nvm/nvm.sh && pm2 logs attendance --err --
 - 確認 SSH key 已設定
 
 ### PM2 程序不存在
-- 首次設定：`ssh deploy@188.166.229.128 "source ~/.nvm/nvm.sh && cd ~/apps/changfu-attendance && pm2 start npm --name attendance -- start && pm2 save"`
+- 首次設定：`ssh deploy@188.166.229.128 "source ~/.nvm/nvm.sh && cd ~/apps/changfu-attendance && PORT=3000 pm2 start npm --name attendance -- start && pm2 save"`
