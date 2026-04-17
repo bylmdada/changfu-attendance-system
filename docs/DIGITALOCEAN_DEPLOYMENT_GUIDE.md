@@ -6,7 +6,7 @@
 - **可用時間**: ~33 個月（$6/月方案）
 - **申請方式**: [education.github.com](https://education.github.com/pack)
 
-> 注意：本文件主路徑適用於 `DigitalOcean VPS + PM2 + Nginx`。若您改走容器化部署，請改參考根目錄 `deploy-vps.sh` 與 `docker-compose.production.yml`。無論 PM2 或 Docker，建議統一使用 `3001` 作為應用程式 upstream port。
+> 注意：本文件主路徑適用於 `DigitalOcean VPS + PM2 + Nginx`，並以目前正式環境的 `3000` port 為基準。若您改走容器化部署，請改參考根目錄 `deploy-vps.sh` 與 `docker-compose.production.yml`；容器路徑仍有獨立的 port 設定，請勿直接套用本頁 PM2/Nginx 範例。
 
 ---
 
@@ -183,8 +183,8 @@ npm run build
 ### 3.4 使用 PM2 啟動
 
 ```bash
-# 啟動（明確綁定 3001，避免回到 next start 預設 3000）
-PORT=3001 pm2 start npm --name "attendance" -- start
+# 啟動（正式環境基準使用 3000）
+PORT=3000 pm2 start npm --name "attendance" -- start
 
 # 設定開機自啟
 pm2 startup
@@ -194,7 +194,7 @@ pm2 save
 pm2 status
 
 # 健康檢查
-curl http://127.0.0.1:3001/api/health
+curl http://127.0.0.1:3000/api/health
 ```
 
 ---
@@ -213,7 +213,7 @@ server {
     server_name your-domain.com;
 
     location / {
-        proxy_pass http://localhost:3001;
+        proxy_pass http://localhost:3000;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection 'upgrade';
