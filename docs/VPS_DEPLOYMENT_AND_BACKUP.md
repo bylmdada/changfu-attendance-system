@@ -208,59 +208,23 @@ rclone ls gdrive:backups/attendance/
 
 ## 六、自動備份腳本
 
-### 6.1 備份腳本內容
+### 6.1 同步 repo 內正式腳本
 
-建立 `/home/deploy/app/scripts/backup.sh`：
+正式環境請直接同步 repo 內的 `scripts/backup-database.sh`：
 
 ```bash
-#!/bin/bash
-# === 設定 ===
-APP_DIR="/home/deploy/app"
-DB_FILE="$APP_DIR/prisma/prod.db"
-BACKUP_DIR="/home/deploy/backups"
-DATE=$(date +%Y%m%d_%H%M%S)
-BACKUP_NAME="attendance_backup_$DATE"
-
-# NAS 設定
-NAS_USER="your_nas_user"
-NAS_HOST="192.168.1.100"
-NAS_PATH="/volume1/backups/attendance"
-
-# Google Drive
-GDRIVE_REMOTE="gdrive"
-GDRIVE_PATH="backups/attendance"
-
-# === 執行備份 ===
-mkdir -p "$BACKUP_DIR/local" "$BACKUP_DIR/temp"
-
-# 備份資料庫
-sqlite3 "$DB_FILE" ".backup '$BACKUP_DIR/temp/prod.db'"
-cp "$APP_DIR/.env" "$BACKUP_DIR/temp/" 2>/dev/null
-
-# 壓縮
-cd "$BACKUP_DIR/temp"
-tar -czf "$BACKUP_DIR/local/$BACKUP_NAME.tar.gz" ./*
-rm -rf "$BACKUP_DIR/temp"
-
-# 上傳 NAS
-scp "$BACKUP_DIR/local/$BACKUP_NAME.tar.gz" \
-    "$NAS_USER@$NAS_HOST:$NAS_PATH/" 2>/dev/null
-
-# 上傳 Google Drive
-rclone copy "$BACKUP_DIR/local/$BACKUP_NAME.tar.gz" \
-    "$GDRIVE_REMOTE:$GDRIVE_PATH/" 2>/dev/null
-
-# 清理 30 天前備份
-find "$BACKUP_DIR/local" -name "*.tar.gz" -mtime +30 -delete
-rclone delete "$GDRIVE_REMOTE:$GDRIVE_PATH/" --min-age 30d 2>/dev/null
-
-echo "備份完成: $BACKUP_NAME.tar.gz"
+scp scripts/backup-database.sh deploy@YOUR_SERVER_IP:/home/deploy/backup-database.sh
+ssh deploy@YOUR_SERVER_IP 'chmod +x /home/deploy/backup-database.sh && bash -n /home/deploy/backup-database.sh'
 ```
 
-### 6.2 設定權限
+### 6.2 備份腳本位置
 
 ```bash
-chmod +x /home/deploy/app/scripts/backup.sh
+# repo 內正式版本
+scripts/backup-database.sh
+
+# VPS 實際執行位置
+/home/deploy/backup-database.sh
 ```
 
 ### 6.3 設定 Cron 自動執行
@@ -271,8 +235,8 @@ crontab -e
 
 加入：
 ```bash
-# 每日凌晨 3:00 備份
-0 3 * * * /home/deploy/app/scripts/backup.sh >> /home/deploy/backups/cron.log 2>&1
+# 每日台灣時間凌晨 3:00 備份（UTC 19:00）
+0 19 * * * /home/deploy/backup-database.sh
 ```
 
 ---
@@ -292,9 +256,9 @@ crontab -e
 
 | 動作 | 指令 |
 |------|------|
-| 手動備份 | `/home/deploy/app/scripts/backup.sh` |
-| 查看本地備份 | `ls -la /home/deploy/backups/local/` |
-| 查看雲端備份 | `rclone ls gdrive:backups/attendance/` |
+| 手動備份 | `/home/deploy/backup-database.sh` |
+| 查看本地備份 | `ls -la /home/deploy/backups/` |
+| 查看雲端備份 | `rclone ls gdrive1:changfu-backups/` |
 
 ### 還原資料庫
 

@@ -35,14 +35,13 @@ ssh-copy-id -i ~/.ssh/nas_backup.pub your_user@192.168.1.100
 ssh -i ~/.ssh/nas_backup your_user@192.168.1.100 "echo 連線成功"
 ```
 
-### 3. 修改備份腳本
+### 3. 同步正式備份腳本
 
-編輯 `scripts/backup.sh`，更新以下設定：
+正式環境請以 repo 內的 `scripts/backup-database.sh` 為唯一來源，並同步到 VPS：
 
 ```bash
-NAS_USER="your_nas_user"      # 您的 NAS 帳號
-NAS_HOST="192.168.1.100"      # 您的 NAS IP
-NAS_PATH="/volume1/backups/attendance"
+scp scripts/backup-database.sh deploy@YOUR_SERVER_IP:/home/deploy/backup-database.sh
+ssh deploy@YOUR_SERVER_IP 'chmod +x /home/deploy/backup-database.sh && bash -n /home/deploy/backup-database.sh'
 ```
 
 ---
@@ -92,17 +91,16 @@ crontab -e
 ### 2. 加入排程
 
 ```bash
-# 每天凌晨 3:00 執行備份
-0 3 * * * /home/deploy/app/scripts/backup.sh >> /home/deploy/backups/cron.log 2>&1
+# 每天台灣時間凌晨 3:00 執行備份（UTC 19:00）
+0 19 * * * /home/deploy/backup-database.sh
 
-# 或者：每天凌晨 3:00 和下午 15:00 執行（每日兩次）
-0 3,15 * * * /home/deploy/app/scripts/backup.sh >> /home/deploy/backups/cron.log 2>&1
+# 如需調整策略，先更新 repo 的 scripts/backup-database.sh，再重新同步
 ```
 
 ### 3. 賦予執行權限
 
 ```bash
-chmod +x /home/deploy/app/scripts/backup.sh
+ssh deploy@YOUR_SERVER_IP 'chmod +x /home/deploy/backup-database.sh'
 ```
 
 ---
@@ -113,13 +111,14 @@ chmod +x /home/deploy/app/scripts/backup.sh
 
 ```bash
 # 執行備份
-/home/deploy/app/scripts/backup.sh
+ssh deploy@YOUR_SERVER_IP '/home/deploy/backup-database.sh'
 
 # 檢查本地備份
-ls -la /home/deploy/backups/local/
+ssh deploy@YOUR_SERVER_IP 'ls -la /home/deploy/backups/'
 
 # 檢查 Google Drive
-rclone ls gdrive:backups/attendance/
+ssh deploy@YOUR_SERVER_IP 'rclone ls gdrive1:changfu-backups/'
+ssh deploy@YOUR_SERVER_IP 'rclone ls gdrive2:changfu-backups/'
 
 # 檢查 NAS（透過 SSH）
 ssh your_user@192.168.1.100 "ls -la /volume1/backups/attendance/"

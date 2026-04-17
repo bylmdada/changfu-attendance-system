@@ -691,8 +691,8 @@ interface BusinessLog {
 
 #### 數據備份
 ```bash
-# 每日自動備份
-0 2 * * * /scripts/backup-database.sh
+# 每日自動備份（正式環境使用 /home/deploy/backup-database.sh，repo 來源為 scripts/backup-database.sh）
+0 19 * * * /home/deploy/backup-database.sh
 
 # 每週完整備份
 0 1 * * 0 /scripts/full-backup.sh
