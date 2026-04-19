@@ -196,7 +196,7 @@ export async function POST(request: NextRequest) {
     const workDateObj = new Date(workDate);
     const freezeCheck = await checkAttendanceFreeze(workDateObj);
     if (freezeCheck.isFrozen) {
-      const freezeDateStr = freezeCheck.freezeInfo?.freezeDate.toLocaleString('zh-TW');
+      const freezeDateStr = freezeCheck.freezeInfo?.freezeDate.toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', hour12: false });
       return NextResponse.json({
         error: `該月份已被凍結，無法提交忘打卡申請。凍結時間：${freezeDateStr}，操作者：${freezeCheck.freezeInfo?.creator.name}`
       }, { status: 403 });

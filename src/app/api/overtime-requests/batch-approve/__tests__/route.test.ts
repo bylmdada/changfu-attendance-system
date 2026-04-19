@@ -87,12 +87,24 @@ describe('overtime batch-approve route guards', () => {
     mockedCalculateOvertimePayForRequest.mockResolvedValue({ success: true, overtimePay: 600, hourlyRate: 200 } as never);
   });
 
-  it('rejects HR users so legacy overtime batch approval stays admin-only for final decisions', async () => {
+  it('allows HR users to batch approve final overtime decisions', async () => {
     mockedGetUserFromRequest.mockResolvedValue({
       role: 'HR',
       employeeId: 66,
       userId: 123,
     } as never);
+    mockPrisma.overtimeRequest.findMany.mockResolvedValue([
+      {
+        id: 8,
+        employeeId: 21,
+        overtimeDate: new Date('2026-04-01T10:00:00.000Z'),
+        totalHours: 1.5,
+        compensationType: 'MEAL_ALLOWANCE',
+        reason: '例行維運',
+        status: 'PENDING_ADMIN',
+      },
+    ] as never);
+    mockPrisma.overtimeRequest.update.mockResolvedValue({ id: 8 } as never);
 
     const request = new NextRequest('http://localhost:3000/api/overtime-requests/batch-approve', {
       method: 'POST',
@@ -106,9 +118,37 @@ describe('overtime batch-approve route guards', () => {
     const response = await POST(request);
     const payload = await response.json();
 
-    expect(response.status).toBe(403);
-    expect(payload).toEqual({ error: '權限不足' });
-    expect(mockPrisma.overtimeRequest.updateMany).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect(payload.count).toBe(1);
+    expect(mockPrisma.overtimeRequest.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 8 },
+        data: expect.objectContaining({
+          status: 'APPROVED',
+          approvedBy: 66,
+        }),
+      })
+    );
+  });
+
+  it('rejects requests that exceed the batch-approve endpoint rate limit', async () => {
+    mockedCheckRateLimit.mockResolvedValue({ allowed: false } as never);
+
+    const request = new NextRequest('http://localhost:3000/api/overtime-requests/batch-approve', {
+      method: 'POST',
+      headers: {
+        cookie: 'token=session-token',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ ids: [8], action: 'APPROVED' }),
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(429);
+    expect(payload.error).toBe('Too many requests');
+    expect(mockedValidateCSRF).not.toHaveBeenCalled();
   });
 
   it('rejects malformed ids before calling updateMany', async () => {
@@ -211,6 +251,32 @@ describe('overtime batch-approve route guards', () => {
 
     expect(response.status).toBe(400);
     expect(payload).toEqual({ error: '申請已被處理' });
+  });
+
+  it('does not write a non-existent rejectReason field when batch rejecting overtime requests', async () => {
+    const request = new NextRequest('http://localhost:3000/api/overtime-requests/batch-approve', {
+      method: 'POST',
+      headers: {
+        cookie: 'token=session-token',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ ids: [18], action: 'REJECTED', remarks: '資料不完整' }),
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.count).toBe(1);
+
+    const updateManyArgs = mockPrisma.overtimeRequest.updateMany.mock.calls[0][0];
+    expect(updateManyArgs.data).toEqual(
+      expect.objectContaining({
+        status: 'REJECTED',
+        approvedBy: 88,
+      })
+    );
+    expect(updateManyArgs.data).not.toHaveProperty('rejectReason');
   });
 
   it('rejects batch approval when every selected overtime request has already been processed', async () => {

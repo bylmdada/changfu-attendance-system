@@ -112,4 +112,93 @@ describe('payroll statistics route guards', () => {
       })
     );
   });
+
+  it('rejects malformed year and month query params before querying prisma', async () => {
+    const invalidYearResponse = await GET(new NextRequest('http://localhost/api/payroll/statistics?year=20xx'));
+    const invalidYearPayload = await invalidYearResponse.json();
+
+    expect(invalidYearResponse.status).toBe(400);
+    expect(invalidYearPayload.error).toBe('year 格式錯誤');
+
+    const invalidMonthResponse = await GET(new NextRequest('http://localhost/api/payroll/statistics?year=2026&month=13'));
+    const invalidMonthPayload = await invalidMonthResponse.json();
+
+    expect(invalidMonthResponse.status).toBe(400);
+    expect(invalidMonthPayload.error).toBe('month 格式錯誤');
+    expect(mockPrisma.payrollRecord.aggregate).not.toHaveBeenCalled();
+    expect(mockPrisma.payrollRecord.findMany).not.toHaveBeenCalled();
+    expect(mockPrisma.payrollRecord.count).not.toHaveBeenCalled();
+  });
+
+  it('counts unique employees per department and exposes actual overtime pay totals', async () => {
+    mockPrisma.payrollRecord.aggregate.mockResolvedValue({
+      _count: { id: 3 },
+      _sum: {
+        regularHours: 480,
+        overtimeHours: 24,
+        basePay: 90000,
+        overtimePay: 6000,
+        grossPay: 96000,
+        netPay: 90000
+      },
+      _avg: {
+        regularHours: 160,
+        overtimeHours: 8,
+        basePay: 30000,
+        overtimePay: 2000,
+        grossPay: 32000,
+        netPay: 30000
+      }
+    } as never);
+    mockPrisma.payrollRecord.findMany.mockResolvedValue([
+      {
+        employeeId: 11,
+        grossPay: 32000,
+        netPay: 30000,
+        regularHours: 160,
+        overtimeHours: 8,
+        employee: { department: '製造部' }
+      },
+      {
+        employeeId: 11,
+        grossPay: 33000,
+        netPay: 31000,
+        regularHours: 160,
+        overtimeHours: 8,
+        employee: { department: '製造部' }
+      },
+      {
+        employeeId: 12,
+        grossPay: 31000,
+        netPay: 29000,
+        regularHours: 160,
+        overtimeHours: 8,
+        employee: { department: '製造部' }
+      }
+    ] as never);
+
+    const response = await GET(new NextRequest('http://localhost/api/payroll/statistics?year=2026'));
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.statistics.overall.totalOvertimePay).toBe(6000);
+    expect(payload.statistics.departmentStats).toEqual([
+      expect.objectContaining({
+        department: '製造部',
+        employeeCount: 2,
+        avgGrossPay: 32000,
+        avgNetPay: 30000,
+      })
+    ]);
+  });
+
+  it('limits monthly trend aggregation to the selected month', async () => {
+    const response = await GET(new NextRequest('http://localhost/api/payroll/statistics?year=2026&month=4'));
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.statistics.monthlyTrends).toHaveLength(1);
+    expect(payload.statistics.monthlyTrends[0].month).toBe(4);
+    expect(mockPrisma.payrollRecord.aggregate).toHaveBeenCalledTimes(2);
+  });
 });

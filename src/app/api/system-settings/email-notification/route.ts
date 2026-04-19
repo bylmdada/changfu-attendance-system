@@ -6,24 +6,66 @@ import { validateCSRF } from '@/lib/csrf';
 import { safeParseJSON } from '@/lib/validation';
 import { safeParseSystemSettingsValue } from '@/lib/system-settings-json';
 
-// 預設 Email 通知設定（預設關閉）
 const DEFAULT_SETTINGS = {
-  enabled: false, // 預設關閉
-  smtpHost: '',
-  smtpPort: 587,
-  smtpSecure: false,
-  smtpUser: '',
-  smtpPass: '',
-  senderName: '長福考勤系統',
-  senderEmail: '',
-  // 通知類型開關
+  enabled: false,
+  notifyLeaveApproval: true,
+  notifyOvertimeApproval: true,
+  notifyShiftApproval: true,
+  notifyAnnualLeaveExpiry: true,
+};
+
+const LEGACY_SETTINGS_KEY = 'email_notification_settings';
+const LEGACY_DEFAULT_SETTINGS = {
+  enabled: false,
   notifyLeaveApproval: true,
   notifyOvertimeApproval: true,
   notifyScheduleChange: true,
-  notifyPasswordReset: true
+  notifyPasswordReset: true,
 };
 
-const SETTINGS_KEY = 'email_notification_settings';
+const BOOLEAN_FIELDS = [
+  'enabled',
+  'notifyLeaveApproval',
+  'notifyOvertimeApproval',
+  'notifyShiftApproval',
+  'notifyAnnualLeaveExpiry',
+] as const;
+
+type EmailNotificationSettings = typeof DEFAULT_SETTINGS;
+
+function mapStoredSettings(
+  settings: {
+    emailEnabled?: boolean | null;
+    leaveApprovalNotify?: boolean | null;
+    overtimeApprovalNotify?: boolean | null;
+    shiftApprovalNotify?: boolean | null;
+    annualLeaveExpiryNotify?: boolean | null;
+  } | null | undefined
+): EmailNotificationSettings {
+  if (!settings) {
+    return DEFAULT_SETTINGS;
+  }
+
+  return {
+    enabled: settings.emailEnabled ?? DEFAULT_SETTINGS.enabled,
+    notifyLeaveApproval: settings.leaveApprovalNotify ?? DEFAULT_SETTINGS.notifyLeaveApproval,
+    notifyOvertimeApproval: settings.overtimeApprovalNotify ?? DEFAULT_SETTINGS.notifyOvertimeApproval,
+    notifyShiftApproval: settings.shiftApprovalNotify ?? DEFAULT_SETTINGS.notifyShiftApproval,
+    notifyAnnualLeaveExpiry: settings.annualLeaveExpiryNotify ?? DEFAULT_SETTINGS.notifyAnnualLeaveExpiry,
+  };
+}
+
+function mapLegacySettings(rawValue: string | null | undefined): EmailNotificationSettings {
+  const parsed = safeParseSystemSettingsValue(rawValue, LEGACY_DEFAULT_SETTINGS, LEGACY_SETTINGS_KEY);
+
+  return {
+    enabled: parsed.enabled ?? DEFAULT_SETTINGS.enabled,
+    notifyLeaveApproval: parsed.notifyLeaveApproval ?? DEFAULT_SETTINGS.notifyLeaveApproval,
+    notifyOvertimeApproval: parsed.notifyOvertimeApproval ?? DEFAULT_SETTINGS.notifyOvertimeApproval,
+    notifyShiftApproval: parsed.notifyScheduleChange ?? DEFAULT_SETTINGS.notifyShiftApproval,
+    notifyAnnualLeaveExpiry: DEFAULT_SETTINGS.notifyAnnualLeaveExpiry,
+  };
+}
 
 async function verifyAdmin(request: NextRequest) {
   const user = await getUserFromRequest(request);
@@ -43,7 +85,23 @@ async function verifyAdmin(request: NextRequest) {
   return { user };
 }
 
-// GET - 取得 Email 通知設定
+async function loadEmailNotificationSettings(): Promise<EmailNotificationSettings> {
+  const currentSettings = await prisma.systemNotificationSettings.findFirst();
+  if (currentSettings) {
+    return mapStoredSettings(currentSettings);
+  }
+
+  const legacySettings = await prisma.systemSettings.findUnique({
+    where: { key: LEGACY_SETTINGS_KEY }
+  });
+
+  if (legacySettings) {
+    return mapLegacySettings(legacySettings.value);
+  }
+
+  return DEFAULT_SETTINGS;
+}
+
 export async function GET(request: NextRequest) {
   try {
     const rateLimitResult = await checkRateLimit(request);
@@ -56,28 +114,11 @@ export async function GET(request: NextRequest) {
       return authResult.error;
     }
 
-    const settings = await prisma.systemSettings.findUnique({
-      where: { key: SETTINGS_KEY }
-    });
-
-    if (settings) {
-      const parsed = safeParseSystemSettingsValue(settings.value, DEFAULT_SETTINGS, SETTINGS_KEY);
-      // 不回傳密碼明文
-      return NextResponse.json({
-        success: true,
-        settings: {
-          ...parsed,
-          smtpPass: parsed.smtpPass ? '********' : ''
-        }
-      });
-    }
+    const settings = await loadEmailNotificationSettings();
 
     return NextResponse.json({
       success: true,
-      settings: {
-        ...DEFAULT_SETTINGS,
-        smtpPass: ''
-      }
+      settings,
     });
   } catch (error) {
     console.error('取得 Email 設定失敗:', error);
@@ -85,7 +126,6 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// POST - 更新 Email 通知設定
 export async function POST(request: NextRequest) {
   try {
     const rateLimitResult = await checkRateLimit(request);
@@ -93,14 +133,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
 
-    const csrfResult = await validateCSRF(request);
-    if (!csrfResult.valid) {
-      return NextResponse.json({ error: 'CSRF驗證失敗' }, { status: 403 });
-    }
-
     const authResult = await verifyAdmin(request);
     if (authResult.error) {
       return authResult.error;
+    }
+
+    const csrfResult = await validateCSRF(request);
+    if (!csrfResult.valid) {
+      return NextResponse.json({ error: 'CSRF驗證失敗' }, { status: 403 });
     }
 
     const parseResult = await safeParseJSON(request);
@@ -118,49 +158,56 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '請提供有效的設定資料' }, { status: 400 });
     }
 
-    // 取得現有設定（保留密碼）
-    const existingSettings = await prisma.systemSettings.findUnique({
-      where: { key: SETTINGS_KEY }
-    });
+    const data = body as Record<string, unknown>;
 
-    const baseSettings = safeParseSystemSettingsValue(existingSettings?.value, DEFAULT_SETTINGS, SETTINGS_KEY);
-    const existingSmtpPass = baseSettings.smtpPass || '';
+    for (const field of BOOLEAN_FIELDS) {
+      if (field in data && typeof data[field] !== 'boolean') {
+        return NextResponse.json({ error: '通知開關欄位必須為布林值' }, { status: 400 });
+      }
+    }
 
-    // 如果密碼是遮罩值，保留原密碼
-    const smtpPass = body.smtpPass === '********' ? existingSmtpPass : (body.smtpPass ?? '');
-
-    const newSettings = {
-      enabled: body.enabled ?? baseSettings.enabled,
-      smtpHost: body.smtpHost ?? baseSettings.smtpHost,
-      smtpPort: body.smtpPort ?? baseSettings.smtpPort,
-      smtpSecure: body.smtpSecure ?? baseSettings.smtpSecure,
-      smtpUser: body.smtpUser ?? baseSettings.smtpUser,
-      smtpPass,
-      senderName: body.senderName ?? baseSettings.senderName,
-      senderEmail: body.senderEmail ?? baseSettings.senderEmail,
-      notifyLeaveApproval: body.notifyLeaveApproval ?? baseSettings.notifyLeaveApproval,
-      notifyOvertimeApproval: body.notifyOvertimeApproval ?? baseSettings.notifyOvertimeApproval,
-      notifyScheduleChange: body.notifyScheduleChange ?? baseSettings.notifyScheduleChange,
-      notifyPasswordReset: body.notifyPasswordReset ?? baseSettings.notifyPasswordReset
+    const existing = await prisma.systemNotificationSettings.findFirst();
+    const baseSettings = existing ? mapStoredSettings(existing) : await loadEmailNotificationSettings();
+    const nextSettings: EmailNotificationSettings = {
+      enabled: typeof data.enabled === 'boolean' ? data.enabled : baseSettings.enabled,
+      notifyLeaveApproval: typeof data.notifyLeaveApproval === 'boolean' ? data.notifyLeaveApproval : baseSettings.notifyLeaveApproval,
+      notifyOvertimeApproval: typeof data.notifyOvertimeApproval === 'boolean' ? data.notifyOvertimeApproval : baseSettings.notifyOvertimeApproval,
+      notifyShiftApproval: typeof data.notifyShiftApproval === 'boolean' ? data.notifyShiftApproval : baseSettings.notifyShiftApproval,
+      notifyAnnualLeaveExpiry: typeof data.notifyAnnualLeaveExpiry === 'boolean' ? data.notifyAnnualLeaveExpiry : baseSettings.notifyAnnualLeaveExpiry,
     };
 
-    await prisma.systemSettings.upsert({
-      where: { key: SETTINGS_KEY },
-      update: { value: JSON.stringify(newSettings) },
-      create: {
-        key: SETTINGS_KEY,
-        value: JSON.stringify(newSettings),
-        description: 'Email 通知設定'
-      }
-    });
+    let settings;
+    if (existing) {
+      settings = await prisma.systemNotificationSettings.update({
+        where: { id: existing.id },
+        data: {
+          emailEnabled: nextSettings.enabled,
+          inAppEnabled: existing.inAppEnabled,
+          leaveApprovalNotify: nextSettings.notifyLeaveApproval,
+          overtimeApprovalNotify: nextSettings.notifyOvertimeApproval,
+          shiftApprovalNotify: nextSettings.notifyShiftApproval,
+          annualLeaveExpiryNotify: nextSettings.notifyAnnualLeaveExpiry,
+          annualLeaveExpiryDays: existing.annualLeaveExpiryDays,
+        }
+      });
+    } else {
+      settings = await prisma.systemNotificationSettings.create({
+        data: {
+          emailEnabled: nextSettings.enabled,
+          inAppEnabled: true,
+          leaveApprovalNotify: nextSettings.notifyLeaveApproval,
+          overtimeApprovalNotify: nextSettings.notifyOvertimeApproval,
+          shiftApprovalNotify: nextSettings.notifyShiftApproval,
+          annualLeaveExpiryNotify: nextSettings.notifyAnnualLeaveExpiry,
+          annualLeaveExpiryDays: 30,
+        }
+      });
+    }
 
     return NextResponse.json({
       success: true,
       message: 'Email 通知設定已更新',
-      settings: {
-        ...newSettings,
-        smtpPass: newSettings.smtpPass ? '********' : ''
-      }
+      settings: mapStoredSettings(settings),
     });
   } catch (error) {
     console.error('更新 Email 設定失敗:', error);

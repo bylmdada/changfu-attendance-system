@@ -5,6 +5,7 @@ import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { safeParseJSON } from '@/lib/validation';
 import { getAnnualLeaveYearBreakdown } from '@/lib/annual-leave';
+import { isAnnualLeaveType } from '@/lib/leave-types';
 
 interface PrismaWithSchedule {
   schedule?: {
@@ -99,7 +100,7 @@ export async function POST(request: NextRequest) {
           }
         });
 
-        if (action === 'APPROVED' && leaveRequest.leaveType === 'ANNUAL_LEAVE') {
+        if (action === 'APPROVED' && isAnnualLeaveType(leaveRequest.leaveType)) {
           const startDate = new Date(leaveRequest.startDate);
           const endDate = new Date(leaveRequest.endDate);
           for (const { year, days } of getAnnualLeaveYearBreakdown(startDate, endDate)) {

@@ -11,8 +11,25 @@ export interface ApprovalWorkflowConfig {
   approvalLevel: number;       // 1=一階, 2=二階
   requireManager: boolean;     // 是否需主管審核
   finalApprover: string;       // MANAGER 或 ADMIN
+  deadlineMode: string;
+  deadlineHours: number | null;
   enableForward: boolean;      // 是否允許轉會
   enableCC: boolean;           // 是否 CC 通知 HR
+}
+
+export function getEffectiveApprovalLevel(approvalLevel: number, requireManager: boolean): number {
+  const normalizedLevel = Math.min(Math.max(approvalLevel, 1), 3);
+  return requireManager ? normalizedLevel : 1;
+}
+
+export function normalizeApprovalWorkflowConfig(config: ApprovalWorkflowConfig): ApprovalWorkflowConfig {
+  const approvalLevel = getEffectiveApprovalLevel(config.approvalLevel, config.requireManager);
+
+  return {
+    ...config,
+    approvalLevel,
+    finalApprover: config.requireManager ? config.finalApprover : 'ADMIN'
+  };
 }
 
 // 快取設定，避免每次查詢資料庫
@@ -43,26 +60,30 @@ export async function getApprovalWorkflow(
 
     if (!workflow || !workflow.isActive) {
       // 返回預設值
-      return {
+      return normalizeApprovalWorkflowConfig({
         workflowType,
         workflowName: workflowType,
         approvalLevel: 2,
         requireManager: true,
         finalApprover: 'ADMIN',
+        deadlineMode: 'FIXED',
+        deadlineHours: 48,
         enableForward: false,
         enableCC: false
-      };
+      });
     }
 
-    const config: ApprovalWorkflowConfig = {
+    const config = normalizeApprovalWorkflowConfig({
       workflowType: workflow.workflowType,
       workflowName: workflow.workflowName,
       approvalLevel: workflow.approvalLevel,
       requireManager: workflow.requireManager,
       finalApprover: workflow.finalApprover,
+      deadlineMode: workflow.deadlineMode,
+      deadlineHours: workflow.deadlineHours,
       enableForward: workflow.enableForward,
       enableCC: workflow.enableCC
-    };
+    });
 
     // 存入快取
     workflowCache.set(workflowType, config);
@@ -72,15 +93,17 @@ export async function getApprovalWorkflow(
   } catch (error) {
     console.error('取得審核流程設定失敗:', error);
     // 返回預設值
-    return {
+    return normalizeApprovalWorkflowConfig({
       workflowType,
       workflowName: workflowType,
       approvalLevel: 2,
       requireManager: true,
       finalApprover: 'ADMIN',
+      deadlineMode: 'FIXED',
+      deadlineHours: 48,
       enableForward: false,
       enableCC: false
-    };
+    });
   }
 }
 

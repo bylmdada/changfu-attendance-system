@@ -31,11 +31,16 @@ jest.mock('bcryptjs', () => ({
   compare: jest.fn()
 }));
 
+jest.mock('@/lib/rate-limit', () => ({
+  checkRateLimit: jest.fn()
+}));
+
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { generateTOTPSecret, generateQRCode, generateBackupCodes, verifyTOTP } from '@/lib/totp';
 import { decrypt } from '@/lib/encryption';
+import { checkRateLimit } from '@/lib/rate-limit';
 import bcrypt from 'bcryptjs';
 import { POST as setup2FA } from '../setup/route';
 import { POST as verify2FA } from '../verify/route';
@@ -50,6 +55,7 @@ const mockGenerateBackupCodes = generateBackupCodes as jest.MockedFunction<typeo
 const mockVerifyTOTP = verifyTOTP as jest.MockedFunction<typeof verifyTOTP>;
 const mockDecrypt = decrypt as jest.MockedFunction<typeof decrypt>;
 const mockBcryptCompare = bcrypt.compare as jest.MockedFunction<typeof bcrypt.compare>;
+const mockCheckRateLimit = checkRateLimit as jest.MockedFunction<typeof checkRateLimit>;
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 
 describe('secure 2FA routes', () => {
@@ -62,6 +68,11 @@ describe('secure 2FA routes', () => {
       role: 'USER'
     } as never);
     mockValidateCSRF.mockResolvedValue({ valid: true } as never);
+    mockCheckRateLimit.mockResolvedValue({
+      allowed: true,
+      remainingRequests: 9,
+      resetTime: Date.now() + 60_000
+    } as never);
   });
 
   it('allows non-admin users to start secure 2FA setup', async () => {
@@ -147,6 +158,26 @@ describe('secure 2FA routes', () => {
     consoleSpy.mockRestore();
   });
 
+  it('returns 429 when verify route exceeds rate limit', async () => {
+    mockCheckRateLimit.mockResolvedValueOnce({
+      allowed: false,
+      remainingRequests: 0,
+      resetTime: Date.now() + 60_000,
+      retryAfter: 60
+    } as never);
+
+    const response = await verify2FA(new Request('http://localhost/api/auth/2fa/verify', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code: '123456' })
+    }) as never);
+    const payload = await response.json();
+
+    expect(response.status).toBe(429);
+    expect(payload).toEqual({ error: '操作過於頻繁', retryAfter: 60 });
+    expect(mockPrisma.user.findUnique).not.toHaveBeenCalled();
+  });
+
   it('returns 400 for malformed JSON in disable route instead of bubbling a 500', async () => {
     const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
 
@@ -165,5 +196,25 @@ describe('secure 2FA routes', () => {
     expect(consoleSpy).not.toHaveBeenCalled();
 
     consoleSpy.mockRestore();
+  });
+
+  it('returns 429 when disable route exceeds rate limit', async () => {
+    mockCheckRateLimit.mockResolvedValueOnce({
+      allowed: false,
+      remainingRequests: 0,
+      resetTime: Date.now() + 60_000,
+      retryAfter: 120
+    } as never);
+
+    const response = await disable2FA(new Request('http://localhost/api/auth/2fa/disable', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: 'Password123!' })
+    }) as never);
+    const payload = await response.json();
+
+    expect(response.status).toBe(429);
+    expect(payload).toEqual({ error: '操作過於頻繁', retryAfter: 120 });
+    expect(mockPrisma.user.findUnique).not.toHaveBeenCalled();
   });
 });

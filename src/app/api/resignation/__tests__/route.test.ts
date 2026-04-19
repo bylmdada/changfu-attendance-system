@@ -97,4 +97,51 @@ describe('resignation route guards', () => {
     expect(mockPrisma.resignationRecord.findFirst).not.toHaveBeenCalled();
     expect(mockPrisma.resignationRecord.create).not.toHaveBeenCalled();
   });
+
+  it('returns 400 when reasonType is not one of the supported resignation types', async () => {
+    const request = new NextRequest('http://localhost:3000/api/resignation', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        expectedDate: '2026-04-30',
+        reason: 'career move',
+        reasonType: 'CAREER',
+      }),
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload.error).toBe('離職原因類型無效');
+    expect(mockPrisma.resignationRecord.findFirst).not.toHaveBeenCalled();
+    expect(mockPrisma.resignationRecord.create).not.toHaveBeenCalled();
+  });
+
+  it('returns the in-progress message when create hits the unique pending resignation constraint', async () => {
+    mockPrisma.resignationRecord.create.mockRejectedValue({
+      code: 'P2002',
+      message: 'Unique constraint failed',
+    } as never);
+
+    const request = new NextRequest('http://localhost:3000/api/resignation', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        expectedDate: '2026-04-30',
+        reason: 'career move',
+        reasonType: 'VOLUNTARY',
+      }),
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload).toEqual({ error: '您已有進行中的離職申請' });
+  });
 });

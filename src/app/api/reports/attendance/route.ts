@@ -33,6 +33,10 @@ function validateIntegerQueryParam(
   return { value: parsedValue, error: null };
 }
 
+function toTaiwanClockTime(date: Date) {
+  return new Date(date.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
+}
+
 // GET - 匯出月度考勤報表 (JSON 格式，前端生成 PDF)
 export async function GET(request: NextRequest) {
   try {
@@ -190,14 +194,14 @@ export async function GET(request: NextRequest) {
       // 計算遲到次數
       const lateDays = empAttendance.filter(r => {
         if (!r.clockInTime) return false;
-        const clockIn = new Date(r.clockInTime);
-        return clockIn.getHours() >= 9 && clockIn.getMinutes() > 0;
+        const clockIn = toTaiwanClockTime(new Date(r.clockInTime));
+        return clockIn.getHours() > 9 || (clockIn.getHours() === 9 && clockIn.getMinutes() > 0);
       }).length;
 
       // 計算早退次數
       const earlyLeaveDays = empAttendance.filter(r => {
         if (!r.clockOutTime) return false;
-        const clockOut = new Date(r.clockOutTime);
+        const clockOut = toTaiwanClockTime(new Date(r.clockOutTime));
         return clockOut.getHours() < 18;
       }).length;
 

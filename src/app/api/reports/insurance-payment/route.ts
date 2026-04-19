@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
+import { DEFAULT_LABOR_LAW_CONFIG } from '@/lib/labor-law-config-defaults';
 import { toCsvRow } from '@/lib/csv';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 
@@ -31,6 +32,19 @@ function findInsuredAmount(salary: number, grades: number[]): number {
     if (salary <= grade) return grade;
   }
   return grades[grades.length - 1];
+}
+
+function findConfiguredHealthInsuredAmount(
+  salary: number,
+  salaryLevels: Array<{ minSalary: number; maxSalary: number; insuredAmount: number }>
+): number {
+  for (const level of salaryLevels) {
+    if (salary >= level.minSalary && salary <= level.maxSalary) {
+      return level.insuredAmount;
+    }
+  }
+
+  return salaryLevels[salaryLevels.length - 1]?.insuredAmount ?? 0;
 }
 
 /**
@@ -83,14 +97,21 @@ export async function GET(request: NextRequest) {
     // 取得健保費率設定
     const healthConfig = await prisma.healthInsuranceConfig.findFirst({
       where: { isActive: true },
-      orderBy: { effectiveDate: 'desc' }
+      orderBy: { effectiveDate: 'desc' },
+      include: {
+        salaryLevels: {
+          orderBy: { level: 'asc' },
+        },
+      },
     });
 
     // 預設費率
-    const laborRate = laborConfig?.laborInsuranceRate || 0.115;
-    const laborEmployeeRate = laborConfig?.laborEmployeeRate || 0.2;
+    const laborRate = laborConfig?.laborInsuranceRate || DEFAULT_LABOR_LAW_CONFIG.laborInsuranceRate;
+    const laborEmployeeRate = laborConfig?.laborEmployeeRate || DEFAULT_LABOR_LAW_CONFIG.laborEmployeeRate;
+    const laborInsuranceMax = laborConfig?.laborInsuranceMax || DEFAULT_LABOR_LAW_CONFIG.laborInsuranceMax;
     const healthRate = healthConfig?.premiumRate || 0.0517;
     const healthEmployeeRate = healthConfig?.employeeContributionRatio || 0.3;
+    const maxDependents = healthConfig?.maxDependents || 3;
 
     // 取得所有在職員工
     const employees = await prisma.employee.findMany({
@@ -114,18 +135,34 @@ export async function GET(request: NextRequest) {
       const insuredBase = emp.insuredBase || salary;
       
       // 勞保
-      const laborInsuredAmount = findInsuredAmount(insuredBase, LABOR_INSURANCE_GRADES);
+      const laborInsuredAmount = findInsuredAmount(
+        Math.min(insuredBase, laborInsuranceMax),
+        LABOR_INSURANCE_GRADES
+      );
       const laborTotal = Math.round(laborInsuredAmount * laborRate);
       const laborEmployee = Math.round(laborTotal * laborEmployeeRate);
       const laborEmployer = laborTotal - laborEmployee;
       
       // 健保
-      const healthInsuredAmount = findInsuredAmount(insuredBase, HEALTH_INSURANCE_GRADES);
-      const dependents = Math.min(emp.dependents || 0, 3);
-      const totalPersons = 1 + dependents;
-      const healthTotal = Math.round(healthInsuredAmount * healthRate * totalPersons);
-      const healthEmployee = Math.round(healthTotal * healthEmployeeRate);
-      const healthEmployer = Math.round(healthTotal * 0.6);
+      const isHealthActive = emp.healthInsuranceActive !== false;
+      const healthInsuredAmount = isHealthActive
+        ? (
+          healthConfig?.salaryLevels && healthConfig.salaryLevels.length > 0
+            ? findConfiguredHealthInsuredAmount(insuredBase, healthConfig.salaryLevels)
+            : findInsuredAmount(insuredBase, HEALTH_INSURANCE_GRADES)
+        )
+        : 0;
+      const dependents = isHealthActive ? Math.min(emp.dependents || 0, maxDependents) : 0;
+      const totalPersons = isHealthActive ? 1 + dependents : 0;
+      const healthTotal = isHealthActive
+        ? Math.round(healthInsuredAmount * healthRate * totalPersons)
+        : 0;
+      const healthEmployee = isHealthActive
+        ? Math.round(healthTotal * healthEmployeeRate)
+        : 0;
+      const healthEmployer = isHealthActive
+        ? Math.round(healthTotal * 0.6)
+        : 0;
       
       return {
         employeeId: emp.employeeId,
@@ -148,7 +185,7 @@ export async function GET(request: NextRequest) {
         // 總計
         totalEmployee: laborEmployee + healthEmployee,
         totalEmployer: laborEmployer + healthEmployer,
-        isHealthActive: emp.healthInsuranceActive
+        isHealthActive
       };
     });
 

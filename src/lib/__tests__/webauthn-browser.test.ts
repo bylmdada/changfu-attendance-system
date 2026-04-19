@@ -1,4 +1,4 @@
-import { arrayBufferToBase64Url, serializeRegistrationCredential } from '@/lib/webauthn-browser';
+import { arrayBufferToBase64Url, base64UrlToArrayBuffer, serializeRegistrationCredential } from '@/lib/webauthn-browser';
 
 describe('serializeRegistrationCredential', () => {
   it('keeps only the registration fields required by register-verify', () => {
@@ -24,5 +24,13 @@ describe('serializeRegistrationCredential', () => {
     });
     expect(serialized).not.toHaveProperty('rawId');
     expect(serialized).not.toHaveProperty('type');
+  });
+
+  it('decodes base64url data into a standalone ArrayBuffer', () => {
+    const encoded = 'AQIDBA';
+    const decoded = base64UrlToArrayBuffer(encoded);
+
+    expect(Array.from(new Uint8Array(decoded))).toEqual([1, 2, 3, 4]);
+    expect(decoded).toBeInstanceOf(ArrayBuffer);
   });
 });

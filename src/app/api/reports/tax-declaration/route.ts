@@ -109,14 +109,20 @@ export async function GET(request: NextRequest) {
     }
 
 
-    const records = Array.from(employeeSummary.values()).map(emp => ({
-      ...emp,
-      // 免稅所得（加班費前46小時免稅，簡化處理）
-      taxExempt: Math.min(emp.totalOvertimePay, 46 * 12 * 200), // 假設時薪200
-      // 應稅所得
-      taxableIncome: emp.totalGrossPay - emp.totalLaborInsurance - emp.totalHealthInsurance,
-      hireDate: emp.hireDate.toISOString().split('T')[0]
-    }));
+    const records = Array.from(employeeSummary.values()).map(emp => {
+      const taxExempt = Math.min(emp.totalOvertimePay, 46 * 12 * 200);
+
+      return {
+        ...emp,
+        taxExempt,
+        taxableIncome: emp.totalGrossPay
+          - emp.totalLaborInsurance
+          - emp.totalHealthInsurance
+          - emp.totalLaborPensionSelf
+          - taxExempt,
+        hireDate: emp.hireDate.toISOString().split('T')[0]
+      };
+    });
 
     // 統計
     const summary = {

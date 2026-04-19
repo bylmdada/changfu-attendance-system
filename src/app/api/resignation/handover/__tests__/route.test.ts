@@ -6,6 +6,9 @@ import { validateCSRF } from '@/lib/csrf';
 
 jest.mock('@/lib/database', () => ({
   prisma: {
+    resignationRecord: {
+      findUnique: jest.fn(),
+    },
     handoverItem: {
       findUnique: jest.fn(),
       update: jest.fn(),
@@ -38,6 +41,10 @@ describe('resignation handover route guards', () => {
       role: 'ADMIN',
       sessionId: 'session-1',
     } as never);
+    mockedPrisma.resignationRecord.findUnique.mockResolvedValue({
+      id: 3,
+      status: 'APPROVED',
+    } as never);
     mockedPrisma.handoverItem.findUnique.mockResolvedValue({
       id: 5,
       resignationId: 3,
@@ -48,6 +55,9 @@ describe('resignation handover route guards', () => {
       completedAt: null,
       completedBy: null,
       notes: null,
+      resignation: {
+        status: 'APPROVED',
+      }
     } as never);
   });
 
@@ -138,6 +148,70 @@ describe('resignation handover route guards', () => {
 
     expect(response.status).toBe(400);
     expect(payload).toEqual({ error: '項目ID格式無效' });
+    expect(mockedPrisma.handoverItem.delete).not.toHaveBeenCalled();
+  });
+
+  it('preserves completed metadata when only updating notes on an already completed item', async () => {
+    const completedAt = new Date('2026-04-01T10:00:00Z');
+    mockedPrisma.handoverItem.findUnique.mockResolvedValue({
+      id: 5,
+      resignationId: 3,
+      category: 'EQUIPMENT',
+      description: '公司電腦',
+      assignedTo: 'IT',
+      completed: true,
+      completedAt,
+      completedBy: 'admin',
+      notes: 'old note',
+      resignation: {
+        status: 'IN_HANDOVER',
+      }
+    } as never);
+    mockedPrisma.handoverItem.update.mockResolvedValue({ id: 5 } as never);
+
+    const request = new NextRequest('http://localhost:3000/api/resignation/handover', {
+      method: 'PUT',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        itemId: 5,
+        notes: 'updated note',
+      }),
+    });
+
+    const response = await PUT(request);
+
+    expect(response.status).toBe(200);
+    expect(mockedPrisma.handoverItem.update).toHaveBeenCalledWith({
+      where: { id: 5 },
+      data: {
+        completed: true,
+        completedAt,
+        completedBy: 'admin',
+        notes: 'updated note',
+        assignedTo: 'IT'
+      }
+    });
+  });
+
+  it('rejects deleting handover items after resignation is already completed', async () => {
+    mockedPrisma.handoverItem.findUnique.mockResolvedValue({
+      id: 5,
+      resignation: {
+        status: 'COMPLETED',
+      }
+    } as never);
+
+    const request = new NextRequest('http://localhost:3000/api/resignation/handover?id=5', {
+      method: 'DELETE',
+    });
+
+    const response = await DELETE(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload).toEqual({ error: '目前離職狀態不可修改交接項目' });
     expect(mockedPrisma.handoverItem.delete).not.toHaveBeenCalled();
   });
 });

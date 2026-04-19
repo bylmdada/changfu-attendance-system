@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { User, Fingerprint, Smartphone, Trash2, Plus, Shield, Clock, Eye, EyeOff } from 'lucide-react';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
-import { serializeRegistrationCredential } from '@/lib/webauthn-browser';
+import { base64UrlToArrayBuffer, serializeRegistrationCredential } from '@/lib/webauthn-browser';
 
 interface WebAuthnCredential {
   id: number;
@@ -116,40 +116,51 @@ export default function PersonalSettingsPage() {
 
     if (!user) return;
 
-    setActionLoading(true);
-    try {
-      // 1. 獲取註冊選項
-      const optionsResponse = await fetch('/api/webauthn/register-options', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          username: user.username,
-          password: registerData.password
-        }),
-        credentials: 'include'
-      });
+      setActionLoading(true);
+      try {
+        // 1. 獲取註冊選項
+        let optionsResponse: Response;
+        try {
+          optionsResponse = await fetch('/api/webauthn/register-options', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+              username: user.username,
+              password: registerData.password
+            }),
+            credentials: 'include'
+          });
+        } finally {
+          setRegisterData((previous) => ({ ...previous, password: '' }));
+        }
 
-      if (!optionsResponse.ok) {
-        const error = await optionsResponse.json();
-        throw new Error(error.error || '驗證失敗');
-      }
+        if (!optionsResponse.ok) {
+          const error = await optionsResponse.json();
+          throw new Error(error.error || '驗證失敗');
+        }
 
-      const { options } = await optionsResponse.json();
+        const { options } = await optionsResponse.json();
 
-      // 2. 調用 WebAuthn API
-      const publicKeyOptions: PublicKeyCredentialCreationOptions = {
-        challenge: Uint8Array.from(atob(options.challenge.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0)),
-        rp: options.rp,
-        user: {
-          id: Uint8Array.from(atob(options.user.id.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0)),
-          name: options.user.name,
-          displayName: options.user.displayName
-        },
-        pubKeyCredParams: options.pubKeyCredParams,
-        timeout: options.timeout,
-        authenticatorSelection: options.authenticatorSelection,
-        attestation: options.attestation
-      };
+        // 2. 調用 WebAuthn API
+        const publicKeyOptions: PublicKeyCredentialCreationOptions = {
+          challenge: base64UrlToArrayBuffer(options.challenge),
+          rp: options.rp,
+          user: {
+            id: base64UrlToArrayBuffer(options.user.id),
+            name: options.user.name,
+            displayName: options.user.displayName
+          },
+          pubKeyCredParams: options.pubKeyCredParams,
+          timeout: options.timeout,
+          authenticatorSelection: options.authenticatorSelection,
+          attestation: options.attestation,
+          excludeCredentials: Array.isArray(options.excludeCredentials)
+            ? options.excludeCredentials.map((credential: { id: string; transports?: AuthenticatorTransport[] }) => ({
+                ...credential,
+                id: base64UrlToArrayBuffer(credential.id),
+              }))
+            : undefined,
+        };
 
       const credential = await navigator.credentials.create({
         publicKey: publicKeyOptions
@@ -160,18 +171,16 @@ export default function PersonalSettingsPage() {
       }
 
       // 3. 發送憑證到伺服器驗證
-      const verifyResponse = await fetch('/api/webauthn/register-verify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          credential: serializeRegistrationCredential({
-            id: credential.id,
-            response: credential.response as AuthenticatorAttestationResponse,
-          }),
-          deviceName: registerData.deviceName || getDeviceName()
-        }),
-        credentials: 'include'
-      });
+        const verifyResponse = await fetchJSONWithCSRF('/api/webauthn/register-verify', {
+          method: 'POST',
+          body: {
+            credential: serializeRegistrationCredential({
+              id: credential.id,
+              response: credential.response as AuthenticatorAttestationResponse,
+            }),
+            deviceName: registerData.deviceName || getDeviceName()
+          }
+        });
 
       const verifyData = await verifyResponse.json();
       if (verifyResponse.ok) {

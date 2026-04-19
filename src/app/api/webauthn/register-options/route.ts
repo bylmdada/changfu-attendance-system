@@ -1,6 +1,8 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { generateRegistrationOptions } from '@simplewebauthn/server';
 import { prisma } from '@/lib/database';
+import { getAuthResultFromRequest } from '@/lib/auth';
+import { checkRateLimit } from '@/lib/rate-limit';
 import { normalizeStoredCredentialTransports, WEBAUTHN_RP_ID, WEBAUTHN_RP_NAME } from '@/lib/webauthn';
 import { safeParseJSON } from '@/lib/validation';
 
@@ -8,8 +10,28 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
   try {
+    const rateLimitResult = await checkRateLimit(request, '/api/webauthn/register-options');
+    if (!rateLimitResult.allowed) {
+      return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
+    }
+
+    const authResult = await getAuthResultFromRequest(request);
+    if (authResult.reason === 'session_invalid') {
+      return NextResponse.json(
+        {
+          error: '您已在其他裝置登入，此會話已失效',
+          code: 'SESSION_INVALID',
+        },
+        { status: 401 }
+      );
+    }
+
+    if (!authResult.user) {
+      return NextResponse.json({ error: '未授權' }, { status: 401 });
+    }
+
     const parseResult = await safeParseJSON(request);
     if (!parseResult.success) {
       return NextResponse.json(
@@ -30,9 +52,12 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: '請提供帳號和密碼' }, { status: 400 });
     }
 
-    // 驗證帳密
+    if (username !== authResult.user.username) {
+      return NextResponse.json({ error: '僅能為目前登入帳號設定裝置' }, { status: 403 });
+    }
+
     const user = await prisma.user.findUnique({
-      where: { username },
+      where: { id: authResult.user.userId },
       include: {
         employee: true,
         webauthnCredentials: true
@@ -62,7 +87,7 @@ export async function POST(request: Request) {
     const options = await generateRegistrationOptions({
       rpName: WEBAUTHN_RP_NAME,
       rpID: WEBAUTHN_RP_ID,
-      userName: username,
+      userName: user.username,
       userID: Buffer.from(user.id.toString(), 'utf8'),
       userDisplayName: user.employee?.name || username,
       timeout: 60000,

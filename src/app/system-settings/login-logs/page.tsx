@@ -39,6 +39,15 @@ interface Pagination {
   totalPages: number;
 }
 
+const DEFAULT_FILTERS = {
+  username: '',
+  status: '',
+  startDate: '',
+  endDate: '',
+};
+
+const TAIWAN_TIMEZONE = 'Asia/Taipei';
+
 const STATUS_LABELS: Record<string, string> = {
   SUCCESS: '成功',
   FAILED_PASSWORD: '密碼錯誤',
@@ -66,22 +75,25 @@ export default function LoginLogsPage() {
   const [loading, setLoading] = useState(true);
   
   // 篩選狀態
-  const [filters, setFilters] = useState({
-    username: '',
-    status: '',
-    startDate: '',
-    endDate: '',
+  const [filters, setFilters] = useState(DEFAULT_FILTERS);
+
+  const formatLogTime = (value: string) => new Date(value).toLocaleString('zh-TW', {
+    timeZone: TAIWAN_TIMEZONE,
+    hour12: false,
   });
 
-  const fetchLogs = useCallback(async (page = 1) => {
+  const fetchLogs = useCallback(async (
+    page = 1,
+    activeFilters = filters,
+  ) => {
     try {
       setLoading(true);
       const params = new URLSearchParams({ page: page.toString(), limit: '50' });
       
-      if (filters.username) params.set('username', filters.username);
-      if (filters.status) params.set('status', filters.status);
-      if (filters.startDate) params.set('startDate', filters.startDate);
-      if (filters.endDate) params.set('endDate', filters.endDate);
+      if (activeFilters.username) params.set('username', activeFilters.username);
+      if (activeFilters.status) params.set('status', activeFilters.status);
+      if (activeFilters.startDate) params.set('startDate', activeFilters.startDate);
+      if (activeFilters.endDate) params.set('endDate', activeFilters.endDate);
 
       const response = await fetch(`/api/system-settings/login-logs?${params}`, {
         credentials: 'include'
@@ -128,7 +140,8 @@ export default function LoginLogsPage() {
   };
 
   const handleClearFilters = () => {
-    setFilters({ username: '', status: '', startDate: '', endDate: '' });
+    setFilters(DEFAULT_FILTERS);
+    void fetchLogs(1, DEFAULT_FILTERS);
   };
 
   const getDeviceIcon = (device: string | null) => {
@@ -241,6 +254,8 @@ export default function LoginLogsPage() {
                 <option value="FAILED_PASSWORD">密碼錯誤</option>
                 <option value="FAILED_NOT_FOUND">帳號不存在</option>
                 <option value="FAILED_INACTIVE">帳號停用</option>
+                <option value="FAILED_LOCKED">帳號鎖定</option>
+                <option value="FAILED_2FA">2FA 驗證失敗</option>
               </select>
             </div>
             <div>
@@ -304,7 +319,7 @@ export default function LoginLogsPage() {
                 {logs.map((log) => (
                   <tr key={log.id} className="hover:bg-gray-50">
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                      {new Date(log.createdAt).toLocaleString('zh-TW')}
+                      {formatLogTime(log.createdAt)}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
                       {log.username}

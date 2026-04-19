@@ -63,6 +63,17 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function isUniqueConstraintError(error: unknown) {
+  if (!isPlainObject(error)) {
+    return false;
+  }
+
+  const code = typeof error.code === 'string' ? error.code : '';
+  const message = typeof error.message === 'string' ? error.message : '';
+
+  return code === 'P2002' || message.includes('UNIQUE constraint failed');
+}
+
 // 獲取所有部門與職位
 export async function GET(request: NextRequest) {
   try {
@@ -274,6 +285,10 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ error: '無效的操作' }, { status: 400 });
   } catch (error) {
+    if (isUniqueConstraintError(error)) {
+      return NextResponse.json({ error: '部門名稱或職位名稱已存在' }, { status: 400 });
+    }
+
     console.error('Failed to create department/position:', error);
     return NextResponse.json({ error: '新增失敗' }, { status: 500 });
   }
@@ -336,15 +351,44 @@ export async function PUT(request: NextRequest) {
         return NextResponse.json({ error: '啟用狀態格式無效' }, { status: 400 });
       }
 
+      const existingDepartment = await prisma.department.findUnique({
+        where: { id: parsedId },
+      });
+
+      if (!existingDepartment) {
+        return NextResponse.json({ error: '部門不存在' }, { status: 404 });
+      }
+
+      if (parsedName.value !== undefined && parsedName.value !== existingDepartment.name) {
+        const duplicateDepartment = await prisma.department.findUnique({
+          where: { name: parsedName.value }
+        });
+
+        if (duplicateDepartment && duplicateDepartment.id !== parsedId) {
+          return NextResponse.json({ error: '部門名稱已存在' }, { status: 400 });
+        }
+      }
+
       const updateData: Record<string, unknown> = {};
       if (parsedName.value !== undefined) updateData.name = parsedName.value;
       if (parsedSortOrder.value !== undefined) updateData.sortOrder = parsedSortOrder.value;
       if (parsedIsActive.value !== undefined) updateData.isActive = parsedIsActive.value;
 
-      const updated = await prisma.department.update({
-        where: { id: parsedId },
-        data: updateData,
-        include: { positions: { orderBy: { sortOrder: 'asc' } } }
+      const updated = await prisma.$transaction(async (tx) => {
+        const updatedDepartment = await tx.department.update({
+          where: { id: parsedId },
+          data: updateData,
+          include: { positions: { orderBy: { sortOrder: 'asc' } } }
+        });
+
+        if (parsedName.value !== undefined && parsedName.value !== existingDepartment.name) {
+          await tx.employee.updateMany({
+            where: { department: existingDepartment.name },
+            data: { department: parsedName.value }
+          });
+        }
+
+        return updatedDepartment;
       });
 
       return NextResponse.json({ success: true, department: updated });
@@ -371,14 +415,55 @@ export async function PUT(request: NextRequest) {
         return NextResponse.json({ error: '啟用狀態格式無效' }, { status: 400 });
       }
 
+      const existingPosition = await prisma.position.findUnique({
+        where: { id: parsedId },
+        include: {
+          department: {
+            select: { name: true }
+          }
+        }
+      });
+
+      if (!existingPosition) {
+        return NextResponse.json({ error: '職位不存在' }, { status: 404 });
+      }
+
+      if (parsedName.value !== undefined && parsedName.value !== existingPosition.name) {
+        const duplicatePosition = await prisma.position.findFirst({
+          where: {
+            departmentId: existingPosition.departmentId,
+            name: parsedName.value,
+            NOT: { id: parsedId }
+          }
+        });
+
+        if (duplicatePosition) {
+          return NextResponse.json({ error: '該部門已有相同職位' }, { status: 400 });
+        }
+      }
+
       const updateData: Record<string, unknown> = {};
       if (parsedName.value !== undefined) updateData.name = parsedName.value;
       if (parsedSortOrder.value !== undefined) updateData.sortOrder = parsedSortOrder.value;
       if (parsedIsActive.value !== undefined) updateData.isActive = parsedIsActive.value;
 
-      const updated = await prisma.position.update({
-        where: { id: parsedId },
-        data: updateData
+      const updated = await prisma.$transaction(async (tx) => {
+        const updatedPosition = await tx.position.update({
+          where: { id: parsedId },
+          data: updateData
+        });
+
+        if (parsedName.value !== undefined && parsedName.value !== existingPosition.name) {
+          await tx.employee.updateMany({
+            where: {
+              department: existingPosition.department.name,
+              position: existingPosition.name,
+            },
+            data: { position: parsedName.value }
+          });
+        }
+
+        return updatedPosition;
       });
 
       return NextResponse.json({ success: true, position: updated });
@@ -419,6 +504,10 @@ export async function PUT(request: NextRequest) {
 
     return NextResponse.json({ error: '無效的操作' }, { status: 400 });
   } catch (error) {
+    if (isUniqueConstraintError(error)) {
+      return NextResponse.json({ error: '部門名稱或職位名稱已存在' }, { status: 400 });
+    }
+
     console.error('Failed to update:', error);
     return NextResponse.json({ error: '更新失敗' }, { status: 500 });
   }
@@ -465,6 +554,22 @@ export async function DELETE(request: NextRequest) {
         return NextResponse.json({ error: 'ID 格式無效' }, { status: 400 });
       }
 
+      const existingDepartment = await prisma.department.findUnique({
+        where: { id: parsedId },
+      });
+
+      if (!existingDepartment) {
+        return NextResponse.json({ error: '部門不存在' }, { status: 404 });
+      }
+
+      const employeeCount = await prisma.employee.count({
+        where: { department: existingDepartment.name }
+      });
+
+      if (employeeCount > 0) {
+        return NextResponse.json({ error: `仍有 ${employeeCount} 位員工使用此部門，無法刪除` }, { status: 400 });
+      }
+
       // 刪除部門（會連帶刪除所有職位）
       await prisma.department.delete({ where: { id: parsedId } });
       return NextResponse.json({ success: true, message: '部門刪除成功' });
@@ -473,6 +578,30 @@ export async function DELETE(request: NextRequest) {
     if (action === 'deletePosition') {
       if (parsedId === null) {
         return NextResponse.json({ error: 'ID 格式無效' }, { status: 400 });
+      }
+
+      const existingPosition = await prisma.position.findUnique({
+        where: { id: parsedId },
+        include: {
+          department: {
+            select: { name: true }
+          }
+        }
+      });
+
+      if (!existingPosition) {
+        return NextResponse.json({ error: '職位不存在' }, { status: 404 });
+      }
+
+      const employeeCount = await prisma.employee.count({
+        where: {
+          department: existingPosition.department.name,
+          position: existingPosition.name,
+        }
+      });
+
+      if (employeeCount > 0) {
+        return NextResponse.json({ error: `仍有 ${employeeCount} 位員工使用此職位，無法刪除` }, { status: 400 });
       }
 
       await prisma.position.delete({ where: { id: parsedId } });
@@ -493,16 +622,37 @@ export async function DELETE(request: NextRequest) {
       const requestedIds = normalizedIds as number[];
       const existingPositions = await prisma.position.findMany({
         where: { id: { in: requestedIds } },
-        select: { id: true },
+        include: {
+          department: {
+            select: { name: true }
+          }
+        }
       });
-      const deletedIds = existingPositions.map(position => position.id);
-      const failedIds = requestedIds.filter(requestedId => !deletedIds.includes(requestedId));
+      const missingIds = requestedIds.filter(requestedId => !existingPositions.some(position => position.id === requestedId));
+      const deletableIds: number[] = [];
+      const failedIds = [...missingIds];
 
-      if (deletedIds.length === 0) {
-        return NextResponse.json({ error: '找不到可刪除的職位' }, { status: 400 });
+      for (const position of existingPositions) {
+        const employeeCount = await prisma.employee.count({
+          where: {
+            department: position.department.name,
+            position: position.name,
+          }
+        });
+
+        if (employeeCount > 0) {
+          failedIds.push(position.id);
+          continue;
+        }
+
+        deletableIds.push(position.id);
       }
 
-      const deleteResult = await prisma.position.deleteMany({ where: { id: { in: deletedIds } } });
+      if (deletableIds.length === 0) {
+        return NextResponse.json({ error: '選取的職位仍有員工使用或不存在，無法刪除' }, { status: 400 });
+      }
+
+      const deleteResult = await prisma.position.deleteMany({ where: { id: { in: deletableIds } } });
       if (deleteResult.count === 0) {
         return NextResponse.json({ error: '找不到可刪除的職位' }, { status: 400 });
       }
@@ -511,13 +661,17 @@ export async function DELETE(request: NextRequest) {
         success: true,
         message: `已刪除 ${deleteResult.count} 個職位`,
         deletedCount: deleteResult.count,
-        deletedIds,
+        deletedIds: deletableIds,
         failedIds,
       });
     }
 
     return NextResponse.json({ error: '無效的操作' }, { status: 400 });
   } catch (error) {
+    if (isUniqueConstraintError(error)) {
+      return NextResponse.json({ error: '部門名稱或職位名稱已存在' }, { status: 400 });
+    }
+
     console.error('Failed to delete:', error);
     return NextResponse.json({ error: '刪除失敗' }, { status: 500 });
   }

@@ -1,4 +1,12 @@
 import { prisma } from '@/lib/database';
+import {
+  DEFAULT_ATTENDANCE_FREEZE_SETTINGS,
+  getFreezeExecutionDateForTargetMonth,
+  isAttendanceFrozenBySettings,
+  type AttendanceFreezeSettings,
+} from '@/lib/attendance-freeze-rules';
+import { safeParseSystemSettingsValue } from '@/lib/system-settings-json';
+import { toTaiwanDate } from '@/lib/timezone';
 
 export interface FreezeCheckResult {
   isFrozen: boolean;
@@ -11,6 +19,23 @@ export interface FreezeCheckResult {
   };
 }
 
+const SETTINGS_KEY = 'attendance_freeze';
+
+async function getRecurringFreezeSettings(): Promise<AttendanceFreezeSettings> {
+  const storedSettings = await prisma.systemSettings.findFirst({
+    where: { key: SETTINGS_KEY }
+  });
+
+  return {
+    ...DEFAULT_ATTENDANCE_FREEZE_SETTINGS,
+    ...safeParseSystemSettingsValue<Partial<AttendanceFreezeSettings>>(
+      storedSettings?.value,
+      {},
+      SETTINGS_KEY
+    ),
+  };
+}
+
 /**
  * 檢查指定日期是否被凍結
  * @param targetDate 目標日期
@@ -18,8 +43,10 @@ export interface FreezeCheckResult {
  */
 export async function checkAttendanceFreeze(targetDate: Date): Promise<FreezeCheckResult> {
   try {
-    const targetMonth = targetDate.getMonth() + 1; // JavaScript月份從0開始
-    const targetYear = targetDate.getFullYear();
+    const taiwanTargetDate = toTaiwanDate(targetDate);
+    const targetMonth = taiwanTargetDate.getMonth() + 1;
+    const targetYear = taiwanTargetDate.getFullYear();
+    const now = new Date();
 
     const freeze = await prisma.attendanceFreeze.findFirst({
       where: {
@@ -40,11 +67,24 @@ export async function checkAttendanceFreeze(targetDate: Date): Promise<FreezeChe
     });
 
     if (!freeze) {
-      return { isFrozen: false };
+      const settings = await getRecurringFreezeSettings();
+
+      if (!isAttendanceFrozenBySettings(targetDate, settings, now)) {
+        return { isFrozen: false };
+      }
+
+      return {
+        isFrozen: true,
+        freezeInfo: {
+          freezeDate: getFreezeExecutionDateForTargetMonth(targetDate, settings),
+          description: settings.description || undefined,
+          creator: {
+            name: '系統設定'
+          }
+        }
+      };
     }
 
-    // 檢查當前時間是否已經超過凍結時間
-    const now = new Date();
     if (now >= freeze.freezeDate) {
       return {
         isFrozen: true,
@@ -59,8 +99,7 @@ export async function checkAttendanceFreeze(targetDate: Date): Promise<FreezeChe
     return { isFrozen: false };
   } catch (error) {
     console.error('檢查凍結狀態失敗:', error);
-    // 出錯時預設為不凍結，避免影響正常功能
-    return { isFrozen: false };
+    throw error;
   }
 }
 

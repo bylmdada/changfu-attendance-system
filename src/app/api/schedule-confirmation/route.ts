@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
+import { checkRateLimit } from '@/lib/rate-limit';
 import { sendSchedulePublishNotification, sendReminderToUnconfirmed } from '@/lib/schedule-confirm-service';
 import { parseYearMonthQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
@@ -71,6 +72,11 @@ function getConfirmStatus(release: ReleaseRecord | null, confirmation: Confirmat
 
 export async function GET(request: NextRequest) {
   try {
+    const rateLimitResult = await checkRateLimit(request, '/api/schedule-confirmation');
+    if (!rateLimitResult.allowed) {
+      return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
+    }
+
     const user = await getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
@@ -287,6 +293,11 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
+    const rateLimitResult = await checkRateLimit(request, '/api/schedule-confirmation');
+    if (!rateLimitResult.allowed) {
+      return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
+    }
+
     const user = await getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
@@ -328,6 +339,11 @@ export async function POST(request: NextRequest) {
 
       const yearMonth = yearMonthResult.value;
 
+      const confirmRateLimitResult = await checkRateLimit(request, '/api/schedule-confirmation/confirm');
+      if (!confirmRateLimitResult.allowed) {
+        return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
+      }
+
       const employee = await prisma.employee.findUnique({
         where: { id: user.employeeId },
         select: { id: true, department: true }
@@ -361,31 +377,21 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: '密碼錯誤，請重新輸入' }, { status: 401 });
       }
 
-      // 查詢發布記錄（移除需要發布的限制，允許員工在排班後即可確認）
+      // 查詢已正式發布的記錄
       const release = await prisma.scheduleMonthlyRelease.findFirst({
         where: {
           yearMonth,
+          status: 'PUBLISHED',
           OR: [
             { department: null },
             { department: employee.department || '' }
           ]
-        }
+        },
+        orderBy: { publishedAt: 'desc' }
       });
 
-      // 如果沒有發布記錄，為該月份創建一個
-      let releaseRecord = release;
-      if (!releaseRecord) {
-        releaseRecord = await prisma.scheduleMonthlyRelease.create({
-          data: {
-            yearMonth,
-            publishedAt: new Date(),
-            publishedById: employee.id,
-            status: 'PUBLISHED',
-            version: 1,
-            department: employee.department,
-            deadline: getLastDayOfMonth(yearMonth)
-          }
-        });
+      if (!release) {
+        return NextResponse.json({ error: '本月班表尚未發布，無法確認' }, { status: 409 });
       }
 
       // 建立或更新確認記錄
@@ -393,20 +399,20 @@ export async function POST(request: NextRequest) {
         where: {
           employeeId_releaseId: {
             employeeId: employee.id,
-            releaseId: releaseRecord.id
+            releaseId: release.id
           }
         },
         create: {
           employeeId: employee.id,
           yearMonth,
-          releaseId: releaseRecord.id,
-          version: releaseRecord.version,
+          releaseId: release.id,
+          version: release.version,
           confirmedAt: new Date(),
           comment,
           isValid: true
         },
         update: {
-          version: releaseRecord.version,
+          version: release.version,
           confirmedAt: new Date(),
           comment,
           isValid: true

@@ -5,6 +5,8 @@
 
 import { prisma } from '@/lib/database';
 import { Prisma } from '@prisma/client';
+import { buildActiveDeputyAssignmentWhere } from '@/lib/schedule-management-permissions';
+import { getEffectiveApprovalLevel } from '@/lib/approval-workflow';
 
 // 審核流程類型
 export type WorkflowType = 
@@ -36,6 +38,148 @@ type ReviewableApprovalInstance = {
   currentLevel: number;
   status: string;
 };
+
+type ApprovalDelegateResourceType = 'LEAVE' | 'OVERTIME' | 'SHIFT';
+
+export interface ApprovalDelegateScope {
+  delegatorId: number;
+  department: string;
+  resourceTypes: ApprovalDelegateResourceType[] | null;
+}
+
+const APPROVAL_DELEGATE_RESOURCE_TYPES = new Set<ApprovalDelegateResourceType>([
+  'LEAVE',
+  'OVERTIME',
+  'SHIFT'
+]);
+
+function buildActiveDeputyDateRangeWhere(now = new Date()) {
+  return {
+    isActive: true,
+    AND: [
+      {
+        OR: [
+          { startDate: null },
+          { startDate: { lte: now } }
+        ]
+      },
+      {
+        OR: [
+          { endDate: null },
+          { endDate: { gte: now } }
+        ]
+      }
+    ]
+  };
+}
+
+function parseApprovalDelegateResourceTypes(resourceTypes: string | null): ApprovalDelegateResourceType[] | null {
+  if (!resourceTypes) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(resourceTypes);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return Array.from(new Set(
+      parsed.filter((value): value is ApprovalDelegateResourceType => (
+        typeof value === 'string' && APPROVAL_DELEGATE_RESOURCE_TYPES.has(value as ApprovalDelegateResourceType)
+      ))
+    ));
+  } catch {
+    return [];
+  }
+}
+
+function mapRequestTypeToApprovalDelegateResourceType(requestType: string): ApprovalDelegateResourceType | null {
+  switch (requestType) {
+    case 'LEAVE':
+      return 'LEAVE';
+    case 'OVERTIME':
+      return 'OVERTIME';
+    case 'SHIFT_CHANGE':
+    case 'SHIFT_SWAP':
+    case 'MISSED_CLOCK':
+      return 'SHIFT';
+    default:
+      return null;
+  }
+}
+
+export function resourceTypesAllowRequest(
+  resourceTypes: ApprovalDelegateResourceType[] | null,
+  requestType?: string
+): boolean {
+  if (resourceTypes === null) {
+    return true;
+  }
+
+  if (!requestType || resourceTypes.length === 0) {
+    return false;
+  }
+
+  const mappedType = mapRequestTypeToApprovalDelegateResourceType(requestType);
+  return mappedType ? resourceTypes.includes(mappedType) : false;
+}
+
+export async function getActiveApprovalDelegateScopes(
+  delegateEmployeeId: number,
+  now = new Date()
+): Promise<ApprovalDelegateScope[]> {
+  const assignments = await prisma.approvalDelegate.findMany({
+    where: {
+      delegateId: delegateEmployeeId,
+      isActive: true,
+      startDate: { lte: now },
+      endDate: { gte: now }
+    },
+    select: {
+      delegatorId: true,
+      resourceTypes: true
+    }
+  });
+
+  if (assignments.length === 0) {
+    return [];
+  }
+
+  const delegatorIds = Array.from(new Set(assignments.map(assignment => assignment.delegatorId)));
+  const managerRecords = await prisma.departmentManager.findMany({
+    where: {
+      employeeId: { in: delegatorIds },
+      isActive: true
+    },
+    select: {
+      employeeId: true,
+      department: true
+    }
+  });
+
+  if (managerRecords.length === 0) {
+    return [];
+  }
+
+  const departmentsByDelegator = new Map<number, string[]>();
+  for (const managerRecord of managerRecords) {
+    const departments = departmentsByDelegator.get(managerRecord.employeeId) ?? [];
+    departments.push(managerRecord.department);
+    departmentsByDelegator.set(managerRecord.employeeId, departments);
+  }
+
+  return assignments.flatMap((assignment) => {
+    const departments = departmentsByDelegator.get(assignment.delegatorId) ?? [];
+    const resourceTypes = parseApprovalDelegateResourceTypes(assignment.resourceTypes);
+
+    return departments.map((department) => ({
+      delegatorId: assignment.delegatorId,
+      department,
+      resourceTypes
+    }));
+  });
+}
 
 export function isTerminalApprovalStatus(status: string): boolean {
   return status === 'APPROVED' || status === 'REJECTED';
@@ -160,7 +304,11 @@ export async function getWorkflowConfig(workflowType: WorkflowType) {
     };
   }
   
-  return workflow;
+  return {
+    ...workflow,
+    approvalLevel: getEffectiveApprovalLevel(workflow.approvalLevel, workflow.requireManager),
+    finalApprover: workflow.requireManager ? workflow.finalApprover : 'ADMIN'
+  };
 }
 
 /**
@@ -179,7 +327,7 @@ export async function createApprovalInstance(params: CreateApprovalParams) {
   }
   
   // 決定初始狀態
-  const initialStatus = workflow.requireManager ? 'LEVEL1_REVIEWING' : 'LEVEL2_REVIEWING';
+  const initialStatus = 'LEVEL1_REVIEWING';
   const maxLevel = workflow.approvalLevel;
   
   const instance = await prisma.approvalInstance.create({
@@ -189,7 +337,7 @@ export async function createApprovalInstance(params: CreateApprovalParams) {
       applicantId,
       applicantName,
       department,
-      currentLevel: workflow.requireManager ? 1 : 2,
+      currentLevel: 1,
       maxLevel,
       requireManager: workflow.requireManager,
       status: initialStatus,
@@ -204,6 +352,7 @@ export async function createApprovalInstance(params: CreateApprovalParams) {
  * 取得部門主管
  */
 export async function getDepartmentManager(department: string) {
+  const now = new Date();
   const manager = await prisma.departmentManager.findFirst({
     where: {
       department,
@@ -215,13 +364,7 @@ export async function getDepartmentManager(department: string) {
         select: { id: true, name: true }
       },
       deputies: {
-        where: {
-          isActive: true,
-          OR: [
-            { startDate: null },
-            { startDate: { lte: new Date() } }
-          ]
-        },
+        where: buildActiveDeputyDateRangeWhere(now),
         include: {
           deputyEmployee: {
             select: { id: true, name: true }
@@ -237,7 +380,9 @@ export async function getDepartmentManager(department: string) {
 /**
  * 檢查是否為審核者
  */
-export async function isReviewerFor(employeeId: number, department: string) {
+export async function isReviewerFor(employeeId: number, department: string, requestType?: string) {
+  const now = new Date();
+
   // 檢查是否為該部門主管
   const manager = await prisma.departmentManager.findFirst({
     where: {
@@ -254,8 +399,7 @@ export async function isReviewerFor(employeeId: number, department: string) {
   // 檢查是否為代理人
   const deputy = await prisma.managerDeputy.findFirst({
     where: {
-      deputyEmployeeId: employeeId,
-      isActive: true,
+      ...buildActiveDeputyAssignmentWhere(employeeId, now),
       manager: {
         department,
         isActive: true
@@ -264,6 +408,16 @@ export async function isReviewerFor(employeeId: number, department: string) {
   });
   
   if (deputy) {
+    return { isReviewer: true, role: 'DEPUTY' as const };
+  }
+
+  const approvalDelegateScopes = await getActiveApprovalDelegateScopes(employeeId, now);
+  const delegatedPermission = approvalDelegateScopes.some((scope) => (
+    scope.department === department &&
+    resourceTypesAllowRequest(scope.resourceTypes, requestType)
+  ));
+
+  if (delegatedPermission) {
     return { isReviewer: true, role: 'DEPUTY' as const };
   }
   
@@ -286,26 +440,24 @@ export async function performReview(params: ReviewParams) {
     isDeputy = false 
   } = params;
   
-  const instance = await prisma.approvalInstance.findUnique({
-    where: { id: instanceId }
-  });
-  
-  if (!instance) {
-    throw new Error('找不到審核實例');
-  }
-
-  await ensureApprovalReviewAllowed(prisma, instance, reviewerId);
-  
-  const { newStatus, newLevel } = determineApprovalTransition(
-    instance.currentLevel,
-    instance.maxLevel,
-    action,
-    reviewerRole,
-    instance.status as ApprovalStatus
-  );
-  
   const updatedInstance = await prisma.$transaction(async (tx) => {
+    const instance = await tx.approvalInstance.findUnique({
+      where: { id: instanceId }
+    });
+
+    if (!instance) {
+      throw new Error('找不到審核實例');
+    }
+
     await ensureApprovalReviewAllowed(tx, instance, reviewerId);
+
+    const { newStatus, newLevel } = determineApprovalTransition(
+      instance.currentLevel,
+      instance.maxLevel,
+      action,
+      reviewerRole,
+      instance.status as ApprovalStatus
+    );
 
     await tx.approvalReview.create({
       data: {

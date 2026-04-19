@@ -39,10 +39,21 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-// 驗證 admin 權限
+function isDuplicateDependentError(error: unknown) {
+  if (!isPlainObject(error)) {
+    return false;
+  }
+
+  const code = typeof error.code === 'string' ? error.code : '';
+  const message = typeof error.message === 'string' ? error.message : '';
+
+  return code === 'P2002' || message.includes('UNIQUE constraint failed');
+}
+
+// 驗證管理權限
 async function verifyAdmin(request: NextRequest) {
   const user = await getUserFromRequest(request);
-  if (!user || user.role !== 'ADMIN') {
+  if (!user || (user.role !== 'ADMIN' && user.role !== 'HR')) {
     return null;
   }
 
@@ -54,7 +65,7 @@ export async function GET(request: NextRequest) {
   try {
     const user = await verifyAdmin(request);
     if (!user) {
-      return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
+      return NextResponse.json({ error: '需要管理或人資權限' }, { status: 403 });
     }
 
     // 取得所有員工資料
@@ -149,7 +160,7 @@ export async function POST(request: NextRequest) {
     // 3. 管理員權限驗證
     const user = await verifyAdmin(request);
     if (!user) {
-      return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
+      return NextResponse.json({ error: '需要管理或人資權限' }, { status: 403 });
     }
 
     const parseResult = await safeParseJSON(request);
@@ -263,7 +274,12 @@ export async function POST(request: NextRequest) {
       }
     });
 
-    if (existingDependent) {
+    const shouldReactivateExistingDependent = !parsedId
+      && !!existingDependent
+      && !existingDependent.isActive
+      && existingDependent.employeeId === parsedEmployeeId;
+
+    if (existingDependent && !shouldReactivateExistingDependent) {
       return NextResponse.json(
         { error: '此身分證號已存在' },
         { status: 400 }
@@ -292,6 +308,13 @@ export async function POST(request: NextRequest) {
         where: { id: parsedId },
         include: { employee: { select: { name: true } } }
       });
+
+      if (!oldDependent) {
+        return NextResponse.json(
+          { error: '眷屬資料不存在' },
+          { status: 404 }
+        );
+      }
       
       // 更新現有眷屬
       savedDependent = await prisma.healthInsuranceDependent.update({
@@ -329,22 +352,46 @@ export async function POST(request: NextRequest) {
         }
       }
     } else {
-      // 新增眷屬
-      savedDependent = await prisma.healthInsuranceDependent.create({
-        data: dependentData,
-        include: { employee: { select: { name: true } } }
-      });
+      if (shouldReactivateExistingDependent && existingDependent) {
+        savedDependent = await prisma.healthInsuranceDependent.update({
+          where: { id: existingDependent.id },
+          data: {
+            ...dependentData,
+            endDate: null,
+          },
+          include: { employee: { select: { name: true } } }
+        });
 
-      // 記錄新增歷史
-      await prisma.dependentHistoryLog.create({
-        data: {
-          dependentId: savedDependent.id,
-          dependentName: dependentData.dependentName,
-          employeeName: savedDependent.employee.name,
-          action: 'CREATE',
-          changedBy
-        }
-      });
+        await prisma.dependentHistoryLog.create({
+          data: {
+            dependentId: savedDependent.id,
+            dependentName: dependentData.dependentName,
+            employeeName: savedDependent.employee.name,
+            action: 'UPDATE',
+            fieldName: 'isActive',
+            oldValue: 'false',
+            newValue: 'true',
+            changedBy
+          }
+        });
+      } else {
+        // 新增眷屬
+        savedDependent = await prisma.healthInsuranceDependent.create({
+          data: dependentData,
+          include: { employee: { select: { name: true } } }
+        });
+
+        // 記錄新增歷史
+        await prisma.dependentHistoryLog.create({
+          data: {
+            dependentId: savedDependent.id,
+            dependentName: dependentData.dependentName,
+            employeeName: savedDependent.employee.name,
+            action: 'CREATE',
+            changedBy
+          }
+        });
+      }
     }
 
     return NextResponse.json({
@@ -364,6 +411,13 @@ export async function POST(request: NextRequest) {
     });
 
   } catch (error) {
+    if (isDuplicateDependentError(error)) {
+      return NextResponse.json(
+        { error: '此身分證號已存在' },
+        { status: 409 }
+      );
+    }
+
     console.error('儲存眷屬資料失敗:', error);
     return NextResponse.json(
       { error: '儲存失敗，請檢查資料格式' },
@@ -392,7 +446,7 @@ export async function DELETE(request: NextRequest) {
 
     const user = await verifyAdmin(request);
     if (!user) {
-      return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
+      return NextResponse.json({ error: '需要管理或人資權限' }, { status: 403 });
     }
 
     const { searchParams } = new URL(request.url);
@@ -415,7 +469,12 @@ export async function DELETE(request: NextRequest) {
 
     // 檢查眷屬是否存在
     const dependent = await prisma.healthInsuranceDependent.findUnique({
-      where: { id }
+      where: { id },
+      include: {
+        employee: {
+          select: { name: true }
+        }
+      }
     });
 
     if (!dependent) {
@@ -425,22 +484,36 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    // 刪除眷屬資料前記錄歷史
-    const changedBy = user.username;
-    await prisma.dependentHistoryLog.create({
-      data: {
-        dependentId: dependent.id,
-        dependentName: dependent.dependentName,
-        employeeName: '', // 已刪除無法取得
-        action: 'DELETE',
-        changedBy
+    const pendingApplication = await prisma.dependentApplication.findFirst({
+      where: {
+        dependentId: id,
+        status: 'PENDING'
       }
     });
 
-    // 刪除眷屬資料
-    await prisma.healthInsuranceDependent.delete({
-      where: { id }
-    });
+    if (pendingApplication) {
+      return NextResponse.json(
+        { error: '此眷屬仍有待審核申請，請先處理申請後再刪除' },
+        { status: 409 }
+      );
+    }
+
+    // 刪除眷屬資料前記錄歷史
+    const changedBy = user.username;
+    await prisma.$transaction([
+      prisma.dependentHistoryLog.create({
+        data: {
+          dependentId: dependent.id,
+          dependentName: dependent.dependentName,
+          employeeName: dependent.employee?.name || '',
+          action: 'DELETE',
+          changedBy
+        }
+      }),
+      prisma.healthInsuranceDependent.delete({
+        where: { id }
+      })
+    ]);
 
     return NextResponse.json({
       success: true,

@@ -4,7 +4,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { parseIntegerQueryParam } from '@/lib/query-params';
-import { toTaiwanDateStr } from '@/lib/timezone';
+import { getTaiwanTodayEnd, toTaiwanDateStr } from '@/lib/timezone';
 import { validateCSRF } from '@/lib/csrf';
 import { safeParseJSON } from '@/lib/validation';
 
@@ -100,6 +100,7 @@ export async function PUT(
       }
 
       const finalStatus = action === 'APPROVE' ? 'APPROVED' : 'REJECTED';
+      const shouldApplyImmediately = action === 'APPROVE' && application.effectiveDate < getTaiwanTodayEnd();
 
       await prisma.$transaction(async (tx) => {
         await tx.pensionContributionApplication.update({
@@ -114,7 +115,7 @@ export async function PUT(
           }
         });
 
-        if (action === 'APPROVE') {
+        if (shouldApplyImmediately) {
           await tx.employee.update({
             where: { id: application.employeeId },
             data: {
@@ -139,6 +140,7 @@ export async function PUT(
       }
 
       const finalStatus = action === 'APPROVE' ? 'APPROVED' : 'REJECTED';
+      const shouldApplyImmediately = action === 'APPROVE' && application.effectiveDate < getTaiwanTodayEnd();
 
       await prisma.$transaction(async (tx) => {
         // 更新申請狀態
@@ -153,7 +155,7 @@ export async function PUT(
         });
 
         // 如果核准，更新員工的自提比例
-        if (action === 'APPROVE') {
+        if (shouldApplyImmediately) {
           await tx.employee.update({
             where: { id: application.employeeId },
             data: {
@@ -177,6 +179,8 @@ export async function PUT(
     return NextResponse.json({ error: '系統錯誤' }, { status: 500 });
   }
 }
+
+export const PATCH = PUT;
 
 // DELETE: 取消申請（僅限申請人且狀態為待HR審核）
 export async function DELETE(

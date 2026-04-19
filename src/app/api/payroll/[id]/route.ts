@@ -3,7 +3,12 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { buildSuccessPayload } from '@/lib/api-response';
 import { validateCSRF } from '@/lib/csrf';
+import { getStoredLaborLawConfig } from '@/lib/labor-law-config';
+import { checkRateLimit } from '@/lib/rate-limit';
 import { parseIntegerQueryParam } from '@/lib/query-params';
+import { calculatePayrollTotals } from '@/lib/payroll-calculator';
+import { buildEmployeePayrollInfo } from '@/lib/payroll-processing';
+import { getStoredSupplementaryPremiumSettings } from '@/lib/supplementary-premium-settings';
 import { safeParseJSON } from '@/lib/validation';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -11,7 +16,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 function asNumber(value: unknown): number | undefined {
-  return typeof value === 'number' ? value : undefined;
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
 function parsePayrollId(id: string) {
@@ -29,6 +34,14 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const rateLimitResult = await checkRateLimit(request, '/api/payroll/[id]');
+    if (!rateLimitResult.allowed) {
+      return NextResponse.json(
+        { error: '操作過於頻繁，請稍後再試', retryAfter: rateLimitResult.retryAfter },
+        { status: 429, headers: { 'Retry-After': rateLimitResult.retryAfter?.toString() || '60' } }
+      );
+    }
+
     const decoded = await getUserFromRequest(request);
     if (!decoded) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
@@ -80,6 +93,14 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const rateLimitResult = await checkRateLimit(request, '/api/payroll/[id]');
+    if (!rateLimitResult.allowed) {
+      return NextResponse.json(
+        { error: '操作過於頻繁，請稍後再試', retryAfter: rateLimitResult.retryAfter },
+        { status: 429, headers: { 'Retry-After': rateLimitResult.retryAfter?.toString() || '60' } }
+      );
+    }
+
     const decoded = await getUserFromRequest(request);
     if (!decoded) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
@@ -108,32 +129,95 @@ export async function PATCH(
     }
 
     const body = parseResult.data;
-    const regularHours = isPlainObject(body) ? asNumber(body.regularHours) : undefined;
-    const overtimeHours = isPlainObject(body) ? asNumber(body.overtimeHours) : undefined;
-    const basePay = isPlainObject(body) ? asNumber(body.basePay) : undefined;
-    const overtimePay = isPlainObject(body) ? asNumber(body.overtimePay) : undefined;
+    if (!isPlainObject(body)) {
+      return NextResponse.json({ error: '請求內容格式無效' }, { status: 400 });
+    }
+
+    const regularHours = asNumber(body.regularHours);
+    const overtimeHours = asNumber(body.overtimeHours);
+    const basePay = asNumber(body.basePay);
+    const overtimePay = asNumber(body.overtimePay);
+
+    if (
+      regularHours === undefined &&
+      overtimeHours === undefined &&
+      basePay === undefined &&
+      overtimePay === undefined
+    ) {
+      return NextResponse.json({ error: '未提供可更新欄位' }, { status: 400 });
+    }
 
     const payrollRecord = await prisma.payrollRecord.findUnique({
-      where: { id: payrollId }
+      where: { id: payrollId },
+      include: {
+        employee: {
+          select: {
+            id: true,
+            employeeId: true,
+            name: true,
+            department: true,
+            position: true,
+            baseSalary: true,
+            hourlyRate: true,
+            hireDate: true,
+            dependents: true,
+            insuredBase: true,
+            laborPensionSelfRate: true,
+            employeeType: true,
+            laborInsuranceActive: true,
+            healthInsuranceActive: true
+          }
+        }
+      }
     });
 
     if (!payrollRecord) {
       return NextResponse.json({ error: '找不到薪資記錄' }, { status: 404 });
     }
 
-    // 計算新的總薪資
-    const newGrossPay = (basePay || payrollRecord.basePay) + (overtimePay || payrollRecord.overtimePay);
-    const newNetPay = newGrossPay; // 簡化計算
+    const resolvedBasePay = basePay ?? payrollRecord.basePay;
+    const resolvedOvertimePay = overtimePay ?? payrollRecord.overtimePay;
+    const existingTotalBonus = Math.max(0, payrollRecord.grossPay - payrollRecord.basePay - payrollRecord.overtimePay);
+    const employeeInfo = await buildEmployeePayrollInfo(
+      payrollRecord.employee,
+      payrollRecord.payYear,
+      payrollRecord.payMonth
+    );
+    const [supplementaryPremiumSettings, laborLawConfig] = await Promise.all([
+      getStoredSupplementaryPremiumSettings(),
+      getStoredLaborLawConfig(),
+    ]);
+    const totals = calculatePayrollTotals(
+      employeeInfo,
+      resolvedBasePay + resolvedOvertimePay,
+      existingTotalBonus,
+      supplementaryPremiumSettings,
+      laborLawConfig
+    );
 
     const updatedPayrollRecord = await prisma.payrollRecord.update({
       where: { id: payrollId },
       data: {
         ...(regularHours !== undefined && { regularHours }),
         ...(overtimeHours !== undefined && { overtimeHours }),
-        ...(basePay !== undefined && { basePay }),
-        ...(overtimePay !== undefined && { overtimePay }),
-        grossPay: newGrossPay,
-        netPay: newNetPay
+        ...(basePay !== undefined && { basePay: resolvedBasePay }),
+        ...(overtimePay !== undefined && { overtimePay: resolvedOvertimePay }),
+        grossPay: totals.grossPay,
+        laborInsurance: totals.deductions.laborInsurance,
+        healthInsurance: totals.deductions.healthInsurance,
+        supplementaryInsurance: totals.deductions.supplementaryInsurance,
+        laborPensionSelf: totals.deductions.laborPensionSelf,
+        incomeTax: totals.deductions.incomeTax,
+        totalDeductions: totals.totalDeductions,
+        deductionDetails: {
+          laborInsurance: totals.deductions.laborInsurance,
+          healthInsurance: totals.deductions.healthInsurance,
+          supplementaryInsurance: totals.deductions.supplementaryInsurance,
+          laborPensionSelf: totals.deductions.laborPensionSelf,
+          incomeTax: totals.deductions.incomeTax,
+          other: totals.deductions.other
+        },
+        netPay: totals.netPay
       },
       include: {
         employee: {
@@ -167,6 +251,14 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const rateLimitResult = await checkRateLimit(request, '/api/payroll/[id]');
+    if (!rateLimitResult.allowed) {
+      return NextResponse.json(
+        { error: '操作過於頻繁，請稍後再試', retryAfter: rateLimitResult.retryAfter },
+        { status: 429, headers: { 'Retry-After': rateLimitResult.retryAfter?.toString() || '60' } }
+      );
+    }
+
     const decoded = await getUserFromRequest(request);
     if (!decoded) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });

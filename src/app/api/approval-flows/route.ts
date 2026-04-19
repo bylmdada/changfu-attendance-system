@@ -9,6 +9,15 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function parseStoredFlowJson(value: string, fallback: unknown) {
+  try {
+    return JSON.parse(value);
+  } catch (error) {
+    console.error('解析審批流程設定失敗:', error);
+    return fallback;
+  }
+}
+
 // GET - 取得審批流程設定
 export async function GET(request: NextRequest) {
   try {
@@ -23,7 +32,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    if (!decoded || !['ADMIN', 'HR'].includes(decoded.role)) {
+    if (!['ADMIN', 'HR'].includes(decoded.role)) {
       return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
     }
 
@@ -40,8 +49,8 @@ export async function GET(request: NextRequest) {
     // 解析 JSON 欄位
     const parsedFlows = flows.map(flow => ({
       ...flow,
-      steps: JSON.parse(flow.steps),
-      autoApproveRules: flow.autoApproveRules ? JSON.parse(flow.autoApproveRules) : null
+      steps: parseStoredFlowJson(flow.steps, []),
+      autoApproveRules: flow.autoApproveRules ? parseStoredFlowJson(flow.autoApproveRules, null) : null
     }));
 
     return NextResponse.json({
@@ -73,7 +82,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    if (!decoded || decoded.role !== 'ADMIN') {
+    if (decoded.role !== 'ADMIN') {
       return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
     }
 

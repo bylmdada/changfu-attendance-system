@@ -4,6 +4,7 @@ import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { calculateAllDeductions } from '@/lib/tax-calculator';
 import { calculatePerfectAttendanceBonus } from '@/lib/perfect-attendance';
+import { getStoredSupplementaryPremiumSettings } from '@/lib/supplementary-premium-settings';
 import { Prisma } from '@prisma/client';
 import { safeParseJSON } from '@/lib/validation';
 
@@ -60,7 +61,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    if (decoded.role !== 'ADMIN' && decoded.role !== 'HR') {
+    if (decoded.role !== 'ADMIN') {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
 
@@ -93,7 +94,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    if (decoded.role !== 'ADMIN' && decoded.role !== 'HR') {
+    if (decoded.role !== 'ADMIN') {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
 
@@ -135,8 +136,12 @@ export async function POST(request: NextRequest) {
     const targetMonthValue = targetMonthResult.value;
     const targetYearValue = targetYearResult.value;
     const freezeDateValue = freezeDateResult.value;
-    const descriptionValue = typeof description === 'string' ? description : null;
+    const descriptionValue = typeof description === 'string' ? description.trim() || null : null;
     const shouldAutoCalculatePayroll = autoCalculatePayroll === true;
+
+    if (!decoded.employeeId) {
+      return NextResponse.json({ error: '當前帳號缺少員工資料，無法建立凍結設定' }, { status: 400 });
+    }
 
     // 檢查是否已經存在相同的凍結設定
     const existingFreeze = await prisma.attendanceFreeze.findFirst({
@@ -305,11 +310,13 @@ async function calculateAndCreatePayroll(
   }
   
   // 計算稅金和扣除額
+  const supplementaryPremiumSettings = await getStoredSupplementaryPremiumSettings();
   const taxCalculation = calculateAllDeductions(
     grossPay, 
     grossPay * 12,
     employee.dependents || 0,
-    bonusSupplementaryPremium
+    bonusSupplementaryPremium,
+    supplementaryPremiumSettings
   );
   const netPay = taxCalculation.netSalary;
 

@@ -53,6 +53,32 @@ function normalizeOptionalString(value: unknown): string | undefined {
   return normalized ? normalized : undefined;
 }
 
+const ADMIN_ACTION_STATUS_MAP = {
+  approve: ['PENDING'],
+  reject: ['PENDING'],
+  start_handover: ['APPROVED'],
+  complete: ['IN_HANDOVER'],
+} as const;
+
+function isAllowedAdminAction(action: unknown): action is keyof typeof ADMIN_ACTION_STATUS_MAP {
+  return typeof action === 'string' && action in ADMIN_ACTION_STATUS_MAP;
+}
+
+function getInvalidStatusMessage(action: keyof typeof ADMIN_ACTION_STATUS_MAP, status: string): string {
+  switch (action) {
+    case 'approve':
+      return `只有待審核的申請可以核准，目前狀態為 ${status}`;
+    case 'reject':
+      return `只有待審核的申請可以拒絕，目前狀態為 ${status}`;
+    case 'start_handover':
+      return `只有已核准的申請可以開始交接，目前狀態為 ${status}`;
+    case 'complete':
+      return `只有交接中的申請可以完成離職，目前狀態為 ${status}`;
+    default:
+      return '目前狀態不可執行此操作';
+  }
+}
+
 export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
     const user = await getUserFromRequest(request);
@@ -153,10 +179,18 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
 
     // 管理員/HR：審核操作
     if (user.role === 'ADMIN' || user.role === 'HR') {
-      const action = typeof data.action === 'string' ? data.action : undefined;
+      const action = data.action;
       const rejectionReason = normalizeOptionalString(data.rejectionReason);
       const notes = normalizeOptionalString(data.notes);
       const actualDate = data.actualDate;
+
+      if (!isAllowedAdminAction(action)) {
+        return NextResponse.json({ error: '操作類型無效' }, { status: 400 });
+      }
+
+      if (!(ADMIN_ACTION_STATUS_MAP[action] as readonly string[]).includes(record.status)) {
+        return NextResponse.json({ error: getInvalidStatusMessage(action, record.status) }, { status: 400 });
+      }
 
       if (action === 'approve') {
         // 核准
@@ -221,25 +255,47 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
           return NextResponse.json({ error: '實際離職日格式無效' }, { status: 400 });
         }
 
-        const updated = await prisma.resignationRecord.update({
-          where: { id: recordId },
-          data: {
-            status: 'COMPLETED',
-            actualDate: parsedActualDate
-          },
-          include: { employee: true }
+        const incompleteHandoverItems = await prisma.handoverItem.count({
+          where: {
+            resignationId: recordId,
+            completed: false
+          }
         });
 
-        // 停用員工帳號
-        await prisma.employee.update({
-          where: { id: record.employeeId },
-          data: { isActive: false }
+        if (incompleteHandoverItems > 0) {
+          return NextResponse.json({ error: '尚有未完成的交接項目，無法完成離職' }, { status: 400 });
+        }
+
+        const updated = await prisma.$transaction(async (tx) => {
+          const completedRecord = await tx.resignationRecord.update({
+            where: { id: recordId },
+            data: {
+              status: 'COMPLETED',
+              actualDate: parsedActualDate
+            },
+            include: { employee: true }
+          });
+
+          await tx.employee.update({
+            where: { id: record.employeeId },
+            data: { isActive: false }
+          });
+
+          await tx.user.updateMany({
+            where: { employeeId: record.employeeId },
+            data: {
+              isActive: false,
+              currentSessionId: null
+            }
+          });
+
+          return completedRecord;
         });
 
         return NextResponse.json({
           success: true,
           record: updated,
-          message: '離職流程已完成，員工帳號已停用'
+          message: '離職流程已完成，員工與登入帳號已停用'
         });
       }
     }
@@ -251,6 +307,10 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       const reasonType = normalizeOptionalString(data.reasonType);
       const notes = normalizeOptionalString(data.notes);
       let parsedExpectedDate: Date | undefined;
+
+      if (reasonType && !['VOLUNTARY', 'LAYOFF', 'RETIREMENT', 'OTHER'].includes(reasonType)) {
+        return NextResponse.json({ error: '離職原因類型無效' }, { status: 400 });
+      }
 
       if (expectedDate !== undefined) {
         parsedExpectedDate = parseDateInput(expectedDate) ?? undefined;

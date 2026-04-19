@@ -141,6 +141,77 @@ test.describe('mobile attendance clock-out regression', () => {
     await expect(page.getByRole('heading', { name: '延後下班提示' })).not.toBeVisible();
   });
 
+  test('keeps the logged-in username after canceling and reopening the mobile clock modal', async ({ page, context }) => {
+    await page.addInitScript(() => {
+      window.localStorage.setItem('attendance_remembered_username', 'stale-worker');
+    });
+
+    await context.route('**/api/auth/me', async (route) => {
+      await route.fulfill(
+        jsonResponse({
+          user: {
+            id: 1,
+            username: 'worker1',
+            role: 'employee',
+            employee: {
+              id: 10,
+              employeeId: 'EMP001',
+              name: '測試員工',
+              department: '營運部',
+              position: '專員',
+            },
+          },
+        })
+      );
+    });
+
+    await context.route('**/api/attendance/clock', async (route) => {
+      await route.fulfill(
+        jsonResponse({
+          hasClockIn: false,
+          hasClockOut: false,
+          today: null,
+        })
+      );
+    });
+
+    await context.route('**/api/attendance/allowed-locations', async (route) => {
+      await route.fulfill(jsonResponse({ locations: [], isRequired: false }));
+    });
+
+    await context.route('**/api/system-settings/gps-attendance', async (route) => {
+      await route.fulfill(
+        jsonResponse({
+          settings: {
+            enabled: false,
+            requiredAccuracy: 50,
+            allowOfflineMode: true,
+            requireAddressInfo: false,
+          },
+        })
+      );
+    });
+
+    await context.route('**/api/webauthn/check**', async (route) => {
+      await route.fulfill(jsonResponse({ hasCredentials: false }));
+    });
+
+    await page.goto('/attendance');
+    await page.waitForLoadState('networkidle');
+
+    await page.getByRole('button', { name: '上班打卡' }).click();
+    await expect(page.getByRole('heading', { name: '上班打卡確認' })).toBeVisible();
+    await expect(page.getByPlaceholder('請輸入您的帳號')).toHaveValue('worker1');
+
+    await page.getByRole('button', { name: '取消' }).click();
+    await expect(page.getByRole('heading', { name: '上班打卡確認' })).not.toBeVisible();
+
+    await page.getByRole('button', { name: '上班打卡' }).click();
+    await expect(page.getByRole('heading', { name: '上班打卡確認' })).toBeVisible();
+    await expect(page.getByPlaceholder('請輸入您的帳號')).toHaveValue('worker1');
+    await expect(page.getByPlaceholder('請輸入您的帳號')).not.toHaveValue('stale-worker');
+  });
+
   test('still sends GPS location when GPS is enabled and allowed-locations omits isRequired', async ({ page, context }) => {
     let verifyClockPayload: Record<string, unknown> | null = null;
 

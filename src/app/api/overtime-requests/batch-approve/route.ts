@@ -19,7 +19,7 @@ function getReviewableStatuses() {
 // POST - 批次審核加班申請
 export async function POST(request: NextRequest) {
   try {
-    const rateLimitResult = await checkRateLimit(request);
+    const rateLimitResult = await checkRateLimit(request, '/api/overtime-requests/batch-approve');
     if (!rateLimitResult.allowed) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
@@ -30,7 +30,7 @@ export async function POST(request: NextRequest) {
     }
 
     const user = await getUserFromRequest(request);
-    if (!user || user.role !== 'ADMIN') {
+    if (!user || (user.role !== 'ADMIN' && user.role !== 'HR')) {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
 
@@ -49,7 +49,6 @@ export async function POST(request: NextRequest) {
 
     const ids = Array.isArray(body.ids) ? body.ids : undefined;
     const action = typeof body.action === 'string' ? body.action : undefined;
-    const remarks = typeof body.remarks === 'string' ? body.remarks : undefined;
     const requestedOvertimeType = typeof body.overtimeType === 'string'
       ? body.overtimeType as OvertimeType
       : undefined;
@@ -81,7 +80,6 @@ export async function POST(request: NextRequest) {
           status: action,
           approvedBy: user.employeeId,
           approvedAt: new Date(),
-          ...(remarks && { rejectReason: remarks })
         }
       });
 

@@ -3,6 +3,7 @@
  */
 import { authenticator } from 'otplib';
 import QRCode from 'qrcode';
+import { randomInt } from 'crypto';
 
 // 配置 TOTP
 authenticator.options = {
@@ -54,13 +55,18 @@ export function verifyTOTP(token: string, secret: string): boolean {
  * 產生備用碼 (用於手機遺失時)
  */
 export function generateBackupCodes(count: number = 8): string[] {
-  const codes: string[] = [];
-  for (let i = 0; i < count; i++) {
-    // 產生 8 位隨機碼
-    const code = Math.random().toString(36).substring(2, 10).toUpperCase();
-    codes.push(code);
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const codes = new Set<string>();
+
+  while (codes.size < count) {
+    let code = '';
+    for (let i = 0; i < 8; i++) {
+      code += alphabet[randomInt(0, alphabet.length)];
+    }
+    codes.add(code);
   }
-  return codes;
+
+  return Array.from(codes);
 }
 
 /**

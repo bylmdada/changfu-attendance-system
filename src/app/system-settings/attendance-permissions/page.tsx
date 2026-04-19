@@ -58,12 +58,10 @@ const PERMISSION_DESCRIPTIONS = {
   scheduleManagement: '可以管理指定部門的員工班表'
 };
 
-// 使用常數檔案中的部門選項
-const DEPARTMENTS = DEPARTMENT_OPTIONS;
-
 export default function AttendancePermissionsPage() {
   const [permissions, setPermissions] = useState<AttendancePermission[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
+  const [departmentOptions, setDepartmentOptions] = useState<string[]>([...DEPARTMENT_OPTIONS]);
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [showCreateForm, setShowCreateForm] = useState(false);
@@ -120,6 +118,23 @@ export default function AttendancePermissionsPage() {
           const employeesData = await employeesRes.json();
           const employeeList = Array.isArray(employeesData) ? employeesData : employeesData.employees || [];
           setEmployees(employeeList);
+        }
+
+        const departmentsRequest = buildCookieSessionRequest(window.location.origin, '/api/departments');
+        const departmentsRes = await fetch(departmentsRequest.url, departmentsRequest.options);
+        if (departmentsRes.ok) {
+          const departmentsData = await departmentsRes.json();
+          const names = Array.isArray(departmentsData.departments)
+            ? departmentsData.departments
+                .map((department: { name?: string } | string) =>
+                  typeof department === 'string' ? department : department?.name
+                )
+                .filter((departmentName: string | undefined): departmentName is string => typeof departmentName === 'string' && departmentName.length > 0)
+            : [];
+
+          if (names.length > 0) {
+            setDepartmentOptions(names);
+          }
         }
 
         // 載入考勤權限設定
@@ -608,7 +623,7 @@ export default function AttendancePermissionsPage() {
                     </div>
                     
                     <div className="space-y-2">
-                      {DEPARTMENTS.map((department) => (
+                      {departmentOptions.map((department) => (
                         <label key={department} className="flex items-center">
                           <input
                             type="checkbox"
@@ -698,7 +713,7 @@ export default function AttendancePermissionsPage() {
                     </div>
                     
                     <div className="space-y-2">
-                      {DEPARTMENTS.map((department) => (
+                      {departmentOptions.map((department) => (
                         <label key={department} className="flex items-center">
                           <input
                             type="checkbox"

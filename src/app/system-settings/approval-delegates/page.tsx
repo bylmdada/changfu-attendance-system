@@ -42,7 +42,7 @@ interface Delegate {
 const RESOURCE_TYPE_LABELS: Record<string, string> = {
   LEAVE: '請假審核',
   OVERTIME: '加班審核',
-  SHIFT: '調班審核'
+  SHIFT: '調班/補卡審核'
 };
 
 export default function ApprovalDelegatesPage() {

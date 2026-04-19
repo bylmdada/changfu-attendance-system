@@ -2,8 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { parseIntegerQueryParam } from '@/lib/query-params';
+import { checkRateLimit } from '@/lib/rate-limit';
+import { Prisma } from '@prisma/client';
 
-function parseDateFilter(rawValue: string | null) {
+function parseTaiwanDateFilter(rawValue: string | null, endOfDay: boolean) {
   if (!rawValue) {
     return { value: null, isValid: true };
   }
@@ -12,7 +14,8 @@ function parseDateFilter(rawValue: string | null) {
     return { value: null, isValid: false };
   }
 
-  const value = new Date(`${rawValue}T00:00:00.000Z`);
+  const timeSuffix = endOfDay ? '23:59:59.999+08:00' : '00:00:00.000+08:00';
+  const value = new Date(`${rawValue}T${timeSuffix}`);
   if (Number.isNaN(value.getTime())) {
     return { value: null, isValid: false };
   }
@@ -25,6 +28,14 @@ function parseDateFilter(rawValue: string | null) {
  */
 export async function GET(request: NextRequest) {
   try {
+    const rateLimitResult = await checkRateLimit(request, '/api/system-settings/login-logs');
+    if (!rateLimitResult.allowed) {
+      return NextResponse.json(
+        { error: '操作過於頻繁', retryAfter: rateLimitResult.retryAfter },
+        { status: 429 }
+      );
+    }
+
     const user = await getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
@@ -52,15 +63,22 @@ export async function GET(request: NextRequest) {
     const startDate = searchParams.get('startDate');
     const endDate = searchParams.get('endDate');
 
-    const startDateResult = parseDateFilter(startDate);
-    const endDateResult = parseDateFilter(endDate);
+    const startDateResult = parseTaiwanDateFilter(startDate, false);
+    const endDateResult = parseTaiwanDateFilter(endDate, true);
     if (!startDateResult.isValid || !endDateResult.isValid) {
       return NextResponse.json({ error: '日期格式無效' }, { status: 400 });
     }
 
+    if (
+      startDateResult.value
+      && endDateResult.value
+      && startDateResult.value > endDateResult.value
+    ) {
+      return NextResponse.json({ error: '開始日期不得晚於結束日期' }, { status: 400 });
+    }
+
     // 建立查詢條件
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const where: any = {};
+    const where: Prisma.LoginLogWhereInput = {};
 
     if (username) {
       where.username = { contains: username };
@@ -76,9 +94,7 @@ export async function GET(request: NextRequest) {
         where.createdAt.gte = startDateResult.value;
       }
       if (endDateResult.value) {
-        const end = new Date(endDateResult.value);
-        end.setHours(23, 59, 59, 999);
-        where.createdAt.lte = end;
+        where.createdAt.lte = endDateResult.value;
       }
     }
 

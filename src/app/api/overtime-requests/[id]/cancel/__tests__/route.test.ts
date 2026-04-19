@@ -4,7 +4,6 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { checkRateLimit } from '@/lib/rate-limit';
-import { getTaiwanYearMonth } from '@/lib/timezone';
 
 jest.mock('@/lib/database', () => ({
   prisma: {
@@ -20,6 +19,7 @@ jest.mock('@/lib/database', () => ({
       update: jest.fn(),
     },
     compLeaveTransaction: {
+      findFirst: jest.fn(),
       create: jest.fn(),
     },
     $transaction: jest.fn(),
@@ -38,15 +38,10 @@ jest.mock('@/lib/rate-limit', () => ({
   checkRateLimit: jest.fn(),
 }));
 
-jest.mock('@/lib/timezone', () => ({
-  getTaiwanYearMonth: jest.fn(),
-}));
-
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockedGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
 const mockedValidateCSRF = validateCSRF as jest.MockedFunction<typeof validateCSRF>;
 const mockedCheckRateLimit = checkRateLimit as jest.MockedFunction<typeof checkRateLimit>;
-const mockedGetTaiwanYearMonth = getTaiwanYearMonth as jest.MockedFunction<typeof getTaiwanYearMonth>;
 
 const transactionClient = {
   overtimeRequest: {
@@ -57,6 +52,7 @@ const transactionClient = {
     update: jest.fn(),
   },
   compLeaveTransaction: {
+    findFirst: jest.fn(),
     create: jest.fn(),
   },
 };
@@ -79,7 +75,6 @@ describe('overtime cancellation authorization guards', () => {
         department: '製造部',
       },
     } as never);
-    mockedGetTaiwanYearMonth.mockReturnValue('2026-04' as never);
     mockPrisma.$transaction.mockImplementation(async (callback) => callback(transactionClient as never) as never);
   });
 
@@ -257,6 +252,11 @@ describe('overtime cancellation authorization guards', () => {
       },
     } as never);
     transactionClient.compLeaveBalance.findUnique.mockResolvedValue({ employeeId: 10 } as never);
+    transactionClient.compLeaveTransaction.findFirst.mockResolvedValue({
+      id: 21,
+      isFrozen: false,
+      yearMonth: '2026-04',
+    } as never);
     transactionClient.compLeaveBalance.update.mockResolvedValue({ employeeId: 10 } as never);
     transactionClient.compLeaveTransaction.create.mockResolvedValue({ id: 1 } as never);
     transactionClient.overtimeRequest.update.mockResolvedValue({ id: 5 } as never);
@@ -277,8 +277,23 @@ describe('overtime cancellation authorization guards', () => {
     expect(payload.success).toBe(true);
     expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
     expect(mockPrisma.overtimeRequest.update).not.toHaveBeenCalled();
-    expect(transactionClient.compLeaveBalance.update).toHaveBeenCalled();
-    expect(transactionClient.compLeaveTransaction.create).toHaveBeenCalled();
+    expect(transactionClient.compLeaveBalance.update).toHaveBeenCalledWith({
+      where: { employeeId: 10 },
+      data: {
+        pendingUse: { increment: 2 },
+      },
+    });
+    expect(transactionClient.compLeaveTransaction.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        employeeId: 10,
+        transactionType: 'USE',
+        hours: 2,
+        isFrozen: false,
+        referenceType: 'OVERTIME_CANCEL',
+        referenceId: 5,
+        yearMonth: '2026-04',
+      }),
+    });
     expect(transactionClient.overtimeRequest.update).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: 5 },

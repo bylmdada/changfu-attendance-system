@@ -1,10 +1,12 @@
 jest.mock('@/lib/database', () => ({
   prisma: {
     compLeaveTransaction: {
-      updateMany: jest.fn(),
       findMany: jest.fn(),
+      updateMany: jest.fn(),
     },
     compLeaveBalance: {
+      create: jest.fn(),
+      findUnique: jest.fn(),
       upsert: jest.fn(),
     },
     $transaction: jest.fn(),
@@ -28,7 +30,7 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { checkRateLimit } from '@/lib/rate-limit';
-import { POST } from '../route';
+import { GET, POST } from '../route';
 
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
@@ -54,6 +56,23 @@ describe('comp leave balance recomputation', () => {
     mockPrisma.compLeaveTransaction.updateMany.mockResolvedValue({ count: 0 } as never);
     mockPrisma.$transaction.mockImplementation(async (callback) => callback(transactionClient as never) as never);
     transactionClient.compLeaveTransaction.updateMany.mockResolvedValue({ count: 0 } as never);
+  });
+
+  it('rejects malformed admin employeeId query parameters before reading balances', async () => {
+    const request = new NextRequest('http://localhost/api/comp-leave/balance?employeeId=9abc', {
+      headers: {
+        cookie: 'auth-token=session-token',
+      },
+    });
+
+    const response = await GET(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload).toEqual({ error: 'employeeId 參數格式無效' });
+    expect(mockPrisma.compLeaveBalance.findUnique).not.toHaveBeenCalled();
+    expect(mockPrisma.compLeaveBalance.create).not.toHaveBeenCalled();
+    expect(mockPrisma.compLeaveTransaction.findMany).not.toHaveBeenCalled();
   });
 
   it('rejects POST when csrf validation fails before freezing transactions', async () => {

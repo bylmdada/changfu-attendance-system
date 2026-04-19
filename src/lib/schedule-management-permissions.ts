@@ -1,96 +1,55 @@
 import { prisma } from '@/lib/database';
+import {
+  type AttendancePermissionReader,
+  buildActiveDeputyAssignmentWhere,
+  getAttendancePermissionDepartments,
+  hasFullAttendanceAccess,
+  type UserScope,
+} from '@/lib/attendance-permission-scopes';
 
-type UserScope = {
-  role: string;
-  employeeId?: number;
+export { buildActiveDeputyAssignmentWhere };
+
+type ScheduleManagementReader = AttendancePermissionReader & {
+  employee: {
+    findUnique: (args: {
+      where: { id: number };
+      select: { department: true };
+    }) => Promise<{ department: string | null } | null>;
+  };
 };
 
 export function hasFullScheduleManagementAccess(user: UserScope): boolean {
-  return user.role === 'ADMIN' || user.role === 'HR';
+  return hasFullAttendanceAccess(user);
 }
 
-export function buildActiveDeputyAssignmentWhere(deputyEmployeeId: number, now = new Date()) {
-  return {
-    deputyEmployeeId,
-    isActive: true,
-    AND: [
-      {
-        OR: [
-          { startDate: null },
-          { startDate: { lte: now } }
-        ]
-      },
-      {
-        OR: [
-          { endDate: null },
-          { endDate: { gte: now } }
-        ]
-      }
-    ]
-  };
-}
-
-export async function getManageableDepartments(user: UserScope, now = new Date()): Promise<string[]> {
+export async function getManageableDepartments(
+  user: UserScope,
+  now = new Date(),
+  reader: AttendancePermissionReader = prisma
+): Promise<string[]> {
   if (hasFullScheduleManagementAccess(user)) {
     return [];
   }
 
-  if (!user.employeeId) {
-    return [];
-  }
-
-  const manageableDepartments: string[] = [];
-
-  const [managerRecords, deputyRecords, permRecord] = await Promise.all([
-    prisma.departmentManager.findMany({
-      where: { employeeId: user.employeeId, isActive: true },
-      select: { department: true }
-    }),
-    prisma.managerDeputy.findMany({
-      where: buildActiveDeputyAssignmentWhere(user.employeeId, now),
-      select: {
-        manager: {
-          select: {
-            department: true
-          }
-        }
-      }
-    }),
-    prisma.attendancePermission.findUnique({
-      where: { employeeId: user.employeeId }
-    })
-  ]);
-
-  manageableDepartments.push(
-    ...managerRecords.map((record) => record.department).filter(Boolean),
-    ...deputyRecords.map((record) => record.manager.department).filter(Boolean)
-  );
-
-  if (permRecord?.permissions) {
-    const permissions = permRecord.permissions as { scheduleManagement?: string[] };
-    if (Array.isArray(permissions.scheduleManagement)) {
-      manageableDepartments.push(...permissions.scheduleManagement.filter(Boolean));
-    }
-  }
-
-  return [...new Set(manageableDepartments)];
+  return getAttendancePermissionDepartments(user, 'scheduleManagement', now, reader);
 }
 
 export async function canManageScheduleEmployee(
   user: UserScope,
   targetEmployeeId: number,
-  now = new Date()
+  now = new Date(),
+  reader: ScheduleManagementReader = prisma
 ): Promise<boolean> {
   if (hasFullScheduleManagementAccess(user)) {
     return true;
   }
 
-  const manageableDepartments = await getManageableDepartments(user, now);
+  const manageableDepartments = await getManageableDepartments(user, now, reader);
   if (manageableDepartments.length === 0) {
     return false;
   }
 
-  const targetEmployee = await prisma.employee.findUnique({
+  const targetEmployee = await reader.employee.findUnique({
     where: { id: targetEmployeeId },
     select: { department: true }
   });

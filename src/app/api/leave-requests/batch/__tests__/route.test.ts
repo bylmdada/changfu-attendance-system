@@ -242,7 +242,7 @@ describe('leave request batch route', () => {
     mockPrisma.leaveRequest.findUnique.mockResolvedValue({
       id: 1,
       employeeId: 10,
-      leaveType: 'ANNUAL_LEAVE',
+      leaveType: 'ANNUAL',
       status: 'PENDING',
       startDate: new Date('2026-04-01T00:00:00.000Z'),
       endDate: new Date('2026-04-02T00:00:00.000Z'),

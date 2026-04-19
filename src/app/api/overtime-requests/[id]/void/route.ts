@@ -3,7 +3,6 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
-import { getTaiwanYearMonth } from '@/lib/timezone';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
 
@@ -27,26 +26,43 @@ async function reverseCompLeave(
     return false;
   }
 
-  await tx.compLeaveBalance.update({
-    where: { employeeId },
-    data: {
-      totalEarned: { decrement: hours },
-      balance: { decrement: hours }
-    }
+  const originalAccrual = await tx.compLeaveTransaction.findFirst({
+    where: {
+      employeeId,
+      referenceId: overtimeRequestId,
+      referenceType: 'OVERTIME',
+      transactionType: 'EARN',
+    },
+    orderBy: { createdAt: 'desc' },
   });
 
-  const yearMonth = getTaiwanYearMonth();
-  
+  if (!originalAccrual) {
+    console.log(`找不到加班申請 ${overtimeRequestId} 對應的補休獲得交易`);
+    return false;
+  }
+
+  await tx.compLeaveBalance.update({
+    where: { employeeId },
+    data: originalAccrual.isFrozen
+      ? {
+          totalUsed: { increment: hours },
+          balance: { decrement: hours }
+        }
+      : {
+          pendingUse: { increment: hours }
+        }
+  });
+
   await tx.compLeaveTransaction.create({
     data: {
       employeeId,
-      transactionType: 'ADJUST',
-      hours: -hours,
-      isFrozen: true,
+      transactionType: 'USE',
+      hours,
+      isFrozen: originalAccrual.isFrozen,
       referenceType: 'OVERTIME_VOID',
       referenceId: overtimeRequestId,
       description: `加班作廢回沖 (加班申請 #${overtimeRequestId})`,
-      yearMonth
+      yearMonth: originalAccrual.yearMonth
     }
   });
 

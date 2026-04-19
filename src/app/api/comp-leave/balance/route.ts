@@ -3,50 +3,12 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { checkRateLimit } from '@/lib/rate-limit';
+import { planCompLeaveImportRepair } from '@/lib/comp-leave-import-repair';
+import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-type CompLeaveTransactionRecord = {
-  id: number;
-  transactionType: string;
-  hours: number;
-  isFrozen: boolean;
-  referenceType: string | null;
-  createdAt: Date;
-};
-
-function isAfterBaseline(
-  transaction: CompLeaveTransactionRecord,
-  baseline: CompLeaveTransactionRecord | null
-) {
-  if (!baseline) {
-    return true;
-  }
-
-  const transactionTime = transaction.createdAt.getTime();
-  const baselineTime = baseline.createdAt.getTime();
-
-  if (transactionTime !== baselineTime) {
-    return transactionTime > baselineTime;
-  }
-
-  return transaction.id > baseline.id;
-}
-
-function getLatestImportBaseline(transactions: CompLeaveTransactionRecord[]) {
-  return transactions
-    .filter(transaction => transaction.transactionType === 'EARN' && transaction.referenceType === 'IMPORT')
-    .sort((left, right) => {
-      const timeDiff = right.createdAt.getTime() - left.createdAt.getTime();
-      if (timeDiff !== 0) {
-        return timeDiff;
-      }
-
-      return right.id - left.id;
-    })[0] ?? null;
 }
 
 // GET - 取得員工補休餘額
@@ -68,7 +30,11 @@ export async function GET(request: NextRequest) {
     
     // 管理員可以查看其他員工
     if (['ADMIN', 'HR'].includes(user.role) && searchParams.get('employeeId')) {
-      targetEmployeeId = parseInt(searchParams.get('employeeId')!);
+      const employeeIdResult = parseIntegerQueryParam(searchParams.get('employeeId'), { min: 1, max: 99999999 });
+      if (!employeeIdResult.isValid || employeeIdResult.value === null) {
+        return NextResponse.json({ error: 'employeeId 參數格式無效' }, { status: 400 });
+      }
+      targetEmployeeId = employeeIdResult.value;
     }
 
     // 取得或建立餘額記錄
@@ -180,61 +146,32 @@ export async function POST(request: NextRequest) {
         where: { employeeId }
       });
 
-      const allTransactions = transactions as CompLeaveTransactionRecord[];
-      const frozenTransactions = allTransactions.filter(transaction => transaction.isFrozen);
-      const pendingTransactions = allTransactions.filter(transaction => !transaction.isFrozen);
-      const latestImportBaseline = getLatestImportBaseline(frozenTransactions);
-
-      const effectiveFrozenTransactions = latestImportBaseline
-        ? frozenTransactions.filter(transaction => {
-            if (transaction.id === latestImportBaseline.id) {
-              return true;
-            }
-
-            if (transaction.referenceType === 'IMPORT') {
-              return false;
-            }
-
-            return isAfterBaseline(transaction, latestImportBaseline);
-          })
-        : frozenTransactions;
-
-      const effectivePendingTransactions = latestImportBaseline
-        ? pendingTransactions.filter(transaction => isAfterBaseline(transaction, latestImportBaseline))
-        : pendingTransactions;
-
-      const totalEarned = effectiveFrozenTransactions
-        .filter(t => t.transactionType === 'EARN')
-        .reduce((sum, t) => sum + t.hours, 0);
-
-      const totalUsed = effectiveFrozenTransactions
-        .filter(t => t.transactionType === 'USE')
-        .reduce((sum, t) => sum + t.hours, 0);
-
-      const pendingEarn = effectivePendingTransactions
-        .filter(t => t.transactionType === 'EARN')
-        .reduce((sum, t) => sum + t.hours, 0);
-
-      const pendingUse = effectivePendingTransactions
-        .filter(t => t.transactionType === 'USE')
-        .reduce((sum, t) => sum + t.hours, 0);
+      const recomputedBalance = transactions.length > 0
+        ? planCompLeaveImportRepair(transactions).recomputedBalance
+        : {
+            totalEarned: 0,
+            totalUsed: 0,
+            balance: 0,
+            pendingEarn: 0,
+            pendingUse: 0,
+          };
 
       return tx.compLeaveBalance.upsert({
         where: { employeeId },
         update: {
-          totalEarned,
-          totalUsed,
-          balance: totalEarned - totalUsed,
-          pendingEarn,
-          pendingUse
+          totalEarned: recomputedBalance.totalEarned,
+          totalUsed: recomputedBalance.totalUsed,
+          balance: recomputedBalance.balance,
+          pendingEarn: recomputedBalance.pendingEarn,
+          pendingUse: recomputedBalance.pendingUse
         },
         create: {
           employeeId,
-          totalEarned,
-          totalUsed,
-          balance: totalEarned - totalUsed,
-          pendingEarn,
-          pendingUse
+          totalEarned: recomputedBalance.totalEarned,
+          totalUsed: recomputedBalance.totalUsed,
+          balance: recomputedBalance.balance,
+          pendingEarn: recomputedBalance.pendingEarn,
+          pendingUse: recomputedBalance.pendingUse
         }
       });
     });

@@ -4,93 +4,17 @@ import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { safeParseJSON } from '@/lib/validation';
-import { safeParseSystemSettingsValue } from '@/lib/system-settings-json';
-
-interface PasswordPolicy {
-  minLength: number;
-  requireUppercase: boolean;
-  requireLowercase: boolean;
-  requireNumbers: boolean;
-  requireSpecialChars: boolean;
-  allowedSpecialChars?: string;
-  expirationMonths: number;
-  preventPasswordReuse: boolean;
-  passwordHistoryCount: number;
-  preventSequentialChars: boolean;
-  preventBirthdate: boolean;
-  preventCommonPasswords: boolean;
-  customBlockedPasswords: string[];
-  enableStrengthMeter: boolean;
-  minimumStrengthScore: number;
-  allowAdminExceptions: boolean;
-  requireExceptionReason: boolean;
-  enablePasswordHints: boolean;
-  lockoutAfterFailedAttempts: boolean;
-  maxFailedAttempts: number;
-  lockoutDurationMinutes: number;
-  enableTwoFactorAuth: boolean;
-  notifyPasswordExpiration: boolean;
-  notificationDaysBefore: number;
-}
-
-const SETTINGS_KEY = 'password_policy';
-
-const DEFAULT_POLICY: PasswordPolicy = {
-  minLength: 6,
-  requireUppercase: false,
-  requireLowercase: false,
-  requireNumbers: false,
-  requireSpecialChars: false,
-  allowedSpecialChars: '!@#$%^&*()_+-=[]{}|;:,.<>?',
-  expirationMonths: 0,
-  preventPasswordReuse: false,
-  passwordHistoryCount: 5,
-  preventSequentialChars: true,
-  preventBirthdate: true,
-  preventCommonPasswords: true,
-  customBlockedPasswords: [],
-  enableStrengthMeter: true,
-  minimumStrengthScore: 2,
-  allowAdminExceptions: true,
-  requireExceptionReason: true,
-  enablePasswordHints: false,
-  lockoutAfterFailedAttempts: true,
-  maxFailedAttempts: 5,
-  lockoutDurationMinutes: 30,
-  enableTwoFactorAuth: false,
-  notifyPasswordExpiration: true,
-  notificationDaysBefore: 7
-};
-
-function getDefaultPolicy(): PasswordPolicy {
-  return {
-    ...DEFAULT_POLICY,
-    customBlockedPasswords: [...DEFAULT_POLICY.customBlockedPasswords],
-  };
-}
+import {
+  type PasswordPolicy,
+  normalizePasswordPolicy,
+} from '@/lib/password-policy';
+import {
+  getStoredPasswordPolicy,
+  PASSWORD_POLICY_SETTINGS_KEY,
+} from '@/lib/password-policy-store';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function toInteger(value: unknown, fallback: number) {
-  return typeof value === 'number' && Number.isInteger(value) ? value : fallback;
-}
-
-function toBoolean(value: unknown, fallback: boolean) {
-  return typeof value === 'boolean' ? value : fallback;
-}
-
-function toStringValue(value: unknown, fallback: string | undefined) {
-  return typeof value === 'string' ? value : fallback;
-}
-
-function toStringArray(value: unknown, fallback: string[]) {
-  if (!Array.isArray(value) || !value.every(item => typeof item === 'string')) {
-    return fallback;
-  }
-
-  return value.map(item => item.trim()).filter(item => item.length > 0);
 }
 
 function validatePolicyPatch(policy: unknown) {
@@ -163,51 +87,6 @@ function validatePolicyPatch(policy: unknown) {
   return { success: true as const, value: patch };
 }
 
-function normalizePolicy(input: Partial<PasswordPolicy>): PasswordPolicy {
-  const defaults = getDefaultPolicy();
-
-  return {
-    minLength: toInteger(input.minLength, defaults.minLength),
-    requireUppercase: toBoolean(input.requireUppercase, defaults.requireUppercase),
-    requireLowercase: toBoolean(input.requireLowercase, defaults.requireLowercase),
-    requireNumbers: toBoolean(input.requireNumbers, defaults.requireNumbers),
-    requireSpecialChars: toBoolean(input.requireSpecialChars, defaults.requireSpecialChars),
-    allowedSpecialChars: toStringValue(input.allowedSpecialChars, defaults.allowedSpecialChars),
-    expirationMonths: toInteger(input.expirationMonths, defaults.expirationMonths),
-    preventPasswordReuse: toBoolean(input.preventPasswordReuse, defaults.preventPasswordReuse),
-    passwordHistoryCount: toInteger(input.passwordHistoryCount, defaults.passwordHistoryCount),
-    preventSequentialChars: toBoolean(input.preventSequentialChars, defaults.preventSequentialChars),
-    preventBirthdate: toBoolean(input.preventBirthdate, defaults.preventBirthdate),
-    preventCommonPasswords: toBoolean(input.preventCommonPasswords, defaults.preventCommonPasswords),
-    customBlockedPasswords: toStringArray(input.customBlockedPasswords, defaults.customBlockedPasswords),
-    enableStrengthMeter: toBoolean(input.enableStrengthMeter, defaults.enableStrengthMeter),
-    minimumStrengthScore: toInteger(input.minimumStrengthScore, defaults.minimumStrengthScore),
-    allowAdminExceptions: toBoolean(input.allowAdminExceptions, defaults.allowAdminExceptions),
-    requireExceptionReason: toBoolean(input.requireExceptionReason, defaults.requireExceptionReason),
-    enablePasswordHints: toBoolean(input.enablePasswordHints, defaults.enablePasswordHints),
-    lockoutAfterFailedAttempts: toBoolean(input.lockoutAfterFailedAttempts, defaults.lockoutAfterFailedAttempts),
-    maxFailedAttempts: toInteger(input.maxFailedAttempts, defaults.maxFailedAttempts),
-    lockoutDurationMinutes: toInteger(input.lockoutDurationMinutes, defaults.lockoutDurationMinutes),
-    enableTwoFactorAuth: toBoolean(input.enableTwoFactorAuth, defaults.enableTwoFactorAuth),
-    notifyPasswordExpiration: toBoolean(input.notifyPasswordExpiration, defaults.notifyPasswordExpiration),
-    notificationDaysBefore: toInteger(input.notificationDaysBefore, defaults.notificationDaysBefore),
-  };
-}
-
-async function getStoredPolicy(): Promise<PasswordPolicy> {
-  const setting = await prisma.systemSettings.findUnique({
-    where: { key: SETTINGS_KEY }
-  });
-
-  if (!setting?.value) {
-    return getDefaultPolicy();
-  }
-
-  return normalizePolicy(
-    safeParseSystemSettingsValue<Partial<PasswordPolicy>>(setting.value, {}, SETTINGS_KEY)
-  );
-}
-
 // GET - 獲取密碼政策
 export async function GET(request: NextRequest) {
   try {
@@ -216,7 +95,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
 
-    const policy = await getStoredPolicy();
+    const policy = await getStoredPasswordPolicy();
 
     return NextResponse.json({ policy });
   } catch (error) {
@@ -293,8 +172,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: policyPatchResult.error }, { status: 400 });
     }
 
-    const existingPolicy = await getStoredPolicy();
-    const normalizedPolicy = normalizePolicy({
+    const existingPolicy = await getStoredPasswordPolicy();
+    const normalizedPolicy = normalizePasswordPolicy({
       ...existingPolicy,
       ...policyPatchResult.value,
     });
@@ -312,8 +191,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '密碼歷史記錄數量必須為非負整數' }, { status: 400 });
     }
 
-    if (normalizedPolicy.minimumStrengthScore < 0 || normalizedPolicy.minimumStrengthScore > 4) {
-      return NextResponse.json({ error: '密碼強度分數必須在0-4之間' }, { status: 400 });
+    if (normalizedPolicy.requireSpecialChars && !normalizedPolicy.allowedSpecialChars?.trim()) {
+      return NextResponse.json({ error: '啟用特殊字元要求時，必須提供可用的特殊字元清單' }, { status: 400 });
+    }
+
+    if (normalizedPolicy.minimumStrengthScore < 1 || normalizedPolicy.minimumStrengthScore > 5) {
+      return NextResponse.json({ error: '密碼強度分數必須在1-5之間' }, { status: 400 });
     }
 
     if (normalizedPolicy.maxFailedAttempts < 1) {
@@ -330,13 +213,13 @@ export async function POST(request: NextRequest) {
 
     // 更新或創建設定
     await prisma.systemSettings.upsert({
-      where: { key: SETTINGS_KEY },
+      where: { key: PASSWORD_POLICY_SETTINGS_KEY },
       update: {
         value: JSON.stringify(normalizedPolicy),
         updatedAt: new Date()
       },
       create: {
-        key: SETTINGS_KEY,
+        key: PASSWORD_POLICY_SETTINGS_KEY,
         value: JSON.stringify(normalizedPolicy),
         description: '密碼安全政策設定'
       }

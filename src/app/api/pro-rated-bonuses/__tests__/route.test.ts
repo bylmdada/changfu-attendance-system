@@ -9,13 +9,19 @@ jest.mock('@/lib/database', () => ({
       update: jest.fn(),
     },
     bonusRecord: {
+      findMany: jest.fn(),
       create: jest.fn(),
     },
+    $transaction: jest.fn(),
   },
 }));
 
 jest.mock('@/lib/auth', () => ({
   getUserFromRequest: jest.fn(),
+}));
+
+jest.mock('@/lib/rate-limit', () => ({
+  checkRateLimit: jest.fn(),
 }));
 
 jest.mock('@/lib/csrf', () => ({
@@ -38,6 +44,7 @@ jest.mock('@/lib/tax-calculator', () => ({
 import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
+import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import {
   calculateFestivalBonus,
@@ -54,6 +61,7 @@ import { GET, POST } from '../route';
 
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
+const mockCheckRateLimit = checkRateLimit as jest.MockedFunction<typeof checkRateLimit>;
 const mockValidateCSRF = validateCSRF as jest.MockedFunction<typeof validateCSRF>;
 const mockCalculateFestivalBonus = calculateFestivalBonus as jest.MockedFunction<typeof calculateFestivalBonus>;
 const mockCalculateYearEndBonus = calculateYearEndBonus as jest.MockedFunction<typeof calculateYearEndBonus>;
@@ -74,6 +82,7 @@ describe('pro-rated bonuses route guards', () => {
       role: 'ADMIN',
     } as never);
 
+    mockCheckRateLimit.mockResolvedValue({ allowed: true } as never);
     mockValidateCSRF.mockResolvedValue({ valid: true } as never);
     mockPrisma.employee.findMany.mockResolvedValue([] as never);
     mockPrisma.employee.findUnique.mockResolvedValue(null as never);
@@ -85,7 +94,11 @@ describe('pro-rated bonuses route guards', () => {
       supplementaryPremium: 0,
     } as never);
     mockPrisma.employeeAnnualBonus.update.mockResolvedValue({} as never);
+    mockPrisma.bonusRecord.findMany.mockResolvedValue([] as never);
     mockPrisma.bonusRecord.create.mockResolvedValue({ id: 901 } as never);
+    mockPrisma.$transaction.mockImplementation(async (callback: (tx: typeof prisma) => unknown) => {
+      return callback(mockPrisma as never) as never;
+    });
 
     mockCalculateYearEndBonus.mockResolvedValue({
       bonusType: 'YEAR_END',

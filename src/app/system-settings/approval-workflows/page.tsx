@@ -412,7 +412,13 @@ export default function ApprovalWorkflowsPage() {
 
   const updateWorkflow = (id: number, field: string, value: unknown) => {
     setWorkflows(prev => prev.map(wf => 
-      wf.id === id ? { ...wf, [field]: value } : wf
+      wf.id === id
+        ? {
+            ...wf,
+            [field]: value,
+            ...(field === 'requireManager' && value === false ? { approvalLevel: 1 } : {})
+          }
+        : wf
     ));
   };
 
@@ -538,6 +544,7 @@ export default function ApprovalWorkflowsPage() {
                           <select
                             value={wf.approvalLevel}
                             onChange={(e) => updateWorkflow(wf.id, 'approvalLevel', parseInt(e.target.value))}
+                            disabled={!wf.requireManager}
                             className="border rounded px-2 py-1 text-sm text-gray-900"
                           >
                             <option value={1}>一階</option>

@@ -11,6 +11,34 @@ import { validateCSRF } from '@/lib/csrf';
 import { createApprovalForRequest } from '@/lib/approval-helper';
 import { safeParseJSON } from '@/lib/validation';
 
+const DEPENDENT_ID_NUMBER_REGEX = /^[A-Z][0-9]{9}$/;
+const ALLOWED_UPDATE_FIELDS = new Set(['dependentName', 'relationship', 'idNumber', 'birthDate']);
+
+function getTrimmedString(value: unknown) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function parsePositiveInteger(value: unknown) {
+  if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
+    return value;
+  }
+
+  if (typeof value === 'string' && /^[1-9]\d*$/.test(value)) {
+    return Number(value);
+  }
+
+  return null;
+}
+
+function parseDateInput(value: unknown) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return null;
+  }
+
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 export async function GET(request: NextRequest) {
   try {
     const user = await getUserFromRequest(request);
@@ -96,21 +124,17 @@ export async function POST(request: NextRequest) {
     }
 
     const applicationType = typeof parsedBody.data?.applicationType === 'string' ? parsedBody.data.applicationType : null;
-    const dependentIdRaw = parsedBody.data?.dependentId;
-    const dependentId = typeof dependentIdRaw === 'number'
-      ? dependentIdRaw
-      : typeof dependentIdRaw === 'string' && /^-?\d+$/.test(dependentIdRaw)
-        ? Number(dependentIdRaw)
-        : null;
-    const dependentName = typeof parsedBody.data?.dependentName === 'string' ? parsedBody.data.dependentName : null;
-    const relationship = typeof parsedBody.data?.relationship === 'string' ? parsedBody.data.relationship : '';
-    const idNumber = typeof parsedBody.data?.idNumber === 'string' ? parsedBody.data.idNumber : '';
-    const birthDate = typeof parsedBody.data?.birthDate === 'string' ? parsedBody.data.birthDate : null;
-    const effectiveDate = typeof parsedBody.data?.effectiveDate === 'string' ? parsedBody.data.effectiveDate : null;
-    const changeField = typeof parsedBody.data?.changeField === 'string' ? parsedBody.data.changeField : null;
-    const oldValue = typeof parsedBody.data?.oldValue === 'string' ? parsedBody.data.oldValue : null;
-    const newValue = typeof parsedBody.data?.newValue === 'string' ? parsedBody.data.newValue : null;
-    const remarks = typeof parsedBody.data?.remarks === 'string' ? parsedBody.data.remarks : null;
+    const dependentId = parsePositiveInteger(parsedBody.data?.dependentId);
+    const dependentName = getTrimmedString(parsedBody.data?.dependentName);
+    const relationship = getTrimmedString(parsedBody.data?.relationship);
+    const idNumber = getTrimmedString(parsedBody.data?.idNumber).toUpperCase();
+    const birthDate = parsedBody.data?.birthDate;
+    const effectiveDate = parsedBody.data?.effectiveDate;
+    const changeField = getTrimmedString(parsedBody.data?.changeField);
+    const newValue = getTrimmedString(parsedBody.data?.newValue);
+    const remarks = typeof parsedBody.data?.remarks === 'string'
+      ? parsedBody.data.remarks.trim() || null
+      : null;
 
     // 取得員工資料
     const userRecord = await prisma.user.findUnique({
@@ -122,14 +146,176 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '找不到員工資料' }, { status: 404 });
     }
 
-    // 驗證必填欄位
-    if (!applicationType || !dependentName || !effectiveDate) {
-      return NextResponse.json({ error: '缺少必要欄位' }, { status: 400 });
+    // 驗證申請類型
+    if (!applicationType || !['ADD', 'REMOVE', 'UPDATE'].includes(applicationType)) {
+      return NextResponse.json({ error: '無效的申請類型' }, { status: 400 });
     }
 
-    // 驗證申請類型
-    if (!['ADD', 'REMOVE', 'UPDATE'].includes(applicationType)) {
-      return NextResponse.json({ error: '無效的申請類型' }, { status: 400 });
+    const parsedEffectiveDate = parseDateInput(effectiveDate);
+    if (!parsedEffectiveDate) {
+      return NextResponse.json({ error: '生效日期格式無效' }, { status: 400 });
+    }
+
+    let applicationData: {
+      dependentId: number | null;
+      dependentName: string;
+      relationship: string;
+      idNumber: string;
+      birthDate: Date;
+      changeField: string | null;
+      oldValue: string | null;
+      newValue: string | null;
+    } | null = null;
+
+    if (applicationType === 'ADD') {
+      const parsedBirthDate = parseDateInput(birthDate);
+      if (!dependentName || !relationship || !idNumber || !parsedBirthDate) {
+        return NextResponse.json({ error: '缺少必要欄位' }, { status: 400 });
+      }
+
+      if (!DEPENDENT_ID_NUMBER_REGEX.test(idNumber)) {
+        return NextResponse.json({ error: '身分證號格式無效' }, { status: 400 });
+      }
+
+      const [existingDependent, existingPendingApplication] = await Promise.all([
+        prisma.healthInsuranceDependent.findFirst({
+          where: {
+            employeeId: userRecord.employee.id,
+            idNumber,
+            isActive: true
+          }
+        }),
+        prisma.dependentApplication.findFirst({
+          where: {
+            employeeId: userRecord.employee.id,
+            applicationType: 'ADD',
+            idNumber,
+            status: 'PENDING'
+          }
+        })
+      ]);
+
+      if (existingDependent) {
+        return NextResponse.json({ error: '此眷屬已在投保名單中' }, { status: 409 });
+      }
+
+      if (existingPendingApplication) {
+        return NextResponse.json({ error: '此眷屬已有待審核的加保申請' }, { status: 409 });
+      }
+
+      applicationData = {
+        dependentId: null,
+        dependentName,
+        relationship,
+        idNumber,
+        birthDate: parsedBirthDate,
+        changeField: null,
+        oldValue: null,
+        newValue: null
+      };
+    } else if (applicationType === 'REMOVE') {
+      if (!dependentId) {
+        return NextResponse.json({ error: '缺少眷屬資料' }, { status: 400 });
+      }
+
+      const [existingDependent, existingPendingApplication] = await Promise.all([
+        prisma.healthInsuranceDependent.findFirst({
+          where: {
+            id: dependentId,
+            employeeId: userRecord.employee.id,
+            isActive: true
+          }
+        }),
+        prisma.dependentApplication.findFirst({
+          where: {
+            employeeId: userRecord.employee.id,
+            dependentId,
+            applicationType: 'REMOVE',
+            status: 'PENDING'
+          }
+        })
+      ]);
+
+      if (!existingDependent) {
+        return NextResponse.json({ error: '找不到可退保的眷屬資料' }, { status: 404 });
+      }
+
+      if (existingPendingApplication) {
+        return NextResponse.json({ error: '此眷屬已有待審核的退保申請' }, { status: 409 });
+      }
+
+      applicationData = {
+        dependentId: existingDependent.id,
+        dependentName: existingDependent.dependentName,
+        relationship: existingDependent.relationship,
+        idNumber: existingDependent.idNumber,
+        birthDate: existingDependent.birthDate,
+        changeField: null,
+        oldValue: null,
+        newValue: null
+      };
+    } else {
+      if (!dependentId || !changeField || !newValue) {
+        return NextResponse.json({ error: '缺少必要欄位' }, { status: 400 });
+      }
+
+      if (!ALLOWED_UPDATE_FIELDS.has(changeField)) {
+        return NextResponse.json({ error: '無效的變更欄位' }, { status: 400 });
+      }
+
+      const [existingDependent, existingPendingApplication] = await Promise.all([
+        prisma.healthInsuranceDependent.findFirst({
+          where: {
+            id: dependentId,
+            employeeId: userRecord.employee.id
+          }
+        }),
+        prisma.dependentApplication.findFirst({
+          where: {
+            employeeId: userRecord.employee.id,
+            dependentId,
+            applicationType: 'UPDATE',
+            status: 'PENDING'
+          }
+        })
+      ]);
+
+      if (!existingDependent) {
+        return NextResponse.json({ error: '找不到可變更的眷屬資料' }, { status: 404 });
+      }
+
+      if (existingPendingApplication) {
+        return NextResponse.json({ error: '此眷屬已有待審核的變更申請' }, { status: 409 });
+      }
+
+      let normalizedNewValue = newValue;
+      if (changeField === 'idNumber') {
+        normalizedNewValue = newValue.toUpperCase();
+        if (!DEPENDENT_ID_NUMBER_REGEX.test(normalizedNewValue)) {
+          return NextResponse.json({ error: '身分證號格式無效' }, { status: 400 });
+        }
+      }
+
+      if (changeField === 'birthDate' && !parseDateInput(newValue)) {
+        return NextResponse.json({ error: '生日格式無效' }, { status: 400 });
+      }
+
+      const oldValue = changeField === 'birthDate'
+        ? existingDependent.birthDate.toISOString().split('T')[0]
+        : changeField === 'idNumber'
+          ? existingDependent.idNumber
+          : existingDependent[changeField as 'dependentName' | 'relationship'];
+
+      applicationData = {
+        dependentId: existingDependent.id,
+        dependentName: existingDependent.dependentName,
+        relationship: existingDependent.relationship,
+        idNumber: existingDependent.idNumber,
+        birthDate: existingDependent.birthDate,
+        changeField,
+        oldValue,
+        newValue: normalizedNewValue
+      };
     }
 
     // 建立申請
@@ -138,15 +324,15 @@ export async function POST(request: NextRequest) {
         employeeId: userRecord.employee.id,
         employeeName: userRecord.employee.name,
         applicationType,
-        dependentId,
-        dependentName,
-        relationship,
-        idNumber,
-        birthDate: birthDate ? new Date(birthDate) : new Date(),
-        effectiveDate: new Date(effectiveDate),
-        changeField,
-        oldValue,
-        newValue,
+        dependentId: applicationData.dependentId,
+        dependentName: applicationData.dependentName,
+        relationship: applicationData.relationship,
+        idNumber: applicationData.idNumber,
+        birthDate: applicationData.birthDate,
+        effectiveDate: parsedEffectiveDate,
+        changeField: applicationData.changeField,
+        oldValue: applicationData.oldValue,
+        newValue: applicationData.newValue,
         remarks
       }
     });
@@ -164,6 +350,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
+      id: application.id,
       message: `${typeLabel}申請已提交，等待審核`,
       application
     });

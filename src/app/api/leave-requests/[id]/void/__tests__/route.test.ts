@@ -116,7 +116,7 @@ describe('leave request void guards', () => {
       id: 8,
       employeeId: 10,
       status: 'APPROVED',
-      leaveType: 'ANNUAL_LEAVE',
+      leaveType: 'ANNUAL',
       startDate: new Date('2026-05-01T00:00:00.000Z'),
       endDate: new Date('2026-05-03T00:00:00.000Z'),
     } as never);

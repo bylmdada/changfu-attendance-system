@@ -64,6 +64,107 @@ function normalizeEmployeeIds(value: unknown): number[] | null {
   return normalizedIds;
 }
 
+interface OriginalScheduleSnapshot {
+  employeeId: number;
+  existed: boolean;
+  shiftType: string | null;
+  startTime: string | null;
+  endTime: string | null;
+}
+
+function parseDateOnly(value: unknown): Date | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const normalizedValue = value.trim();
+  const match = normalizedValue.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) {
+    return null;
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const parsedDate = new Date(Date.UTC(year, month - 1, day));
+
+  if (
+    Number.isNaN(parsedDate.getTime()) ||
+    parsedDate.getUTCFullYear() !== year ||
+    parsedDate.getUTCMonth() !== month - 1 ||
+    parsedDate.getUTCDate() !== day
+  ) {
+    return null;
+  }
+
+  return parsedDate;
+}
+
+function toDateKey(date: Date) {
+  return date.toISOString().split('T')[0];
+}
+
+function buildDateRange(startDate: Date, days: number) {
+  return Array.from({ length: days }, (_, index) => {
+    const currentDate = new Date(startDate);
+    currentDate.setUTCDate(currentDate.getUTCDate() + index);
+    return toDateKey(currentDate);
+  });
+}
+
+function getStopWorkScheduleTimes(stopWorkType: string) {
+  return {
+    startTime: stopWorkType === 'FULL' ? '00:00' : (stopWorkType === 'AM' ? '00:00' : '12:00'),
+    endTime: stopWorkType === 'FULL' ? '23:59' : (stopWorkType === 'AM' ? '12:00' : '23:59')
+  };
+}
+
+function parseOriginalSchedules(value: string | null): OriginalScheduleSnapshot[] | null {
+  if (!value) {
+    return [];
+  }
+
+  try {
+    const parsedValue = JSON.parse(value);
+    if (!Array.isArray(parsedValue)) {
+      return null;
+    }
+
+    const snapshots: OriginalScheduleSnapshot[] = [];
+    for (const item of parsedValue) {
+      if (!isPlainObject(item)) {
+        return null;
+      }
+
+      const employeeId = typeof item.employeeId === 'number' ? item.employeeId : Number.NaN;
+      const existed = typeof item.existed === 'boolean' ? item.existed : false;
+      const shiftType = typeof item.shiftType === 'string' ? item.shiftType : null;
+      const startTime = typeof item.startTime === 'string' ? item.startTime : null;
+      const endTime = typeof item.endTime === 'string' ? item.endTime : null;
+
+      if (!Number.isSafeInteger(employeeId) || employeeId <= 0) {
+        return null;
+      }
+
+      if (existed && (!shiftType || !startTime || !endTime)) {
+        return null;
+      }
+
+      snapshots.push({
+        employeeId,
+        existed,
+        shiftType,
+        startTime,
+        endTime
+      });
+    }
+
+    return snapshots;
+  } catch {
+    return null;
+  }
+}
+
 // GET - 取得天災假記錄列表
 export async function GET(request: NextRequest) {
   try {
@@ -180,7 +281,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '請提供有效的天災假資料' }, { status: 400 });
     }
 
-    const disasterDate = typeof data.disasterDate === 'string' ? data.disasterDate : '';
+    const disasterDate = typeof data.disasterDate === 'string' ? data.disasterDate.trim() : '';
     const numberOfDays = data.numberOfDays;
     const disasterType = typeof data.disasterType === 'string' ? data.disasterType : '';
     const stopWorkType = typeof data.stopWorkType === 'string' ? data.stopWorkType : '';
@@ -214,8 +315,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '請填寫完整資訊' }, { status: 400 });
     }
 
-    // 驗證日期格式
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(disasterDate)) {
+    const parsedStartDate = parseDateOnly(disasterDate);
+    if (!parsedStartDate) {
       return NextResponse.json({ error: '日期格式不正確' }, { status: 400 });
     }
 
@@ -237,28 +338,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '無效的停班類型' }, { status: 400 });
     }
 
-    // 產生日期範圍
-    const dates: string[] = [];
-    const startDate = new Date(disasterDate);
-    for (let i = 0; i < days; i++) {
-      const d = new Date(startDate);
-      d.setDate(d.getDate() + i);
-      dates.push(d.toISOString().split('T')[0]);
-    }
+    const dates = buildDateRange(parsedStartDate, days);
 
-    // 檢查是否已存在
-    const existingDates: string[] = [];
-    for (const date of dates) {
-      const existing = await prisma.disasterDayOff.findFirst({
-        where: {
-          disasterDate: date,
-          affectedScope
-        }
-      });
-      if (existing) {
-        existingDates.push(date);
+    const existingRecords = await prisma.disasterDayOff.findMany({
+      where: {
+        disasterDate: { in: dates }
+      },
+      select: {
+        disasterDate: true
       }
-    }
+    });
+
+    const existingDates = existingRecords.map((record) => record.disasterDate);
 
     if (existingDates.length > 0) {
       return NextResponse.json({ 
@@ -296,95 +387,107 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '未選擇任何受影響的員工' }, { status: 400 });
     }
 
-    // 建立多天的天災假記錄
-    const createdRecords = [];
-    let totalUpdated = 0;
-    let totalCreated = 0;
+    const { records: createdRecords, totalCreated, totalUpdated } = await prisma.$transaction(async (tx) => {
+      const records = [];
+      let createdCount = 0;
+      let updatedCount = 0;
+      const disasterShiftTimes = getStopWorkScheduleTimes(stopWorkType);
 
-    for (const date of dates) {
-      // 先收集原始班表資訊
-      const originalSchedulesData: { employeeId: number; shiftType: string; startTime: string; endTime: string }[] = [];
-      
-      for (const emp of affectedEmployees) {
-        const existingSchedule = await prisma.schedule.findUnique({
-          where: {
-            employeeId_workDate: {
-              employeeId: emp.id,
-              workDate: date
+      for (const date of dates) {
+        const originalSchedulesData: (OriginalScheduleSnapshot & { scheduleId?: number })[] = [];
+
+        for (const emp of affectedEmployees) {
+          const existingSchedule = await tx.schedule.findUnique({
+            where: {
+              employeeId_workDate: {
+                employeeId: emp.id,
+                workDate: date
+              }
             }
+          });
+
+          if (existingSchedule) {
+            originalSchedulesData.push({
+              employeeId: emp.id,
+              existed: true,
+              shiftType: existingSchedule.shiftType,
+              startTime: existingSchedule.startTime,
+              endTime: existingSchedule.endTime,
+              scheduleId: existingSchedule.id
+            });
+            continue;
           }
-        });
-        
-        if (existingSchedule) {
+
           originalSchedulesData.push({
             employeeId: emp.id,
-            shiftType: existingSchedule.shiftType,
-            startTime: existingSchedule.startTime,
-            endTime: existingSchedule.endTime
+            existed: false,
+            shiftType: null,
+            startTime: null,
+            endTime: null
           });
         }
-      }
 
-      const record = await prisma.disasterDayOff.create({
-        data: {
-          disasterDate: date,
-          disasterType,
-          stopWorkType,
-          affectedScope,
-          affectedDepartments: affectedScope === 'DEPARTMENTS' ? JSON.stringify(normalizedAffectedDepartments) : null,
-          affectedEmployeeIds: affectedScope === 'EMPLOYEES' ? JSON.stringify(normalizedAffectedEmployeeIds) : null,
-          description: description ? `${description}${days > 1 ? ` (${date})` : ''}` : undefined,
-          affectedCount: affectedEmployees.length,
-          originalSchedules: JSON.stringify(originalSchedulesData),
-          createdBy: user.employeeId
-        },
-        include: {
-          creator: {
-            select: {
-              id: true,
-              name: true,
-              department: true
-            }
-          }
-        }
-      });
-      createdRecords.push(record);
-
-      // 批量更新員工班表為 TD
-      for (const emp of affectedEmployees) {
-        const existingSchedule = await prisma.schedule.findUnique({
-          where: {
-            employeeId_workDate: {
-              employeeId: emp.id,
-              workDate: date
+        const record = await tx.disasterDayOff.create({
+          data: {
+            disasterDate: date,
+            disasterType,
+            stopWorkType,
+            affectedScope,
+            affectedDepartments: affectedScope === 'DEPARTMENTS' ? JSON.stringify(normalizedAffectedDepartments) : null,
+            affectedEmployeeIds: affectedScope === 'EMPLOYEES' ? JSON.stringify(normalizedAffectedEmployeeIds) : null,
+            description: description ? `${description}${days > 1 ? ` (${date})` : ''}` : undefined,
+            affectedCount: affectedEmployees.length,
+            originalSchedules: JSON.stringify(originalSchedulesData.map((snapshot) => ({
+              employeeId: snapshot.employeeId,
+              existed: snapshot.existed,
+              shiftType: snapshot.shiftType,
+              startTime: snapshot.startTime,
+              endTime: snapshot.endTime
+            }))),
+            createdBy: user.employeeId
+          },
+          include: {
+            creator: {
+              select: {
+                id: true,
+                name: true,
+                department: true
+              }
             }
           }
         });
+        records.push(record);
 
-        if (existingSchedule) {
-          await prisma.schedule.update({
-            where: { id: existingSchedule.id },
-            data: { 
-              shiftType: 'TD',
-              startTime: stopWorkType === 'FULL' ? '00:00' : (stopWorkType === 'AM' ? '00:00' : '12:00'),
-              endTime: stopWorkType === 'FULL' ? '23:59' : (stopWorkType === 'AM' ? '12:00' : '23:59')
-            }
-          });
-          totalUpdated++;
-        } else {
-          await prisma.schedule.create({
-            data: {
-              employeeId: emp.id,
-              workDate: date,
-              shiftType: 'TD',
-              startTime: stopWorkType === 'FULL' ? '00:00' : (stopWorkType === 'AM' ? '00:00' : '12:00'),
-              endTime: stopWorkType === 'FULL' ? '23:59' : (stopWorkType === 'AM' ? '12:00' : '23:59')
-            }
-          });
-          totalCreated++;
+        for (const scheduleSnapshot of originalSchedulesData) {
+          if (scheduleSnapshot.existed && scheduleSnapshot.scheduleId) {
+            await tx.schedule.update({
+              where: { id: scheduleSnapshot.scheduleId },
+              data: {
+                shiftType: 'TD',
+                ...disasterShiftTimes
+              }
+            });
+            updatedCount++;
+          } else {
+            await tx.schedule.create({
+              data: {
+                employeeId: scheduleSnapshot.employeeId,
+                workDate: date,
+                shiftType: 'TD',
+                ...disasterShiftTimes
+              }
+            });
+            createdCount++;
+          }
         }
       }
-    }
+
+      return {
+        records,
+        totalCreated: createdCount,
+        totalUpdated: updatedCount
+      };
+    });
 
     const dateRange = days > 1 
       ? `${dates[0]} 至 ${dates[dates.length - 1]}（共 ${days} 天）` 
@@ -442,6 +545,7 @@ export async function PUT(request: NextRequest) {
     if (!parsedId.isValid || parsedId.value === null) {
       return NextResponse.json({ error: '記錄ID 格式錯誤' }, { status: 400 });
     }
+    const recordId = parsedId.value;
 
     const disasterType = typeof data.disasterType === 'string' ? data.disasterType : undefined;
     const stopWorkType = typeof data.stopWorkType === 'string' ? data.stopWorkType : undefined;
@@ -460,30 +564,60 @@ export async function PUT(request: NextRequest) {
     }
 
     const record = await prisma.disasterDayOff.findUnique({
-      where: { id: parsedId.value }
+      where: { id: recordId }
     });
 
     if (!record) {
       return NextResponse.json({ error: '找不到記錄' }, { status: 404 });
     }
 
-    // 更新記錄
-    const updatedRecord = await prisma.disasterDayOff.update({
-      where: { id: parsedId.value },
-      data: {
-        disasterType: disasterType || record.disasterType,
-        stopWorkType: stopWorkType || record.stopWorkType,
-        description: description !== undefined ? description : record.description
-      },
-      include: {
-        creator: {
-          select: {
-            id: true,
-            name: true,
-            department: true
+    const updatedStopWorkType = stopWorkType || record.stopWorkType;
+    const originalSchedules = parseOriginalSchedules(record.originalSchedules);
+    if (originalSchedules === null) {
+      return NextResponse.json({ error: '原始班表資料格式錯誤，無法編輯' }, { status: 500 });
+    }
+
+    const updatedRecord = await prisma.$transaction(async (tx) => {
+      const nextRecord = await tx.disasterDayOff.update({
+        where: { id: recordId },
+        data: {
+          disasterType: disasterType || record.disasterType,
+          stopWorkType: updatedStopWorkType,
+          description: description !== undefined ? description : record.description
+        },
+        include: {
+          creator: {
+            select: {
+              id: true,
+              name: true,
+              department: true
+            }
+          }
+        }
+      });
+
+      if (stopWorkType !== undefined && stopWorkType !== record.stopWorkType) {
+        const disasterShiftTimes = getStopWorkScheduleTimes(updatedStopWorkType);
+        for (const snapshot of originalSchedules) {
+          const schedule = await tx.schedule.findUnique({
+            where: {
+              employeeId_workDate: {
+                employeeId: snapshot.employeeId,
+                workDate: record.disasterDate
+              }
+            }
+          });
+
+          if (schedule && schedule.shiftType === 'TD') {
+            await tx.schedule.update({
+              where: { id: schedule.id },
+              data: disasterShiftTimes
+            });
           }
         }
       }
+
+      return nextRecord;
     });
 
     return NextResponse.json({
@@ -528,56 +662,69 @@ export async function DELETE(request: NextRequest) {
     if (!parsedId.isValid || parsedId.value === null) {
       return NextResponse.json({ error: '記錄ID 格式錯誤' }, { status: 400 });
     }
+    const recordId = parsedId.value;
 
     const record = await prisma.disasterDayOff.findUnique({
-      where: { id: parsedId.value }
+      where: { id: recordId }
     });
 
     if (!record) {
       return NextResponse.json({ error: '找不到記錄' }, { status: 404 });
     }
 
-    // 恢復原始班表
-    let restoredCount = 0;
-    if (record.originalSchedules) {
-      try {
-        const originalSchedules = JSON.parse(record.originalSchedules) as {
-          employeeId: number;
-          shiftType: string;
-          startTime: string;
-          endTime: string;
-        }[];
-        
-        for (const orig of originalSchedules) {
-          const schedule = await prisma.schedule.findUnique({
-            where: {
-              employeeId_workDate: {
-                employeeId: orig.employeeId,
-                workDate: record.disasterDate
-              }
-            }
-          });
-          
-          if (schedule && schedule.shiftType === 'TD') {
-            await prisma.schedule.update({
-              where: { id: schedule.id },
-              data: {
-                shiftType: orig.shiftType,
-                startTime: orig.startTime,
-                endTime: orig.endTime
-              }
-            });
-            restoredCount++;
-          }
-        }
-      } catch (e) {
-        console.error('解析原始班表失敗:', e);
-      }
+    const originalSchedules = parseOriginalSchedules(record.originalSchedules);
+    if (originalSchedules === null) {
+      return NextResponse.json({ error: '原始班表資料格式錯誤，無法刪除' }, { status: 500 });
     }
 
-    // 刪除記錄
-    await prisma.disasterDayOff.delete({
-      where: { id: parsedId.value }
+    const restoredCount = await prisma.$transaction(async (tx) => {
+      let restored = 0;
+      let conflictedSchedules = 0;
+
+      for (const snapshot of originalSchedules) {
+        const schedule = await tx.schedule.findUnique({
+          where: {
+            employeeId_workDate: {
+              employeeId: snapshot.employeeId,
+              workDate: record.disasterDate
+            }
+          }
+        });
+
+        if (!schedule || schedule.shiftType !== 'TD') {
+          if (schedule && schedule.shiftType !== 'TD') {
+            conflictedSchedules++;
+          }
+          continue;
+        }
+
+        if (snapshot.existed && snapshot.shiftType && snapshot.startTime && snapshot.endTime) {
+          await tx.schedule.update({
+            where: { id: schedule.id },
+            data: {
+              shiftType: snapshot.shiftType,
+              startTime: snapshot.startTime,
+              endTime: snapshot.endTime
+            }
+          });
+        } else {
+          await tx.schedule.delete({
+            where: { id: schedule.id }
+          });
+        }
+
+        restored++;
+      }
+
+      if (conflictedSchedules > 0) {
+        throw new Error(`DISASTER_DELETE_CONFLICT:${conflictedSchedules}`);
+      }
+
+      await tx.disasterDayOff.delete({
+        where: { id: recordId }
+      });
+
+      return restored;
     });
 
     return NextResponse.json({
@@ -585,7 +732,15 @@ export async function DELETE(request: NextRequest) {
       message: `已刪除 ${record.disasterDate} 的天災假記錄。${restoredCount > 0 ? `已恢復 ${restoredCount} 位員工的原始班表。` : ''}`
     });
 
-  } catch (error) {
+   } catch (error) {
+    if (error instanceof Error && error.message.startsWith('DISASTER_DELETE_CONFLICT:')) {
+      const conflictedCount = Number(error.message.split(':')[1] || '0');
+      return NextResponse.json(
+        { error: `有 ${conflictedCount} 筆班表已被改為非 TD，請先確認班表後再刪除天災假記錄` },
+        { status: 409 }
+      );
+    }
+
     console.error('刪除天災假失敗:', error);
     return NextResponse.json({ error: '系統錯誤' }, { status: 500 });
   }

@@ -43,16 +43,16 @@ function parseUserAgent(userAgent: string | null): { device: string; browser: st
 
   // 簡易解析作業系統
   let os = '未知';
-  if (/windows/i.test(userAgent)) {
+  if (/iphone|ipad|ipod/i.test(userAgent)) {
+    os = 'iOS';
+  } else if (/android/i.test(userAgent)) {
+    os = 'Android';
+  } else if (/windows/i.test(userAgent)) {
     os = 'Windows';
   } else if (/macintosh|mac os/i.test(userAgent)) {
     os = 'macOS';
   } else if (/linux/i.test(userAgent)) {
     os = 'Linux';
-  } else if (/android/i.test(userAgent)) {
-    os = 'Android';
-  } else if (/iphone|ipad|ipod/i.test(userAgent)) {
-    os = 'iOS';
   }
 
   return { device, browser, os };

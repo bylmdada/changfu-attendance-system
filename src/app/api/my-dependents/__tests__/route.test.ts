@@ -10,7 +10,11 @@ jest.mock('@/lib/database', () => ({
     user: {
       findUnique: jest.fn(),
     },
+    healthInsuranceDependent: {
+      findFirst: jest.fn(),
+    },
     dependentApplication: {
+      findFirst: jest.fn(),
       create: jest.fn(),
     },
   },
@@ -52,6 +56,10 @@ describe('my dependents root route guards', () => {
         department: '行政部',
       },
     } as never);
+    mockPrisma.healthInsuranceDependent.findFirst.mockResolvedValue(null as never);
+    mockPrisma.dependentApplication.findFirst.mockResolvedValue(null as never);
+    mockPrisma.dependentApplication.create.mockResolvedValue({ id: 55 } as never);
+    mockCreateApprovalForRequest.mockResolvedValue({ success: true } as never);
   });
 
   it('returns 400 when POST body JSON is malformed', async () => {
@@ -71,5 +79,54 @@ describe('my dependents root route guards', () => {
     expect(mockPrisma.user.findUnique).not.toHaveBeenCalled();
     expect(mockPrisma.dependentApplication.create).not.toHaveBeenCalled();
     expect(mockCreateApprovalForRequest).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 when REMOVE targets a dependent outside the current employee', async () => {
+    const request = new NextRequest('http://localhost:3000/api/my-dependents', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        applicationType: 'REMOVE',
+        dependentId: 999,
+        effectiveDate: '2026-05-01',
+      }),
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(404);
+    expect(payload).toEqual({ error: '找不到可退保的眷屬資料' });
+    expect(mockPrisma.dependentApplication.create).not.toHaveBeenCalled();
+  });
+
+  it('returns a top-level id when creating ADD applications for attachment uploads', async () => {
+    const request = new NextRequest('http://localhost:3000/api/my-dependents', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        applicationType: 'ADD',
+        dependentName: '王小美',
+        relationship: '配偶',
+        idNumber: 'a123456789',
+        birthDate: '1990-01-01',
+        effectiveDate: '2026-05-01',
+      }),
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.id).toBe(55);
+    expect(mockPrisma.dependentApplication.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        idNumber: 'A123456789',
+      }),
+    });
   });
 });

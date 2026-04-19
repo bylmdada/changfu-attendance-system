@@ -8,9 +8,14 @@ export function getTaiwanNow(): Date {
   return new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
 }
 
+/** 將任意時間轉換為台灣時區視角的 Date 物件 */
+export function toTaiwanDate(d: Date): Date {
+  return new Date(d.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
+}
+
 /** 將任意 Date 轉為台灣時區的 YYYY-MM-DD 字串 */
 export function toTaiwanDateStr(d: Date): string {
-  const tw = new Date(d.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
+  const tw = toTaiwanDate(d);
   const yyyy = tw.getFullYear();
   const mm = String(tw.getMonth() + 1).padStart(2, '0');
   const dd = String(tw.getDate()).padStart(2, '0');

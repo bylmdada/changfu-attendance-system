@@ -347,22 +347,22 @@ export default function HealthInsuranceFormulaPage() {
                       <label className="block text-sm font-medium text-gray-900 mb-2">
                         補充保費免扣門檻倍數
                       </label>
-                      <input
-                        type="number"
-                        min="1"
-                        max="10"
-                        value={config.supplementaryThreshold / (config.supplementaryThreshold / 4)}
-                        onChange={(e) => setConfig({
-                          ...config,
-                          supplementaryThreshold: (parseFloat(e.target.value) || 4) * (config.supplementaryThreshold / 4)
-                        })}
-                        className="block w-full rounded-md border-gray-300 shadow-sm focus:border-red-500 focus:ring-red-500 text-gray-900"
-                      />
-                      <p className="mt-1 text-xs text-gray-900">
-                        投保金額的4倍為免扣門檻
-                      </p>
+                        <input
+                          type="number"
+                          min="1"
+                          max="10"
+                          value={config.supplementaryThreshold}
+                          onChange={(e) => setConfig({
+                            ...config,
+                            supplementaryThreshold: parseFloat(e.target.value) || 1
+                          })}
+                          className="block w-full rounded-md border-gray-300 shadow-sm focus:border-red-500 focus:ring-red-500 text-gray-900"
+                        />
+                        <p className="mt-1 text-xs text-gray-900">
+                          目前設定為投保金額的 {config.supplementaryThreshold} 倍
+                        </p>
+                      </div>
                     </div>
-                  </div>
                 </div>
               )}
             </div>
@@ -583,4 +583,3 @@ function CalculationExample({
     </div>
   );
 }
-

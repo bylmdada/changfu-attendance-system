@@ -4,6 +4,7 @@ import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { getUserFromRequest } from '@/lib/auth';
 import { safeParseJSON } from '@/lib/validation';
+import { normalizeAttendancePermissions } from '@/lib/attendance-permission-scopes';
 
 interface AttendancePermissionData {
   employeeId: number;
@@ -24,8 +25,20 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function normalizePermissionList(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+function isUniqueConstraintError(error: unknown): boolean {
+  if (!isPlainObject(error)) {
+    return false;
+  }
+
+  return error.code === 'P2002' || error.message === 'Unique constraint failed on the fields: (`employee_id`)';
+}
+
+async function loadDepartmentNames(): Promise<Set<string>> {
+  const departments = await prisma.department.findMany({
+    select: { name: true }
+  });
+
+  return new Set(departments.map((department) => department.name));
 }
 
 
@@ -44,7 +57,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    if (!decoded || decoded.role !== 'ADMIN') {
+    if (decoded.role !== 'ADMIN') {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
 
@@ -96,7 +109,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    if (!decoded || decoded.role !== 'ADMIN') {
+    if (decoded.role !== 'ADMIN') {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
 
@@ -115,12 +128,7 @@ export async function POST(request: NextRequest) {
 
     const employeeId = typeof data.employeeId === 'number' ? data.employeeId : undefined;
     const permissions: AttendancePermissionData['permissions'] | undefined = isPlainObject(data.permissions)
-      ? {
-          leaveRequests: normalizePermissionList(data.permissions.leaveRequests),
-          overtimeRequests: normalizePermissionList(data.permissions.overtimeRequests),
-          shiftExchanges: normalizePermissionList(data.permissions.shiftExchanges),
-          scheduleManagement: normalizePermissionList(data.permissions.scheduleManagement),
-        }
+      ? normalizeAttendancePermissions(data.permissions)
       : undefined;
 
     // 驗證必要欄位
@@ -155,6 +163,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '請至少選擇一個權限' }, { status: 400 });
     }
 
+    const departmentNames = await loadDepartmentNames();
+    const invalidDepartments = [...new Set(
+      Object.values(permissions).flat().filter((department) => !departmentNames.has(department))
+    )];
+
+    if (invalidDepartments.length > 0) {
+      return NextResponse.json(
+        { error: `包含無效的部門：${invalidDepartments.join('、')}` },
+        { status: 400 }
+      );
+    }
+
     // 創建權限設定
     const newPermission = await prisma.attendancePermission.create({
       data: {
@@ -181,6 +201,10 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json(newPermission, { status: 201 });
   } catch (error) {
+    if (isUniqueConstraintError(error)) {
+      return NextResponse.json({ error: '該員工已有權限設定' }, { status: 409 });
+    }
+
     console.error('新增權限設定失敗:', error);
     return NextResponse.json(
       { error: '新增權限設定失敗' },

@@ -3,7 +3,6 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
-import { getTaiwanYearMonth } from '@/lib/timezone';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
 
@@ -40,31 +39,47 @@ async function reverseCompLeave(
     return false;
   }
 
+  const originalAccrual = await tx.compLeaveTransaction.findFirst({
+    where: {
+      employeeId,
+      referenceId: overtimeRequestId,
+      referenceType: 'OVERTIME',
+      transactionType: 'EARN',
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  if (!originalAccrual) {
+    console.log(`找不到加班申請 ${overtimeRequestId} 對應的補休獲得交易`);
+    return false;
+  }
+
   // 計算要扣減的時數
   const hoursToDeduct = hours;
   
   // 更新餘額
   await tx.compLeaveBalance.update({
     where: { employeeId },
-    data: {
-      totalEarned: { decrement: hoursToDeduct },
-      balance: { decrement: hoursToDeduct }
-    }
+    data: originalAccrual.isFrozen
+      ? {
+          totalUsed: { increment: hoursToDeduct },
+          balance: { decrement: hoursToDeduct }
+        }
+      : {
+          pendingUse: { increment: hoursToDeduct }
+        }
   });
 
-  // 建立扣減交易記錄
-  const yearMonth = getTaiwanYearMonth();
-  
   await tx.compLeaveTransaction.create({
     data: {
       employeeId,
-      transactionType: 'ADJUST',
-      hours: -hoursToDeduct,
-      isFrozen: true,
+      transactionType: 'USE',
+      hours: hoursToDeduct,
+      isFrozen: originalAccrual.isFrozen,
       referenceType: 'OVERTIME_CANCEL',
       referenceId: overtimeRequestId,
       description: `加班撤銷回沖 (加班申請 #${overtimeRequestId})`,
-      yearMonth
+      yearMonth: originalAccrual.yearMonth
     }
   });
 

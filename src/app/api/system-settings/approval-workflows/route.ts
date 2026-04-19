@@ -8,6 +8,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
+import { clearWorkflowCache, getEffectiveApprovalLevel } from '@/lib/approval-workflow';
+import { checkRateLimit } from '@/lib/rate-limit';
 import { safeParseJSON } from '@/lib/validation';
 
 const DEFAULT_FREEZE_REMINDER = {
@@ -33,6 +35,22 @@ type FreezeReminderInput = {
   daysBeforeFreeze1: number;
   daysBeforeFreeze2: number;
   freezeDayReminderTime: string;
+};
+
+type WorkflowResponse = {
+  id: number;
+  workflowType: string;
+  workflowName: string;
+  approvalLevel: number;
+  requireManager: boolean;
+  finalApprover: string;
+  deadlineMode: string;
+  deadlineHours: number | null;
+  enableForward: boolean;
+  enableCC: boolean;
+  isActive: boolean;
+  createdAt: Date;
+  updatedAt: Date;
 };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -121,9 +139,29 @@ function parseFreezeReminder(value: unknown): FreezeReminderInput | null {
   };
 }
 
+function normalizeWorkflowUpdate(input: WorkflowUpdateInput): WorkflowUpdateInput {
+  return {
+    ...input,
+    approvalLevel: getEffectiveApprovalLevel(input.approvalLevel, input.requireManager),
+  };
+}
+
+function normalizeWorkflowResponse(workflow: WorkflowResponse): WorkflowResponse {
+  return {
+    ...workflow,
+    approvalLevel: getEffectiveApprovalLevel(workflow.approvalLevel, workflow.requireManager),
+    finalApprover: workflow.requireManager ? workflow.finalApprover : 'ADMIN'
+  };
+}
+
 // GET: 取得所有審核流程設定
 export async function GET(request: NextRequest) {
   try {
+    const rateLimitResult = await checkRateLimit(request, '/api/system-settings/approval-workflows');
+    if (!rateLimitResult.allowed) {
+      return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
+    }
+
     const user = await getUserFromRequest(request);
     if (!user) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
@@ -162,7 +200,7 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      workflows,
+      workflows: workflows.map((workflow) => normalizeWorkflowResponse(workflow as WorkflowResponse)),
       freezeReminder: freezeReminder ?? DEFAULT_FREEZE_REMINDER,
       freezeSettings
     });
@@ -176,6 +214,11 @@ export async function GET(request: NextRequest) {
 // PUT: 更新審核流程設定
 export async function PUT(request: NextRequest) {
   try {
+    const rateLimitResult = await checkRateLimit(request, '/api/system-settings/approval-workflows');
+    if (!rateLimitResult.allowed) {
+      return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
+    }
+
     const csrfResult = await validateCSRF(request);
     if (!csrfResult.valid) {
       return NextResponse.json({ error: 'CSRF 驗證失敗' }, { status: 403 });
@@ -220,7 +263,7 @@ export async function PUT(request: NextRequest) {
           return NextResponse.json({ error: '工作流程設定格式不正確' }, { status: 400 });
         }
 
-        workflowUpdates.push(parsedWorkflow);
+        workflowUpdates.push(normalizeWorkflowUpdate(parsedWorkflow));
       }
     }
 
@@ -232,44 +275,48 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: '凍結提醒設定格式不正確' }, { status: 400 });
     }
 
-    // 更新工作流程
-    if (workflowUpdates.length > 0) {
-      for (const wf of workflowUpdates) {
-        await prisma.approvalWorkflow.update({
-          where: { id: wf.id },
-          data: {
-            approvalLevel: wf.approvalLevel,
-            requireManager: wf.requireManager,
-            deadlineMode: wf.deadlineMode,
-            deadlineHours: wf.deadlineHours,
-            enableForward: wf.enableForward,
-            enableCC: wf.enableCC
-          }
-        });
+    await prisma.$transaction(async (tx) => {
+      if (workflowUpdates.length > 0) {
+        for (const wf of workflowUpdates) {
+          await tx.approvalWorkflow.update({
+            where: { id: wf.id },
+            data: {
+              approvalLevel: wf.approvalLevel,
+              requireManager: wf.requireManager,
+              deadlineMode: wf.deadlineMode,
+              deadlineHours: wf.deadlineHours,
+              enableForward: wf.enableForward,
+              enableCC: wf.enableCC
+            }
+          });
+        }
       }
-    }
 
-    // 更新凍結提醒設定
-    if (parsedFreezeReminder) {
-      const existing = await prisma.approvalFreezeReminder.findFirst();
-      if (existing) {
-        await prisma.approvalFreezeReminder.update({
-          where: { id: existing.id },
-          data: {
-            daysBeforeFreeze1: parsedFreezeReminder.daysBeforeFreeze1,
-            daysBeforeFreeze2: parsedFreezeReminder.daysBeforeFreeze2,
-            freezeDayReminderTime: parsedFreezeReminder.freezeDayReminderTime
-          }
-        });
-      } else {
-        await prisma.approvalFreezeReminder.create({
-          data: {
-            daysBeforeFreeze1: parsedFreezeReminder.daysBeforeFreeze1,
-            daysBeforeFreeze2: parsedFreezeReminder.daysBeforeFreeze2,
-            freezeDayReminderTime: parsedFreezeReminder.freezeDayReminderTime
-          }
-        });
+      if (parsedFreezeReminder) {
+        const existing = await tx.approvalFreezeReminder.findFirst();
+        if (existing) {
+          await tx.approvalFreezeReminder.update({
+            where: { id: existing.id },
+            data: {
+              daysBeforeFreeze1: parsedFreezeReminder.daysBeforeFreeze1,
+              daysBeforeFreeze2: parsedFreezeReminder.daysBeforeFreeze2,
+              freezeDayReminderTime: parsedFreezeReminder.freezeDayReminderTime
+            }
+          });
+        } else {
+          await tx.approvalFreezeReminder.create({
+            data: {
+              daysBeforeFreeze1: parsedFreezeReminder.daysBeforeFreeze1,
+              daysBeforeFreeze2: parsedFreezeReminder.daysBeforeFreeze2,
+              freezeDayReminderTime: parsedFreezeReminder.freezeDayReminderTime
+            }
+          });
+        }
       }
+    });
+
+    if (workflowUpdates.length > 0) {
+      clearWorkflowCache();
     }
 
     return NextResponse.json({

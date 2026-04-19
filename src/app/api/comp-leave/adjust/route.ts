@@ -5,10 +5,11 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { getTaiwanYearMonth } from '@/lib/timezone';
 import { safeParseJSON } from '@/lib/validation';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 // POST - 手動調整員工補休餘額
@@ -72,8 +73,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 取得當前年月
-    const now = new Date();
-    const yearMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const yearMonth = getTaiwanYearMonth();
 
     // 使用交易確保資料一致性
     const result = await prisma.$transaction(async (tx) => {

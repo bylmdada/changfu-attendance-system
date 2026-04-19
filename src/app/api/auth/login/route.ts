@@ -8,7 +8,9 @@ import { logSecurityEvent, SecurityEventType } from '@/lib/security-monitoring';
 import { validateRequest, AuthSchemas } from '@/lib/validation';
 import { Prisma } from '@prisma/client';
 import { logLogin, LOGIN_STATUS } from '@/lib/login-logger';
-import { randomUUID } from 'crypto';
+import { decrypt, encrypt } from '@/lib/encryption';
+import { verifyBackupCode, verifyTOTP } from '@/lib/totp';
+import { createHash, randomUUID } from 'crypto';
 
 function buildEmployeeSelect(): Prisma.EmployeeSelect {
   const employeeModel = Prisma.dmmf.datamodel.models.find(m => m.name === 'Employee');
@@ -26,6 +28,64 @@ function buildEmployeeSelect(): Prisma.EmployeeSelect {
   if (fields.has('dependents')) base.dependents = true;
   if (fields.has('laborPensionSelfRate')) base.laborPensionSelfRate = true;
   return base as Prisma.EmployeeSelect;
+}
+
+const USED_TWO_FACTOR_CODE_WINDOW_MS = 90 * 1000;
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function extractAttemptedUsername(value: unknown): string | undefined {
+  if (!isPlainObject(value) || typeof value.username !== 'string') {
+    return undefined;
+  }
+
+  const username = value.username.trim();
+  return username || undefined;
+}
+
+function normalizeSecondFactorCode(value: unknown): string {
+  return typeof value === 'string'
+    ? value.trim().replace(/\s/g, '').toUpperCase()
+    : '';
+}
+
+function getStoredBackupCodes(encryptedBackupCodes: string | null | undefined): string[] {
+  if (!encryptedBackupCodes) {
+    return [];
+  }
+
+  const parsedCodes = JSON.parse(encryptedBackupCodes) as unknown;
+  if (!Array.isArray(parsedCodes) || parsedCodes.some(code => typeof code !== 'string')) {
+    throw new Error('備用碼資料格式錯誤');
+  }
+
+  return parsedCodes.map(code => decrypt(code));
+}
+
+function getTwoFactorReplayKey(userId: number, code: string): string {
+  const digest = createHash('sha256').update(`${userId}:${code}`).digest('hex');
+  return `2fa-replay:${digest}`;
+}
+
+async function wasTwoFactorCodeRecentlyUsed(userId: number, code: string): Promise<boolean> {
+  const record = await prisma.rateLimitRecord.findUnique({
+    where: { key: getTwoFactorReplayKey(userId, code) }
+  });
+
+  return Boolean(record && record.resetTime > new Date());
+}
+
+async function rememberUsedTwoFactorCode(userId: number, code: string): Promise<void> {
+  const resetTime = new Date(Date.now() + USED_TWO_FACTOR_CODE_WINDOW_MS);
+  const key = getTwoFactorReplayKey(userId, code);
+
+  await prisma.rateLimitRecord.upsert({
+    where: { key },
+    create: { key, count: 1, resetTime },
+    update: { count: 1, resetTime }
+  });
 }
 
 export async function POST(request: NextRequest) {
@@ -50,10 +110,17 @@ export async function POST(request: NextRequest) {
       throw error;
     }
 
+    const rawLoginAttempt = await request.clone().json().catch(() => null);
+    const attemptedUsername = extractAttemptedUsername(rawLoginAttempt);
+
     // 2. 檢查IP是否被封鎖
     if (await isIPBlocked(request)) {
       const remainingTime = await getRemainingBlockTime(request);
       const remainingMinutes = Math.ceil(remainingTime / (1000 * 60));
+
+      if (attemptedUsername) {
+        await logLogin(request, attemptedUsername, LOGIN_STATUS.FAILED_LOCKED, undefined, 'IP已被暫時封鎖');
+      }
       
       logSecurityEvent(SecurityEventType.AUTHENTICATION_FAILED, request, {
         message: 'IP已被封鎖嘗試登入',
@@ -80,7 +147,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 4. 輸入驗證
-    const parseResult = await request.clone().json().catch(() => null);
+    const parseResult = rawLoginAttempt;
     if (!parseResult) {
       logSecurityEvent(SecurityEventType.INPUT_VALIDATION_FAILED, request, {
         message: '無效的JSON格式'
@@ -133,6 +200,7 @@ export async function POST(request: NextRequest) {
 
     // 檢查帳號是否啟用
     if (!user.isActive) {
+      await recordLoginAttempt(request, false);
       await logLogin(request, username, LOGIN_STATUS.FAILED_INACTIVE, user.id, '帳號已停用');
       return NextResponse.json({ error: '帳號已停用，請聯繫管理員' }, { status: 401 });
     }
@@ -151,36 +219,57 @@ export async function POST(request: NextRequest) {
     }
 
     // 檢查是否需要 2FA 驗證
+    let remainingBackupCodes: string[] | null = null;
+
     if (user.twoFactorEnabled) {
-      const { totpCode } = parseResult;
-      
-      // 如果沒有提供 TOTP 碼，返回需要 2FA 的回應
-      if (!totpCode) {
+      const secondFactorCode = normalizeSecondFactorCode(parseResult.totpCode);
+
+      if (!secondFactorCode) {
         return NextResponse.json({
           requires2FA: true,
-          message: '請輸入雙因素驗證碼'
+          message: '請輸入雙因素驗證碼或備用碼'
         }, { status: 200 });
       }
-      
-      // 驗證 TOTP 碼
-      const { verifyTOTP } = await import('@/lib/totp');
-      const { decrypt } = await import('@/lib/encryption');
-      
-      const secret = decrypt(user.twoFactorSecret!);
-      const isValidTOTP = verifyTOTP(totpCode, secret);
-      
-      if (!isValidTOTP) {
-        await logLogin(request, username, LOGIN_STATUS.FAILED_PASSWORD, user.id, '2FA驗證碼錯誤');
-        logSecurityEvent(SecurityEventType.AUTHENTICATION_FAILED, request, {
-          message: '2FA驗證碼錯誤',
-          userId: user.id,
-          username: user.username,
-          additionalData: { reason: '2fa_invalid' }
-        });
-        return NextResponse.json({ error: '驗證碼錯誤' }, { status: 401 });
+
+      if (!user.twoFactorSecret) {
+        return NextResponse.json({ error: '雙因素驗證設定異常，請聯繫管理員' }, { status: 500 });
       }
-      
-      console.log(`✅ [2FA] 用戶 ${user.username} 通過 2FA 驗證`);
+
+      const secret = decrypt(user.twoFactorSecret);
+      const isValidTOTP = verifyTOTP(secondFactorCode, secret);
+
+      if (isValidTOTP) {
+        if (await wasTwoFactorCodeRecentlyUsed(user.id, secondFactorCode)) {
+          await recordLoginAttempt(request, false);
+          await logLogin(request, username, LOGIN_STATUS.FAILED_2FA, user.id, '2FA驗證碼重放');
+          logSecurityEvent(SecurityEventType.AUTHENTICATION_FAILED, request, {
+            message: '2FA驗證碼重放',
+            userId: user.id,
+            username: user.username,
+            additionalData: { reason: '2fa_replay' }
+          });
+          return NextResponse.json({ error: '驗證碼已使用，請等待新的驗證碼' }, { status: 401 });
+        }
+
+        await rememberUsedTwoFactorCode(user.id, secondFactorCode);
+        console.log(`✅ [2FA] 用戶 ${user.username} 通過 TOTP 驗證`);
+      } else {
+        const backupCodeResult = verifyBackupCode(secondFactorCode, getStoredBackupCodes(user.backupCodes));
+        if (!backupCodeResult.valid) {
+          await recordLoginAttempt(request, false);
+          await logLogin(request, username, LOGIN_STATUS.FAILED_2FA, user.id, '2FA驗證碼或備用碼錯誤');
+          logSecurityEvent(SecurityEventType.AUTHENTICATION_FAILED, request, {
+            message: '2FA驗證碼或備用碼錯誤',
+            userId: user.id,
+            username: user.username,
+            additionalData: { reason: '2fa_invalid' }
+          });
+          return NextResponse.json({ error: '驗證碼或備用碼錯誤' }, { status: 401 });
+        }
+
+        remainingBackupCodes = backupCodeResult.remainingCodes;
+        console.log(`✅ [2FA] 用戶 ${user.username} 使用備用碼通過驗證`);
+      }
     }
 
     // 記錄成功登入
@@ -205,12 +294,18 @@ export async function POST(request: NextRequest) {
     });
 
     // 更新用戶最後登入時間和當前會話 ID（舊會話自動失效）
+    const updateData: Prisma.UserUpdateInput = {
+      lastLogin: new Date(),
+      currentSessionId: sessionId
+    };
+
+    if (remainingBackupCodes !== null) {
+      updateData.backupCodes = JSON.stringify(remainingBackupCodes.map(code => encrypt(code)));
+    }
+
     await prisma.user.update({
       where: { id: user.id },
-      data: { 
-        lastLogin: new Date(),
-        currentSessionId: sessionId // 儲存當前有效的會話 ID
-      }
+      data: updateData
     });
 
     const response = NextResponse.json({

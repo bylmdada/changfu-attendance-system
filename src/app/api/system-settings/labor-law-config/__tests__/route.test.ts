@@ -174,4 +174,91 @@ describe('labor law config route guards', () => {
     expect(data).toEqual({ error: '無效的 JSON 格式' });
     expect(mockedPrisma.$transaction).not.toHaveBeenCalled();
   });
+
+  it('rejects invalid numeric fields instead of silently falling back to defaults', async () => {
+    mockedGetUserFromRequest.mockResolvedValueOnce({
+      id: 1,
+      username: 'admin',
+      role: 'ADMIN',
+      employee: null,
+    } as never);
+
+    const response = await POST(new NextRequest('http://localhost:3000/api/system-settings/labor-law-config', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: 'token=shared-session-token',
+      },
+      body: JSON.stringify({
+        basicWage: 'abc',
+        laborInsuranceRate: 0.12,
+        laborInsuranceMax: 46000,
+        laborEmployeeRate: 0.2,
+        effectiveDate: '2025-01-01',
+      }),
+    }));
+    const data = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(data).toEqual({ error: '基本工資必須為正整數' });
+    expect(mockedPrisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects out-of-range labor rates before replacing the active config', async () => {
+    mockedGetUserFromRequest.mockResolvedValueOnce({
+      id: 1,
+      username: 'admin',
+      role: 'ADMIN',
+      employee: null,
+    } as never);
+
+    const response = await POST(new NextRequest('http://localhost:3000/api/system-settings/labor-law-config', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: 'token=shared-session-token',
+      },
+      body: JSON.stringify({
+        basicWage: 30000,
+        laborInsuranceRate: 1.2,
+        laborInsuranceMax: 46000,
+        laborEmployeeRate: 0.2,
+        effectiveDate: '2025-01-01',
+      }),
+    }));
+    const data = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(data).toEqual({ error: '勞保費率必須為 0 到 1 之間的數值' });
+    expect(mockedPrisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects labor insurance max values below the configured basic wage', async () => {
+    mockedGetUserFromRequest.mockResolvedValueOnce({
+      id: 1,
+      username: 'admin',
+      role: 'ADMIN',
+      employee: null,
+    } as never);
+
+    const response = await POST(new NextRequest('http://localhost:3000/api/system-settings/labor-law-config', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: 'token=shared-session-token',
+      },
+      body: JSON.stringify({
+        basicWage: 30000,
+        laborInsuranceRate: 0.12,
+        laborInsuranceMax: 29000,
+        laborEmployeeRate: 0.2,
+        effectiveDate: '2025-01-01',
+      }),
+    }));
+    const data = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(data).toEqual({ error: '投保薪資上限不得低於基本工資' });
+    expect(mockedPrisma.$transaction).not.toHaveBeenCalled();
+  });
 });

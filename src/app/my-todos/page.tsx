@@ -114,7 +114,7 @@ export default function MyTodosPage() {
       OVERTIME: `/overtime-management?id=${item.requestId}`,
       MISSED_CLOCK: `/missed-clock?id=${item.requestId}`,
       SHIFT_CHANGE: `/schedule-management?id=${item.requestId}`,
-      SHIFT_SWAP: `/shift-swap?id=${item.requestId}`,
+      SHIFT_SWAP: '/shift-exchange',
       PURCHASE: `/purchase-requests?id=${item.requestId}`,
       RESIGNATION: `/resignation-management?id=${item.requestId}`,
       PAYROLL_DISPUTE: `/payroll-disputes?id=${item.requestId}`,

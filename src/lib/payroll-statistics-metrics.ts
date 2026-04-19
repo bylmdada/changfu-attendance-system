@@ -18,3 +18,11 @@ export function calculateAverageMonthlyGrossPay(
 
   return totalGrossPay / activeMonthCount;
 }
+
+export function calculateOvertimePayShare(totalOvertimePay: number, totalGrossPay: number): number {
+  if (totalGrossPay <= 0) {
+    return 0;
+  }
+
+  return (totalOvertimePay / totalGrossPay) * 100;
+}

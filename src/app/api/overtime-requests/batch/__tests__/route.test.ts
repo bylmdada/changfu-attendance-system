@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { POST } from '@/app/api/overtime-requests/batch/route';
 import { getUserFromRequest } from '@/lib/auth';
+import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 
 jest.mock('@/lib/database', () => ({
@@ -9,6 +10,10 @@ jest.mock('@/lib/database', () => ({
 
 jest.mock('@/lib/auth', () => ({
   getUserFromRequest: jest.fn(),
+}));
+
+jest.mock('@/lib/rate-limit', () => ({
+  checkRateLimit: jest.fn(),
 }));
 
 jest.mock('@/lib/csrf', () => ({
@@ -20,11 +25,13 @@ jest.mock('@/lib/salary-utils', () => ({
 }));
 
 const mockedGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
+const mockedCheckRateLimit = checkRateLimit as jest.MockedFunction<typeof checkRateLimit>;
 const mockedValidateCSRF = validateCSRF as jest.MockedFunction<typeof validateCSRF>;
 
 describe('overtime batch csrf guards', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockedCheckRateLimit.mockResolvedValue({ allowed: true } as never);
     mockedValidateCSRF.mockResolvedValue({ valid: false, error: '缺少CSRF令牌' });
   });
 

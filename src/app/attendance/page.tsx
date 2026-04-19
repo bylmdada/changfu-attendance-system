@@ -148,6 +148,8 @@ export default function AttendancePage() {
     setTimeout(() => setToast(null), 5000);
   };
 
+  const resolvedVerificationUsername = verificationData.username || loggedInUsername || savedUsername;
+
   const getTrustedCurrentLocation = () => (
     locationStatus === 'valid' ? (currentLocation ?? undefined) : undefined
   );
@@ -223,7 +225,7 @@ export default function AttendancePage() {
       return;
     }
 
-    const username = verificationData.username || savedUsername || loggedInUsername;
+    const username = resolvedVerificationUsername;
     if (!username) {
       showToast('error', '請先輸入帳號');
       return;
@@ -822,7 +824,7 @@ export default function AttendancePage() {
       }
 
       // 準備打卡數據，包含GPS位置信息
-      const effectiveUsername = verificationData.username || savedUsername || loggedInUsername;
+      const effectiveUsername = resolvedVerificationUsername;
       if (!effectiveUsername) {
         showToast('error', '請先輸入帳號');
         return;
@@ -1399,14 +1401,14 @@ export default function AttendancePage() {
                   <User className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
                   <input
                     type="text"
-                    value={verificationData.username || savedUsername}
+                    value={resolvedVerificationUsername}
                     onChange={(e) => setVerificationData({
                       ...verificationData,
                       username: e.target.value
                     })}
                     className="w-full pl-10 pr-3 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black text-base"
                     placeholder="請輸入您的帳號"
-                    autoFocus={!(verificationData.username || savedUsername)}
+                    autoFocus={!resolvedVerificationUsername}
                   />
                 </div>
               </div>
@@ -1424,7 +1426,7 @@ export default function AttendancePage() {
                     })}
                     className="w-full pl-10 pr-10 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black text-base"
                     placeholder="請輸入您的密碼"
-                    autoFocus={!!(verificationData.username || savedUsername)}
+                    autoFocus={!!resolvedVerificationUsername}
                     onKeyPress={(e) => {
                       if (e.key === 'Enter') {
                         handleVerificationSubmit();
@@ -1471,14 +1473,14 @@ export default function AttendancePage() {
               </button>
               <button
                 onClick={() => {
-                  const effectiveUsername = verificationData.username || savedUsername || loggedInUsername;
+                  const effectiveUsername = resolvedVerificationUsername;
                   // 記住帳號
                   if (rememberDevice && effectiveUsername) {
                     localStorage.setItem('attendance_remembered_username', effectiveUsername);
                   }
                   handleVerificationSubmit();
                 }}
-                disabled={!(verificationData.username || savedUsername || loggedInUsername) || !verificationData.password || clockLoading}
+                disabled={!resolvedVerificationUsername || !verificationData.password || clockLoading}
                 className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-3 px-4 rounded-lg transition-colors"
               >
                 {clockLoading ? '打卡中...' : '確認打卡'}

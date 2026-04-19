@@ -2,9 +2,16 @@ jest.mock('@/lib/database', () => ({
   prisma: {
     approvalDelegate: {
       create: jest.fn(),
+      findFirst: jest.fn(),
       findMany: jest.fn(),
       findUnique: jest.fn(),
       update: jest.fn()
+    },
+    employee: {
+      findUnique: jest.fn()
+    },
+    departmentManager: {
+      findFirst: jest.fn()
     }
   }
 }));
@@ -42,6 +49,8 @@ describe('approval delegates route guards', () => {
     mockValidateCSRF.mockResolvedValue({ valid: true });
     mockGetUserFromRequest.mockResolvedValue({ role: 'ADMIN', employeeId: 1 } as never);
     mockGetUserFromToken.mockResolvedValue({ role: 'ADMIN', employeeId: 1 } as never);
+    mockPrisma.employee.findUnique.mockResolvedValue({ id: 1 } as never);
+    mockPrisma.departmentManager.findFirst.mockResolvedValue({ id: 1 } as never);
   });
 
   it('accepts shared token cookie extraction on GET requests', async () => {
@@ -75,9 +84,20 @@ describe('approval delegates route guards', () => {
     const payload = await response.json();
 
     expect(response.status).toBe(403);
-    expect(payload.error).toBe('CSRF token validation failed');
+    expect(payload.error).toBe('CSRF驗證失敗');
     expect(mockPrisma.approvalDelegate.findUnique).not.toHaveBeenCalled();
     expect(mockPrisma.approvalDelegate.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects malformed delegatorId filters on GET requests', async () => {
+    const request = new NextRequest('http://localhost/api/approval-delegates?delegatorId=12abc');
+
+    const response = await GET(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload).toEqual({ error: 'delegatorId 格式錯誤' });
+    expect(mockPrisma.approvalDelegate.findMany).not.toHaveBeenCalled();
   });
 
   it('rejects null POST request bodies before validating delegate fields', async () => {
@@ -113,6 +133,57 @@ describe('approval delegates route guards', () => {
 
     expect(response.status).toBe(400);
     expect(payload).toEqual({ error: '無效的 JSON 格式' });
+    expect(mockPrisma.approvalDelegate.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects unsupported resourceTypes in POST payloads', async () => {
+    const request = new NextRequest('http://localhost/api/approval-delegates', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: 'token=shared-session-token'
+      },
+      body: JSON.stringify({
+        delegatorId: 1,
+        delegateId: 2,
+        startDate: '2026-04-10',
+        endDate: '2026-04-12',
+        resourceTypes: ['LEAVE', 'PURCHASE']
+      })
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload).toEqual({ error: 'resourceTypes 包含不支援的審核類型' });
+    expect(mockPrisma.approvalDelegate.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects delegate setup when the delegator is not an active manager', async () => {
+    mockPrisma.departmentManager.findFirst.mockResolvedValue(null as never);
+
+    const request = new NextRequest('http://localhost/api/approval-delegates', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: 'token=shared-session-token'
+      },
+      body: JSON.stringify({
+        delegatorId: 1,
+        delegateId: 2,
+        startDate: '2026-04-10',
+        endDate: '2026-04-12',
+        resourceTypes: ['LEAVE']
+      })
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload).toEqual({ error: '委託人目前不是有效主管，無法設定代理審核' });
+    expect(mockPrisma.approvalDelegate.findFirst).not.toHaveBeenCalled();
     expect(mockPrisma.approvalDelegate.create).not.toHaveBeenCalled();
   });
 });

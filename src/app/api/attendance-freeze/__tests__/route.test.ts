@@ -37,8 +37,8 @@ describe('attendance freeze csrf guard', () => {
     mockGetUserFromRequest.mockResolvedValue({
       userId: 1,
       employeeId: 15,
-      username: 'hr-user',
-      role: 'HR',
+      username: 'admin-user',
+      role: 'ADMIN',
     } as never);
     mockValidateCSRF.mockResolvedValue({ valid: true } as never);
     mockPrisma.attendanceFreeze.findFirst.mockResolvedValue(null as never);
@@ -157,6 +157,68 @@ describe('attendance freeze csrf guard', () => {
     expect(response.status).toBe(400);
     expect(payload).toEqual({ error: '凍結日期格式不正確' });
     expect(mockPrisma.attendanceFreeze.findFirst).not.toHaveBeenCalled();
+    expect(mockPrisma.attendanceFreeze.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects POST when the current admin account has no employee profile id for createdBy', async () => {
+    mockGetUserFromRequest.mockResolvedValue({
+      userId: 1,
+      employeeId: null,
+      username: 'admin-user',
+      role: 'ADMIN',
+    } as never);
+
+    const request = new NextRequest('http://localhost/api/attendance-freeze', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: 'auth-token=session-token',
+      },
+      body: JSON.stringify({
+        freezeDate: '2026-04-08T00:00:00.000Z',
+        targetMonth: 4,
+        targetYear: 2026,
+        description: '月結凍結',
+        autoCalculatePayroll: false,
+      }),
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload).toEqual({ error: '當前帳號缺少員工資料，無法建立凍結設定' });
+    expect(mockPrisma.attendanceFreeze.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects POST when an HR user attempts to create a new freeze setting', async () => {
+    mockGetUserFromRequest.mockResolvedValue({
+      userId: 2,
+      employeeId: 18,
+      username: 'hr-user',
+      role: 'HR',
+    } as never);
+
+    const request = new NextRequest('http://localhost/api/attendance-freeze', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: 'auth-token=session-token',
+      },
+      body: JSON.stringify({
+        freezeDate: '2026-04-08T00:00:00.000Z',
+        targetMonth: 4,
+        targetYear: 2026,
+        description: '月結凍結',
+        autoCalculatePayroll: false,
+      }),
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(payload).toEqual({ error: '權限不足' });
     expect(mockPrisma.attendanceFreeze.create).not.toHaveBeenCalled();
   });
 });

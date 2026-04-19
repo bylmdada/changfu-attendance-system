@@ -6,6 +6,7 @@ import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import BatchApproveBar from '@/components/BatchApproveBar';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import ApprovalProgress, { ApprovalReviewRecord } from '@/components/ApprovalProgress';
+import { getLeaveTypeLabel, normalizeLeaveTypeCode } from '@/lib/leave-types';
 
 interface Employee {
   id: number;
@@ -19,6 +20,14 @@ interface User {
   id: number;
   username: string;
   role: string;
+  isDepartmentManager?: boolean;
+  isDeputyManager?: boolean;
+  attendancePermissions?: {
+    leaveRequests?: string[];
+    overtimeRequests?: string[];
+    shiftExchanges?: string[];
+    scheduleManagement?: string[];
+  };
   employee?: {
     id: number;
     employeeId: string;
@@ -164,15 +173,44 @@ const LABOR_LAW_REGULATIONS = {
 
 const STATUS_COLORS = {
   PENDING: 'bg-yellow-100 text-yellow-800',
+  PENDING_ADMIN: 'bg-blue-100 text-blue-800',
   APPROVED: 'bg-green-100 text-green-800',
-  REJECTED: 'bg-red-100 text-red-800'
+  REJECTED: 'bg-red-100 text-red-800',
+  CANCELLED: 'bg-gray-100 text-gray-700',
+  VOIDED: 'bg-gray-100 text-gray-700'
 };
 
 const STATUS_ICONS = {
   PENDING: AlertCircle,
+  PENDING_ADMIN: AlertCircle,
   APPROVED: CheckCircle,
-  REJECTED: XCircle
+  REJECTED: XCircle,
+  CANCELLED: XCircle,
+  VOIDED: XCircle
 };
+
+function getStatusLabel(status: string) {
+  switch (status) {
+    case 'PENDING':
+      return '待審核';
+    case 'PENDING_ADMIN':
+      return '待管理員決核';
+    case 'APPROVED':
+      return '已批准';
+    case 'REJECTED':
+      return '已拒絕';
+    case 'CANCELLED':
+      return '已撤銷';
+    case 'VOIDED':
+      return '已作廢';
+    default:
+      return status;
+  }
+}
+
+function isReviewableStatus(status: string) {
+  return status === 'PENDING' || status === 'PENDING_ADMIN';
+}
 
 export default function LeaveManagementPage() {
   const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>([]);
@@ -242,11 +280,11 @@ export default function LeaveManagementPage() {
         r.employee.employeeId,
         r.employee.name,
         r.employee.department,
-        LEAVE_TYPES[r.leaveType as keyof typeof LEAVE_TYPES] || r.leaveType,
+        getLeaveTypeLabel(r.leaveType),
         r.startDate.substring(0, 10),
         r.endDate.substring(0, 10),
         r.totalDays,
-        r.status === 'PENDING' ? '待審核' : r.status === 'APPROVED' ? '已批准' : '已拒絕',
+        getStatusLabel(r.status),
         r.reason || ''
       ].join(','))
     ].join('\n');
@@ -270,11 +308,11 @@ export default function LeaveManagementPage() {
         r.employee.employeeId,
         r.employee.name,
         r.employee.department,
-        LEAVE_TYPES[r.leaveType as keyof typeof LEAVE_TYPES] || r.leaveType,
+        getLeaveTypeLabel(r.leaveType),
         r.startDate.substring(0, 10),
         r.endDate.substring(0, 10),
         r.totalDays,
-        r.status === 'PENDING' ? '待審核' : r.status === 'APPROVED' ? '已批准' : '已拒絕',
+        getStatusLabel(r.status),
         r.reason || ''
       ].join('\t'))
     ].join('\n');
@@ -405,7 +443,7 @@ export default function LeaveManagementPage() {
     }
 
     if (filters.leaveType) {
-      filtered = filtered.filter(req => req.leaveType === filters.leaveType);
+      filtered = filtered.filter(req => normalizeLeaveTypeCode(req.leaveType) === filters.leaveType);
     }
 
     // 部門篩選
@@ -447,7 +485,7 @@ export default function LeaveManagementPage() {
         return ((statusOrder[a.status as keyof typeof statusOrder] || 0) - (statusOrder[b.status as keyof typeof statusOrder] || 0)) * direction;
       }
       case 'type':
-        return a.leaveType.localeCompare(b.leaveType) * direction;
+        return getLeaveTypeLabel(a.leaveType).localeCompare(getLeaveTypeLabel(b.leaveType)) * direction;
       default:
         return 0;
     }
@@ -455,6 +493,7 @@ export default function LeaveManagementPage() {
 
   // 分頁計算
   const totalPages = Math.ceil(sortedRequests.length / itemsPerPage);
+  const paginatedRequests = sortedRequests.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
 
   useEffect(() => {
     // 設定頁面標題
@@ -496,6 +535,14 @@ export default function LeaveManagementPage() {
   useEffect(() => {
     filterRequests();
   }, [filterRequests]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [filters.status, filters.leaveType, filters.department, filters.startDate, filters.endDate, filters.search]);
+
+  useEffect(() => {
+    setCurrentPage((prev) => Math.min(prev, Math.max(totalPages, 1)));
+  }, [totalPages]);
 
   const fetchLeaveRequests = async () => {
     try {
@@ -575,10 +622,22 @@ export default function LeaveManagementPage() {
   };
 
   const handleApproveReject = async (id: number, status: 'APPROVED' | 'REJECTED') => {
+    if (!user) {
+      showToast('error', '尚未取得使用者資訊');
+      return;
+    }
+
     try {
+      const canSubmitManagerOpinion = user.role === 'MANAGER'
+        || user.isDepartmentManager
+        || user.isDeputyManager
+        || Boolean(user.attendancePermissions?.leaveRequests?.length);
+
       const response = await fetchJSONWithCSRF(`/api/leave-requests/${id}`, {
         method: 'PATCH',
-        body: { status }
+        body: canSubmitManagerOpinion
+          ? { opinion: status === 'APPROVED' ? 'AGREE' : 'DISAGREE' }
+          : { status }
       });
 
       if (response.ok) {
@@ -643,7 +702,7 @@ export default function LeaveManagementPage() {
     }
     
     setEditForm({
-      leaveType: r.leaveType,
+      leaveType: normalizeLeaveTypeCode(r.leaveType),
       startDate: r.startDate.substring(0, 10),
       endDate: r.endDate.substring(0, 10),
       startHour: String(s.getHours()).padStart(2, '0'),
@@ -816,7 +875,14 @@ export default function LeaveManagementPage() {
     );
   }
 
-  const isAdmin = user?.role === 'ADMIN' || user?.role === 'HR';
+  const canFinalApprove = user?.role === 'ADMIN' || user?.role === 'HR';
+  const canBatchApprove = canFinalApprove;
+  const canManagerReview = user?.role === 'MANAGER'
+    || user?.isDepartmentManager
+    || user?.isDeputyManager
+    || Boolean(user?.attendancePermissions?.leaveRequests?.length);
+  const canPrivilegedEdit = user?.role === 'ADMIN' || user?.role === 'HR';
+  const reviewableRequests = filteredRequests.filter((request) => isReviewableStatus(request.status));
 
   return (
     <AuthenticatedLayout>
@@ -973,14 +1039,14 @@ export default function LeaveManagementPage() {
             <h2 className="text-lg font-semibold text-gray-900">
               請假記錄 ({filteredRequests.length})
             </h2>
-            {isAdmin && filteredRequests.filter(r => r.status === 'PENDING').length > 0 && (
+            {canBatchApprove && reviewableRequests.length > 0 && (
               <label className="flex items-center gap-2 text-sm text-gray-600">
                 <input
                   type="checkbox"
-                  checked={selectedIds.length === filteredRequests.filter(r => r.status === 'PENDING').length && selectedIds.length > 0}
+                  checked={selectedIds.length === reviewableRequests.length && selectedIds.length > 0}
                   onChange={(e) => {
                     if (e.target.checked) {
-                      setSelectedIds(filteredRequests.filter(r => r.status === 'PENDING').map(r => r.id));
+                      setSelectedIds(reviewableRequests.map((request) => request.id));
                     } else {
                       setSelectedIds([]);
                     }
@@ -996,7 +1062,7 @@ export default function LeaveManagementPage() {
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
                 <tr>
-                  {isAdmin && (
+                  {canBatchApprove && (
                     <th className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-12">
                       選擇
                     </th>
@@ -1028,15 +1094,18 @@ export default function LeaveManagementPage() {
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {filteredRequests.map((request) => {
+                {paginatedRequests.map((request) => {
                   const StatusIcon = STATUS_ICONS[request.status as keyof typeof STATUS_ICONS];
                   const isOwner = user?.employee?.id && request.employee.id === user.employee.id;
+                  const canReviewThisRequest =
+                    (canManagerReview && request.status === 'PENDING') ||
+                    (canFinalApprove && isReviewableStatus(request.status));
                   return (
                     <React.Fragment key={request.id}>
                     <tr className={`hover:bg-gray-50 ${selectedIds.includes(request.id) ? 'bg-blue-50' : ''}`}>
-                      {isAdmin && (
+                      {canBatchApprove && (
                         <td className="px-3 py-4 text-center">
-                          {request.status === 'PENDING' && (
+                          {isReviewableStatus(request.status) && (
                             <input
                               type="checkbox"
                               checked={selectedIds.includes(request.id)}
@@ -1064,7 +1133,7 @@ export default function LeaveManagementPage() {
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <span className="text-sm text-gray-900">
-                          {LEAVE_TYPES[request.leaveType as keyof typeof LEAVE_TYPES]}
+                          {getLeaveTypeLabel(request.leaveType)}
                         </span>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
@@ -1078,8 +1147,7 @@ export default function LeaveManagementPage() {
                       <td className="px-6 py-4 whitespace-nowrap">
                         <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium ${STATUS_COLORS[request.status as keyof typeof STATUS_COLORS]}`}>
                           <StatusIcon className="h-3 w-3" />
-                          {request.status === 'PENDING' ? '待審核' : 
-                           request.status === 'APPROVED' ? '已批准' : '已拒絕'}
+                          {getStatusLabel(request.status)}
                         </span>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
@@ -1100,8 +1168,7 @@ export default function LeaveManagementPage() {
                         )}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {/* 管理員審核 */}
-                        {isAdmin && request.status === 'PENDING' && (
+                        {canReviewThisRequest && (
                           <div className="flex flex-wrap gap-3 items-center">
                             <button
                               onClick={() => handleApproveReject(request.id, 'APPROVED')}
@@ -1113,9 +1180,12 @@ export default function LeaveManagementPage() {
                               onClick={() => handleApproveReject(request.id, 'REJECTED')}
                               className="text-red-600 hover:text-red-800 font-medium"
                             >
-                              拒絕
+                              {canManagerReview && request.status === 'PENDING' ? '退回' : '拒絕'}
                             </button>
-                            <span className="text-gray-300">|</span>
+                          </div>
+                        )}
+                        {canPrivilegedEdit && request.status === 'PENDING' && (
+                          <div className="mt-2 flex flex-wrap gap-3 items-center">
                             <button
                               onClick={() => openEditModal(request)}
                               className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800"
@@ -1131,7 +1201,7 @@ export default function LeaveManagementPage() {
                           </div>
                         )}
                         {/* 員工編輯/刪除（僅自己且 PENDING） */}
-                          {!isAdmin && isOwner && (
+                          {!canPrivilegedEdit && isOwner && (
                           request.status === 'PENDING' ? (
                             <div className="flex gap-3">
                               <button
@@ -1164,7 +1234,7 @@ export default function LeaveManagementPage() {
                           )
                         )}
                         {/* 管理員作廢已核准申請 */}
-                        {isAdmin && request.status === 'APPROVED' && (
+                        {canPrivilegedEdit && request.status === 'APPROVED' && (
                           <button
                             onClick={() => {
                               const reason = prompt('請輸入作廢原因：');
@@ -1191,7 +1261,7 @@ export default function LeaveManagementPage() {
                     {/* 展開的審核進度區域 */}
                     {expandedId === request.id && (
                       <tr>
-                        <td colSpan={isAdmin ? 9 : 8} className="px-6 py-4 bg-gray-50">
+                        <td colSpan={canBatchApprove ? 9 : 8} className="px-6 py-4 bg-gray-50">
                           {approvalData ? (
                             <ApprovalProgress
                               currentLevel={approvalData.currentLevel}
@@ -1677,7 +1747,7 @@ export default function LeaveManagementPage() {
       )}
 
       {/* 批次審核工具列 */}
-      {isAdmin && (
+      {canBatchApprove && (
         <BatchApproveBar
           selectedIds={selectedIds}
           apiEndpoint="/api/leave-requests/batch"

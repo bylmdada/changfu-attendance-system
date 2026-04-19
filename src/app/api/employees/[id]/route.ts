@@ -6,6 +6,9 @@ import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
+import { evaluatePasswordStrength } from '@/lib/password-policy';
+import { getStoredPasswordPolicy } from '@/lib/password-policy-store';
+import { getPasswordReuseViolation } from '@/lib/password-reuse';
 
 function parseEmployeeIdParam(rawValue: string) {
   return parseIntegerQueryParam(rawValue, { min: 1 });
@@ -131,6 +134,7 @@ export async function PUT(
       name,
       birthday,
       phone,
+      email,
       address,
       emergencyContact,
       emergencyPhone,
@@ -139,6 +143,8 @@ export async function PUT(
       hourlyRate,
       department,
       position,
+      employeeType,
+      laborInsuranceActive,
       username,
       password,
       createAccount,
@@ -147,6 +153,7 @@ export async function PUT(
 
     const normalizedEmpId = isNonEmptyString(empId) ? empId.trim() : '';
     const normalizedName = isNonEmptyString(name) ? name.trim() : '';
+    const normalizedEmail = isNonEmptyString(email) ? email.trim() : '';
     const normalizedDepartment = isNonEmptyString(department) ? department.trim() : '';
     const normalizedPosition = isNonEmptyString(position) ? position.trim() : '';
     const normalizedUsername = isNonEmptyString(username) ? username.trim() : '';
@@ -154,6 +161,7 @@ export async function PUT(
     const normalizedBaseSalary = parsePayrollNumber(baseSalary);
     const normalizedHourlyRate = parsePayrollNumber(hourlyRate);
     const normalizedRole = typeof role === 'string' ? role : undefined;
+    const normalizedEmployeeType = employeeType === 'HOURLY' ? 'HOURLY' : 'MONTHLY';
 
     // 驗證必填欄位
     if (!normalizedEmpId || !normalizedName || !isValidDateInput(birthday) || !isValidDateInput(hireDate) || normalizedBaseSalary === null || normalizedHourlyRate === null || !normalizedDepartment || !normalizedPosition) {
@@ -164,8 +172,38 @@ export async function PUT(
       return NextResponse.json({ error: 'createAccount 參數格式無效' }, { status: 400 });
     }
 
-    if (normalizedRole !== undefined && !['EMPLOYEE', 'HR', 'ADMIN'].includes(normalizedRole)) {
+    if (laborInsuranceActive !== undefined && typeof laborInsuranceActive !== 'boolean') {
+      return NextResponse.json({ error: 'laborInsuranceActive 參數格式無效' }, { status: 400 });
+    }
+
+    if (normalizedRole !== undefined && !['EMPLOYEE', 'MANAGER', 'HR', 'ADMIN'].includes(normalizedRole)) {
       return NextResponse.json({ error: 'role 參數格式無效' }, { status: 400 });
+    }
+
+    if (normalizedPassword) {
+      const passwordPolicy = await getStoredPasswordPolicy();
+      const passwordValidation = evaluatePasswordStrength(normalizedPassword, passwordPolicy);
+      if (!passwordValidation.passesPolicy) {
+        return NextResponse.json({
+          error: '密碼不符合安全要求',
+          details: passwordValidation.violations
+        }, { status: 400 });
+      }
+
+      if (existingEmployee.user?.passwordHash) {
+        const passwordReuseViolation = await getPasswordReuseViolation(
+          existingEmployee.user.id,
+          normalizedPassword,
+          existingEmployee.user.passwordHash,
+          passwordPolicy
+        );
+        if (passwordReuseViolation) {
+          return NextResponse.json({
+            error: '密碼不符合安全要求',
+            details: [passwordReuseViolation]
+          }, { status: 400 });
+        }
+      }
     }
 
     // 檢查員工編號是否重複（排除當前員工）
@@ -192,6 +230,7 @@ export async function PUT(
           name: normalizedName,
           birthday: new Date(birthday),
           phone: isNonEmptyString(phone) ? phone.trim() : '',
+          email: normalizedEmail || null,
           address: isNonEmptyString(address) ? address.trim() : '',
           emergencyContact: isNonEmptyString(emergencyContact) ? emergencyContact.trim() : '',
           emergencyPhone: isNonEmptyString(emergencyPhone) ? emergencyPhone.trim() : '',
@@ -199,20 +238,25 @@ export async function PUT(
           baseSalary: normalizedBaseSalary,
           hourlyRate: normalizedHourlyRate,
           department: normalizedDepartment,
-          position: normalizedPosition
+          position: normalizedPosition,
+          employeeType: normalizedEmployeeType,
+          laborInsuranceActive: laborInsuranceActive !== false,
         }
       });
 
       // 處理帳號資訊
       if (createAccount) {
-        if (!normalizedUsername || !normalizedPassword) {
+        const effectiveUsername = normalizedUsername || existingEmployee.user?.username || normalizedEmpId;
+        const requiresPassword = !existingEmployee.user;
+
+        if (!effectiveUsername || (requiresPassword && !normalizedPassword)) {
           throw new Error('建立帳號時必須提供 username 和 password');
         }
 
         // 檢查用戶名是否重複（排除當前用戶）
         const duplicateUsername = await tx.user.findFirst({
           where: {
-            username: normalizedUsername,
+            username: effectiveUsername,
             id: existingEmployee.user ? { not: existingEmployee.user.id } : undefined
           }
         });
@@ -221,17 +265,27 @@ export async function PUT(
           throw new Error('用戶名已存在');
         }
 
-        const hashedPassword = await bcrypt.hash(normalizedPassword, 10);
-
         if (existingEmployee.user) {
           // 更新現有用戶（包含角色）
-          const updateData: { username: string; passwordHash?: string; role?: string } = {
-            username: normalizedUsername
+          const updateData: {
+            username: string;
+            passwordHash?: string;
+            currentSessionId?: null;
+            role?: string;
+            passwordHistories?: { create: { passwordHash: string } };
+          } = {
+            username: effectiveUsername
           };
           
           // 只有當提供密碼時才更新密碼
           if (normalizedPassword) {
-            updateData.passwordHash = hashedPassword;
+            updateData.passwordHash = await bcrypt.hash(normalizedPassword, 12);
+            updateData.currentSessionId = null;
+            updateData.passwordHistories = {
+              create: {
+                passwordHash: existingEmployee.user.passwordHash
+              }
+            };
           }
           
           // 更新角色（如果有提供）
@@ -247,9 +301,9 @@ export async function PUT(
           // 創建新用戶
           await tx.user.create({
             data: {
-              username: normalizedUsername,
-              passwordHash: hashedPassword,
-              role: 'EMPLOYEE',
+              username: effectiveUsername,
+              passwordHash: await bcrypt.hash(normalizedPassword, 10),
+              role: normalizedRole || 'EMPLOYEE',
               employeeId: updatedEmployee.id,
               isActive: true
             }

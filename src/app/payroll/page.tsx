@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { DollarSign, Plus, Search, Users, Calculator, TrendingUp, BarChart3, Download, FileText, Eye, Loader2, X } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import { escapeHtml } from '@/lib/html';
 import { LOGO_BASE64 } from '@/lib/logoBase64';
 
 interface Employee {
@@ -653,28 +654,47 @@ export default function PayrollManagementPage() {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const generatePayslipHTML = (payslip: any) => {
+    const safeCompanyName = escapeHtml(payslip.companyInfo?.name || '社團法人宜蘭縣長期照護及社會福祉推廣協會');
+    const safeFooterCompanyName = escapeHtml(payslip.companyInfo?.name || '長福會');
+    const safeEmployeeId = escapeHtml(payslip.employee.employeeId);
+    const safeEmployeeName = escapeHtml(payslip.employee.name);
+    const safeEmployeeDepartment = escapeHtml(payslip.employee.department || 'N/A');
+    const safeEmployeePosition = escapeHtml(payslip.employee.position || 'N/A');
+    const safeMonthName = escapeHtml(payslip.period.monthName);
+    const safeGeneratedAt = escapeHtml(new Date(payslip.generatedAt).toLocaleString('zh-TW'));
+
     // 生成收入項目表格行
-    const earningsRows = payslip.earnings?.map((item: PayslipItem) => `
+    const earningsRows = payslip.earnings?.map((item: PayslipItem) => {
+      const safeItemName = escapeHtml(item.name);
+      const quantityLabel = (item.quantity ?? 0) > 1 ? ` (${escapeHtml(item.quantity)})` : '';
+
+      return `
       <tr>
-        <td style="padding: 8px 12px; border-bottom: 1px solid #e5e7eb;">${item.name}${(item.quantity ?? 0) > 1 ? ` (${item.quantity})` : ''}</td>
+        <td style="padding: 8px 12px; border-bottom: 1px solid #e5e7eb;">${safeItemName}${quantityLabel}</td>
         <td style="padding: 8px 12px; border-bottom: 1px solid #e5e7eb; text-align: right; color: #059669; font-weight: 500;">NT$ ${item.amount.toLocaleString()}</td>
       </tr>
-    `).join('') || '';
+    `;
+    }).join('') || '';
 
     // 生成扣除項目表格行
-    const deductionsRows = payslip.deductions?.map((item: PayslipItem) => `
+    const deductionsRows = payslip.deductions?.map((item: PayslipItem) => {
+      const safeItemName = escapeHtml(item.name);
+      const quantityLabel = (item.quantity ?? 0) > 1 ? ` (${escapeHtml(item.quantity)})` : '';
+
+      return `
       <tr>
-        <td style="padding: 8px 12px; border-bottom: 1px solid #e5e7eb;">${item.name}${(item.quantity ?? 0) > 1 ? ` (${item.quantity})` : ''}</td>
+        <td style="padding: 8px 12px; border-bottom: 1px solid #e5e7eb;">${safeItemName}${quantityLabel}</td>
         <td style="padding: 8px 12px; border-bottom: 1px solid #e5e7eb; text-align: right; color: #dc2626;">NT$ ${item.amount.toLocaleString()}</td>
       </tr>
-    `).join('') || '';
+    `;
+    }).join('') || '';
 
     return `
     <!DOCTYPE html>
     <html>
     <head>
       <meta charset="UTF-8">
-      <title>薪資條 - ${payslip.employee.name} - ${payslip.period.monthName}</title>
+      <title>薪資條 - ${safeEmployeeName} - ${safeMonthName}</title>
       <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { 
@@ -870,18 +890,18 @@ export default function PayrollManagementPage() {
               <img src="${LOGO_BASE64}" alt="長福會" class="logo" /><div class="logo-text" style="display:none;">長福會</div>
               <div class="header-title">
                 <h1>薪資條</h1>
-                <p>${payslip.companyInfo?.name || '社團法人宜蘭縣長期照護及社會福祉推廣協會'}</p>
+                <p>${safeCompanyName}</p>
               </div>
             </div>
-            <div class="period-badge">${payslip.period.monthName}</div>
+            <div class="period-badge">${safeMonthName}</div>
           </div>
           <div class="employee-info">
             <div class="info-card">
               <h3>👤 員工資訊</h3>
-              <div class="info-item"><span class="info-label">員工編號</span><span class="info-value">${payslip.employee.employeeId}</span></div>
-              <div class="info-item"><span class="info-label">姓名</span><span class="info-value">${payslip.employee.name}</span></div>
-              <div class="info-item"><span class="info-label">部門</span><span class="info-value">${payslip.employee.department || 'N/A'}</span></div>
-              <div class="info-item"><span class="info-label">職位</span><span class="info-value">${payslip.employee.position || 'N/A'}</span></div>
+              <div class="info-item"><span class="info-label">員工編號</span><span class="info-value">${safeEmployeeId}</span></div>
+              <div class="info-item"><span class="info-label">姓名</span><span class="info-value">${safeEmployeeName}</span></div>
+              <div class="info-item"><span class="info-label">部門</span><span class="info-value">${safeEmployeeDepartment}</span></div>
+              <div class="info-item"><span class="info-label">職位</span><span class="info-value">${safeEmployeePosition}</span></div>
             </div>
             <div class="info-card">
               <h3>⏰ 工時統計</h3>
@@ -914,10 +934,10 @@ export default function PayrollManagementPage() {
           </div>
           <div class="footer">
             <div class="confidential-notice">
-              🔒 本薪資條專供 ${payslip.employee.name} (${payslip.employee.employeeId}) 查閱，請妥善保管
+              🔒 本薪資條專供 ${safeEmployeeName} (${safeEmployeeId}) 查閱，請妥善保管
             </div>
-            <p>生成時間：${new Date(payslip.generatedAt).toLocaleString('zh-TW')}</p>
-            <p style="margin-top: 4px;">${payslip.companyInfo?.name || '長福會'} | 如有疑問請洽人事部門</p>
+            <p>生成時間：${safeGeneratedAt}</p>
+            <p style="margin-top: 4px;">${safeFooterCompanyName} | 如有疑問請洽人事部門</p>
           </div>
         </div>
       </div>

@@ -1,12 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
-import { calculateAllDeductions } from '@/lib/tax-calculator';
 import { Prisma } from '@prisma/client';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { calculatePerfectAttendanceBonus } from '@/lib/perfect-attendance';
 import { buildSuccessPayload } from '@/lib/api-response';
+import { parseIntegerQueryParam } from '@/lib/query-params';
+import { getStoredLaborLawConfig } from '@/lib/labor-law-config';
+import {
+  buildPayrollRecordData,
+  computePayrollForEmployee,
+  getPendingApprovedPayrollDisputeAdjustments,
+  getPayrollHolidayDates,
+} from '@/lib/payroll-processing';
+import { getStoredSupplementaryPremiumSettings } from '@/lib/supplementary-premium-settings';
 import { safeParseJSON } from '@/lib/validation';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -15,6 +23,11 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function asStringOrNumber(value: unknown): string | number | undefined {
   return typeof value === 'string' || typeof value === 'number' ? value : undefined;
+}
+
+function parsePayrollInteger(value: string | number, options: { min: number; max: number }) {
+  const parsed = parseIntegerQueryParam(String(value), options);
+  return parsed.isValid ? parsed.value : null;
 }
 
 function buildEmployeeSelect(includeExtended: boolean): Prisma.EmployeeSelect {
@@ -39,6 +52,14 @@ function buildEmployeeSelect(includeExtended: boolean): Prisma.EmployeeSelect {
 
 export async function GET(request: NextRequest) {
   try {
+    const rateLimitResult = await checkRateLimit(request, '/api/payroll');
+    if (!rateLimitResult.allowed) {
+      return NextResponse.json(
+        { error: '操作過於頻繁，請稍後再試', retryAfter: rateLimitResult.retryAfter },
+        { status: 429, headers: { 'Retry-After': rateLimitResult.retryAfter?.toString() || '60' } }
+      );
+    }
+
     const user = await getUserFromRequest(request);
     
     if (!user) {
@@ -62,15 +83,27 @@ export async function GET(request: NextRequest) {
     if (isEmployee) {
       where.employeeId = user.employeeId;
     } else if (employeeId) {
-      where.employeeId = parseInt(employeeId);
+      const parsedEmployeeId = parseIntegerQueryParam(employeeId, { min: 1, max: 99999999 });
+      if (!parsedEmployeeId.isValid || parsedEmployeeId.value === null) {
+        return NextResponse.json({ error: '員工ID格式無效' }, { status: 400 });
+      }
+      where.employeeId = parsedEmployeeId.value;
     }
 
     if (year) {
-      where.payYear = parseInt(year);
+      const parsedYear = parseIntegerQueryParam(year, { min: 2000, max: 2100 });
+      if (!parsedYear.isValid || parsedYear.value === null) {
+        return NextResponse.json({ error: '年份格式無效' }, { status: 400 });
+      }
+      where.payYear = parsedYear.value;
     }
 
     if (month) {
-      where.payMonth = parseInt(month);
+      const parsedMonth = parseIntegerQueryParam(month, { min: 1, max: 12 });
+      if (!parsedMonth.isValid || parsedMonth.value === null) {
+        return NextResponse.json({ error: '月份格式無效' }, { status: 400 });
+      }
+      where.payMonth = parsedMonth.value;
     }
 
     const payrollRecords = await prisma.payrollRecord.findMany({
@@ -137,9 +170,21 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '員工ID、年份和月份為必填' }, { status: 400 });
     }
 
-    const employeeIdNumber = Number(employeeId);
-    const payYearNumber = Number(payYear);
-    const payMonthNumber = Number(payMonth);
+    const employeeIdNumber = parsePayrollInteger(employeeId, { min: 1, max: 99999999 });
+    const payYearNumber = parsePayrollInteger(payYear, { min: 2000, max: 2100 });
+    const payMonthNumber = parsePayrollInteger(payMonth, { min: 1, max: 12 });
+
+    if (employeeIdNumber === null) {
+      return NextResponse.json({ error: '員工ID格式無效' }, { status: 400 });
+    }
+
+    if (payYearNumber === null) {
+      return NextResponse.json({ error: '年份格式無效' }, { status: 400 });
+    }
+
+    if (payMonthNumber === null) {
+      return NextResponse.json({ error: '月份格式無效' }, { status: 400 });
+    }
 
     // 檢查是否已存在該月份的薪資記錄
     const existingRecord = await prisma.payrollRecord.findFirst({
@@ -163,39 +208,31 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '找不到員工資訊' }, { status: 404 });
     }
 
-    // 計算該月份的考勤記錄
-    const startDate = new Date(payYearNumber, payMonthNumber - 1, 1);
-    const endDate = new Date(payYearNumber, payMonthNumber, 0);
-
-    const attendanceRecords = await prisma.attendanceRecord.findMany({
-      where: {
-        employeeId: employeeIdNumber,
-        workDate: {
-          gte: startDate,
-          lte: endDate
-        }
-      }
+    const [holidayDates, supplementaryPremiumSettings, laborLawConfig] = await Promise.all([
+      getPayrollHolidayDates(payYearNumber, payMonthNumber),
+      getStoredSupplementaryPremiumSettings(),
+      getStoredLaborLawConfig(),
+    ]);
+    const {
+      payrollResult,
+      validation,
+      bonuses,
+      totals,
+    } = await computePayrollForEmployee(employee, payYearNumber, payMonthNumber, {
+      holidayDates,
+      includeBonus: true,
+      supplementaryPremiumSettings,
+      laborLawConfig,
     });
 
-    // 計算總工時和加班時數
-    let totalRegularHours = 0;
-    let totalOvertimeHours = 0;
+    if (!validation.isValid) {
+      return NextResponse.json(
+        { error: `薪資計算驗證失敗: ${validation.errors.join(', ')}` },
+        { status: 400 }
+      );
+    }
 
-    attendanceRecords.forEach(record => {
-      if (record.regularHours) {
-        totalRegularHours += record.regularHours;
-      }
-      if (record.overtimeHours) {
-        totalOvertimeHours += record.overtimeHours;
-      }
-    });
-
-    // 計算薪資
-    const basePay = employee.baseSalary;
-    const overtimePay = totalOvertimeHours * employee.hourlyRate;
-    
-    // 計算全勤獎金
-    let perfectAttendanceBonus = 0;
+    // 保留全勤獎金檢查作為記錄提醒，不改變統一後的薪資計算邏輯
     try {
       const paResult = await calculatePerfectAttendanceBonus(
         employee.id,
@@ -203,69 +240,50 @@ export async function POST(request: NextRequest) {
         payMonthNumber
       );
       if (paResult.eligible) {
-        perfectAttendanceBonus = paResult.actualAmount;
-        console.log(`✅ 全勤獎金計算: ${employee.name} - ${perfectAttendanceBonus} 元 (${paResult.details})`);
+        console.log(`✅ 全勤獎金檢查: ${employee.name} - ${paResult.actualAmount} 元 (${paResult.details})`);
       }
     } catch (paError) {
       console.warn('計算全勤獎金失敗:', paError);
     }
-    
-    const grossPay = basePay + overtimePay + perfectAttendanceBonus;
-    
-    // 查詢該月份是否有獎金記錄，並計算對應的補充保費
-    let bonusSupplementaryPremium = 0;
-    try {
-      const bonusRecords = await prisma.bonusRecord.findMany({
-        where: {
-          employeeId: employee.id,
-          payrollYear: payYearNumber,
-          payrollMonth: payMonthNumber
-        }
-      });
-      
-      bonusSupplementaryPremium = bonusRecords.reduce((sum, record) => sum + record.supplementaryPremium, 0);
-    } catch (bonusError) {
-      console.warn('查詢獎金補充保費失敗:', bonusError);
-      // 獎金補充保費查詢失敗不影響主要薪資計算，繼續處理
-    }
-    
-    // 計算稅金和扣除額 (包含獎金補充保費)
-    const taxCalculation = calculateAllDeductions(
-      grossPay, 
-      grossPay * 12, // 年薪估算
-      employee.dependents || 0,
-      bonusSupplementaryPremium
+
+    const disputeAdjustments = await getPendingApprovedPayrollDisputeAdjustments(
+      employee.id,
+      payYearNumber,
+      payMonthNumber
     );
-    const netPay = taxCalculation.netSalary;
 
-    // 基本 payload，符合目前 Prisma Client 的型別
-    const baseData: Prisma.PayrollRecordUncheckedCreateInput = {
-      employeeId: employeeIdNumber,
-      payYear: payYearNumber,
-      payMonth: payMonthNumber,
-      regularHours: totalRegularHours,
-      overtimeHours: totalOvertimeHours,
-      basePay,
-      overtimePay,
-      grossPay,
-      netPay,
-      hourlyWage: employee.hourlyRate || 0,
-    };
+    const payload = buildPayrollRecordData(
+      employee,
+      payYearNumber,
+      payMonthNumber,
+      payrollResult,
+      totals,
+      bonuses,
+      disputeAdjustments
+    ) as unknown as Prisma.PayrollRecordUncheckedCreateInput;
 
-    // 動態附加可用欄位（解決 client 尚未更新造成的型別不一致）
-    const payrollModel = Prisma.dmmf.datamodel.models.find(m => m.name === 'PayrollRecord');
-    const fieldSet = new Set((payrollModel?.fields ?? []).map(f => f.name));
-    const extraData = {} as { [key: string]: number };
-    if (fieldSet.has('laborInsurance')) extraData.laborInsurance = taxCalculation.laborInsurance;
-    if (fieldSet.has('healthInsurance')) extraData.healthInsurance = taxCalculation.healthInsurance;
-    if (fieldSet.has('supplementaryInsurance')) extraData.supplementaryInsurance = taxCalculation.supplementaryHealthInsurance;
-    if (fieldSet.has('incomeTax')) extraData.incomeTax = taxCalculation.incomeTax;
-    if (fieldSet.has('totalDeductions')) extraData.totalDeductions = taxCalculation.totalDeductions;
+    const payrollRecord = await prisma.$transaction(async (tx) => {
+      const createdRecord = await tx.payrollRecord.create({
+        data: payload,
+      });
 
-    const payload = { ...baseData, ...extraData } as unknown as Prisma.PayrollRecordUncheckedCreateInput;
+      for (const adjustment of disputeAdjustments) {
+        await tx.payrollAdjustment.create({
+          data: {
+            payrollId: createdRecord.id,
+            disputeId: adjustment.disputeId,
+            type: adjustment.type,
+            category: adjustment.category,
+            description: adjustment.description,
+            amount: adjustment.amount,
+            originalYear: adjustment.originalYear,
+            originalMonth: adjustment.originalMonth,
+            createdBy: user.employeeId,
+          }
+        });
+      }
 
-    const payrollRecord = await prisma.payrollRecord.create({
-      data: payload,
+      return createdRecord;
     });
 
     return NextResponse.json(

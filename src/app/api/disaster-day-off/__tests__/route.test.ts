@@ -23,7 +23,9 @@ jest.mock('@/lib/database', () => ({
       findUnique: jest.fn(),
       update: jest.fn(),
       create: jest.fn(),
+      delete: jest.fn(),
     },
+    $transaction: jest.fn(),
   },
 }));
 
@@ -67,11 +69,27 @@ describe('disaster day off route guards', () => {
     mockPrisma.disasterDayOff.findUnique.mockResolvedValue(null as never);
     mockPrisma.employee.findMany.mockResolvedValue([{ id: 11 }] as never);
     mockPrisma.schedule.findUnique.mockResolvedValue(null as never);
+    mockPrisma.schedule.delete.mockResolvedValue({ id: 100 } as never);
     mockPrisma.disasterDayOff.create.mockResolvedValue({
       id: 1,
       disasterDate: '2026-07-06',
       creator: { id: 10, name: 'Admin', department: 'HR' },
     } as never);
+    mockPrisma.disasterDayOff.update.mockResolvedValue({
+      id: 1,
+      disasterDate: '2026-07-06',
+      disasterType: 'TYPHOON',
+      stopWorkType: 'PM',
+      description: '',
+      creator: { id: 10, name: 'Admin', department: 'HR' },
+    } as never);
+    mockPrisma.$transaction.mockImplementation(async (input: unknown) => {
+      if (typeof input === 'function') {
+        return input(mockPrisma);
+      }
+
+      return Promise.all(input as Promise<unknown>[]);
+    });
   });
 
   it('returns 400 on GET when year is malformed', async () => {
@@ -144,6 +162,49 @@ describe('disaster day off route guards', () => {
     expect(data.error).toBe('affectedEmployeeIds 格式錯誤');
   });
 
+  it('returns 400 on POST when disasterDate is not a real calendar date', async () => {
+    const request = new NextRequest('http://localhost:3000/api/disaster-day-off', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        disasterDate: '2026-02-30',
+        disasterType: 'TYPHOON',
+        stopWorkType: 'FULL',
+      }),
+    });
+
+    const response = await POST(request);
+    const data = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(data.error).toBe('日期格式不正確');
+    expect(mockPrisma.disasterDayOff.create).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 on POST when any requested date already has a disaster record', async () => {
+    mockPrisma.disasterDayOff.findMany.mockResolvedValue([
+      { disasterDate: '2026-07-06' },
+    ] as never);
+
+    const request = new NextRequest('http://localhost:3000/api/disaster-day-off', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        disasterDate: '2026-07-06',
+        numberOfDays: 1,
+        disasterType: 'TYPHOON',
+        stopWorkType: 'FULL',
+      }),
+    });
+
+    const response = await POST(request);
+    const data = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(data.error).toBe('以下日期已設定天災假：2026-07-06');
+    expect(mockPrisma.disasterDayOff.create).not.toHaveBeenCalled();
+  });
+
   it('returns 400 on PUT when body is null', async () => {
     const request = new NextRequest('http://localhost:3000/api/disaster-day-off', {
       method: 'PUT',
@@ -188,6 +249,53 @@ describe('disaster day off route guards', () => {
     expect(data.error).toBe('記錄ID 格式錯誤');
   });
 
+  it('updates TD schedules when stop work type changes on PUT', async () => {
+    mockPrisma.disasterDayOff.findUnique.mockResolvedValue({
+      id: 1,
+      disasterDate: '2026-07-06',
+      disasterType: 'TYPHOON',
+      stopWorkType: 'FULL',
+      description: '',
+      originalSchedules: JSON.stringify([
+        {
+          employeeId: 11,
+          existed: true,
+          shiftType: 'A',
+          startTime: '08:00',
+          endTime: '17:00',
+        },
+      ]),
+    } as never);
+    mockPrisma.schedule.findUnique.mockResolvedValue({
+      id: 88,
+      shiftType: 'TD',
+      startTime: '00:00',
+      endTime: '23:59',
+    } as never);
+
+    const request = new NextRequest('http://localhost:3000/api/disaster-day-off', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        id: 1,
+        stopWorkType: 'PM',
+      }),
+    });
+
+    const response = await PUT(request);
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.success).toBe(true);
+    expect(mockPrisma.schedule.update).toHaveBeenCalledWith({
+      where: { id: 88 },
+      data: {
+        startTime: '12:00',
+        endTime: '23:59',
+      },
+    });
+  });
+
   it('returns 400 on DELETE when id is malformed', async () => {
     const request = new NextRequest('http://localhost:3000/api/disaster-day-off?id=abc', {
       method: 'DELETE',
@@ -198,5 +306,73 @@ describe('disaster day off route guards', () => {
 
     expect(response.status).toBe(400);
     expect(data.error).toBe('記錄ID 格式錯誤');
+  });
+
+  it('deletes generated TD schedules when removing a record with no original schedule', async () => {
+    mockPrisma.disasterDayOff.findUnique.mockResolvedValue({
+      id: 1,
+      disasterDate: '2026-07-06',
+      originalSchedules: JSON.stringify([
+        {
+          employeeId: 11,
+          existed: false,
+          shiftType: null,
+          startTime: null,
+          endTime: null,
+        },
+      ]),
+    } as never);
+    mockPrisma.schedule.findUnique.mockResolvedValue({
+      id: 88,
+      shiftType: 'TD',
+      startTime: '00:00',
+      endTime: '23:59',
+    } as never);
+
+    const request = new NextRequest('http://localhost:3000/api/disaster-day-off?id=1', {
+      method: 'DELETE',
+    });
+
+    const response = await DELETE(request);
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.success).toBe(true);
+    expect(mockPrisma.schedule.delete).toHaveBeenCalledWith({
+      where: { id: 88 },
+    });
+  });
+
+  it('returns 409 on DELETE when an affected schedule is no longer TD', async () => {
+    mockPrisma.disasterDayOff.findUnique.mockResolvedValue({
+      id: 1,
+      disasterDate: '2026-07-06',
+      originalSchedules: JSON.stringify([
+        {
+          employeeId: 11,
+          existed: true,
+          shiftType: 'A',
+          startTime: '08:00',
+          endTime: '17:00',
+        },
+      ]),
+    } as never);
+    mockPrisma.schedule.findUnique.mockResolvedValue({
+      id: 88,
+      shiftType: 'A',
+      startTime: '08:00',
+      endTime: '17:00',
+    } as never);
+
+    const request = new NextRequest('http://localhost:3000/api/disaster-day-off?id=1', {
+      method: 'DELETE',
+    });
+
+    const response = await DELETE(request);
+    const data = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(data.error).toBe('有 1 筆班表已被改為非 TD，請先確認班表後再刪除天災假記錄');
+    expect(mockPrisma.disasterDayOff.delete).not.toHaveBeenCalled();
   });
 });

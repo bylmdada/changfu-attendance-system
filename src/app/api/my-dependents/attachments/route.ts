@@ -4,6 +4,7 @@ import { getUserFromRequest } from '@/lib/auth';
 import { writeFile, mkdir } from 'fs/promises';
 import path from 'path';
 import { validateCSRF } from '@/lib/csrf';
+import { parseIntegerQueryParam } from '@/lib/query-params';
 
 // 允許的檔案類型
 const ALLOWED_MIME_TYPES = [
@@ -24,6 +25,14 @@ const FILE_TYPES = {
   HOUSEHOLD_BOOK: '戶口名簿',
   OTHER: '其他證明'
 };
+
+function parseAttachmentId(value: unknown) {
+  if (typeof value !== 'string') {
+    return { isValid: false, value: null };
+  }
+
+  return parseIntegerQueryParam(value, { min: 1, max: 99999999 });
+}
 
 // 上傳附件
 export async function POST(request: NextRequest) {
@@ -46,6 +55,13 @@ export async function POST(request: NextRequest) {
     if (!applicationId || !fileType || !file) {
       return NextResponse.json({ error: '缺少必要參數' }, { status: 400 });
     }
+
+    const applicationIdResult = parseAttachmentId(applicationId);
+    if (!applicationIdResult.isValid || applicationIdResult.value === null) {
+      return NextResponse.json({ error: '申請 ID 格式無效' }, { status: 400 });
+    }
+
+    const parsedApplicationId = applicationIdResult.value;
 
     // 驗證檔案類型
     if (!ALLOWED_MIME_TYPES.includes(file.type)) {
@@ -77,13 +93,14 @@ export async function POST(request: NextRequest) {
     // 驗證申請是否存在且屬於當前用戶
     const application = await prisma.dependentApplication.findFirst({
       where: {
-        id: parseInt(applicationId as string),
-        employeeId: user.employeeId || 0
+        id: parsedApplicationId,
+        employeeId: user.employeeId || 0,
+        status: 'PENDING'
       }
     });
 
     if (!application) {
-      return NextResponse.json({ error: '申請不存在或無權限' }, { status: 404 });
+      return NextResponse.json({ error: '申請不存在、無權限，或已無法修改附件' }, { status: 404 });
     }
 
     // 確保目錄存在
@@ -92,7 +109,7 @@ export async function POST(request: NextRequest) {
 
     // 生成唯一檔名
     const timestamp = Date.now();
-    const uniqueFileName = `${applicationId}_${fileType}_${timestamp}${ext}`;
+    const uniqueFileName = `${parsedApplicationId}_${fileType}_${timestamp}${ext}`;
     const filePath = path.join(uploadDir, uniqueFileName);
 
     // 儲存檔案
@@ -102,9 +119,9 @@ export async function POST(request: NextRequest) {
 
     // 儲存到資料庫
     const attachment = await prisma.dependentApplicationAttachment.create({
-      data: {
-        applicationId: parseInt(applicationId as string),
-        fileType,
+        data: {
+          applicationId: parsedApplicationId,
+          fileType,
         fileName: file.name,
         filePath: `/uploads/dependent-attachments/${uniqueFileName}`,
         fileSize: file.size,
@@ -144,10 +161,15 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: '缺少申請 ID' }, { status: 400 });
     }
 
+    const applicationIdResult = parseAttachmentId(applicationId);
+    if (!applicationIdResult.isValid || applicationIdResult.value === null) {
+      return NextResponse.json({ error: '申請 ID 格式無效' }, { status: 400 });
+    }
+
     // 驗證權限
     const application = await prisma.dependentApplication.findFirst({
       where: {
-        id: parseInt(applicationId),
+        id: applicationIdResult.value,
         ...(user.role !== 'ADMIN' && user.role !== 'HR' 
           ? { employeeId: user.employeeId || 0 } 
           : {})
@@ -201,9 +223,14 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: '缺少附件 ID' }, { status: 400 });
     }
 
+    const attachmentIdResult = parseAttachmentId(id);
+    if (!attachmentIdResult.isValid || attachmentIdResult.value === null) {
+      return NextResponse.json({ error: '附件 ID 格式無效' }, { status: 400 });
+    }
+
     // 驗證權限
     const attachment = await prisma.dependentApplicationAttachment.findFirst({
-      where: { id: parseInt(id) },
+      where: { id: attachmentIdResult.value },
       include: { application: true }
     });
 
@@ -224,7 +251,7 @@ export async function DELETE(request: NextRequest) {
 
     // 刪除資料庫記錄（檔案保留作為備份）
     await prisma.dependentApplicationAttachment.delete({
-      where: { id: parseInt(id) }
+      where: { id: attachmentIdResult.value }
     });
 
     return NextResponse.json({ success: true, message: '附件已刪除' });

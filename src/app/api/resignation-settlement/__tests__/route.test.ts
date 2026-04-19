@@ -7,6 +7,9 @@ import { validateCSRF } from '@/lib/csrf';
 
 jest.mock('@/lib/database', () => ({
   prisma: {
+    resignationRecord: {
+      findFirst: jest.fn(),
+    },
     employee: {
       findUnique: jest.fn(),
     },
@@ -17,6 +20,7 @@ jest.mock('@/lib/database', () => ({
     annualLeave: {
       findMany: jest.fn(),
       updateMany: jest.fn(),
+      update: jest.fn(),
     },
     systemSettings: {
       findUnique: jest.fn(),
@@ -62,6 +66,7 @@ const transactionClient = {
   },
   annualLeave: {
     updateMany: jest.fn(),
+    update: jest.fn(),
   },
 };
 
@@ -70,6 +75,11 @@ describe('resignation settlement auth guards', () => {
     jest.clearAllMocks();
     mockCheckRateLimit.mockResolvedValue({ allowed: true } as never);
     mockValidateCSRF.mockResolvedValue({ valid: true } as never);
+    mockPrisma.resignationRecord.findFirst.mockResolvedValue({
+      id: 9,
+      employeeId: 3,
+      status: 'COMPLETED',
+    } as never);
     mockPrisma.$transaction.mockImplementation(async (callback) => callback(transactionClient as never) as never);
   });
 
@@ -123,6 +133,26 @@ describe('resignation settlement auth guards', () => {
     expect(mockPrisma.resignationSettlement.findUnique).not.toHaveBeenCalled();
   });
 
+  it('returns 400 on POST when the acting admin account has no employee profile id', async () => {
+    mockGetUserFromRequest.mockResolvedValue({ role: 'ADMIN', employeeId: null } as never);
+
+    const request = new NextRequest('http://localhost:3000/api/resignation-settlement', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ employeeId: 3 }),
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload.error).toBe('當前帳號缺少員工資料，無法執行離職結算');
+    expect(mockPrisma.employee.findUnique).not.toHaveBeenCalled();
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+  });
+
   it('returns 400 on POST when employeeId is not a clean positive integer', async () => {
     mockGetUserFromRequest.mockResolvedValue({ role: 'ADMIN', employeeId: 1 } as never);
 
@@ -143,6 +173,31 @@ describe('resignation settlement auth guards', () => {
     expect(mockPrisma.resignationSettlement.findUnique).not.toHaveBeenCalled();
   });
 
+  it('returns 400 on POST when the employee has not completed resignation yet', async () => {
+    mockGetUserFromRequest.mockResolvedValue({ role: 'ADMIN', employeeId: 1 } as never);
+    mockPrisma.employee.findUnique.mockResolvedValue({
+      id: 3,
+      baseSalary: 48000,
+    } as never);
+    mockPrisma.resignationRecord.findFirst.mockResolvedValue(null as never);
+
+    const request = new NextRequest('http://localhost:3000/api/resignation-settlement', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ employeeId: 3 }),
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload.error).toBe('該員工尚未完成離職流程，無法進行結算');
+    expect(mockPrisma.resignationSettlement.findUnique).not.toHaveBeenCalled();
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+  });
+
   it('wraps settlement creation and leave clearing writes in a transaction', async () => {
     mockGetUserFromRequest.mockResolvedValue({ role: 'ADMIN', employeeId: 9 } as never);
     mockPrisma.employee.findUnique.mockResolvedValue({
@@ -158,7 +213,7 @@ describe('resignation settlement auth guards', () => {
       pendingUse: 1,
     } as never);
     mockPrisma.annualLeave.findMany.mockResolvedValue([
-      { remainingDays: 2 },
+      { id: 21, remainingDays: 2 },
     ] as never);
     mockPrisma.systemSettings.findUnique.mockResolvedValue({
       value: JSON.stringify({ monthlyBasicHours: 240 }),
@@ -170,7 +225,7 @@ describe('resignation settlement auth guards', () => {
     } as never);
     transactionClient.compLeaveTransaction.create.mockResolvedValue({ id: 1 } as never);
     transactionClient.compLeaveBalance.update.mockResolvedValue({ employeeId: 3 } as never);
-    transactionClient.annualLeave.updateMany.mockResolvedValue({ count: 1 } as never);
+    transactionClient.annualLeave.update.mockResolvedValue({ id: 1 } as never);
 
     const request = new NextRequest('http://localhost:3000/api/resignation-settlement', {
       method: 'POST',
@@ -190,6 +245,97 @@ describe('resignation settlement auth guards', () => {
     expect(transactionClient.resignationSettlement.create).toHaveBeenCalled();
     expect(transactionClient.compLeaveTransaction.create).toHaveBeenCalled();
     expect(transactionClient.compLeaveBalance.update).toHaveBeenCalled();
-    expect(transactionClient.annualLeave.updateMany).toHaveBeenCalled();
+    expect(transactionClient.annualLeave.update).toHaveBeenCalledWith({
+      where: { id: 21 },
+      data: {
+        usedDays: { increment: 2 },
+        remainingDays: 0,
+      }
+    });
+  });
+
+  it('settles each annual leave record using its own remaining balance instead of incrementing all rows by the total', async () => {
+    mockGetUserFromRequest.mockResolvedValue({ role: 'ADMIN', employeeId: 9 } as never);
+    mockPrisma.employee.findUnique.mockResolvedValue({
+      id: 3,
+      baseSalary: 48000,
+    } as never);
+    mockPrisma.resignationSettlement.findUnique.mockResolvedValue(null as never);
+    mockPrisma.compLeaveBalance.findUnique.mockResolvedValue(null as never);
+    mockPrisma.annualLeave.findMany.mockResolvedValue([
+      { id: 11, remainingDays: 2 },
+      { id: 12, remainingDays: 3 },
+    ] as never);
+    mockPrisma.systemSettings.findUnique.mockResolvedValue({
+      value: JSON.stringify({ monthlyBasicHours: 240 }),
+    } as never);
+    transactionClient.resignationSettlement.create.mockResolvedValue({
+      id: 88,
+      employee: { id: 3, employeeId: 'E003', name: 'Test', department: 'HR', position: 'Staff', baseSalary: 48000 },
+      processor: { id: 9, name: 'Admin' },
+    } as never);
+    transactionClient.annualLeave.update.mockResolvedValue({ id: 11 } as never);
+
+    const request = new NextRequest('http://localhost:3000/api/resignation-settlement', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ employeeId: 3, notes: '離職結算' }),
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.success).toBe(true);
+    expect(transactionClient.annualLeave.update).toHaveBeenNthCalledWith(1, {
+      where: { id: 11 },
+      data: {
+        usedDays: { increment: 2 },
+        remainingDays: 0,
+      }
+    });
+    expect(transactionClient.annualLeave.update).toHaveBeenNthCalledWith(2, {
+      where: { id: 12 },
+      data: {
+        usedDays: { increment: 3 },
+        remainingDays: 0,
+      }
+    });
+  });
+
+  it('returns 400 when settlement creation hits the unique employee constraint during a race', async () => {
+    mockGetUserFromRequest.mockResolvedValue({ role: 'ADMIN', employeeId: 9 } as never);
+    mockPrisma.employee.findUnique.mockResolvedValue({
+      id: 3,
+      baseSalary: 48000,
+    } as never);
+    mockPrisma.resignationSettlement.findUnique.mockResolvedValue(null as never);
+    mockPrisma.compLeaveBalance.findUnique.mockResolvedValue(null as never);
+    mockPrisma.annualLeave.findMany.mockResolvedValue([
+      { id: 11, remainingDays: 2 },
+    ] as never);
+    mockPrisma.systemSettings.findUnique.mockResolvedValue({
+      value: JSON.stringify({ monthlyBasicHours: 240 }),
+    } as never);
+    transactionClient.resignationSettlement.create.mockRejectedValue({
+      code: 'P2002',
+      message: 'Unique constraint failed',
+    } as never);
+
+    const request = new NextRequest('http://localhost:3000/api/resignation-settlement', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ employeeId: 3 }),
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload).toEqual({ error: '該員工已進行過離職結算' });
   });
 });

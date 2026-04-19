@@ -50,9 +50,7 @@ export async function GET(request: NextRequest) {
     }
 
     // 根據設定計算實際層級
-    const maxLevel = workflow.requireManager
-      ? Math.min(Math.max(workflow.approvalLevel, 1), 3)
-      : 1;
+    const maxLevel = workflow.approvalLevel;
 
     return NextResponse.json({
       success: true,

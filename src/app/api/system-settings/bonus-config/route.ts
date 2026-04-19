@@ -13,12 +13,14 @@ import { safeParseSystemSettingsValue } from '@/lib/system-settings-json';
 
 type BonusConfigPayload = {
   bonusTypeName?: string;
+  isActive?: boolean;
   eligibilityRules?: Record<string, unknown>;
   paymentSchedule?: Record<string, unknown>;
 };
 
 type StoredBonusConfig = {
   bonusTypeName: string;
+  isActive: boolean;
   eligibilityRules: Record<string, unknown>;
   paymentSchedule: Record<string, unknown>;
 };
@@ -46,6 +48,7 @@ function parseBonusConfigField(
 function normalizeStoredConfig(
   config: {
     bonusTypeName?: string | null;
+    isActive?: boolean | null;
     eligibilityRules?: unknown;
     paymentSchedule?: unknown;
   } | null,
@@ -54,6 +57,7 @@ function normalizeStoredConfig(
 ): StoredBonusConfig {
   return {
     bonusTypeName: config?.bonusTypeName || defaultName,
+    isActive: config?.isActive !== false,
     eligibilityRules: parseBonusConfigField(config?.eligibilityRules, {}, `${bonusType}.eligibilityRules`),
     paymentSchedule: parseBonusConfigField(config?.paymentSchedule, {}, `${bonusType}.paymentSchedule`),
   };
@@ -72,9 +76,14 @@ function validateIncomingConfig(
   }
 
   const { bonusTypeName, eligibilityRules, paymentSchedule } = config;
+  const isActive = (config as Record<string, unknown>).isActive;
 
   if (bonusTypeName !== undefined && typeof bonusTypeName !== 'string') {
     return { error: `${label}名稱必須為字串` };
+  }
+
+  if (isActive !== undefined && typeof isActive !== 'boolean') {
+    return { error: `${label}啟用狀態必須為布林值` };
   }
 
   if (eligibilityRules !== undefined && !isPlainObject(eligibilityRules)) {
@@ -88,6 +97,7 @@ function validateIncomingConfig(
   return {
     value: {
       bonusTypeName,
+      isActive: isActive as boolean | undefined,
       eligibilityRules: eligibilityRules as Record<string, unknown> | undefined,
       paymentSchedule: paymentSchedule as Record<string, unknown> | undefined,
     },
@@ -95,6 +105,7 @@ function validateIncomingConfig(
 }
 
 async function upsertBonusConfig(
+  db: Pick<typeof prisma, 'bonusConfiguration'>,
   bonusType: 'YEAR_END' | 'FESTIVAL',
   defaultName: string,
   incomingConfig?: BonusConfigPayload
@@ -104,31 +115,32 @@ async function upsertBonusConfig(
   }
 
   const existingConfig = normalizeStoredConfig(
-    await prisma.bonusConfiguration.findUnique({ where: { bonusType } }),
+    await db.bonusConfiguration.findUnique({ where: { bonusType } }),
     defaultName,
     bonusType
   );
 
   const mergedConfig: StoredBonusConfig = {
     bonusTypeName: incomingConfig.bonusTypeName ?? existingConfig.bonusTypeName,
+    isActive: incomingConfig.isActive ?? existingConfig.isActive,
     eligibilityRules: incomingConfig.eligibilityRules ?? existingConfig.eligibilityRules,
     paymentSchedule: incomingConfig.paymentSchedule ?? existingConfig.paymentSchedule,
   };
 
-  await prisma.bonusConfiguration.upsert({
+  await db.bonusConfiguration.upsert({
     where: { bonusType },
     update: {
       bonusTypeName: mergedConfig.bonusTypeName,
       eligibilityRules: JSON.stringify(mergedConfig.eligibilityRules),
       paymentSchedule: JSON.stringify(mergedConfig.paymentSchedule),
-      isActive: true,
+      isActive: mergedConfig.isActive,
     },
     create: {
       bonusType,
       bonusTypeName: mergedConfig.bonusTypeName,
       eligibilityRules: JSON.stringify(mergedConfig.eligibilityRules),
       paymentSchedule: JSON.stringify(mergedConfig.paymentSchedule),
-      isActive: true,
+      isActive: mergedConfig.isActive,
     },
   });
 }
@@ -214,11 +226,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: validatedFestivalConfig.error }, { status: 400 });
     }
 
-    // 儲存年終獎金設定
-    await upsertBonusConfig('YEAR_END', '年終獎金', validatedYearEndConfig.value);
-
-    // 儲存三節獎金設定
-    await upsertBonusConfig('FESTIVAL', '三節獎金', validatedFestivalConfig.value);
+    await prisma.$transaction(async (tx) => {
+      await upsertBonusConfig(tx, 'YEAR_END', '年終獎金', validatedYearEndConfig.value);
+      await upsertBonusConfig(tx, 'FESTIVAL', '三節獎金', validatedFestivalConfig.value);
+    });
 
     return NextResponse.json({
       success: true,

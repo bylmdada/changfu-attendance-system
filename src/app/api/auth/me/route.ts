@@ -3,6 +3,7 @@ import { getAuthResultFromRequest } from '@/lib/auth';
 import { prisma } from '@/lib/database';
 import { Prisma } from '@prisma/client';
 import { buildActiveDeputyAssignmentWhere } from '@/lib/schedule-management-permissions';
+import { normalizeAttendancePermissions } from '@/lib/attendance-permission-scopes';
 
 function buildEmployeeSelect(): Prisma.EmployeeSelect {
   return {
@@ -80,6 +81,7 @@ export async function GET(request: NextRequest) {
     let isDepartmentManager = false;
     let isDeputyManager = false;
     let hasSchedulePermission = false;
+    const attendancePermissions = normalizeAttendancePermissions(undefined);
 
     if (userData.employee) {
       // 檢查部門主管
@@ -92,19 +94,46 @@ export async function GET(request: NextRequest) {
       isDepartmentManager = !!managerRecord;
 
       // 檢查代理人
+      const now = new Date();
       const deputyRecord = await prisma.managerDeputy.findFirst({
-        where: buildActiveDeputyAssignmentWhere(userData.employee.id)
+        where: buildActiveDeputyAssignmentWhere(userData.employee.id, now)
       });
-      isDeputyManager = !!deputyRecord;
+
+      let delegatedManagerRecord = null;
+      if (!deputyRecord) {
+        const approvalDelegates = await prisma.approvalDelegate.findMany({
+          where: {
+            delegateId: userData.employee.id,
+            isActive: true,
+            startDate: { lte: now },
+            endDate: { gte: now }
+          },
+          select: {
+            delegatorId: true
+          }
+        });
+
+        if (approvalDelegates.length > 0) {
+          delegatedManagerRecord = await prisma.departmentManager.findFirst({
+            where: {
+              employeeId: { in: approvalDelegates.map((delegate) => delegate.delegatorId) },
+              isActive: true
+            }
+          });
+        }
+      }
+      isDeputyManager = !!deputyRecord || !!delegatedManagerRecord;
 
       // 檢查班表管理權限（從 JSON permissions 欄位中讀取）
       const permissionRecord = await prisma.attendancePermission.findUnique({
         where: { employeeId: userData.employee.id }
       });
-      if (permissionRecord?.permissions) {
-        const permissions = permissionRecord.permissions as { scheduleManagement?: string[] };
-        hasSchedulePermission = Array.isArray(permissions.scheduleManagement) && permissions.scheduleManagement.length > 0;
-      }
+      const normalizedPermissions = normalizeAttendancePermissions(permissionRecord?.permissions);
+      attendancePermissions.leaveRequests = normalizedPermissions.leaveRequests;
+      attendancePermissions.overtimeRequests = normalizedPermissions.overtimeRequests;
+      attendancePermissions.shiftExchanges = normalizedPermissions.shiftExchanges;
+      attendancePermissions.scheduleManagement = normalizedPermissions.scheduleManagement;
+      hasSchedulePermission = attendancePermissions.scheduleManagement.length > 0;
     }
 
     const employee = buildEmployeeResponse(userData.employee);
@@ -118,7 +147,8 @@ export async function GET(request: NextRequest) {
         employee,
         isDepartmentManager,
         isDeputyManager,
-        hasSchedulePermission
+        hasSchedulePermission,
+        attendancePermissions
       }
     });
   } catch (error) {

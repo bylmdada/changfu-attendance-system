@@ -51,6 +51,15 @@ interface Application {
   createdAt: string;
 }
 
+const createDefaultFormData = () => ({
+  dependentName: '',
+  relationship: '',
+  idNumber: '',
+  birthDate: '',
+  effectiveDate: new Date().toISOString().split('T')[0],
+  remarks: ''
+});
+
 export default function MyDependentsPage() {
   const [loading, setLoading] = useState(true);
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -65,14 +74,7 @@ export default function MyDependentsPage() {
   const [selectedDependent, setSelectedDependent] = useState<Dependent | null>(null);
   const [submitting, setSubmitting] = useState(false);
   
-  const [formData, setFormData] = useState({
-    dependentName: '',
-    relationship: '',
-    idNumber: '',
-    birthDate: '',
-    effectiveDate: new Date().toISOString().split('T')[0],
-    remarks: ''
-  });
+  const [formData, setFormData] = useState(createDefaultFormData);
 
   // 附件相關狀態
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -102,6 +104,14 @@ export default function MyDependentsPage() {
     setTimeout(() => setToast(null), 3000);
   };
 
+  const closeAddForm = () => {
+    setShowAddForm(false);
+    setFormData(createDefaultFormData());
+    setAttachments([]);
+    setCurrentApplicationId(null);
+    setPendingFileType('');
+  };
+
   const loadData = async () => {
     try {
       const response = await fetch('/api/my-dependents', { credentials: 'include' });
@@ -124,6 +134,14 @@ export default function MyDependentsPage() {
 
   const handleSubmitAdd = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    if (currentApplicationId) {
+      showToast('success', '加保申請已完成');
+      closeAddForm();
+      await loadData();
+      return;
+    }
+
     setSubmitting(true);
 
     try {
@@ -137,22 +155,8 @@ export default function MyDependentsPage() {
 
       if (response.ok) {
         const data = await response.json();
-        // 如果有附件需要上傳，先保存申請 ID
-        if (data.id) {
-          setCurrentApplicationId(data.id);
-        }
-        showToast('success', '加保申請已提交');
-        setShowAddForm(false);
-        setFormData({
-          dependentName: '',
-          relationship: '',
-          idNumber: '',
-          birthDate: '',
-          effectiveDate: new Date().toISOString().split('T')[0],
-          remarks: ''
-        });
-        setAttachments([]);
-        setCurrentApplicationId(null);
+        showToast('success', data.message || '加保申請已提交');
+        closeAddForm();
         await loadData();
       } else {
         const error = await response.json();
@@ -611,7 +615,7 @@ export default function MyDependentsPage() {
             <div className="bg-white rounded-lg max-w-2xl w-full mx-4 p-6 max-h-[90vh] overflow-y-auto">
               <div className="flex justify-between items-center mb-4">
                 <h3 className="text-lg font-medium text-gray-900">申請加保</h3>
-                <button onClick={() => { setShowAddForm(false); setAttachments([]); setCurrentApplicationId(null); }} className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors">
+                <button onClick={closeAddForm} className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors">
                   <X className="w-6 h-6" />
                 </button>
               </div>
@@ -778,7 +782,7 @@ export default function MyDependentsPage() {
                 <div className="flex justify-end gap-3 pt-4">
                   <button
                     type="button"
-                    onClick={() => { setShowAddForm(false); setAttachments([]); setCurrentApplicationId(null); }}
+                    onClick={closeAddForm}
                     className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200"
                   >
                     取消
@@ -803,7 +807,18 @@ export default function MyDependentsPage() {
                           });
                           if (response.ok) {
                             const data = await response.json();
-                            setCurrentApplicationId(data.id);
+                            const applicationId = typeof data.id === 'number'
+                              ? data.id
+                              : typeof data.application?.id === 'number'
+                                ? data.application.id
+                                : null;
+
+                            if (applicationId === null) {
+                              showToast('error', '找不到申請編號，請重新提交');
+                              return;
+                            }
+
+                            setCurrentApplicationId(applicationId);
                             showToast('success', '申請已儲存，請上傳附件');
                           } else {
                             const error = await response.json();

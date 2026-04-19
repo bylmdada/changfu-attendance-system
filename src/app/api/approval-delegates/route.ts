@@ -4,15 +4,97 @@ import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { safeParseJSON } from '@/lib/validation';
+import { Prisma } from '@prisma/client';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+const APPROVAL_DELEGATE_RESOURCE_TYPES = ['LEAVE', 'OVERTIME', 'SHIFT'] as const;
+type ApprovalDelegateResourceType = typeof APPROVAL_DELEGATE_RESOURCE_TYPES[number];
+const APPROVAL_DELEGATE_RESOURCE_TYPE_SET = new Set<ApprovalDelegateResourceType>(APPROVAL_DELEGATE_RESOURCE_TYPES);
+
+function parsePositiveInteger(value: string | null): number | null {
+  if (!value || !/^\d+$/.test(value)) {
+    return null;
+  }
+
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function parseBodyPositiveInteger(value: unknown): number | null {
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value > 0 ? value : null;
+  }
+
+  if (typeof value === 'string') {
+    return parsePositiveInteger(value);
+  }
+
+  return null;
+}
+
+function parseDateInput(value: unknown): Date | null {
+  if (typeof value !== 'string' && !(value instanceof Date)) {
+    return null;
+  }
+
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function parseRequestResourceTypes(value: unknown): { resourceTypes: ApprovalDelegateResourceType[] | null; error: string | null } {
+  if (value === null || value === undefined) {
+    return { resourceTypes: null, error: null };
+  }
+
+  if (!Array.isArray(value)) {
+    return { resourceTypes: null, error: 'resourceTypes 必須是陣列或 null' };
+  }
+
+  const normalized = Array.from(new Set(value));
+  const invalidType = normalized.find((item) => (
+    typeof item !== 'string' || !APPROVAL_DELEGATE_RESOURCE_TYPE_SET.has(item as ApprovalDelegateResourceType)
+  ));
+
+  if (invalidType) {
+    return { resourceTypes: null, error: 'resourceTypes 包含不支援的審核類型' };
+  }
+
+  return {
+    resourceTypes: normalized.length === 0 ? null : normalized as ApprovalDelegateResourceType[],
+    error: null
+  };
+}
+
+function parseStoredResourceTypes(value: string | null): ApprovalDelegateResourceType[] | null {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) {
+      return null;
+    }
+
+    return parsed.filter((item): item is ApprovalDelegateResourceType => (
+      typeof item === 'string' && APPROVAL_DELEGATE_RESOURCE_TYPE_SET.has(item as ApprovalDelegateResourceType)
+    ));
+  } catch {
+    return null;
+  }
+}
+
+function isPrivilegedRole(role: string | undefined) {
+  return role === 'ADMIN' || role === 'HR';
+}
+
 // GET - 取得代理審核設定
 export async function GET(request: NextRequest) {
   try {
-    const rateLimitResult = await checkRateLimit(request);
+    const rateLimitResult = await checkRateLimit(request, '/api/approval-delegates');
     if (!rateLimitResult.allowed) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
@@ -25,25 +107,56 @@ export async function GET(request: NextRequest) {
 
     const { searchParams } = new URL(request.url);
     const delegatorId = searchParams.get('delegatorId');
+    const delegateId = searchParams.get('delegateId');
     const onlyActive = searchParams.get('active') !== 'false';
+    const normalizedDelegatorId = delegatorId ? parsePositiveInteger(delegatorId) : null;
+    const normalizedDelegateId = delegateId ? parsePositiveInteger(delegateId) : null;
+
+    if (delegatorId && normalizedDelegatorId === null) {
+      return NextResponse.json({ error: 'delegatorId 格式錯誤' }, { status: 400 });
+    }
+
+    if (delegateId && normalizedDelegateId === null) {
+      return NextResponse.json({ error: 'delegateId 格式錯誤' }, { status: 400 });
+    }
 
     const now = new Date();
-    const whereClause: {
-      delegatorId?: number;
-      isActive?: boolean;
-      startDate?: { lte: Date };
-      endDate?: { gte: Date };
-    } = {};
+    const whereConditions: Prisma.ApprovalDelegateWhereInput[] = [];
 
-    if (delegatorId) {
-      whereClause.delegatorId = parseInt(delegatorId);
+    if (!isPrivilegedRole(decoded.role)) {
+      if (!decoded.employeeId) {
+        return NextResponse.json({ error: '缺少員工資訊' }, { status: 403 });
+      }
+
+      whereConditions.push({
+        OR: [
+          { delegatorId: decoded.employeeId },
+          { delegateId: decoded.employeeId }
+        ]
+      });
+    }
+
+    if (normalizedDelegatorId !== null) {
+      whereConditions.push({ delegatorId: normalizedDelegatorId });
+    }
+
+    if (normalizedDelegateId !== null) {
+      whereConditions.push({ delegateId: normalizedDelegateId });
     }
 
     if (onlyActive) {
-      whereClause.isActive = true;
-      whereClause.startDate = { lte: now };
-      whereClause.endDate = { gte: now };
+      whereConditions.push({
+        isActive: true,
+        startDate: { lte: now },
+        endDate: { gte: now }
+      });
     }
+
+    const whereClause = whereConditions.length === 0
+      ? undefined
+      : whereConditions.length === 1
+        ? whereConditions[0]
+        : { AND: whereConditions };
 
     const delegates = await prisma.approvalDelegate.findMany({
       where: whereClause,
@@ -73,7 +186,7 @@ export async function GET(request: NextRequest) {
     // 解析 JSON 欄位
     const parsedDelegates = delegates.map(d => ({
       ...d,
-      resourceTypes: d.resourceTypes ? JSON.parse(d.resourceTypes) : null
+      resourceTypes: parseStoredResourceTypes(d.resourceTypes)
     }));
 
     return NextResponse.json({
@@ -89,7 +202,7 @@ export async function GET(request: NextRequest) {
 // POST - 建立代理審核設定
 export async function POST(request: NextRequest) {
   try {
-    const rateLimitResult = await checkRateLimit(request);
+    const rateLimitResult = await checkRateLimit(request, '/api/approval-delegates');
     if (!rateLimitResult.allowed) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
@@ -118,47 +231,58 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '請提供有效的代理審核設定資料' }, { status: 400 });
     }
 
-    const delegatorId = typeof body.delegatorId === 'number' || typeof body.delegatorId === 'string'
-      ? body.delegatorId
-      : undefined;
-    const delegateId = typeof body.delegateId === 'number' || typeof body.delegateId === 'string'
-      ? body.delegateId
-      : undefined;
-    const startDate = typeof body.startDate === 'string' || body.startDate instanceof Date
-      ? body.startDate
-      : undefined;
-    const endDate = typeof body.endDate === 'string' || body.endDate instanceof Date
-      ? body.endDate
-      : undefined;
-    const resourceTypes = body.resourceTypes;
+    const normalizedDelegatorId = parseBodyPositiveInteger(body.delegatorId);
+    const normalizedDelegateId = parseBodyPositiveInteger(body.delegateId);
+    const start = parseDateInput(body.startDate);
+    const end = parseDateInput(body.endDate);
+    const { resourceTypes, error: resourceTypesError } = parseRequestResourceTypes(body.resourceTypes);
 
     // 驗證
-    if (!delegatorId || !delegateId || !startDate || !endDate) {
+    if (!normalizedDelegatorId || !normalizedDelegateId || !start || !end) {
       return NextResponse.json({ error: '缺少必要欄位' }, { status: 400 });
     }
 
-    const normalizedDelegatorId = parseInt(String(delegatorId), 10);
-    const normalizedDelegateId = parseInt(String(delegateId), 10);
-
-    if (Number.isNaN(normalizedDelegatorId) || Number.isNaN(normalizedDelegateId)) {
-      return NextResponse.json({ error: '缺少必要欄位' }, { status: 400 });
+    if (resourceTypesError) {
+      return NextResponse.json({ error: resourceTypesError }, { status: 400 });
     }
 
     if (normalizedDelegatorId === normalizedDelegateId) {
       return NextResponse.json({ error: '委託人與代理人不能相同' }, { status: 400 });
     }
 
-    const start = new Date(startDate);
-    const end = new Date(endDate);
-
     if (end <= start) {
       return NextResponse.json({ error: '結束日期必須晚於開始日期' }, { status: 400 });
     }
 
-    // 權限檢查：只能設定自己的代理，或管理員可設定任何人
-
-    if (decoded.role !== 'ADMIN' && decoded.employeeId !== normalizedDelegatorId) {
+    // 權限檢查：只能設定自己的代理，或 HR/管理員可設定任何人
+    if (!isPrivilegedRole(decoded.role) && decoded.employeeId !== normalizedDelegatorId) {
       return NextResponse.json({ error: '只能設定自己的代理審核' }, { status: 403 });
+    }
+
+    const [delegator, delegateEmployee, managerRecord] = await Promise.all([
+      prisma.employee.findUnique({
+        where: { id: normalizedDelegatorId },
+        select: { id: true }
+      }),
+      prisma.employee.findUnique({
+        where: { id: normalizedDelegateId },
+        select: { id: true }
+      }),
+      prisma.departmentManager.findFirst({
+        where: {
+          employeeId: normalizedDelegatorId,
+          isActive: true
+        },
+        select: { id: true }
+      })
+    ]);
+
+    if (!delegator || !delegateEmployee) {
+      return NextResponse.json({ error: '找不到委託人或代理人資料' }, { status: 404 });
+    }
+
+    if (!managerRecord) {
+      return NextResponse.json({ error: '委託人目前不是有效主管，無法設定代理審核' }, { status: 400 });
     }
 
     // 檢查是否有重疊的代理設定
@@ -203,7 +327,7 @@ export async function POST(request: NextRequest) {
       message: '代理審核設定已建立',
       delegate: {
         ...delegate,
-        resourceTypes: delegate.resourceTypes ? JSON.parse(delegate.resourceTypes) : null
+        resourceTypes: parseStoredResourceTypes(delegate.resourceTypes)
       }
     });
   } catch (error) {
@@ -215,14 +339,14 @@ export async function POST(request: NextRequest) {
 // DELETE - 取消代理審核設定
 export async function DELETE(request: NextRequest) {
   try {
-    const rateLimitResult = await checkRateLimit(request);
+    const rateLimitResult = await checkRateLimit(request, '/api/approval-delegates');
     if (!rateLimitResult.allowed) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
 
     const csrfResult = await validateCSRF(request);
     if (!csrfResult.valid) {
-      return NextResponse.json({ error: 'CSRF token validation failed' }, { status: 403 });
+      return NextResponse.json({ error: 'CSRF驗證失敗' }, { status: 403 });
     }
 
     const decoded = await getUserFromRequest(request);
@@ -238,8 +362,13 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: '缺少 ID' }, { status: 400 });
     }
 
+    const normalizedId = parsePositiveInteger(id);
+    if (!normalizedId) {
+      return NextResponse.json({ error: 'ID 格式錯誤' }, { status: 400 });
+    }
+
     const existing = await prisma.approvalDelegate.findUnique({
-      where: { id: parseInt(id) }
+      where: { id: normalizedId }
     });
 
     if (!existing) {
@@ -247,12 +376,12 @@ export async function DELETE(request: NextRequest) {
     }
 
     // 權限檢查
-    if (decoded.role !== 'ADMIN' && decoded.employeeId !== existing.delegatorId) {
+    if (!isPrivilegedRole(decoded.role) && decoded.employeeId !== existing.delegatorId) {
       return NextResponse.json({ error: '無權取消此代理設定' }, { status: 403 });
     }
 
     await prisma.approvalDelegate.update({
-      where: { id: parseInt(id) },
+      where: { id: normalizedId },
       data: { isActive: false }
     });
 

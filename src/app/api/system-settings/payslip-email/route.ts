@@ -27,11 +27,57 @@ const DEFAULT_PAYSLIP_EMAIL_SETTINGS = {
 
 如有任何問題，請洽人事部門。
 
-此為系統自動發送信件，請勿直接回覆。`
+  此為系統自動發送信件，請勿直接回覆。`
 };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function normalizeOptionalString(value: unknown): string | null | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (value === null) {
+    return null;
+  }
+
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  return value;
+}
+
+function parseBooleanSetting(value: unknown, fallback: boolean) {
+  if (value === undefined) {
+    return { value: fallback, isValid: true };
+  }
+
+  if (typeof value !== 'boolean') {
+    return { value: fallback, isValid: false };
+  }
+
+  return { value, isValid: true };
+}
+
+function parseSmtpPortSetting(value: unknown, fallback: number) {
+  if (value === undefined) {
+    return { value: fallback, isValid: true };
+  }
+
+  const parsedValue = typeof value === 'number'
+    ? value
+    : typeof value === 'string' && /^\d+$/.test(value.trim())
+      ? Number(value.trim())
+      : Number.NaN;
+
+  if (!Number.isInteger(parsedValue) || parsedValue < 1 || parsedValue > 65535) {
+    return { value: fallback, isValid: false };
+  }
+
+  return { value: parsedValue, isValid: true };
 }
 
 export async function GET(request: NextRequest) {
@@ -112,23 +158,77 @@ export async function PUT(request: NextRequest) {
 
     // 取得現有設定
     const existing = await prisma.payslipEmailSettings.findFirst();
+    const enabledResult = parseBooleanSetting(enabled, existing?.enabled ?? false);
+    const smtpPortResult = parseSmtpPortSetting(smtpPort, existing?.smtpPort ?? 587);
+    const smtpSecureResult = parseBooleanSetting(smtpSecure, existing?.smtpSecure ?? true);
+    const smtpHostValue = normalizeOptionalString(smtpHost);
+    const smtpUserValue = normalizeOptionalString(smtpUser);
+    const smtpPasswordValue = normalizeOptionalString(smtpPassword);
+    const fromEmailValue = normalizeOptionalString(fromEmail);
+    const fromNameValue = normalizeOptionalString(fromName);
+    const subjectTemplateValue = normalizeOptionalString(subjectTemplate);
+    const bodyTemplateValue = normalizeOptionalString(bodyTemplate);
+
+    if (!enabledResult.isValid) {
+      return NextResponse.json({ error: '啟用設定格式無效' }, { status: 400 });
+    }
+
+    if (!smtpPortResult.isValid) {
+      return NextResponse.json({ error: 'SMTP 埠號必須是 1 到 65535 之間的整數' }, { status: 400 });
+    }
+
+    if (!smtpSecureResult.isValid) {
+      return NextResponse.json({ error: 'SMTP 安全設定格式無效' }, { status: 400 });
+    }
+
+    if (smtpHost !== undefined && smtpHostValue === undefined) {
+      return NextResponse.json({ error: 'SMTP 主機格式無效' }, { status: 400 });
+    }
+
+    if (smtpUser !== undefined && smtpUserValue === undefined) {
+      return NextResponse.json({ error: 'SMTP 帳號格式無效' }, { status: 400 });
+    }
+
+    if (smtpPassword !== undefined && smtpPasswordValue === undefined) {
+      return NextResponse.json({ error: 'SMTP 密碼格式無效' }, { status: 400 });
+    }
+
+    if (fromEmail !== undefined && fromEmailValue === undefined) {
+      return NextResponse.json({ error: '寄件人 Email 格式無效' }, { status: 400 });
+    }
+
+    if (fromName !== undefined && fromNameValue === undefined) {
+      return NextResponse.json({ error: '寄件人名稱格式無效' }, { status: 400 });
+    }
+
+    if (subjectTemplate !== undefined && subjectTemplateValue === undefined) {
+      return NextResponse.json({ error: '郵件主旨格式無效' }, { status: 400 });
+    }
+
+    if (bodyTemplate !== undefined && bodyTemplateValue === undefined) {
+      return NextResponse.json({ error: '郵件內容格式無效' }, { status: 400 });
+    }
     
     // 準備更新資料
     const updateData: Record<string, unknown> = {
-      enabled: enabled ?? false,
-      smtpHost,
-      smtpPort: smtpPort ?? 587,
-      smtpSecure: smtpSecure ?? true,
-      smtpUser,
-      fromEmail,
-      fromName: fromName ?? '薪資系統',
-      subjectTemplate: subjectTemplate ?? '[%YEAR%年%MONTH%月] 薪資條通知',
-      bodyTemplate
+      enabled: enabledResult.value,
+      smtpHost: smtpHostValue === undefined ? existing?.smtpHost : smtpHostValue,
+      smtpPort: smtpPortResult.value,
+      smtpSecure: smtpSecureResult.value,
+      smtpUser: smtpUserValue === undefined ? existing?.smtpUser : smtpUserValue,
+      fromEmail: fromEmailValue === undefined ? existing?.fromEmail : fromEmailValue,
+      fromName: fromNameValue === undefined ? (existing?.fromName ?? '薪資系統') : (fromNameValue ?? '薪資系統'),
+      subjectTemplate: subjectTemplateValue === undefined
+        ? (existing?.subjectTemplate ?? '[%YEAR%年%MONTH%月] 薪資條通知')
+        : (subjectTemplateValue ?? '[%YEAR%年%MONTH%月] 薪資條通知'),
+      bodyTemplate: bodyTemplateValue === undefined
+        ? (existing?.bodyTemplate ?? DEFAULT_PAYSLIP_EMAIL_SETTINGS.bodyTemplate)
+        : (bodyTemplateValue ?? DEFAULT_PAYSLIP_EMAIL_SETTINGS.bodyTemplate)
     };
 
     // 只有在密碼不是遮罩時才更新
-    if (smtpPassword && smtpPassword !== '********') {
-      updateData.smtpPassword = smtpPassword;
+    if (typeof smtpPasswordValue === 'string' && smtpPasswordValue !== '********') {
+      updateData.smtpPassword = smtpPasswordValue;
     }
 
     let settings;

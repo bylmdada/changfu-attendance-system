@@ -4,6 +4,7 @@
 
 import {
   calculateMonthlyPayroll,
+  calculatePayrollTotals,
   validatePayrollCalculation,
   EmployeePayrollInfo,
   AttendanceForPayroll
@@ -79,6 +80,86 @@ describe('月薪資計算整合測試', () => {
 
       expect(result.overtimeBreakdown.holidayHours).toBe(8);
       expect(result.totalOvertimePay).toBeGreaterThan(0);
+    });
+  });
+
+  describe('獎金調整後扣款', () => {
+    test('加上獎金後會重算所得稅與補充保費，但保留原本保險基礎扣款', () => {
+      const employeeWithPension: EmployeePayrollInfo = {
+        ...mockEmployee,
+        laborPensionSelfRate: 3,
+      };
+
+      const baseTotals = calculatePayrollTotals(employeeWithPension, 40000);
+      const bonusTotals = calculatePayrollTotals(employeeWithPension, 40000, 200000);
+
+      expect(bonusTotals.grossPay).toBe(240000);
+      expect(bonusTotals.deductions.laborInsurance).toBe(baseTotals.deductions.laborInsurance);
+      expect(bonusTotals.deductions.healthInsurance).toBe(baseTotals.deductions.healthInsurance);
+      expect(bonusTotals.deductions.laborPensionSelf).toBe(baseTotals.deductions.laborPensionSelf);
+      expect(bonusTotals.deductions.supplementaryInsurance).toBeGreaterThan(baseTotals.deductions.supplementaryInsurance);
+      expect(bonusTotals.deductions.incomeTax).toBeGreaterThan(baseTotals.deductions.incomeTax);
+      expect(bonusTotals.netPay).toBeLessThan(baseTotals.netPay + 200000);
+    });
+
+    test('停用補充保費設定時不扣補充保費', () => {
+      const totals = calculatePayrollTotals(mockEmployee, 40000, 200000, {
+        isEnabled: false,
+        premiumRate: 2.11,
+        exemptThresholdMultiplier: 4,
+        calculationMethod: 'cumulative',
+        resetPeriod: 'yearly',
+        salaryThreshold: 183200,
+        dividendThreshold: 20000,
+        applyToAllEmployees: true,
+        salaryIncludeItems: {
+          allowance: true,
+          commission: true,
+          overtime: true,
+        },
+      });
+
+      expect(totals.deductions.supplementaryInsurance).toBe(0);
+    });
+
+    test('未參加健保時不應扣健保費', () => {
+      const employeeWithoutHealthInsurance: EmployeePayrollInfo = {
+        ...mockEmployee,
+        healthInsuranceActive: false,
+        dependents: 2,
+      };
+
+      const totals = calculatePayrollTotals(employeeWithoutHealthInsurance, 40000);
+
+      expect(totals.deductions.healthInsurance).toBe(0);
+    });
+
+    test('眷屬人數異常時會被正規化', () => {
+      const employeeWithInvalidDependents: EmployeePayrollInfo = {
+        ...mockEmployee,
+        dependents: -3,
+      };
+
+      const totals = calculatePayrollTotals(employeeWithInvalidDependents, 40000);
+
+      expect(totals.deductions.healthInsurance).toBeGreaterThan(0);
+    });
+
+    test('套用法規參數設定中的勞保費率、負擔比例與投保薪資上限', () => {
+      const totals = calculatePayrollTotals(
+        { ...mockEmployee, insuredBase: 80000 },
+        80000,
+        0,
+        undefined,
+        {
+          basicWage: 29500,
+          laborInsuranceRate: 0.1,
+          laborInsuranceMax: 40000,
+          laborEmployeeRate: 0.5,
+        }
+      );
+
+      expect(totals.deductions.laborInsurance).toBe(2000);
     });
   });
 

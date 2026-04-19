@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { 
   FileText, 
   Download, 
@@ -14,6 +14,7 @@ import {
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import { LOGO_BASE64 } from '@/lib/logoBase64';
 import { escapeCsvValue } from '@/lib/csv';
+import { escapeHtml } from '@/lib/html';
 
 interface PayrollRecord {
   id: number;
@@ -33,6 +34,47 @@ interface PayrollRecord {
     position: string;
   };
 }
+
+interface InsuranceReportRecord {
+  employeeId: string;
+  name: string;
+  department: string | null;
+  baseSalary: number;
+  insuredBase: number;
+  laborInsuredAmount: number;
+  laborEmployee: number;
+  laborEmployer: number;
+  laborTotal: number;
+  healthInsuredAmount: number;
+  dependents: number;
+  totalPersons: number;
+  healthEmployee: number;
+  healthEmployer: number;
+  healthTotal: number;
+  totalEmployee: number;
+  totalEmployer: number;
+  isHealthActive: boolean;
+}
+
+interface TaxReportRecord {
+  employeeId: string;
+  name: string;
+  department: string;
+  hireDate: string;
+  totalBasePay: number;
+  totalOvertimePay: number;
+  totalGrossPay: number;
+  totalLaborInsurance: number;
+  totalHealthInsurance: number;
+  totalLaborPensionSelf: number;
+  totalIncomeTax: number;
+  totalNetPay: number;
+  months: number;
+  taxExempt: number;
+  taxableIncome: number;
+}
+
+type ReportType = 'salary' | 'labor_insurance' | 'health_insurance' | 'income_tax';
 
 interface ReportStats {
   totalEmployees: number;
@@ -114,36 +156,12 @@ const DEFAULT_CONFIG: LaborLawConfig = {
   maxDependents: 3
 };
 
-// 計算勞保費
-const calculateLaborInsurance = (salary: number, config: LaborLawConfig) => {
-  const insuredSalary = Math.min(salary, config.laborInsuranceMax);
-  const employeePay = Math.round(insuredSalary * config.laborInsuranceRate * config.laborEmployeeRate);
-  const companyPay = Math.round(insuredSalary * config.laborInsuranceRate * (1 - config.laborEmployeeRate));
-  return { insuredSalary, employeePay, companyPay, total: employeePay + companyPay };
-};
-
-// 計算健保費
-const calculateHealthInsurance = (salary: number, config: LaborLawConfig, dependents: number = 0) => {
-  const insuredSalary = salary;
-  const totalPersons = 1 + Math.min(dependents, config.maxDependents);
-  const employeePay = Math.round(insuredSalary * config.healthInsuranceRate * config.healthEmployeeRate * totalPersons);
-  const companyPay = Math.round(insuredSalary * config.healthInsuranceRate * 0.6 * totalPersons);
-  return { insuredSalary, dependents: Math.min(dependents, config.maxDependents), totalPersons, employeePay, companyPay, total: employeePay + companyPay };
-};
-
-// 計算所得稅
-const calculateIncomeTax = (grossPay: number) => {
-  // 簡化計算：(總薪資 - 4000) × 5%
-  const taxableIncome = Math.max(0, grossPay - 4000);
-  const withholdingTax = Math.round(taxableIncome * 0.05);
-  return { grossPay, taxableIncome, withholdingTax };
-};
-
 export default function ReportsPage() {
   const [payrollRecords, setPayrollRecords] = useState<PayrollRecord[]>([]);
+  const [insuranceRecords, setInsuranceRecords] = useState<InsuranceReportRecord[]>([]);
+  const [taxRecords, setTaxRecords] = useState<TaxReportRecord[]>([]);
   const [stats, setStats] = useState<ReportStats | null>(null);
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [_user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<User | null>(null);
   const [departments, setDepartments] = useState<{ id: number; name: string }[]>([]);
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [selectedMonth, setSelectedMonth] = useState<number | null>(null);
@@ -162,7 +180,7 @@ export default function ReportsPage() {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   
   // 報表類型
-  const [reportType, setReportType] = useState<'salary' | 'labor_insurance' | 'health_insurance' | 'income_tax'>('salary');
+  const [reportType, setReportType] = useState<ReportType>('salary');
 
   // 法規設定
   const [laborLawConfig, setLaborLawConfig] = useState<LaborLawConfig>(DEFAULT_CONFIG);
@@ -174,7 +192,7 @@ export default function ReportsPage() {
   };
 
   // 載入法規設定（從兩個 API 分別讀取勞保和健保）
-  const fetchLaborLawConfig = async () => {
+  const fetchLaborLawConfig = useCallback(async () => {
     try {
       // 讀取勞保設定
       const laborResponse = await fetch('/api/system-settings/labor-law-config', {
@@ -211,7 +229,7 @@ export default function ReportsPage() {
     } catch (error) {
       console.error('載入法規設定失敗:', error);
     }
-  };
+  }, []);
 
   // 排序函數
   const handleSort = (field: 'employee' | 'period' | 'grossPay' | 'netPay') => {
@@ -241,27 +259,49 @@ export default function ReportsPage() {
     }
   };
 
-  const fetchPayrollData = async () => {
+  const fetchReportData = useCallback(async () => {
     setLoading(true);
     try {
       const params = new URLSearchParams();
-      
       if (selectedYear) params.append('year', selectedYear.toString());
-      if (selectedMonth) params.append('month', selectedMonth.toString());
+      if (selectedMonth && reportType !== 'income_tax') params.append('month', selectedMonth.toString());
 
-      const response = await fetch(`/api/payroll?${params}`, {
+      const endpoint = reportType === 'salary'
+        ? `/api/payroll?${params}`
+        : reportType === 'income_tax'
+          ? `/api/reports/tax-declaration?${params}`
+          : `/api/reports/insurance-payment?${params}`;
+
+      const response = await fetch(endpoint, {
         credentials: 'include',
       });
 
-      if (response.ok) {
-        const data = await response.json();
-        setPayrollRecords(data.payrollRecords);
-        
-        // 計算統計數據
-        const totalEmployees = data.payrollRecords.length;
-        const totalGrossPay = data.payrollRecords.reduce((sum: number, record: PayrollRecord) => sum + record.grossPay, 0);
-        const totalNetPay = data.payrollRecords.reduce((sum: number, record: PayrollRecord) => sum + record.netPay, 0);
-        const totalOvertimeHours = data.payrollRecords.reduce((sum: number, record: PayrollRecord) => sum + record.overtimeHours, 0);
+      if (!response.ok) {
+        setPayrollRecords([]);
+        setInsuranceRecords([]);
+        setTaxRecords([]);
+        setStats({
+          totalEmployees: 0,
+          totalGrossPay: 0,
+          totalNetPay: 0,
+          totalOvertimeHours: 0,
+          avgSalary: 0,
+        });
+        return;
+      }
+
+      const data = await response.json();
+
+      if (reportType === 'salary') {
+        const records = data.payrollRecords || [];
+        setPayrollRecords(records);
+        setInsuranceRecords([]);
+        setTaxRecords([]);
+
+        const totalEmployees = records.length;
+        const totalGrossPay = records.reduce((sum: number, record: PayrollRecord) => sum + record.grossPay, 0);
+        const totalNetPay = records.reduce((sum: number, record: PayrollRecord) => sum + record.netPay, 0);
+        const totalOvertimeHours = records.reduce((sum: number, record: PayrollRecord) => sum + record.overtimeHours, 0);
         const avgSalary = totalEmployees > 0 ? totalGrossPay / totalEmployees : 0;
 
         setStats({
@@ -271,12 +311,46 @@ export default function ReportsPage() {
           totalOvertimeHours,
           avgSalary
         });
+      } else if (reportType === 'income_tax') {
+        const records = data.records || [];
+        setPayrollRecords([]);
+        setInsuranceRecords([]);
+        setTaxRecords(records);
+        setStats({
+          totalEmployees: records.length,
+          totalGrossPay: data.summary?.totalGrossPay || 0,
+          totalNetPay: 0,
+          totalOvertimeHours: 0,
+          avgSalary: records.length > 0 ? (data.summary?.totalGrossPay || 0) / records.length : 0,
+        });
+      } else {
+        const records = data.records || [];
+        setPayrollRecords([]);
+        setInsuranceRecords(records);
+        setTaxRecords([]);
+        setStats({
+          totalEmployees: records.length,
+          totalGrossPay: 0,
+          totalNetPay: 0,
+          totalOvertimeHours: 0,
+          avgSalary: 0,
+        });
       }
     } catch (error) {
-      console.error('獲取薪資數據失敗:', error);
+      console.error('獲取報表數據失敗:', error);
+      setPayrollRecords([]);
+      setInsuranceRecords([]);
+      setTaxRecords([]);
+      setStats({
+        totalEmployees: 0,
+        totalGrossPay: 0,
+        totalNetPay: 0,
+        totalOvertimeHours: 0,
+        avgSalary: 0,
+      });
     }
     setLoading(false);
-  };
+  }, [reportType, selectedMonth, selectedYear]);
 
   const generatePayslip = async (payrollId: number) => {
     setPayslipLoading(true);
@@ -350,28 +424,47 @@ export default function ReportsPage() {
   };
 
   const generatePayslipHTML = (payslip: Payslip) => {
+    const safeCompanyName = escapeHtml(payslip.companyInfo?.name || '社團法人宜蘭縣長期照護及社會福祉推廣協會');
+    const safeFooterCompanyName = escapeHtml(payslip.companyInfo?.name || '長福會');
+    const safeEmployeeId = escapeHtml(payslip.employee.employeeId);
+    const safeEmployeeName = escapeHtml(payslip.employee.name);
+    const safeEmployeeDepartment = escapeHtml(payslip.employee.department || 'N/A');
+    const safeEmployeePosition = escapeHtml(payslip.employee.position || 'N/A');
+    const safeMonthName = escapeHtml(payslip.period.monthName);
+    const safeGeneratedAt = escapeHtml(new Date(payslip.generatedAt).toLocaleString('zh-TW'));
+
     // 生成收入項目表格行
-    const earningsRows = payslip.earnings?.map((item: PayslipItem) => `
+    const earningsRows = payslip.earnings?.map((item: PayslipItem) => {
+      const safeItemName = escapeHtml(item.name);
+      const quantityLabel = (item.quantity ?? 0) > 1 ? ` (${escapeHtml(item.quantity)})` : '';
+
+      return `
       <tr>
-        <td style="padding: 8px 12px; border-bottom: 1px solid #e5e7eb;">${item.name}${(item.quantity ?? 0) > 1 ? ` (${item.quantity})` : ''}</td>
+        <td style="padding: 8px 12px; border-bottom: 1px solid #e5e7eb;">${safeItemName}${quantityLabel}</td>
         <td style="padding: 8px 12px; border-bottom: 1px solid #e5e7eb; text-align: right; color: #059669; font-weight: 500;">NT$ ${item.amount.toLocaleString()}</td>
       </tr>
-    `).join('') || '';
+    `;
+    }).join('') || '';
 
     // 生成扣除項目表格行
-    const deductionsRows = payslip.deductions?.map((item: PayslipItem) => `
+    const deductionsRows = payslip.deductions?.map((item: PayslipItem) => {
+      const safeItemName = escapeHtml(item.name);
+      const quantityLabel = (item.quantity ?? 0) > 1 ? ` (${escapeHtml(item.quantity)})` : '';
+
+      return `
       <tr>
-        <td style="padding: 8px 12px; border-bottom: 1px solid #e5e7eb;">${item.name}${(item.quantity ?? 0) > 1 ? ` (${item.quantity})` : ''}</td>
+        <td style="padding: 8px 12px; border-bottom: 1px solid #e5e7eb;">${safeItemName}${quantityLabel}</td>
         <td style="padding: 8px 12px; border-bottom: 1px solid #e5e7eb; text-align: right; color: #dc2626;">NT$ ${item.amount.toLocaleString()}</td>
       </tr>
-    `).join('') || '';
+    `;
+    }).join('') || '';
 
     return `
     <!DOCTYPE html>
     <html>
     <head>
       <meta charset="UTF-8">
-      <title>薪資條 - ${payslip.employee.name} - ${payslip.period.monthName}</title>
+      <title>薪資條 - ${safeEmployeeName} - ${safeMonthName}</title>
       <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { 
@@ -580,20 +673,20 @@ export default function ReportsPage() {
               <img src="${LOGO_BASE64}" alt="長福會" class="logo" /><div class="logo-text" style="display:none;">長福會</div>
               <div class="header-title">
                 <h1>薪資條</h1>
-                <p>${payslip.companyInfo?.name || '社團法人宜蘭縣長期照護及社會福祉推廣協會'}</p>
+                <p>${safeCompanyName}</p>
               </div>
             </div>
-            <div class="period-badge">${payslip.period.monthName}</div>
+            <div class="period-badge">${safeMonthName}</div>
           </div>
 
           <!-- 員工資訊區 -->
           <div class="employee-info">
             <div class="info-card">
               <h3>👤 員工資訊</h3>
-              <div class="info-item"><span class="info-label">員工編號</span><span class="info-value">${payslip.employee.employeeId}</span></div>
-              <div class="info-item"><span class="info-label">姓名</span><span class="info-value">${payslip.employee.name}</span></div>
-              <div class="info-item"><span class="info-label">部門</span><span class="info-value">${payslip.employee.department || 'N/A'}</span></div>
-              <div class="info-item"><span class="info-label">職位</span><span class="info-value">${payslip.employee.position || 'N/A'}</span></div>
+              <div class="info-item"><span class="info-label">員工編號</span><span class="info-value">${safeEmployeeId}</span></div>
+              <div class="info-item"><span class="info-label">姓名</span><span class="info-value">${safeEmployeeName}</span></div>
+              <div class="info-item"><span class="info-label">部門</span><span class="info-value">${safeEmployeeDepartment}</span></div>
+              <div class="info-item"><span class="info-label">職位</span><span class="info-value">${safeEmployeePosition}</span></div>
             </div>
             <div class="info-card">
               <h3>⏰ 工時統計</h3>
@@ -635,10 +728,10 @@ export default function ReportsPage() {
           <!-- 頁尾 -->
           <div class="footer">
             <div class="confidential-notice">
-              🔒 本薪資條專供 ${payslip.employee.name} (${payslip.employee.employeeId}) 查閱，請妥善保管
+              🔒 本薪資條專供 ${safeEmployeeName} (${safeEmployeeId}) 查閱，請妥善保管
             </div>
-            <p>生成時間：${new Date(payslip.generatedAt).toLocaleString('zh-TW')}</p>
-            <p style="margin-top: 4px;">${payslip.companyInfo?.name || '長福會'} | 如有疑問請洽人事部門</p>
+            <p>生成時間：${safeGeneratedAt}</p>
+            <p style="margin-top: 4px;">${safeFooterCompanyName} | 如有疑問請洽人事部門</p>
           </div>
         </div>
       </div>
@@ -648,11 +741,17 @@ export default function ReportsPage() {
   };
 
   const exportToPDF = async () => {
+    if (reportType !== 'salary') {
+      showToast('error', '目前僅支援薪資報表 PDF 匯出');
+      return;
+    }
+
     try {
       const params = new URLSearchParams();
       
       if (selectedYear) params.append('year', selectedYear.toString());
       if (selectedMonth) params.append('month', selectedMonth.toString());
+      if (selectedDepartment) params.append('department', selectedDepartment);
 
       const response = await fetch(`/api/reports/export?${params}`, {
         credentials: 'include',
@@ -680,15 +779,31 @@ export default function ReportsPage() {
     }
   };
 
-  const exportToCSV = () => {
-    const headers = [
-      '員工編號', '姓名', '部門', '職位', '年度', '月份',
-      '正常工時', '加班工時', '基本薪資', '加班費', '總薪資', '實領薪資'
-    ];
-    
-    const csvData = [
-      headers.map(escapeCsvValue).join(','),
-      ...sortedRecords.map(record => [
+  const downloadCsvFile = (content: string, filename: string, successMessage: string) => {
+    const BOM = '\uFEFF';
+    const blob = new Blob([BOM + content], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    showToast('success', successMessage);
+  };
+
+  const getReportCsvConfig = () => {
+    const monthStr = selectedMonth ? `${selectedMonth}月` : '全年';
+
+    if (reportType === 'salary') {
+      const headers = [
+        '員工編號', '姓名', '部門', '職位', '年度', '月份',
+        '正常工時', '加班工時', '基本薪資', '加班費', '總薪資', '實領薪資'
+      ];
+
+      const rows = sortedRecords.map(record => [
         escapeCsvValue(record.employee.employeeId),
         escapeCsvValue(record.employee.name),
         escapeCsvValue(record.employee.department || ''),
@@ -701,24 +816,81 @@ export default function ReportsPage() {
         escapeCsvValue(record.overtimePay),
         escapeCsvValue(record.grossPay),
         escapeCsvValue(record.netPay)
-      ].join(','))
-    ].join('\n');
+      ].join(','));
 
-    // 添加 BOM 以確保 Excel 正確識別 UTF-8 編碼
-    const BOM = '\uFEFF';
-    const blob = new Blob([BOM + csvData], { type: 'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    const monthStr = selectedMonth ? `${selectedMonth}月` : '全年';
-    a.download = `薪資報表_${selectedYear}年${monthStr}.csv`;
-    a.style.display = 'none';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    // 延遲釋放 URL，確保下載完成
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-    showToast('success', 'CSV 報表匯出成功');
+      return {
+        filename: `薪資報表_${selectedYear}年${monthStr}.csv`,
+        rows: [headers.map(escapeCsvValue).join(','), ...rows],
+      };
+    }
+
+    if (reportType === 'income_tax') {
+      const headers = [
+        '員工編號', '姓名', '部門', '到職日', '總薪資', '加班費', '免稅所得',
+        '勞保自付', '健保自付', '勞退自提', '應稅所得', '扣繳稅額', '實領薪資'
+      ];
+
+      const rows = filteredTaxRecords.map(record => [
+        escapeCsvValue(record.employeeId),
+        escapeCsvValue(record.name),
+        escapeCsvValue(record.department || ''),
+        escapeCsvValue(record.hireDate),
+        escapeCsvValue(record.totalGrossPay),
+        escapeCsvValue(record.totalOvertimePay),
+        escapeCsvValue(record.taxExempt),
+        escapeCsvValue(record.totalLaborInsurance),
+        escapeCsvValue(record.totalHealthInsurance),
+        escapeCsvValue(record.totalLaborPensionSelf),
+        escapeCsvValue(record.taxableIncome),
+        escapeCsvValue(record.totalIncomeTax),
+        escapeCsvValue(record.totalNetPay),
+      ].join(','));
+
+      return {
+        filename: `所得稅報表_${selectedYear}年.csv`,
+        rows: [headers.map(escapeCsvValue).join(','), ...rows],
+      };
+    }
+
+    const headers = reportType === 'labor_insurance'
+      ? ['員工編號', '姓名', '部門', '底薪', '投保薪資', '員工負擔', '公司負擔', '勞保總額']
+      : ['員工編號', '姓名', '部門', '投保薪資', '眷屬數', '納保人數', '員工負擔', '公司負擔', '健保總額', '是否加保'];
+
+    const rows = filteredInsuranceRecords.map(record => (
+      reportType === 'labor_insurance'
+        ? [
+            escapeCsvValue(record.employeeId),
+            escapeCsvValue(record.name),
+            escapeCsvValue(record.department || ''),
+            escapeCsvValue(record.baseSalary),
+            escapeCsvValue(record.laborInsuredAmount),
+            escapeCsvValue(record.laborEmployee),
+            escapeCsvValue(record.laborEmployer),
+            escapeCsvValue(record.laborTotal),
+          ]
+        : [
+            escapeCsvValue(record.employeeId),
+            escapeCsvValue(record.name),
+            escapeCsvValue(record.department || ''),
+            escapeCsvValue(record.healthInsuredAmount),
+            escapeCsvValue(record.dependents),
+            escapeCsvValue(record.totalPersons),
+            escapeCsvValue(record.healthEmployee),
+            escapeCsvValue(record.healthEmployer),
+            escapeCsvValue(record.healthTotal),
+            escapeCsvValue(record.isHealthActive ? '是' : '否'),
+          ]
+    ).join(','));
+
+    return {
+      filename: `${reportType === 'labor_insurance' ? '勞保' : '健保'}報表_${selectedYear}年${monthStr}.csv`,
+      rows: [headers.map(escapeCsvValue).join(','), ...rows],
+    };
+  };
+
+  const exportToCSV = () => {
+    const { filename, rows } = getReportCsvConfig();
+    downloadCsvFile(rows.join('\n'), filename, 'CSV 報表匯出成功');
   };
 
   useEffect(() => {
@@ -753,34 +925,64 @@ export default function ReportsPage() {
 
         // 載入法規設定
         fetchLaborLawConfig();
-
-        // 初始載入報表數據
-        fetchPayrollData();
       } catch (error) {
         console.error('獲取用戶信息失敗:', error);
       }
     };
 
     fetchUserAndData();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [fetchLaborLawConfig]);
+
+  useEffect(() => {
+    if (!user) return;
+    setSelectedIds(new Set());
+    fetchReportData();
+  }, [fetchReportData, reportType, user]);
 
   // 部門名稱列表
   const departmentNames = departments.map(d => d.name);
 
   // 過濾薪資記錄（含部門篩選）
   const filteredRecords = payrollRecords.filter(record => {
-    // 部門篩選
     if (selectedDepartment && record.employee.department !== selectedDepartment) {
       return false;
     }
-    // 搜尋篩選
     if (searchQuery) {
       const query = searchQuery.toLowerCase();
       return (
         record.employee.name.toLowerCase().includes(query) ||
         record.employee.employeeId.toLowerCase().includes(query) ||
         (record.employee.department && record.employee.department.toLowerCase().includes(query))
+      );
+    }
+    return true;
+  });
+
+  const filteredInsuranceRecords = insuranceRecords.filter(record => {
+    if (selectedDepartment && record.department !== selectedDepartment) {
+      return false;
+    }
+    if (searchQuery) {
+      const query = searchQuery.toLowerCase();
+      return (
+        record.name.toLowerCase().includes(query) ||
+        record.employeeId.toLowerCase().includes(query) ||
+        (record.department && record.department.toLowerCase().includes(query))
+      );
+    }
+    return true;
+  });
+
+  const filteredTaxRecords = taxRecords.filter(record => {
+    if (selectedDepartment && record.department !== selectedDepartment) {
+      return false;
+    }
+    if (searchQuery) {
+      const query = searchQuery.toLowerCase();
+      return (
+        record.name.toLowerCase().includes(query) ||
+        record.employeeId.toLowerCase().includes(query) ||
+        (record.department && record.department.toLowerCase().includes(query))
       );
     }
     return true;
@@ -808,19 +1010,43 @@ export default function ReportsPage() {
   });
 
   const displayStats = useMemo(() => {
-    const totalEmployees = filteredRecords.length;
-    const totalGrossPay = filteredRecords.reduce((sum, record) => sum + record.grossPay, 0);
-    const totalNetPay = filteredRecords.reduce((sum, record) => sum + record.netPay, 0);
-    const totalOvertimeHours = filteredRecords.reduce((sum, record) => sum + record.overtimeHours, 0);
+    if (reportType === 'salary') {
+      const totalEmployees = filteredRecords.length;
+      const totalGrossPay = filteredRecords.reduce((sum, record) => sum + record.grossPay, 0);
+      const totalNetPay = filteredRecords.reduce((sum, record) => sum + record.netPay, 0);
+      const totalOvertimeHours = filteredRecords.reduce((sum, record) => sum + record.overtimeHours, 0);
+
+      return {
+        totalEmployees,
+        totalGrossPay,
+        totalNetPay,
+        totalOvertimeHours,
+        avgSalary: totalEmployees > 0 ? totalGrossPay / totalEmployees : 0,
+      };
+    }
+
+    if (reportType === 'income_tax') {
+      const totalEmployees = filteredTaxRecords.length;
+      const totalGrossPay = filteredTaxRecords.reduce((sum, record) => sum + record.totalGrossPay, 0);
+      const totalNetPay = filteredTaxRecords.reduce((sum, record) => sum + record.totalNetPay, 0);
+
+      return {
+        totalEmployees,
+        totalGrossPay,
+        totalNetPay,
+        totalOvertimeHours: 0,
+        avgSalary: totalEmployees > 0 ? totalGrossPay / totalEmployees : 0,
+      };
+    }
 
     return {
-      totalEmployees,
-      totalGrossPay,
-      totalNetPay,
-      totalOvertimeHours,
-      avgSalary: totalEmployees > 0 ? totalGrossPay / totalEmployees : 0,
+      totalEmployees: filteredInsuranceRecords.length,
+      totalGrossPay: 0,
+      totalNetPay: 0,
+      totalOvertimeHours: 0,
+      avgSalary: 0,
     };
-  }, [filteredRecords]);
+  }, [filteredInsuranceRecords, filteredRecords, filteredTaxRecords, reportType]);
 
   // 批量匯出薪資條
   const batchExportPayslips = async () => {
@@ -877,44 +1103,33 @@ export default function ReportsPage() {
 
   // 匯出 Excel 格式 (使用 CSV 格式，Excel 可正常開啟)
   const exportToExcel = () => {
-    const headers = [
-      '員工編號', '姓名', '部門', '職位', '年度', '月份',
-      '正常工時', '加班工時', '基本薪資', '加班費', '總薪資', '實領薪資'
-    ];
-    
-    // 使用 CSV 格式 (Excel 可正常開啟)
-    const excelData = [
-      headers.map(escapeCsvValue).join(','),
-      ...sortedRecords.map(record => [
-        escapeCsvValue(record.employee.employeeId),
-        escapeCsvValue(record.employee.name),
-        escapeCsvValue(record.employee.department || ''),
-        escapeCsvValue(record.employee.position || ''),
-        escapeCsvValue(record.payYear),
-        escapeCsvValue(record.payMonth),
-        escapeCsvValue(record.regularHours),
-        escapeCsvValue(record.overtimeHours),
-        escapeCsvValue(record.basePay),
-        escapeCsvValue(record.overtimePay),
-        escapeCsvValue(record.grossPay),
-        escapeCsvValue(record.netPay)
-      ].join(','))
-    ].join('\n');
+    const { filename, rows } = getReportCsvConfig();
+    downloadCsvFile(rows.join('\n'), filename, 'Excel 報表匯出成功');
+  };
 
-    // 添加 BOM
-    const BOM = '\uFEFF';
-    const blob = new Blob([BOM + excelData], { type: 'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    const monthStr = selectedMonth ? `${selectedMonth}月` : '全年';
-    a.download = `薪資報表_${selectedYear}年${monthStr}.csv`;
-    a.style.display = 'none';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-    showToast('success', 'Excel 報表匯出成功');
+  const currentRecordCount = reportType === 'salary'
+    ? sortedRecords.length
+    : reportType === 'income_tax'
+      ? filteredTaxRecords.length
+      : filteredInsuranceRecords.length;
+
+  const laborInsuranceSummary = {
+    employee: filteredInsuranceRecords.reduce((sum, record) => sum + record.laborEmployee, 0),
+    employer: filteredInsuranceRecords.reduce((sum, record) => sum + record.laborEmployer, 0),
+    total: filteredInsuranceRecords.reduce((sum, record) => sum + record.laborTotal, 0),
+  };
+
+  const healthInsuranceSummary = {
+    employee: filteredInsuranceRecords.reduce((sum, record) => sum + record.healthEmployee, 0),
+    employer: filteredInsuranceRecords.reduce((sum, record) => sum + record.healthEmployer, 0),
+    total: filteredInsuranceRecords.reduce((sum, record) => sum + record.healthTotal, 0),
+    activeEmployees: filteredInsuranceRecords.filter(record => record.isHealthActive).length,
+  };
+
+  const incomeTaxSummary = {
+    withholding: filteredTaxRecords.reduce((sum, record) => sum + record.totalIncomeTax, 0),
+    taxableIncome: filteredTaxRecords.reduce((sum, record) => sum + record.taxableIncome, 0),
+    netPay: filteredTaxRecords.reduce((sum, record) => sum + record.totalNetPay, 0),
   };
 
   return (
@@ -953,6 +1168,7 @@ export default function ReportsPage() {
               <select
                 value={selectedMonth ?? ''}
                 onChange={(e) => setSelectedMonth(e.target.value ? parseInt(e.target.value) : null)}
+                disabled={reportType === 'income_tax'}
                 className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-gray-900"
               >
                 <option value="">全部月份</option>
@@ -982,7 +1198,7 @@ export default function ReportsPage() {
               <label className="block text-sm font-medium text-gray-700 mb-2">報表類型</label>
               <select
                 value={reportType}
-                onChange={(e) => setReportType(e.target.value as 'salary' | 'labor_insurance' | 'health_insurance' | 'income_tax')}
+                onChange={(e) => setReportType(e.target.value as ReportType)}
                 className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-gray-900"
               >
                 <option value="salary">薪資報表</option>
@@ -1005,7 +1221,7 @@ export default function ReportsPage() {
 
             <div className="flex items-end gap-2">
               <button
-                onClick={fetchPayrollData}
+                onClick={fetchReportData}
                 disabled={loading}
                 className="bg-indigo-600 text-white px-4 py-2 rounded-md hover:bg-indigo-700 disabled:opacity-50 flex items-center justify-center gap-2 text-sm font-medium"
               >
@@ -1014,7 +1230,7 @@ export default function ReportsPage() {
               </button>
               <button
                 onClick={exportToPDF}
-                disabled={loading || sortedRecords.length === 0}
+                disabled={loading || reportType !== 'salary' || currentRecordCount === 0}
                 className="bg-blue-600 text-white px-3 py-2 rounded-md hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-1 text-sm"
               >
                 <Download className="h-4 w-4" />
@@ -1022,14 +1238,14 @@ export default function ReportsPage() {
               </button>
               <button
                 onClick={exportToCSV}
-                disabled={loading || sortedRecords.length === 0}
+                disabled={loading || currentRecordCount === 0}
                 className="bg-gray-600 text-white px-3 py-2 rounded-md hover:bg-gray-700 disabled:opacity-50 flex items-center justify-center gap-1 text-sm"
               >
                 CSV
               </button>
               <button
                 onClick={exportToExcel}
-                disabled={loading || sortedRecords.length === 0}
+                disabled={loading || currentRecordCount === 0}
                 className="bg-emerald-600 text-white px-3 py-2 rounded-md hover:bg-emerald-700 disabled:opacity-50 flex items-center justify-center gap-1 text-sm"
               >
                 Excel
@@ -1039,6 +1255,7 @@ export default function ReportsPage() {
         </div>
 
         {/* 排序和批量操作欄 */}
+        {reportType === 'salary' && (
         <div className="bg-white p-4 rounded-lg shadow-sm mb-6 flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-4">
             {/* 全選 */}
@@ -1090,6 +1307,7 @@ export default function ReportsPage() {
             </div>
           )}
         </div>
+        )}
 
         {/* 統計卡片 */}
         {stats && (
@@ -1157,10 +1375,10 @@ export default function ReportsPage() {
                   <div className="flex items-center">
                     <DollarSign className="h-8 w-8 text-green-600" />
                     <div className="ml-4">
-                      <p className="text-sm font-medium text-gray-600">員工自付總額</p>
-                      <p className="text-2xl font-bold text-gray-900">
-                        {sortedRecords.reduce((sum, r) => sum + calculateLaborInsurance(r.basePay, laborLawConfig).employeePay, 0).toLocaleString()}
-                      </p>
+                        <p className="text-sm font-medium text-gray-600">員工自付總額</p>
+                        <p className="text-2xl font-bold text-gray-900">
+                          {laborInsuranceSummary.employee.toLocaleString()}
+                        </p>
                     </div>
                   </div>
                 </div>
@@ -1168,10 +1386,10 @@ export default function ReportsPage() {
                   <div className="flex items-center">
                     <Calculator className="h-8 w-8 text-purple-600" />
                     <div className="ml-4">
-                      <p className="text-sm font-medium text-gray-600">公司負擔總額</p>
-                      <p className="text-2xl font-bold text-gray-900">
-                        {sortedRecords.reduce((sum, r) => sum + calculateLaborInsurance(r.basePay, laborLawConfig).companyPay, 0).toLocaleString()}
-                      </p>
+                        <p className="text-sm font-medium text-gray-600">公司負擔總額</p>
+                        <p className="text-2xl font-bold text-gray-900">
+                          {laborInsuranceSummary.employer.toLocaleString()}
+                        </p>
                     </div>
                   </div>
                 </div>
@@ -1179,10 +1397,10 @@ export default function ReportsPage() {
                   <div className="flex items-center">
                     <TrendingUp className="h-8 w-8 text-red-600" />
                     <div className="ml-4">
-                      <p className="text-sm font-medium text-gray-600">勞保總額</p>
-                      <p className="text-2xl font-bold text-gray-900">
-                        {sortedRecords.reduce((sum, r) => sum + calculateLaborInsurance(r.basePay, laborLawConfig).total, 0).toLocaleString()}
-                      </p>
+                        <p className="text-sm font-medium text-gray-600">勞保總額</p>
+                        <p className="text-2xl font-bold text-gray-900">
+                          {laborInsuranceSummary.total.toLocaleString()}
+                        </p>
                     </div>
                   </div>
                 </div>
@@ -1204,10 +1422,10 @@ export default function ReportsPage() {
                   <div className="flex items-center">
                     <DollarSign className="h-8 w-8 text-green-600" />
                     <div className="ml-4">
-                      <p className="text-sm font-medium text-gray-600">員工自付總額</p>
-                      <p className="text-2xl font-bold text-gray-900">
-                        {sortedRecords.reduce((sum, r) => sum + calculateHealthInsurance(r.basePay, laborLawConfig).employeePay, 0).toLocaleString()}
-                      </p>
+                        <p className="text-sm font-medium text-gray-600">員工自付總額</p>
+                        <p className="text-2xl font-bold text-gray-900">
+                          {healthInsuranceSummary.employee.toLocaleString()}
+                        </p>
                     </div>
                   </div>
                 </div>
@@ -1215,10 +1433,10 @@ export default function ReportsPage() {
                   <div className="flex items-center">
                     <Calculator className="h-8 w-8 text-purple-600" />
                     <div className="ml-4">
-                      <p className="text-sm font-medium text-gray-600">公司負擔總額</p>
-                      <p className="text-2xl font-bold text-gray-900">
-                        {sortedRecords.reduce((sum, r) => sum + calculateHealthInsurance(r.basePay, laborLawConfig).companyPay, 0).toLocaleString()}
-                      </p>
+                        <p className="text-sm font-medium text-gray-600">公司負擔總額</p>
+                        <p className="text-2xl font-bold text-gray-900">
+                          {healthInsuranceSummary.employer.toLocaleString()}
+                        </p>
                     </div>
                   </div>
                 </div>
@@ -1226,10 +1444,10 @@ export default function ReportsPage() {
                   <div className="flex items-center">
                     <TrendingUp className="h-8 w-8 text-red-600" />
                     <div className="ml-4">
-                      <p className="text-sm font-medium text-gray-600">健保總額</p>
-                      <p className="text-2xl font-bold text-gray-900">
-                        {sortedRecords.reduce((sum, r) => sum + calculateHealthInsurance(r.basePay, laborLawConfig).total, 0).toLocaleString()}
-                      </p>
+                        <p className="text-sm font-medium text-gray-600">健保總額</p>
+                        <p className="text-2xl font-bold text-gray-900">
+                          {healthInsuranceSummary.total.toLocaleString()}
+                        </p>
                     </div>
                   </div>
                 </div>
@@ -1237,9 +1455,9 @@ export default function ReportsPage() {
                   <div className="flex items-center">
                     <Calendar className="h-8 w-8 text-orange-600" />
                     <div className="ml-4">
-                      <p className="text-sm font-medium text-gray-600">費率</p>
-                      <p className="text-2xl font-bold text-gray-900">{(laborLawConfig.healthInsuranceRate * 100).toFixed(2)}%</p>
-                    </div>
+                        <p className="text-sm font-medium text-gray-600">加保人數</p>
+                        <p className="text-2xl font-bold text-gray-900">{healthInsuranceSummary.activeEmployees}</p>
+                      </div>
                   </div>
                 </div>
               </>
@@ -1262,10 +1480,10 @@ export default function ReportsPage() {
                   <div className="flex items-center">
                     <Calculator className="h-8 w-8 text-purple-600" />
                     <div className="ml-4">
-                      <p className="text-sm font-medium text-gray-600">扣繳稅額總計</p>
-                      <p className="text-2xl font-bold text-gray-900">
-                        {sortedRecords.reduce((sum, r) => sum + calculateIncomeTax(r.grossPay).withholdingTax, 0).toLocaleString()}
-                      </p>
+                        <p className="text-sm font-medium text-gray-600">扣繳稅額總計</p>
+                        <p className="text-2xl font-bold text-gray-900">
+                          {incomeTaxSummary.withholding.toLocaleString()}
+                        </p>
                     </div>
                   </div>
                 </div>
@@ -1273,10 +1491,10 @@ export default function ReportsPage() {
                   <div className="flex items-center">
                     <TrendingUp className="h-8 w-8 text-red-600" />
                     <div className="ml-4">
-                      <p className="text-sm font-medium text-gray-600">稅後實領</p>
-                      <p className="text-2xl font-bold text-gray-900">
-                        {(displayStats.totalGrossPay - sortedRecords.reduce((sum, r) => sum + calculateIncomeTax(r.grossPay).withholdingTax, 0)).toLocaleString()}
-                      </p>
+                        <p className="text-sm font-medium text-gray-600">應稅所得總計</p>
+                        <p className="text-2xl font-bold text-gray-900">
+                          {incomeTaxSummary.taxableIncome.toLocaleString()}
+                        </p>
                     </div>
                   </div>
                 </div>
@@ -1284,9 +1502,9 @@ export default function ReportsPage() {
                   <div className="flex items-center">
                     <Calendar className="h-8 w-8 text-orange-600" />
                     <div className="ml-4">
-                      <p className="text-sm font-medium text-gray-600">平均稅率</p>
-                      <p className="text-2xl font-bold text-gray-900">5%</p>
-                    </div>
+                        <p className="text-sm font-medium text-gray-600">稅後實領</p>
+                        <p className="text-2xl font-bold text-gray-900">{incomeTaxSummary.netPay.toLocaleString()}</p>
+                      </div>
                   </div>
                 </div>
               </>
@@ -1298,93 +1516,38 @@ export default function ReportsPage() {
         <div className="bg-white rounded-lg shadow-sm">
           <div className="px-6 py-4 border-b border-gray-200">
             <h2 className="text-lg font-medium text-gray-900">
-              {reportType === 'salary' && `薪資記錄 (${sortedRecords.length})`}
-              {reportType === 'labor_insurance' && `勞保報表 (${sortedRecords.length})`}
-              {reportType === 'health_insurance' && `健保報表 (${sortedRecords.length})`}
-              {reportType === 'income_tax' && `所得稅報表 (${sortedRecords.length})`}
+              {reportType === 'salary' && `薪資記錄 (${currentRecordCount})`}
+              {reportType === 'labor_insurance' && `勞保報表 (${currentRecordCount})`}
+              {reportType === 'health_insurance' && `健保報表 (${currentRecordCount})`}
+              {reportType === 'income_tax' && `所得稅報表 (${currentRecordCount})`}
             </h2>
           </div>
           
           <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase w-12">
-                    選擇
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    員工資訊
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    期間
-                  </th>
-                  {reportType === 'salary' && (
-                    <>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        工時
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        薪資
-                      </th>
-                    </>
-                  )}
-                  {reportType === 'labor_insurance' && (
-                    <>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        投保薪資
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        勞保費
-                      </th>
-                    </>
-                  )}
-                  {reportType === 'health_insurance' && (
-                    <>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        投保薪資
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        健保費
-                      </th>
-                    </>
-                  )}
-                  {reportType === 'income_tax' && (
-                    <>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        總薪資
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        扣繳稅額
-                      </th>
-                    </>
-                  )}
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    操作
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {loading ? (
+            {reportType === 'salary' && (
+              <table className="min-w-full divide-y divide-gray-200">
+                <thead className="bg-gray-50">
                   <tr>
-                    <td colSpan={6} className="px-6 py-4 text-center text-gray-500">
-                      載入中...
-                    </td>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase w-12">選擇</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">員工資訊</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">期間</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">工時</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">薪資</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">操作</th>
                   </tr>
-                ) : sortedRecords.length === 0 ? (
-                  <tr>
-                    <td colSpan={6} className="px-6 py-4 text-center text-gray-500">
-                      沒有找到記錄
-                    </td>
-                  </tr>
-                ) : (
-                  sortedRecords.map((record) => {
-                    const laborIns = calculateLaborInsurance(record.basePay, laborLawConfig);
-                    const healthIns = calculateHealthInsurance(record.basePay, laborLawConfig);
-                    const incomeTax = calculateIncomeTax(record.grossPay);
-                    
-                    return (
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-200">
+                  {loading ? (
+                    <tr>
+                      <td colSpan={6} className="px-6 py-4 text-center text-gray-500">載入中...</td>
+                    </tr>
+                  ) : sortedRecords.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="px-6 py-4 text-center text-gray-500">沒有找到記錄</td>
+                    </tr>
+                  ) : (
+                    sortedRecords.map((record) => (
                       <tr key={record.id} className={`hover:bg-gray-50 ${selectedIds.has(record.id) ? 'bg-blue-50' : ''}`}>
-                        {/* 勾選框 */}
                         <td className="px-4 py-4 whitespace-nowrap">
                           <input
                             type="checkbox"
@@ -1395,90 +1558,19 @@ export default function ReportsPage() {
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
                           <div>
-                            <div className="text-sm font-medium text-gray-900">
-                              {record.employee.name}
-                            </div>
-                            <div className="text-sm text-gray-500">
-                              {record.employee.employeeId} • {record.employee.department}
-                            </div>
+                            <div className="text-sm font-medium text-gray-900">{record.employee.name}</div>
+                            <div className="text-sm text-gray-500">{record.employee.employeeId} • {record.employee.department}</div>
                           </div>
                         </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{record.payYear}年{record.payMonth}月</td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                          {record.payYear}年{record.payMonth}月
+                          <div>正常: {record.regularHours}h</div>
+                          <div>加班: {record.overtimeHours}h</div>
                         </td>
-                        
-                        {/* 薪資報表欄位 */}
-                        {reportType === 'salary' && (
-                          <>
-                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                              <div>正常: {record.regularHours}h</div>
-                              <div>加班: {record.overtimeHours}h</div>
-                            </td>
-                            <td className="px-6 py-4 whitespace-nowrap">
-                              <div className="text-sm text-gray-900">
-                                總薪資: NT$ {record.grossPay.toLocaleString()}
-                              </div>
-                              <div className="text-sm text-gray-500">
-                                實領: NT$ {record.netPay.toLocaleString()}
-                              </div>
-                            </td>
-                          </>
-                        )}
-                        
-                        {/* 勞保報表欄位 */}
-                        {reportType === 'labor_insurance' && (
-                          <>
-                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                              <div>底薪: NT$ {record.basePay.toLocaleString()}</div>
-                              <div className="text-gray-500">投保: NT$ {laborIns.insuredSalary.toLocaleString()}</div>
-                            </td>
-                            <td className="px-6 py-4 whitespace-nowrap">
-                              <div className="text-sm text-red-600">
-                                員工: NT$ {laborIns.employeePay.toLocaleString()}
-                              </div>
-                              <div className="text-sm text-green-600">
-                                公司: NT$ {laborIns.companyPay.toLocaleString()}
-                              </div>
-                            </td>
-                          </>
-                        )}
-                        
-                        {/* 健保報表欄位 */}
-                        {reportType === 'health_insurance' && (
-                          <>
-                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                              <div>底薪: NT$ {record.basePay.toLocaleString()}</div>
-                              <div className="text-gray-500">人數: {healthIns.totalPersons}</div>
-                            </td>
-                            <td className="px-6 py-4 whitespace-nowrap">
-                              <div className="text-sm text-red-600">
-                                員工: NT$ {healthIns.employeePay.toLocaleString()}
-                              </div>
-                              <div className="text-sm text-green-600">
-                                公司: NT$ {healthIns.companyPay.toLocaleString()}
-                              </div>
-                            </td>
-                          </>
-                        )}
-                        
-                        {/* 所得稅報表欄位 */}
-                        {reportType === 'income_tax' && (
-                          <>
-                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                              <div>總薪: NT$ {record.grossPay.toLocaleString()}</div>
-                              <div className="text-gray-500">應稅: NT$ {incomeTax.taxableIncome.toLocaleString()}</div>
-                            </td>
-                            <td className="px-6 py-4 whitespace-nowrap">
-                              <div className="text-sm text-red-600">
-                                扣繳: NT$ {incomeTax.withholdingTax.toLocaleString()}
-                              </div>
-                              <div className="text-sm text-green-600">
-                                稅後: NT$ {(record.grossPay - incomeTax.withholdingTax).toLocaleString()}
-                              </div>
-                            </td>
-                          </>
-                        )}
-                        
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div className="text-sm text-gray-900">總薪資: NT$ {record.grossPay.toLocaleString()}</div>
+                          <div className="text-sm text-gray-500">實領: NT$ {record.netPay.toLocaleString()}</div>
+                        </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
                           <div className="flex gap-2">
                             <button
@@ -1500,11 +1592,110 @@ export default function ReportsPage() {
                           </div>
                         </td>
                       </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            )}
+
+            {reportType !== 'salary' && (
+              <table className="min-w-full divide-y divide-gray-200">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">員工資訊</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      {reportType === 'income_tax' ? '年度' : '期間'}
+                    </th>
+                    {reportType === 'labor_insurance' && (
+                      <>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">投保薪資</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">勞保費</th>
+                      </>
+                    )}
+                    {reportType === 'health_insurance' && (
+                      <>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">納保資訊</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">健保費</th>
+                      </>
+                    )}
+                    {reportType === 'income_tax' && (
+                      <>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">應稅所得</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">扣繳稅額</th>
+                      </>
+                    )}
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-200">
+                  {loading ? (
+                    <tr>
+                      <td colSpan={4} className="px-6 py-4 text-center text-gray-500">載入中...</td>
+                    </tr>
+                  ) : currentRecordCount === 0 ? (
+                    <tr>
+                      <td colSpan={4} className="px-6 py-4 text-center text-gray-500">沒有找到記錄</td>
+                    </tr>
+                  ) : reportType === 'income_tax' ? (
+                    filteredTaxRecords.map((record) => (
+                      <tr key={record.employeeId} className="hover:bg-gray-50">
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div>
+                            <div className="text-sm font-medium text-gray-900">{record.name}</div>
+                            <div className="text-sm text-gray-500">{record.employeeId} • {record.department}</div>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{selectedYear}年</td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                          <div>應稅: NT$ {record.taxableIncome.toLocaleString()}</div>
+                          <div className="text-gray-500">免稅: NT$ {record.taxExempt.toLocaleString()}</div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                          <div className="text-red-600">扣繳: NT$ {record.totalIncomeTax.toLocaleString()}</div>
+                          <div className="text-green-600">實領: NT$ {record.totalNetPay.toLocaleString()}</div>
+                        </td>
+                      </tr>
+                    ))
+                  ) : (
+                    filteredInsuranceRecords.map((record) => (
+                      <tr key={`${reportType}-${record.employeeId}`} className="hover:bg-gray-50">
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div>
+                            <div className="text-sm font-medium text-gray-900">{record.name}</div>
+                            <div className="text-sm text-gray-500">{record.employeeId} • {record.department}</div>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                          {selectedYear}年{selectedMonth ? `${selectedMonth}月` : ''}
+                        </td>
+                        {reportType === 'labor_insurance' ? (
+                          <>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                              <div>底薪: NT$ {record.baseSalary.toLocaleString()}</div>
+                              <div className="text-gray-500">投保: NT$ {record.laborInsuredAmount.toLocaleString()}</div>
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                              <div className="text-red-600">員工: NT$ {record.laborEmployee.toLocaleString()}</div>
+                              <div className="text-green-600">公司: NT$ {record.laborEmployer.toLocaleString()}</div>
+                            </td>
+                          </>
+                        ) : (
+                          <>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                              <div>{record.isHealthActive ? '已加保' : '未加保'}</div>
+                              <div className="text-gray-500">眷屬: {record.dependents} / 人數: {record.totalPersons}</div>
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                              <div className="text-red-600">員工: NT$ {record.healthEmployee.toLocaleString()}</div>
+                              <div className="text-green-600">公司: NT$ {record.healthEmployer.toLocaleString()}</div>
+                            </td>
+                          </>
+                        )}
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            )}
           </div>
         </div>
         </div>

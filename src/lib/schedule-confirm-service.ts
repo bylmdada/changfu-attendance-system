@@ -22,6 +22,20 @@ export interface ScheduleConfirmSettings {
   enableReminder: boolean;
 }
 
+async function findApplicablePublishedRelease(yearMonth: string, department?: string | null) {
+  return prisma.scheduleMonthlyRelease.findFirst({
+    where: {
+      yearMonth,
+      status: 'PUBLISHED',
+      OR: [
+        { department: null },
+        { department: department || '' }
+      ]
+    },
+    orderBy: { publishedAt: 'desc' }
+  });
+}
+
 /**
  * 取得班表確認機制設定
  */
@@ -61,16 +75,36 @@ export async function canEmployeeClockIn(employeeId: number, clockDate: Date): P
   }
   
   const yearMonth = `${clockDate.getFullYear()}-${(clockDate.getMonth() + 1).toString().padStart(2, '0')}`;
-  
-  // 查詢員工的確認記錄
-  const confirmation = await prisma.scheduleConfirmation.findFirst({
+
+  const employee = await prisma.employee.findUnique({
+    where: { id: employeeId },
+    select: {
+      id: true,
+      department: true
+    }
+  });
+
+  if (!employee) {
+    return {
+      allowed: false,
+      reason: '找不到員工資料'
+    };
+  }
+
+  const release = await findApplicablePublishedRelease(yearMonth, employee.department);
+  if (!release) {
+    return {
+      allowed: false,
+      reason: '本月班表尚未發布，請聯繫排班管理員'
+    };
+  }
+
+  const confirmation = await prisma.scheduleConfirmation.findUnique({
     where: {
-      employeeId,
-      yearMonth,
-      isValid: true
-    },
-    include: {
-      release: true
+      employeeId_releaseId: {
+        employeeId,
+        releaseId: release.id
+      }
     }
   });
   
@@ -82,7 +116,7 @@ export async function canEmployeeClockIn(employeeId: number, clockDate: Date): P
   }
   
   // 檢查版本是否匹配
-  if (confirmation.release && confirmation.version < confirmation.release.version) {
+  if (confirmation.version < release.version) {
     return {
       allowed: false,
       reason: '班表已更新，請重新確認後再打卡'

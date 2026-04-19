@@ -9,6 +9,10 @@ import {
   calculateBonusSupplementaryPremium, 
   getInsuredAmount 
 } from '@/lib/tax-calculator';
+import {
+  getBonusSupplementaryPremiumContext,
+  getStoredSupplementaryPremiumSettings,
+} from '@/lib/supplementary-premium-settings';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -105,6 +109,7 @@ export async function GET(request: NextRequest) {
     const employeeId = searchParams.get('employeeId');
     const year = searchParams.get('year');
     const month = searchParams.get('month');
+    const bonusType = searchParams.get('bonusType');
 
     const parsedEmployeeId = parseOptionalPositiveInteger(employeeId, 'employeeId');
     if (parsedEmployeeId.isPresent && !parsedEmployeeId.isValid) {
@@ -122,7 +127,7 @@ export async function GET(request: NextRequest) {
     }
 
     // 查詢獎金記錄
-    const whereClause: Record<string, number> = {};
+    const whereClause: Record<string, string | number> = {};
     
     if (parsedEmployeeId.isPresent && parsedEmployeeId.isValid) {
       whereClause.employeeId = parsedEmployeeId.value;
@@ -134,6 +139,10 @@ export async function GET(request: NextRequest) {
     
     if (parsedMonth.isPresent && parsedMonth.isValid) {
       whereClause.payrollMonth = parsedMonth.value;
+    }
+
+    if (typeof bonusType === 'string' && bonusType.trim() !== '') {
+      whereClause.bonusType = bonusType.trim();
     }
 
     const bonusRecords = await prisma.bonusRecord.findMany({
@@ -328,35 +337,44 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 取得或創建年度獎金累計記錄
-    const annualBonus = await prisma.employeeAnnualBonus.upsert({
-      where: {
-        employeeId_year: {
-          employeeId: employeeIdValue,
-          year: payrollYearValue
-        }
-      },
-      create: {
-        employeeId: employeeIdValue,
-        year: payrollYearValue,
-        totalBonusAmount: 0,
-        supplementaryPremium: 0
-      },
-      update: {}
-    });
-
     // 計算健保投保金額
     const insuredAmount = getInsuredAmount(employee.baseSalary);
 
-    // 計算補充保費
-    const supplementaryCalculation = calculateBonusSupplementaryPremium(
-      insuredAmount,
-      annualBonus.totalBonusAmount,
-      amountValue
-    );
+    const supplementarySettings = await getStoredSupplementaryPremiumSettings();
 
     // 開始事務處理
     const result = await prisma.$transaction(async (tx) => {
+      const annualBonus = await tx.employeeAnnualBonus.upsert({
+        where: {
+          employeeId_year: {
+            employeeId: employeeIdValue,
+            year: payrollYearValue
+          }
+        },
+        create: {
+          employeeId: employeeIdValue,
+          year: payrollYearValue,
+          totalBonusAmount: 0,
+          supplementaryPremium: 0
+        },
+        update: {}
+      });
+
+      const { currentPeriodBonusTotal, currentYearPremiumTotal } = await getBonusSupplementaryPremiumContext({
+        employeeId: employeeIdValue,
+        payrollYear: payrollYearValue,
+        payrollMonth: payrollMonthValue,
+        settings: supplementarySettings,
+        db: tx,
+      });
+      const supplementaryCalculation = calculateBonusSupplementaryPremium(
+        insuredAmount,
+        currentPeriodBonusTotal,
+        amountValue,
+        supplementarySettings,
+        currentYearPremiumTotal
+      );
+
       // 創建獎金記錄
       const bonusRecord = await tx.bonusRecord.create({
         data: {
@@ -405,13 +423,13 @@ export async function POST(request: NextRequest) {
         }
       });
 
-      return bonusRecord;
+      return { bonusRecord, supplementaryCalculation };
     });
 
     return NextResponse.json({
       success: true,
-      data: result,
-      supplementaryCalculation
+      data: result.bonusRecord,
+      supplementaryCalculation: result.supplementaryCalculation
     });
 
   } catch (error) {
@@ -514,25 +532,34 @@ export async function PUT(request: NextRequest) {
 
     const amountDifference = amountValue - originalRecord.amount;
 
-    // 重新計算補充保費 (使用調整後的累計金額)
-    const newCumulativeBefore = originalRecord.cumulativeBonusBefore;
-    const newCumulativeAfter = originalRecord.cumulativeBonusAfter + amountDifference;
-
-    const supplementaryCalculation = calculateBonusSupplementaryPremium(
-      originalRecord.insuredAmount,
-      newCumulativeBefore,
-      amountValue
-    );
-
-    const supplementaryDifference = supplementaryCalculation.premiumAmount - originalRecord.supplementaryPremium;
+    const supplementarySettings = await getStoredSupplementaryPremiumSettings();
 
     // 事務處理
     const result = await prisma.$transaction(async (tx) => {
+      const { currentPeriodBonusTotal, currentYearPremiumTotal } = await getBonusSupplementaryPremiumContext({
+        employeeId: originalRecord.employeeId,
+        payrollYear: originalRecord.payrollYear,
+        payrollMonth: originalRecord.payrollMonth,
+        settings: supplementarySettings,
+        excludeRecordId: recordId,
+        db: tx,
+      });
+      const supplementaryCalculation = calculateBonusSupplementaryPremium(
+        originalRecord.insuredAmount,
+        currentPeriodBonusTotal,
+        amountValue,
+        supplementarySettings,
+        currentYearPremiumTotal
+      );
+      const newCumulativeAfter = currentPeriodBonusTotal + amountValue;
+      const supplementaryDifference = supplementaryCalculation.premiumAmount - originalRecord.supplementaryPremium;
+
       // 更新原記錄
       const updatedRecord = await tx.bonusRecord.update({
         where: { id: recordId },
         data: {
           amount: amountValue,
+          cumulativeBonusBefore: currentPeriodBonusTotal,
           cumulativeBonusAfter: newCumulativeAfter,
           calculationBase: supplementaryCalculation.calculationBase,
           supplementaryPremium: supplementaryCalculation.premiumAmount,
@@ -564,15 +591,19 @@ export async function PUT(request: NextRequest) {
         }
       });
 
-      return updatedRecord;
+      return {
+        updatedRecord,
+        amountDifference,
+        supplementaryDifference,
+      };
     });
 
     return NextResponse.json({
       success: true,
-      data: result,
+      data: result.updatedRecord,
       changes: {
-        amountDifference,
-        supplementaryDifference
+        amountDifference: result.amountDifference,
+        supplementaryDifference: result.supplementaryDifference
       }
     });
 

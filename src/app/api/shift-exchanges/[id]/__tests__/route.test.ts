@@ -4,6 +4,7 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
+import { canAccessAttendanceDepartment } from '@/lib/attendance-permission-scopes';
 
 jest.mock('@/lib/database', () => ({
   prisma: {
@@ -14,9 +15,6 @@ jest.mock('@/lib/database', () => ({
     schedule: {
       findFirst: jest.fn(),
       update: jest.fn(),
-    },
-    departmentManager: {
-      findMany: jest.fn(),
     },
     $transaction: jest.fn(),
   },
@@ -34,10 +32,15 @@ jest.mock('@/lib/attendance-freeze', () => ({
   checkAttendanceFreeze: jest.fn(),
 }));
 
+jest.mock('@/lib/attendance-permission-scopes', () => ({
+  canAccessAttendanceDepartment: jest.fn(),
+}));
+
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockedGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
 const mockValidateCSRF = validateCSRF as jest.MockedFunction<typeof validateCSRF>;
 const mockCheckAttendanceFreeze = checkAttendanceFreeze as jest.MockedFunction<typeof checkAttendanceFreeze>;
+const mockCanAccessAttendanceDepartment = canAccessAttendanceDepartment as jest.MockedFunction<typeof canAccessAttendanceDepartment>;
 
 const transactionClient = {
   shiftExchangeRequest: {
@@ -60,13 +63,14 @@ describe('shift exchange authorization guards', () => {
       employeeId: 99,
       userId: 199,
     } as never);
+    mockCanAccessAttendanceDepartment.mockResolvedValue(false as never);
     mockPrisma.shiftExchangeRequest.findUnique.mockResolvedValue({
       id: 5,
       requesterId: 10,
       targetEmployeeId: 11,
       originalWorkDate: '2026-04-01',
-      targetWorkDate: '2026-04-02',
-      requestReason: '互調',
+      targetWorkDate: '2026-04-01',
+      requestReason: JSON.stringify({ type: 'SELF_CHANGE', shiftDate: '2026-04-01', original: 'A', new: 'B', note: '調班' }),
       status: 'PENDING',
       createdAt: '2026-04-01T00:00:00.000Z',
       updatedAt: '2026-04-01T00:00:00.000Z',
@@ -120,10 +124,6 @@ describe('shift exchange authorization guards', () => {
   });
 
   it('rejects manager review when the requester department is outside managed departments', async () => {
-    mockPrisma.departmentManager.findMany.mockResolvedValue([
-      { department: '人資部' },
-    ] as never);
-
     const request = new NextRequest('http://localhost:3000/api/shift-exchanges/5', {
       method: 'PATCH',
       headers: {
@@ -142,9 +142,7 @@ describe('shift exchange authorization guards', () => {
   });
 
   it('allows manager review when the requester department is managed', async () => {
-    mockPrisma.departmentManager.findMany.mockResolvedValue([
-      { department: '製造部' },
-    ] as never);
+    mockCanAccessAttendanceDepartment.mockResolvedValue(true as never);
     mockPrisma.shiftExchangeRequest.update.mockResolvedValue({ id: 5 } as never);
 
     const request = new NextRequest('http://localhost:3000/api/shift-exchanges/5', {
@@ -153,7 +151,7 @@ describe('shift exchange authorization guards', () => {
         cookie: 'token=session-token',
         'content-type': 'application/json',
       },
-      body: JSON.stringify({ opinion: 'AGREE', remarks: '同意互調' }),
+      body: JSON.stringify({ opinion: 'AGREE', remarks: '同意調班' }),
     });
 
     const response = await PATCH(request, { params: Promise.resolve({ id: '5' }) });
@@ -162,6 +160,40 @@ describe('shift exchange authorization guards', () => {
     expect(response.status).toBe(200);
     expect(payload.success).toBe(true);
     expect(mockPrisma.shiftExchangeRequest.update).toHaveBeenCalled();
+  });
+
+  it('allows permission holders to forward shift reviews with APPROVED status payloads', async () => {
+    mockedGetUserFromRequest.mockResolvedValue({
+      role: 'USER',
+      employeeId: 77,
+      userId: 177,
+    } as never);
+    mockCanAccessAttendanceDepartment.mockResolvedValue(true as never);
+    mockPrisma.shiftExchangeRequest.update.mockResolvedValue({ id: 5 } as never);
+
+    const request = new NextRequest('http://localhost:3000/api/shift-exchanges/5', {
+      method: 'PATCH',
+      headers: {
+        cookie: 'token=session-token',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ status: 'APPROVED', remarks: '同意調班' }),
+    });
+
+    const response = await PATCH(request, { params: Promise.resolve({ id: '5' }) });
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.success).toBe(true);
+    expect(mockPrisma.shiftExchangeRequest.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: 'PENDING_ADMIN',
+          managerReviewerId: 77,
+          managerOpinion: 'AGREE',
+        }),
+      })
+    );
   });
 
   it('rejects malformed ids on PATCH before querying Prisma', async () => {
@@ -199,11 +231,29 @@ describe('shift exchange authorization guards', () => {
     expect(mockPrisma.shiftExchangeRequest.findUnique).not.toHaveBeenCalled();
   });
 
-  it('rejects malformed targetEmployeeId when editing a pending request', async () => {
+  it('rejects editing legacy mutual-swap requests when the feature is disabled', async () => {
     mockedGetUserFromRequest.mockResolvedValue({
       role: 'ADMIN',
       employeeId: 1,
       userId: 101,
+    } as never);
+    mockPrisma.shiftExchangeRequest.findUnique.mockResolvedValueOnce({
+      id: 5,
+      requesterId: 10,
+      targetEmployeeId: 11,
+      originalWorkDate: '2026-04-01',
+      targetWorkDate: '2026-04-02',
+      requestReason: '互調',
+      status: 'PENDING',
+      createdAt: '2026-04-01T00:00:00.000Z',
+      updatedAt: '2026-04-01T00:00:00.000Z',
+      requester: {
+        id: 10,
+        department: '製造部',
+      },
+      targetEmployee: {
+        id: 11,
+      },
     } as never);
 
     const request = new NextRequest('http://localhost:3000/api/shift-exchanges/5', {
@@ -213,10 +263,10 @@ describe('shift exchange authorization guards', () => {
         'content-type': 'application/json',
       },
       body: JSON.stringify({
-        targetEmployeeId: '11abc',
-        originalWorkDate: '2026-04-01',
-        targetWorkDate: '2026-04-02',
-        requestReason: '改單',
+        shiftDate: '2026-04-01',
+        originalShiftType: 'A',
+        newShiftType: 'B',
+        reason: '改單',
       }),
     });
 
@@ -224,7 +274,7 @@ describe('shift exchange authorization guards', () => {
     const payload = await response.json();
 
     expect(response.status).toBe(400);
-    expect(payload.error).toBe('targetEmployeeId 格式錯誤');
+    expect(payload.error).toBe('員工互調功能已停用，無法修改舊互調申請');
     expect(mockPrisma.shiftExchangeRequest.findUnique).toHaveBeenCalled();
     expect(mockPrisma.shiftExchangeRequest.update).not.toHaveBeenCalled();
   });
@@ -273,9 +323,7 @@ describe('shift exchange authorization guards', () => {
       employeeId: 1,
       userId: 101,
     } as never);
-    transactionClient.schedule.findFirst
-      .mockResolvedValueOnce({ id: 901, shiftType: 'A', startTime: '08:00', endTime: '16:00' } as never)
-      .mockResolvedValueOnce(null as never);
+    transactionClient.schedule.findFirst.mockResolvedValueOnce(null as never);
 
     const request = new NextRequest('http://localhost:3000/api/shift-exchanges/5', {
       method: 'PATCH',
@@ -290,7 +338,7 @@ describe('shift exchange authorization guards', () => {
     const payload = await response.json();
 
     expect(response.status).toBe(409);
-    expect(payload.error).toBe('找不到對應班表，無法核准調班申請');
+    expect(payload.error).toBe('找不到申請人的班表，無法核准調班申請');
     expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
     expect(transactionClient.shiftExchangeRequest.update).not.toHaveBeenCalled();
     expect(transactionClient.schedule.update).not.toHaveBeenCalled();

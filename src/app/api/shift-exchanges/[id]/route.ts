@@ -5,6 +5,7 @@ import { prisma } from '@/lib/database';
 import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
+import { canAccessAttendanceDepartment } from '@/lib/attendance-permission-scopes';
 
 interface EmployeeLite { id: number; employeeId: string; name: string; position: string; department?: string }
 interface ShiftExchangeLite {
@@ -44,7 +45,11 @@ interface PrismaShiftExchangeClient {
 
 interface ApprovalSelfChangePayload {
   type?: string;
+  shiftDate?: string;
+  original?: string;
   new?: string;
+  note?: string;
+  leaveType?: string;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -53,16 +58,13 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 const db = prisma as unknown as PrismaShiftExchangeClient;
 
-async function getManagedDepartments(employeeId: number): Promise<string[]> {
-  const records = await prisma.departmentManager.findMany({
-    where: {
-      employeeId,
-      isActive: true,
-    },
-    select: { department: true },
-  });
-
-  return records.map((record) => record.department).filter(Boolean);
+function parseSelfChangePayload(requestReason: string): ApprovalSelfChangePayload | null {
+  try {
+    const parsed = JSON.parse(requestReason) as ApprovalSelfChangePayload;
+    return parsed?.type === 'SELF_CHANGE' ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 // 小工具：依班別給出時段
@@ -87,13 +89,9 @@ async function applyApprovedShiftExchange(
   }
 
   let parsed: ApprovalSelfChangePayload | null = null;
-  try {
-    parsed = JSON.parse(shiftExchangeRequest.requestReason) as ApprovalSelfChangePayload;
-  } catch {}
+  parsed = parseSelfChangePayload(shiftExchangeRequest.requestReason);
 
-  const isSelfChange = parsed?.type === 'SELF_CHANGE';
-
-  if (isSelfChange) {
+  if (parsed) {
     const newShift = parsed?.new || 'A';
     const template = getTemplateByShift(newShift);
     const original = await tx.schedule.findFirst({
@@ -125,41 +123,7 @@ async function applyApprovedShiftExchange(
     });
   }
 
-  const [originalSchedule, targetSchedule] = await Promise.all([
-    tx.schedule.findFirst({ where: { employeeId: shiftExchangeRequest.requesterId, workDate: shiftExchangeRequest.originalWorkDate } }),
-    tx.schedule.findFirst({ where: { employeeId: shiftExchangeRequest.targetEmployeeId, workDate: shiftExchangeRequest.targetWorkDate } })
-  ]);
-
-  if (!originalSchedule || !targetSchedule) {
-    throw new Error('找不到對應班表，無法核准調班申請');
-  }
-
-  const temp = {
-    shiftType: originalSchedule.shiftType,
-    startTime: originalSchedule.startTime,
-    endTime: originalSchedule.endTime,
-  };
-
-  await tx.schedule.update({
-    where: { id: originalSchedule.id },
-    data: { shiftType: targetSchedule.shiftType, startTime: targetSchedule.startTime, endTime: targetSchedule.endTime }
-  });
-  await tx.schedule.update({ where: { id: targetSchedule.id }, data: temp });
-
-  return tx.shiftExchangeRequest.update({
-    where: { id: shiftExchangeRequest.id },
-    data: {
-      status: 'APPROVED',
-      approvedBy: approverEmployeeId,
-      approvedAt,
-      adminRemarks,
-    },
-    include: {
-      requester: { select: { id: true, employeeId: true, name: true, position: true, department: true } },
-      targetEmployee: { select: { id: true, employeeId: true, name: true, position: true, department: true } },
-      approver: { select: { id: true, employeeId: true, name: true, position: true } }
-    }
-  });
+  throw new Error('員工互調功能已停用，無法核准舊互調申請');
 }
 
 // PATCH - 審核調班申請（批准/拒絕）
@@ -194,7 +158,7 @@ export async function PATCH(
     const rawAction = typeof body.action === 'string' ? body.action : undefined;
     const remarks = typeof body.remarks === 'string' ? body.remarks : undefined;
     const status = typeof body.status === 'string' ? body.status : undefined;
-    const opinion = typeof body.opinion === 'string' ? body.opinion : undefined;
+    const opinion = body.opinion === 'AGREE' || body.opinion === 'DISAGREE' ? body.opinion : undefined;
 
     // 兼容舊前端：若傳入 status，映射為 action（僅管理員/HR才能審核）
     let action = rawAction as 'approve' | 'reject' | undefined;
@@ -226,20 +190,25 @@ export async function PATCH(
       return NextResponse.json({ error: '調班申請不存在' }, { status: 404 });
     }
 
+    const selfChangePayload = parseSelfChangePayload(current.requestReason);
+
     // 如果是審核流程（二階審核：主管→Admin）
     if (action || opinion) {
-      // 主管審核（提供意見，轉交 Admin）
-      if (user.role === 'MANAGER' && current.status === 'PENDING' && opinion) {
-        const managedDepartments = await getManagedDepartments(user.employeeId);
-        if (
-          managedDepartments.length === 0 ||
-          !current.requester?.department ||
-          !managedDepartments.includes(current.requester.department)
-        ) {
+      const managerOpinion: 'AGREE' | 'DISAGREE' | undefined = opinion
+        ?? (action === 'approve' ? 'AGREE' : action === 'reject' ? 'DISAGREE' : undefined);
+
+      if (user.role !== 'ADMIN' && user.role !== 'HR' && current.status === 'PENDING' && managerOpinion) {
+        const canReviewDepartment = await canAccessAttendanceDepartment(
+          { role: user.role, employeeId: user.employeeId },
+          current.requester?.department,
+          'shiftExchanges'
+        );
+
+        if (!canReviewDepartment || !user.employeeId) {
           return NextResponse.json({ error: '無權限審核此部門的調班申請' }, { status: 403 });
         }
 
-        if (!['AGREE', 'DISAGREE'].includes(opinion)) {
+        if (!['AGREE', 'DISAGREE'].includes(managerOpinion)) {
           return NextResponse.json({ error: '請選擇同意或不同意' }, { status: 400 });
         }
 
@@ -248,7 +217,7 @@ export async function PATCH(
           data: {
             status: 'PENDING_ADMIN',
             managerReviewerId: user.employeeId,
-            managerOpinion: opinion,
+            managerOpinion,
             managerNote: remarks || null,
             managerReviewedAt: new Date()
           },
@@ -275,25 +244,17 @@ export async function PATCH(
 
         // 核准時檢查凍結狀態
         if (action === 'approve') {
+          if (!selfChangePayload) {
+            return NextResponse.json({ error: '員工互調功能已停用，無法核准舊互調申請' }, { status: 400 });
+          }
+
           const originalDateObj = new Date(current.originalWorkDate);
           const freezeCheck = await checkAttendanceFreeze(originalDateObj);
           if (freezeCheck.isFrozen) {
-            const freezeDateStr = freezeCheck.freezeInfo?.freezeDate.toLocaleString('zh-TW');
+            const freezeDateStr = freezeCheck.freezeInfo?.freezeDate.toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', hour12: false });
             return NextResponse.json({
               error: `該月份已被凍結，無法核准調班申請。凍結時間：${freezeDateStr}，操作者：${freezeCheck.freezeInfo?.creator.name}`
             }, { status: 403 });
-          }
-
-          // 互調班時也檢查目標日期
-          if (current.originalWorkDate !== current.targetWorkDate) {
-            const targetDateObj = new Date(current.targetWorkDate);
-            const targetFreezeCheck = await checkAttendanceFreeze(targetDateObj);
-            if (targetFreezeCheck.isFrozen) {
-              const freezeDateStr = targetFreezeCheck.freezeInfo?.freezeDate.toLocaleString('zh-TW');
-              return NextResponse.json({
-                error: `目標月份已被凍結，無法核准調班申請。凍結時間：${freezeDateStr}，操作者：${targetFreezeCheck.freezeInfo?.creator.name}`
-              }, { status: 403 });
-            }
           }
         }
 
@@ -363,41 +324,30 @@ export async function PATCH(
       return NextResponse.json({ error: '無權限修改此申請' }, { status: 403 });
     }
 
-    // 支援兩種編輯負載
-    const isSelfChangeEdit = !!body.shiftDate || (() => { try { const p = JSON.parse(current.requestReason); return p?.type === 'SELF_CHANGE'; } catch { return false; } })();
+    if (!selfChangePayload) {
+      return NextResponse.json({ error: '員工互調功能已停用，無法修改舊互調申請' }, { status: 400 });
+    }
 
     let dataToUpdate: Record<string, unknown> = {};
 
-    if (isSelfChangeEdit) {
-      const shiftDate = body.shiftDate ?? current.originalWorkDate;
-      const original = body.originalShiftType ?? (() => { try { return JSON.parse(current.requestReason)?.original; } catch { return undefined; } })() ?? 'A';
-      const next = body.newShiftType ?? (() => { try { return JSON.parse(current.requestReason)?.new; } catch { return undefined; } })() ?? 'A';
-      const note = body.reason ?? (() => { try { return JSON.parse(current.requestReason)?.note; } catch { return undefined; } })() ?? '';
-      dataToUpdate = {
-        originalWorkDate: String(shiftDate),
-        targetWorkDate: String(shiftDate),
-        requestReason: JSON.stringify({ type: 'SELF_CHANGE', shiftDate: String(shiftDate), original, new: next, note })
-      };
-    } else {
-      // 互換班編輯
-      const targetEmployeeIdResult = parseIntegerQueryParam(
-        body.targetEmployeeId === undefined || body.targetEmployeeId === null || body.targetEmployeeId === ''
-          ? null
-          : String(body.targetEmployeeId),
-        { defaultValue: current.targetEmployeeId, min: 1, max: 99999999 }
-      );
+    const shiftDate = body.shiftDate ?? selfChangePayload.shiftDate ?? current.originalWorkDate;
+    const original = body.originalShiftType ?? selfChangePayload.original ?? 'A';
+    const next = body.newShiftType ?? selfChangePayload.new ?? 'A';
+    const note = body.reason ?? selfChangePayload.note ?? '';
+    const leaveType = body.leaveType ?? selfChangePayload.leaveType ?? '';
 
-      if (!targetEmployeeIdResult.isValid || targetEmployeeIdResult.value === null) {
-        return NextResponse.json({ error: 'targetEmployeeId 格式錯誤' }, { status: 400 });
-      }
-
-      dataToUpdate = {
-        targetEmployeeId: targetEmployeeIdResult.value,
-        originalWorkDate: body.originalWorkDate ?? current.originalWorkDate,
-        targetWorkDate: body.targetWorkDate ?? current.targetWorkDate,
-        requestReason: body.requestReason ?? current.requestReason
-      };
-    }
+    dataToUpdate = {
+      originalWorkDate: String(shiftDate),
+      targetWorkDate: String(shiftDate),
+      requestReason: JSON.stringify({
+        type: 'SELF_CHANGE',
+        shiftDate: String(shiftDate),
+        original,
+        new: next,
+        note,
+        leaveType: next === 'FDL' ? leaveType : undefined,
+      })
+    };
 
     const updated = await db.shiftExchangeRequest.update({
       where: { id: requestId },

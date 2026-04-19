@@ -1,7 +1,8 @@
 jest.mock('@/lib/database', () => ({
   prisma: {
     payrollRecord: {
-      findFirst: jest.fn()
+      findFirst: jest.fn(),
+      findMany: jest.fn()
     },
     employee: {
       findUnique: jest.fn()
@@ -37,7 +38,7 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { checkRateLimit } from '@/lib/rate-limit';
-import { POST } from '../route';
+import { GET, POST } from '../route';
 
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
@@ -88,5 +89,34 @@ describe('payroll route body guards', () => {
     expect(consoleSpy).not.toHaveBeenCalled();
 
     consoleSpy.mockRestore();
+  });
+
+  it.each([
+    ['employeeId=oops', '員工ID格式無效'],
+    ['year=oops', '年份格式無效'],
+    ['month=13', '月份格式無效'],
+  ])('rejects invalid GET query params: %s', async (queryString, expectedError) => {
+    const request = new NextRequest(`http://localhost/api/payroll?${queryString}`);
+
+    const response = await GET(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload.error).toBe(expectedError);
+    expect(mockPrisma.payrollRecord.findMany).not.toHaveBeenCalled();
+  });
+
+  it('rate limits payroll listing before auth and prisma queries', async () => {
+    mockCheckRateLimit.mockResolvedValue({ allowed: false, retryAfter: 20 } as never);
+
+    const request = new NextRequest('http://localhost/api/payroll');
+
+    const response = await GET(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(429);
+    expect(payload.error).toBe('操作過於頻繁，請稍後再試');
+    expect(mockGetUserFromRequest).not.toHaveBeenCalled();
+    expect(mockPrisma.payrollRecord.findMany).not.toHaveBeenCalled();
   });
 });

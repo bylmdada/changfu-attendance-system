@@ -1,12 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { getUserFromRequest, hashPassword, verifyPassword, validatePassword } from '@/lib/auth';
+import { getUserFromRequest, hashPassword, verifyPassword } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
+import { evaluatePasswordStrength } from '@/lib/password-policy';
+import { getStoredPasswordPolicy } from '@/lib/password-policy-store';
+import { getPasswordReuseViolation } from '@/lib/password-reuse';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+async function validatePasswordWithStoredPolicy(password: string) {
+  const passwordPolicy = await getStoredPasswordPolicy();
+  return evaluatePasswordStrength(password, passwordPolicy);
 }
 
 // 修改自己的密碼
@@ -49,12 +58,11 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: '當前密碼和新密碼為必填' }, { status: 400 });
     }
 
-    // 驗證密碼複雜度
-    const passwordValidation = validatePassword(newPassword);
-    if (!passwordValidation.isValid) {
+    const passwordValidation = await validatePasswordWithStoredPolicy(newPassword);
+    if (!passwordValidation.passesPolicy) {
       return NextResponse.json({ 
         error: '密碼不符合安全要求', 
-        details: passwordValidation.errors 
+        details: passwordValidation.violations
       }, { status: 400 });
     }
 
@@ -73,18 +81,41 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: '當前密碼錯誤' }, { status: 400 });
     }
 
+    const passwordPolicy = await getStoredPasswordPolicy();
+    const passwordReuseViolation = await getPasswordReuseViolation(
+      user.id,
+      newPassword,
+      user.passwordHash,
+      passwordPolicy
+    );
+    if (passwordReuseViolation) {
+      return NextResponse.json({
+        error: '密碼不符合安全要求',
+        details: [passwordReuseViolation]
+      }, { status: 400 });
+    }
+
     // 加密新密碼
     const hashedNewPassword = await hashPassword(newPassword);
 
     // 更新密碼
     await prisma.user.update({
       where: { id: decoded.userId },
-      data: { passwordHash: hashedNewPassword }
+      data: {
+        passwordHash: hashedNewPassword,
+        currentSessionId: null,
+        passwordHistories: {
+          create: {
+            passwordHash: user.passwordHash
+          }
+        }
+      }
     });
 
     return NextResponse.json({ 
       success: true, 
-      message: '密碼修改成功' 
+      message: '密碼修改成功，請重新登入',
+      requireRelogin: true
     });
   } catch (error) {
     console.error('修改密碼失敗:', error);
@@ -141,18 +172,22 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '用戶ID和新密碼為必填' }, { status: 400 });
     }
 
-    // 驗證密碼複雜度
-    const passwordValidation = validatePassword(newPassword);
-    if (!passwordValidation.isValid) {
+    const parsedUserId = parseIntegerQueryParam(userId, { min: 1, max: 99999999 });
+    if (!parsedUserId.isValid || parsedUserId.value === null) {
+      return NextResponse.json({ error: '用戶ID格式無效' }, { status: 400 });
+    }
+
+    const passwordValidation = await validatePasswordWithStoredPolicy(newPassword);
+    if (!passwordValidation.passesPolicy) {
       return NextResponse.json({ 
         error: '密碼不符合安全要求', 
-        details: passwordValidation.errors 
+        details: passwordValidation.violations 
       }, { status: 400 });
     }
 
     // 查找目標用戶
     const targetUser = await prisma.user.findUnique({
-      where: { id: parseInt(userId) },
+      where: { id: parsedUserId.value },
       include: { employee: true }
     });
 
@@ -160,18 +195,40 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '用戶不存在' }, { status: 404 });
     }
 
+    const passwordPolicy = await getStoredPasswordPolicy();
+    const passwordReuseViolation = await getPasswordReuseViolation(
+      targetUser.id,
+      newPassword,
+      targetUser.passwordHash,
+      passwordPolicy
+    );
+    if (passwordReuseViolation) {
+      return NextResponse.json({
+        error: '密碼不符合安全要求',
+        details: [passwordReuseViolation]
+      }, { status: 400 });
+    }
+
     // 加密新密碼
     const hashedNewPassword = await hashPassword(newPassword);
 
     // 更新密碼
     await prisma.user.update({
-      where: { id: parseInt(userId) },
-      data: { passwordHash: hashedNewPassword }
+      where: { id: parsedUserId.value },
+      data: {
+        passwordHash: hashedNewPassword,
+        currentSessionId: null,
+        passwordHistories: {
+          create: {
+            passwordHash: targetUser.passwordHash
+          }
+        }
+      }
     });
 
     return NextResponse.json({ 
       success: true, 
-      message: `已重置用戶 ${targetUser.employee.name} 的密碼` 
+      message: `已重置用戶 ${targetUser.employee?.name || targetUser.username} 的密碼` 
     });
   } catch (error) {
     console.error('重置密碼失敗:', error);

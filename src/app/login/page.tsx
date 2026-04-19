@@ -1286,27 +1286,26 @@ function LoginPageContent() {
                           <Lock className="w-8 h-8 text-blue-600" />
                         </div>
                         <h3 className="text-lg font-semibold text-gray-900">雙因素驗證</h3>
-                        <p className="text-sm text-gray-500 mt-1">請輸入驗證器 APP 顯示的驗證碼</p>
+                        <p className="text-sm text-gray-500 mt-1">請輸入驗證器 APP 顯示的 6 位驗證碼，或一次性備用碼</p>
                       </div>
 
                       <div>
                         <input
                           type="text"
-                          inputMode="numeric"
-                          pattern="[0-9]*"
-                          maxLength={6}
+                          inputMode="text"
+                          maxLength={16}
                           required
                           value={totpCode}
-                          onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                          onChange={(e) => setTotpCode(e.target.value.toUpperCase().replace(/\s/g, '').slice(0, 16))}
                           className="w-full text-center text-2xl font-mono tracking-widest py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 text-black bg-gray-50"
-                          placeholder="000000"
+                          placeholder="000000 或備用碼"
                           autoFocus
                         />
                       </div>
 
                       <button
                         type="submit"
-                        disabled={loading || totpCode.length !== 6}
+                        disabled={loading || totpCode.trim().length < 6}
                         className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 px-4 rounded-xl transition-colors disabled:opacity-50 shadow-sm"
                       >
                         {loading ? '驗證中...' : '驗證並登入'}

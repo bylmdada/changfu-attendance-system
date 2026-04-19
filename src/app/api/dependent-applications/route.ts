@@ -11,8 +11,38 @@ import { toTaiwanDateStr } from '@/lib/timezone';
 import { validateCSRF } from '@/lib/csrf';
 import { safeParseJSON } from '@/lib/validation';
 
+const DEPENDENT_ID_NUMBER_REGEX = /^[A-Z][0-9]{9}$/;
+const ALLOWED_UPDATE_FIELDS = new Set(['dependentName', 'relationship', 'idNumber', 'birthDate']);
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+function normalizeUpdateFieldValue(field: string, value: string | null) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmedValue = value.trim();
+  if (!trimmedValue) {
+    return null;
+  }
+
+  if (field === 'idNumber') {
+    const normalizedValue = trimmedValue.toUpperCase();
+    return DEPENDENT_ID_NUMBER_REGEX.test(normalizedValue) ? normalizedValue : null;
+  }
+
+  if (field === 'birthDate') {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmedValue)) {
+      return null;
+    }
+
+    const parsedDate = new Date(trimmedValue);
+    return Number.isNaN(parsedDate.getTime()) ? null : parsedDate;
+  }
+
+  return trimmedValue;
 }
 
 export async function GET(request: NextRequest) {
@@ -163,37 +193,111 @@ export async function PUT(request: NextRequest) {
 
     const newStatus = reviewAction === 'APPROVE' ? 'APPROVED' : 'REJECTED';
 
-    // 更新申請狀態
-    await prisma.dependentApplication.update({
-      where: { id },
-      data: {
-        status: newStatus,
-        reviewedBy: user.username,
-        reviewedAt: new Date(),
-        reviewNote
-      }
-    });
+    await prisma.$transaction(async (tx) => {
+      const updatedApplication = await tx.dependentApplication.updateMany({
+        where: {
+          id,
+          status: 'PENDING'
+        },
+        data: {
+          status: newStatus,
+          reviewedBy: user.username,
+          reviewedAt: new Date(),
+          reviewNote: reviewNote || null
+        }
+      });
 
-    // 如果通過，執行對應操作
-    if (reviewAction === 'APPROVE') {
-      if (application.applicationType === 'ADD') {
-        // 新增眷屬
-        await prisma.healthInsuranceDependent.create({
+      if (updatedApplication.count !== 1) {
+        throw new Error('申請狀態已變更，請重新整理後再試');
+      }
+
+      const approvalInstance = await tx.approvalInstance.findFirst({
+        where: {
+          requestType: 'DEPENDENT_APP',
+          requestId: id
+        }
+      });
+
+      if (approvalInstance) {
+        await tx.approvalReview.create({
           data: {
-            employeeId: application.employeeId,
-            dependentName: application.dependentName,
-            relationship: application.relationship,
-            idNumber: application.idNumber,
-            birthDate: application.birthDate,
-            isActive: true,
-            startDate: application.effectiveDate
+            instanceId: approvalInstance.id,
+            level: approvalInstance.currentLevel,
+            reviewerId: user.employeeId,
+            reviewerName: user.username,
+            reviewerRole: user.role,
+            action: reviewAction,
+            comment: reviewNote || null
           }
         });
 
-        // 記錄加保
-        await prisma.dependentEnrollmentLog.create({
+        const updatedInstance = await tx.approvalInstance.updateMany({
+          where: {
+            id: approvalInstance.id,
+            currentLevel: approvalInstance.currentLevel,
+            status: approvalInstance.status
+          },
           data: {
-            dependentId: 0, // 新增的眷屬
+            status: newStatus,
+            currentLevel: approvalInstance.maxLevel
+          }
+        });
+
+        if (updatedInstance.count !== 1) {
+          throw new Error('審核流程狀態已變更，請重新整理後再試');
+        }
+      }
+
+      if (reviewAction !== 'APPROVE') {
+        return;
+      }
+
+      if (application.applicationType === 'ADD') {
+        const existingDependent = await tx.healthInsuranceDependent.findFirst({
+          where: { idNumber: application.idNumber }
+        });
+
+        let savedDependent;
+        if (existingDependent) {
+          if (existingDependent.isActive) {
+            throw new Error('此身分證號已在投保名單中');
+          }
+
+          if (existingDependent.employeeId !== application.employeeId) {
+            throw new Error('此眷屬已有其他員工關聯，請改由管理員處理');
+          }
+
+          savedDependent = await tx.healthInsuranceDependent.update({
+            where: { id: existingDependent.id },
+            data: {
+              dependentName: application.dependentName,
+              relationship: application.relationship,
+              idNumber: application.idNumber,
+              birthDate: application.birthDate,
+              isActive: true,
+              startDate: application.effectiveDate,
+              endDate: null,
+              remarks: application.remarks ?? existingDependent.remarks
+            }
+          });
+        } else {
+          savedDependent = await tx.healthInsuranceDependent.create({
+            data: {
+              employeeId: application.employeeId,
+              dependentName: application.dependentName,
+              relationship: application.relationship,
+              idNumber: application.idNumber,
+              birthDate: application.birthDate,
+              isActive: true,
+              startDate: application.effectiveDate,
+              remarks: application.remarks
+            }
+          });
+        }
+
+        await tx.dependentEnrollmentLog.create({
+          data: {
+            dependentId: savedDependent.id,
             employeeId: application.employeeId,
             dependentName: application.dependentName,
             employeeName: application.employeeName,
@@ -202,19 +306,24 @@ export async function PUT(request: NextRequest) {
             createdBy: user.username
           }
         });
-
       } else if (application.applicationType === 'REMOVE' && application.dependentId) {
-        // 退保：更新為停保狀態
-        await prisma.healthInsuranceDependent.update({
-          where: { id: application.dependentId },
+        const updatedDependent = await tx.healthInsuranceDependent.updateMany({
+          where: {
+            id: application.dependentId,
+            employeeId: application.employeeId,
+            isActive: true
+          },
           data: {
             isActive: false,
             endDate: application.effectiveDate
           }
         });
 
-        // 記錄退保
-        await prisma.dependentEnrollmentLog.create({
+        if (updatedDependent.count !== 1) {
+          throw new Error('找不到可退保的眷屬資料');
+        }
+
+        await tx.dependentEnrollmentLog.create({
           data: {
             dependentId: application.dependentId,
             employeeId: application.employeeId,
@@ -225,19 +334,37 @@ export async function PUT(request: NextRequest) {
             createdBy: user.username
           }
         });
-
       } else if (application.applicationType === 'UPDATE' && application.dependentId && application.changeField) {
-        // 變更：更新眷屬資料
-        const updateData: Record<string, unknown> = {};
-        updateData[application.changeField] = application.newValue;
+        if (!ALLOWED_UPDATE_FIELDS.has(application.changeField)) {
+          throw new Error('不支援的眷屬變更欄位');
+        }
 
-        await prisma.healthInsuranceDependent.update({
+        const normalizedValue = normalizeUpdateFieldValue(application.changeField, application.newValue);
+        if (normalizedValue === null) {
+          throw new Error('眷屬變更資料格式無效');
+        }
+
+        const existingDependent = await tx.healthInsuranceDependent.findFirst({
+          where: {
+            id: application.dependentId,
+            employeeId: application.employeeId
+          }
+        });
+
+        if (!existingDependent) {
+          throw new Error('找不到可變更的眷屬資料');
+        }
+
+        const updateData: Record<string, unknown> = {
+          [application.changeField]: normalizedValue
+        };
+
+        await tx.healthInsuranceDependent.update({
           where: { id: application.dependentId },
           data: updateData
         });
 
-        // 記錄異動
-        await prisma.dependentHistoryLog.create({
+        await tx.dependentHistoryLog.create({
           data: {
             dependentId: application.dependentId,
             dependentName: application.dependentName,
@@ -245,12 +372,14 @@ export async function PUT(request: NextRequest) {
             action: 'UPDATE',
             fieldName: application.changeField,
             oldValue: application.oldValue,
-            newValue: application.newValue,
+            newValue: normalizedValue instanceof Date
+              ? normalizedValue.toISOString().split('T')[0]
+              : normalizedValue,
             changedBy: user.username
           }
         });
       }
-    }
+    });
 
     return NextResponse.json({
       success: true,
@@ -258,6 +387,22 @@ export async function PUT(request: NextRequest) {
     });
 
   } catch (error) {
+    if (error instanceof Error) {
+      if (error.message.includes('狀態已變更')) {
+        return NextResponse.json({ error: error.message }, { status: 409 });
+      }
+
+      if (
+        error.message.includes('投保名單') ||
+        error.message.includes('其他員工關聯') ||
+        error.message.includes('不支援的眷屬變更欄位') ||
+        error.message.includes('資料格式無效') ||
+        error.message.includes('找不到可')
+      ) {
+        return NextResponse.json({ error: error.message }, { status: 400 });
+      }
+    }
+
     console.error('審核申請失敗:', error);
     return NextResponse.json({ error: '系統錯誤' }, { status: 500 });
   }

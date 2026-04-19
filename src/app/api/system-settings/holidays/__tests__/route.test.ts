@@ -7,6 +7,7 @@ jest.mock('@/lib/database', () => ({
       deleteMany: jest.fn(),
       createMany: jest.fn(),
     },
+    $transaction: jest.fn(),
   },
 }));
 
@@ -27,6 +28,8 @@ import { DELETE, GET, POST, PUT } from '../route';
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
 const mockValidateCSRF = validateCSRF as jest.MockedFunction<typeof validateCSRF>;
+let mockTxDeleteMany: jest.Mock;
+let mockTxCreateMany: jest.Mock;
 
 describe('holidays route validation', () => {
   beforeEach(() => {
@@ -44,6 +47,14 @@ describe('holidays route validation', () => {
     mockPrisma.holiday.delete.mockResolvedValue({ id: 1 } as never);
     mockPrisma.holiday.deleteMany.mockResolvedValue({ count: 0 } as never);
     mockPrisma.holiday.createMany.mockResolvedValue({ count: 1 } as never);
+    mockTxDeleteMany = jest.fn().mockResolvedValue({ count: 0 });
+    mockTxCreateMany = jest.fn().mockResolvedValue({ count: 1 });
+    mockPrisma.$transaction.mockImplementation(async (callback) => callback({
+      holiday: {
+        deleteMany: mockTxDeleteMany,
+        createMany: mockTxCreateMany,
+      },
+    } as never) as never);
   });
 
   it('rejects invalid year filters on GET', async () => {
@@ -150,6 +161,27 @@ describe('holidays route validation', () => {
     expect(mockPrisma.holiday.create).not.toHaveBeenCalled();
   });
 
+  it('rejects dates whose year does not match the provided year on POST', async () => {
+    const request = new NextRequest('http://localhost/api/system-settings/holidays', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        year: 2026,
+        date: '2025-12-31',
+        name: '跨年假日',
+      }),
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload.error).toBe('年份或日期格式無效');
+    expect(mockPrisma.holiday.create).not.toHaveBeenCalled();
+  });
+
   it('rejects invalid batch import years on PUT', async () => {
     const request = new NextRequest('http://localhost/api/system-settings/holidays', {
       method: 'PUT',
@@ -221,7 +253,7 @@ describe('holidays route validation', () => {
   });
 
   it('returns 400 when batch import creates zero holidays', async () => {
-    mockPrisma.holiday.createMany.mockResolvedValueOnce({ count: 0 } as never);
+    mockTxCreateMany.mockResolvedValueOnce({ count: 0 });
 
     const request = new NextRequest('http://localhost/api/system-settings/holidays', {
       method: 'PUT',
@@ -239,5 +271,68 @@ describe('holidays route validation', () => {
 
     expect(response.status).toBe(400);
     expect(payload.error).toBe('假日匯入失敗，未新增任何資料');
+  });
+
+  it('rejects impossible government-format dates on PUT instead of normalizing them', async () => {
+    const request = new NextRequest('http://localhost/api/system-settings/holidays', {
+      method: 'PUT',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        year: 2026,
+        holidays: [{ date: '20260230', name: '不存在的日期' }],
+      }),
+    });
+
+    const response = await PUT(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload.error).toBe('假日列表包含無效的日期或名稱');
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects imported holidays whose dates do not belong to the selected year on PUT', async () => {
+    const request = new NextRequest('http://localhost/api/system-settings/holidays', {
+      method: 'PUT',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        year: 2026,
+        holidays: [{ date: '2025-12-31', name: '跨年假日' }],
+      }),
+    });
+
+    const response = await PUT(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload.error).toBe('假日列表包含無效的日期或名稱');
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects duplicate holiday dates on PUT before deleting existing records', async () => {
+    const request = new NextRequest('http://localhost/api/system-settings/holidays', {
+      method: 'PUT',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        year: 2026,
+        holidays: [
+          { date: '2026-01-01', name: '元旦' },
+          { date: '20260101', name: '元旦（重複）' },
+        ],
+      }),
+    });
+
+    const response = await PUT(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload.error).toBe('假日日期不可重複');
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
   });
 });

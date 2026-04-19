@@ -93,6 +93,11 @@ export default function AttendanceFreezePage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canCreateFreeze) {
+      setError('目前僅系統管理員可建立新的考勤凍結設定');
+      return;
+    }
+
     setSubmitting(true);
     setError('');
     setSuccess('');
@@ -101,7 +106,7 @@ export default function AttendanceFreezePage() {
       const response = await fetchJSONWithCSRF('/api/attendance-freeze', {
         method: 'POST',
         body: {
-          freezeDate: new Date(formData.freezeDate).toISOString(),
+          freezeDate: new Date(`${formData.freezeDate}:00+08:00`).toISOString(),
           targetMonth: parseInt(formData.targetMonth),
           targetYear: parseInt(formData.targetYear),
           description: formData.description,
@@ -135,8 +140,13 @@ export default function AttendanceFreezePage() {
   };
 
   const formatDateTime = (dateString: string) => {
-    return new Date(dateString).toLocaleString('zh-TW');
+    return new Date(dateString).toLocaleString('zh-TW', {
+      timeZone: 'Asia/Taipei',
+      hour12: false
+    });
   };
+
+  const canCreateFreeze = user?.role === 'ADMIN';
 
   const getMonthName = (month: number) => {
     const months = ['一月', '二月', '三月', '四月', '五月', '六月',
@@ -188,6 +198,12 @@ export default function AttendanceFreezePage() {
           <h2 className="text-xl font-semibold mb-4">創建凍結設定</h2>
           <p className="text-gray-600 mb-6">設定考勤凍結日期和鎖定的月份</p>
 
+          {!canCreateFreeze && (
+            <div className="mb-6 rounded-lg border border-yellow-200 bg-yellow-50 px-4 py-3 text-sm text-yellow-800">
+              目前僅系統管理員可建立新的考勤凍結設定，HR 可查看既有凍結紀錄。
+            </div>
+          )}
+
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -198,10 +214,11 @@ export default function AttendanceFreezePage() {
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                 value={formData.freezeDate}
                 onChange={(e) => setFormData({ ...formData, freezeDate: e.target.value })}
+                disabled={!canCreateFreeze}
                 required
               />
               <p className="text-sm text-gray-500 mt-1">
-                設定凍結生效的日期和時間
+                設定凍結生效的日期和時間（台灣時間）
               </p>
             </div>
 
@@ -214,6 +231,7 @@ export default function AttendanceFreezePage() {
                   className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                   value={formData.targetMonth}
                   onChange={(e) => setFormData({ ...formData, targetMonth: e.target.value })}
+                  disabled={!canCreateFreeze}
                   required
                 >
                   <option value="">選擇月份</option>
@@ -233,6 +251,7 @@ export default function AttendanceFreezePage() {
                   className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                   value={formData.targetYear}
                   onChange={(e) => setFormData({ ...formData, targetYear: e.target.value })}
+                  disabled={!canCreateFreeze}
                   required
                 />
               </div>
@@ -248,6 +267,7 @@ export default function AttendanceFreezePage() {
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                 value={formData.description}
                 onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                disabled={!canCreateFreeze}
               />
             </div>
 
@@ -258,6 +278,7 @@ export default function AttendanceFreezePage() {
                   type="checkbox"
                   checked={formData.autoCalculatePayroll}
                   onChange={(e) => setFormData({ ...formData, autoCalculatePayroll: e.target.checked })}
+                  disabled={!canCreateFreeze}
                   className="mt-1 h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
                 />
                 <div>
@@ -272,7 +293,7 @@ export default function AttendanceFreezePage() {
 
             <button
               type="submit"
-              disabled={submitting}
+              disabled={submitting || !canCreateFreeze}
               className="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
             >
               {submitting ? '處理中...' : formData.autoCalculatePayroll ? '凍結並計算薪資' : '創建凍結設定'}

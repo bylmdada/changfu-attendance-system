@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import bcrypt from 'bcryptjs';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
-import { getUserFromRequest } from '@/lib/auth';
+import { getUserFromRequest, hashPassword } from '@/lib/auth';
+import { generatePasswordForPolicy } from '@/lib/password-policy';
+import { getStoredPasswordPolicy } from '@/lib/password-policy-store';
 
 export async function POST(request: NextRequest) {
   try {
@@ -29,15 +30,29 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Admin access required for setup operations' }, { status: 403 });
     }
 
+    const testPassword = generatePasswordForPolicy(await getStoredPasswordPolicy());
+
     // 檢查是否已存在員工用戶
     const existingEmployee = await prisma.user.findUnique({
       where: { username: 'employee' }
     });
 
     if (existingEmployee) {
+      await prisma.user.update({
+        where: { id: existingEmployee.id },
+        data: {
+          passwordHash: await hashPassword(testPassword),
+          currentSessionId: null
+        }
+      });
+
       return NextResponse.json({ 
-        message: '員工測試帳號已存在', 
-        success: true 
+        message: '員工測試帳號密碼已重設',
+        success: true,
+        testAccount: {
+          username: 'employee',
+          password: testPassword
+        }
       });
     }
 
@@ -60,12 +75,11 @@ export async function POST(request: NextRequest) {
     });
 
     // 建立員工帳號
-    const employeePassword = await bcrypt.hash('emp123', 12);
     await prisma.user.create({
       data: {
         employeeId: employee.id,
         username: 'employee',
-        passwordHash: employeePassword,
+        passwordHash: await hashPassword(testPassword),
         role: 'EMPLOYEE'
       }
     });
@@ -75,7 +89,7 @@ export async function POST(request: NextRequest) {
       success: true,
       testAccount: {
         username: 'employee',
-        password: 'emp123'
+        password: testPassword
       }
     });
   } catch (error) {

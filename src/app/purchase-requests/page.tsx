@@ -147,6 +147,7 @@ export default function PurchaseRequestsPage() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [requests, setRequests] = useState<PurchaseRequest[]>([]);
+  const [requestsLoaded, setRequestsLoaded] = useState(false);
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
   const [departmentFilter, setDepartmentFilter] = useState<string>('ALL');
   const [categoryFilter, setCategoryFilter] = useState<string>('ALL');
@@ -154,6 +155,10 @@ export default function PurchaseRequestsPage() {
   const [showDetailModal, setShowDetailModal] = useState(false);
   const [selectedRequest, setSelectedRequest] = useState<PurchaseRequest | null>(null);
   const [rejectReason, setRejectReason] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [processingRequestId, setProcessingRequestId] = useState<number | null>(null);
+  const [linkedRequestId, setLinkedRequestId] = useState<number | null>(null);
+  const [linkedRequestHandled, setLinkedRequestHandled] = useState(false);
   
   // 新增表單
   const [newRequest, setNewRequest] = useState({
@@ -266,9 +271,19 @@ export default function PurchaseRequestsPage() {
 
   const fetchRequests = useCallback(async () => {
     try {
-      const url = statusFilter === 'ALL' 
-        ? '/api/purchase-requests' 
-        : `/api/purchase-requests?status=${statusFilter}`;
+      setRequestsLoaded(false);
+
+      const params = new URLSearchParams();
+      if (statusFilter !== 'ALL') {
+        params.set('status', statusFilter);
+      }
+      if (isAdmin && departmentFilter !== 'ALL') {
+        params.set('department', departmentFilter);
+      }
+
+      const url = params.size > 0
+        ? `/api/purchase-requests?${params.toString()}`
+        : '/api/purchase-requests';
       const response = await fetch(url, { credentials: 'include' });
       if (response.ok) {
         const data = await response.json();
@@ -276,12 +291,25 @@ export default function PurchaseRequestsPage() {
       }
     } catch (error) {
       console.error('取得請購單失敗:', error);
+    } finally {
+      setRequestsLoaded(true);
     }
-  }, [statusFilter]);
+  }, [departmentFilter, isAdmin, statusFilter]);
 
   useEffect(() => {
     fetchUser();
   }, [fetchUser]);
+
+  useEffect(() => {
+    const rawId = new URLSearchParams(window.location.search).get('id');
+    if (!rawId || !/^\d+$/.test(rawId)) {
+      setLinkedRequestId(null);
+      return;
+    }
+
+    const parsedId = Number(rawId);
+    setLinkedRequestId(Number.isSafeInteger(parsedId) && parsedId > 0 ? parsedId : null);
+  }, []);
 
   useEffect(() => {
     if (user) {
@@ -289,8 +317,36 @@ export default function PurchaseRequestsPage() {
     }
   }, [user, fetchRequests]);
 
+  useEffect(() => {
+    setLinkedRequestHandled(false);
+  }, [linkedRequestId]);
+
+  useEffect(() => {
+    if (!showDetailModal) {
+      setRejectReason('');
+    }
+  }, [showDetailModal]);
+
+  useEffect(() => {
+    if (!requestsLoaded || linkedRequestId === null || linkedRequestHandled) {
+      return;
+    }
+
+    const linkedRequest = requests.find(request => request.id === linkedRequestId) || null;
+    if (linkedRequest) {
+      setSelectedRequest(linkedRequest);
+      setShowDetailModal(true);
+    }
+
+    setLinkedRequestHandled(true);
+  }, [linkedRequestHandled, linkedRequestId, requests, requestsLoaded]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitting) {
+      return;
+    }
+
     if (!newRequest.title || !newRequest.reason) {
       showToast('error', '請填寫採購主旨和原因');
       return;
@@ -305,6 +361,7 @@ export default function PurchaseRequestsPage() {
     const totalAmount = validItems.reduce((sum, item) => sum + (item.quantity * item.price), 0);
 
     try {
+      setSubmitting(true);
       const response = await fetchJSONWithCSRF('/api/purchase-requests', {
         method: 'POST',
         body: {
@@ -335,11 +392,18 @@ export default function PurchaseRequestsPage() {
     } catch (error) {
       console.error('提交請購單失敗:', error);
       showToast('error', '操作失敗');
+    } finally {
+      setSubmitting(false);
     }
   };
 
   const handleApprove = async (id: number) => {
+    if (processingRequestId === id) {
+      return;
+    }
+
     try {
+      setProcessingRequestId(id);
       const response = await fetchJSONWithCSRF('/api/purchase-requests', {
         method: 'PUT',
         body: { id, status: 'APPROVED' }
@@ -356,17 +420,24 @@ export default function PurchaseRequestsPage() {
     } catch (error) {
       console.error('核准失敗:', error);
       showToast('error', '操作失敗');
+    } finally {
+      setProcessingRequestId(null);
+      setActionConfirm(null);
     }
-    setActionConfirm(null);
   };
 
   const handleReject = async (id: number) => {
+    if (processingRequestId === id) {
+      return;
+    }
+
     if (!rejectReason.trim()) {
       showToast('error', '請填寫駁回原因');
       return;
     }
     
     try {
+      setProcessingRequestId(id);
       const response = await fetchJSONWithCSRF('/api/purchase-requests', {
         method: 'PUT',
         body: { id, status: 'REJECTED', rejectReason }
@@ -384,17 +455,28 @@ export default function PurchaseRequestsPage() {
     } catch (error) {
       console.error('駁回失敗:', error);
       showToast('error', '操作失敗');
+    } finally {
+      setProcessingRequestId(null);
     }
   };
 
   const handleDelete = async (id: number) => {
+    if (processingRequestId === id) {
+      return;
+    }
+
     try {
+      setProcessingRequestId(id);
       const response = await fetchJSONWithCSRF(`/api/purchase-requests?id=${id}`, {
         method: 'DELETE'
       });
 
       if (response.ok) {
         showToast('success', '已刪除');
+        if (selectedRequest?.id === id) {
+          setShowDetailModal(false);
+          setSelectedRequest(null);
+        }
         fetchRequests();
       } else {
         const error = await response.json();
@@ -403,8 +485,10 @@ export default function PurchaseRequestsPage() {
     } catch (error) {
       console.error('刪除失敗:', error);
       showToast('error', '操作失敗');
+    } finally {
+      setProcessingRequestId(null);
+      setActionConfirm(null);
     }
-    setActionConfirm(null);
   };
 
   const addItem = () => {
@@ -674,10 +758,10 @@ export default function PurchaseRequestsPage() {
 
         {/* 列表 */}
         <div className="bg-white rounded-lg shadow overflow-hidden">
-          {requests.length === 0 ? (
+          {sortedRequests.length === 0 ? (
             <div className="text-center py-12">
               <ShoppingCart className="w-12 h-12 text-gray-300 mx-auto mb-4" />
-              <p className="text-gray-500">目前沒有請購單</p>
+              <p className="text-gray-500">{requests.length === 0 ? '目前沒有請購單' : '目前篩選條件下沒有請購單'}</p>
             </div>
           ) : (
             <table className="min-w-full divide-y divide-gray-200">
@@ -697,7 +781,7 @@ export default function PurchaseRequestsPage() {
               <tbody className="bg-white divide-y divide-gray-200">
                 {sortedRequests.map((req) => (
                   <React.Fragment key={req.id}>
-                  <tr className="hover:bg-gray-50">
+                  <tr className={linkedRequestId === req.id ? 'bg-blue-50 hover:bg-blue-50' : 'hover:bg-gray-50'}>
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-blue-600">
                       {req.requestNumber}
                     </td>
@@ -746,9 +830,10 @@ export default function PurchaseRequestsPage() {
                             {isAdmin && (
                               <>
                                 <button
-                                  onClick={() => handleApprove(req.id)}
+                                  onClick={() => setActionConfirm({ type: 'approve', id: req.id, title: req.title })}
                                   className="text-green-600 hover:text-green-800"
                                   title="核准"
+                                  disabled={processingRequestId === req.id}
                                 >
                                   <Check className="w-5 h-5" />
                                 </button>
@@ -756,9 +841,10 @@ export default function PurchaseRequestsPage() {
                             )}
                             {(isAdmin || req.employeeId === user?.employee?.id) && (
                               <button
-                                onClick={() => handleDelete(req.id)}
+                                onClick={() => setActionConfirm({ type: 'delete', id: req.id, title: req.title })}
                                 className="text-red-600 hover:text-red-800"
                                 title="刪除"
+                                disabled={processingRequestId === req.id}
                               >
                                 <Trash2 className="w-5 h-5" />
                               </button>
@@ -979,9 +1065,10 @@ export default function PurchaseRequestsPage() {
                 </button>
                 <button
                   type="submit"
-                  className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                  disabled={submitting}
+                  className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  提交申請
+                  {submitting ? '提交中...' : '提交申請'}
                 </button>
               </div>
             </form>
@@ -1115,8 +1202,9 @@ export default function PurchaseRequestsPage() {
                   <h3 className="font-medium text-gray-900 mb-3">審核操作</h3>
                   <div className="space-y-3">
                     <button
-                      onClick={() => handleApprove(selectedRequest.id)}
+                      onClick={() => setActionConfirm({ type: 'approve', id: selectedRequest.id, title: selectedRequest.title })}
                       className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
+                      disabled={processingRequestId === selectedRequest.id}
                     >
                       <Check className="w-5 h-5" />
                       核准
@@ -1132,6 +1220,7 @@ export default function PurchaseRequestsPage() {
                       <button
                         onClick={() => handleReject(selectedRequest.id)}
                         className="w-full mt-2 flex items-center justify-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700"
+                        disabled={processingRequestId === selectedRequest.id}
                       >
                         <X className="w-5 h-5" />
                         駁回
@@ -1166,9 +1255,10 @@ export default function PurchaseRequestsPage() {
               </button>
               <button
                 onClick={() => actionConfirm.type === 'approve' ? handleApprove(actionConfirm.id) : handleDelete(actionConfirm.id)}
-                className={`flex-1 px-4 py-2 text-white rounded-md ${actionConfirm.type === 'approve' ? 'bg-green-600 hover:bg-green-700' : 'bg-red-600 hover:bg-red-700'}`}
+                disabled={processingRequestId === actionConfirm.id}
+                className={`flex-1 px-4 py-2 text-white rounded-md disabled:opacity-50 disabled:cursor-not-allowed ${actionConfirm.type === 'approve' ? 'bg-green-600 hover:bg-green-700' : 'bg-red-600 hover:bg-red-700'}`}
               >
-                {actionConfirm.type === 'approve' ? '確認核准' : '確認刪除'}
+                {processingRequestId === actionConfirm.id ? '處理中...' : actionConfirm.type === 'approve' ? '確認核准' : '確認刪除'}
               </button>
             </div>
           </div>

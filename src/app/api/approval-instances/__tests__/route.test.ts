@@ -97,7 +97,7 @@ describe('approval instances route authorization', () => {
 
     expect(response.status).toBe(200);
     expect(payload.success).toBe(true);
-    expect(mockIsReviewerFor).toHaveBeenCalledWith(51, 'Operations');
+    expect(mockIsReviewerFor).toHaveBeenCalledWith(51, 'Operations', 'LEAVE');
     expect(mockPrisma.approvalReview.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ reviewerRole: 'DEPUTY' })
     }));

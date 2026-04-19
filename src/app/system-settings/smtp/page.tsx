@@ -30,6 +30,19 @@ interface User {
   };
 }
 
+function normalizeSettings(value: Partial<SmtpSettings> | undefined): SmtpSettings {
+  return {
+    id: typeof value?.id === 'number' ? value.id : 0,
+    smtpHost: typeof value?.smtpHost === 'string' ? value.smtpHost : '',
+    smtpPort: typeof value?.smtpPort === 'number' ? value.smtpPort : 587,
+    smtpSecure: typeof value?.smtpSecure === 'boolean' ? value.smtpSecure : true,
+    smtpUser: typeof value?.smtpUser === 'string' ? value.smtpUser : '',
+    smtpPassword: typeof value?.smtpPassword === 'string' ? value.smtpPassword : '',
+    fromEmail: typeof value?.fromEmail === 'string' ? value.fromEmail : '',
+    fromName: typeof value?.fromName === 'string' && value.fromName.trim() ? value.fromName : '長福考勤系統',
+  };
+}
+
 export default function SmtpSettingsPage() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
@@ -48,6 +61,7 @@ export default function SmtpSettingsPage() {
     fromEmail: '',
     fromName: '長福考勤系統'
   });
+  const hasCompleteSmtpSettings = settings.smtpHost.trim() !== '' && settings.smtpUser.trim() !== '' && settings.smtpPassword !== '';
 
   useEffect(() => {
     const fetchData = async () => {
@@ -76,7 +90,7 @@ export default function SmtpSettingsPage() {
         if (response.ok) {
           const data = await response.json();
           if (data.settings) {
-            setSettings(data.settings);
+            setSettings(normalizeSettings(data.settings));
           }
         }
       } catch (error) {
@@ -98,12 +112,15 @@ export default function SmtpSettingsPage() {
         method: 'POST',
         body: settings
       });
+      const payload = await response.json();
 
       if (response.ok) {
-        setMessage({ type: 'success', text: '設定已儲存' });
+        if (payload.settings) {
+          setSettings(normalizeSettings(payload.settings));
+        }
+        setMessage({ type: 'success', text: payload.message || '設定已儲存' });
       } else {
-        const error = await response.json();
-        setMessage({ type: 'error', text: error.error || '儲存失敗' });
+        setMessage({ type: 'error', text: payload.error || '儲存失敗' });
       }
     } catch (error) {
       console.error('儲存失敗:', error);
@@ -114,7 +131,9 @@ export default function SmtpSettingsPage() {
   };
 
   const handleTestEmail = async () => {
-    if (!testEmail) {
+    const trimmedTestEmail = testEmail.trim();
+
+    if (!trimmedTestEmail) {
       setMessage({ type: 'error', text: '請輸入測試郵件地址' });
       return;
     }
@@ -125,10 +144,11 @@ export default function SmtpSettingsPage() {
     try {
       const response = await fetchJSONWithCSRF('/api/system-settings/smtp/test', {
         method: 'POST',
-        body: { email: testEmail }
+        body: { email: trimmedTestEmail }
       });
 
       if (response.ok) {
+        setTestEmail(trimmedTestEmail);
         setMessage({ type: 'success', text: '測試郵件已發送' });
       } else {
         const error = await response.json();
@@ -304,14 +324,14 @@ export default function SmtpSettingsPage() {
               />
               <button
                 onClick={handleTestEmail}
-                disabled={testing}
+                disabled={testing || !hasCompleteSmtpSettings || !testEmail.trim()}
                 className="inline-flex items-center px-4 py-2 bg-yellow-500 text-white rounded-lg hover:bg-yellow-600 disabled:opacity-50"
               >
                 <Send className="w-4 h-4 mr-2" />
                 {testing ? '發送中...' : '發送測試信'}
               </button>
             </div>
-            <p className="text-xs text-gray-500 mt-2">請先儲存設定後再進行測試</p>
+            <p className="text-xs text-gray-500 mt-2">請先完成並儲存 SMTP 主機、帳號與密碼後再進行測試</p>
           </div>
         </div>
 

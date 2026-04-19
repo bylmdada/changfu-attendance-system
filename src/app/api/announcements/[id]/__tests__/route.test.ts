@@ -17,6 +17,15 @@ jest.mock('@/lib/database', () => ({
     employee: {
       findUnique: jest.fn(),
     },
+    approvalInstance: {
+      findFirst: jest.fn(),
+      update: jest.fn(),
+      deleteMany: jest.fn(),
+    },
+    approvalReview: {
+      create: jest.fn(),
+    },
+    $transaction: jest.fn(),
   },
 }));
 
@@ -54,6 +63,10 @@ describe('announcement delete guards', () => {
     mockedValidateCSRF.mockResolvedValue({ valid: true });
     mockedPrisma.announcementAttachment.findMany.mockResolvedValue([] as never);
     mockedPrisma.announcement.delete.mockResolvedValue({ id: 5 } as never);
+    mockedPrisma.approvalInstance.findFirst.mockResolvedValue(null as never);
+    mockedPrisma.approvalInstance.deleteMany.mockResolvedValue({ count: 1 } as never);
+    mockedPrisma.approvalReview.create.mockResolvedValue({ id: 1 } as never);
+    mockedPrisma.approvalInstance.update.mockResolvedValue({ id: 11, status: 'APPROVED', currentLevel: 2, maxLevel: 2 } as never);
     mockedPrisma.announcement.findUnique.mockResolvedValue({
       id: 5,
       title: 'dept announcement',
@@ -70,6 +83,7 @@ describe('announcement delete guards', () => {
       updatedAt: new Date().toISOString(),
     } as never);
     mockedPrisma.employee.findUnique.mockResolvedValue({ department: 'Sales' } as never);
+    mockedPrisma.$transaction.mockImplementation(async (callback: (tx: typeof mockedPrisma) => Promise<unknown>) => callback(mockedPrisma));
   });
 
   it('rejects DELETE requests with an invalid CSRF token', async () => {
@@ -190,5 +204,148 @@ describe('announcement delete guards', () => {
     expect(data.error).toBe('無效的公告ID');
     expect(mockedPrisma.announcementAttachment.findMany).not.toHaveBeenCalled();
     expect(mockedPrisma.announcement.delete).not.toHaveBeenCalled();
+  });
+
+  it('keeps the original publishedAt timestamp when editing an already published announcement', async () => {
+    mockedPrisma.announcement.update.mockResolvedValue({
+      id: 5,
+      title: 'updated',
+      content: 'content',
+      priority: 'NORMAL',
+      category: 'GENERAL',
+      publisherId: 1,
+      isPublished: true,
+      publishedAt: '2025-01-01T00:00:00.000Z',
+      expiryDate: null,
+      isGlobalAnnouncement: true,
+      targetDepartments: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    } as never);
+    mockedPrisma.announcement.findUnique.mockResolvedValue({
+      id: 5,
+      title: 'published announcement',
+      content: 'content',
+      priority: 'NORMAL',
+      category: 'GENERAL',
+      publisherId: 1,
+      isPublished: true,
+      publishedAt: '2025-01-01T00:00:00.000Z',
+      expiryDate: null,
+      isGlobalAnnouncement: true,
+      targetDepartments: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    } as never);
+
+    const request = new NextRequest('http://localhost:3000/api/announcements/5', {
+      method: 'PUT',
+      body: JSON.stringify({ title: 'updated', isPublished: true }),
+      headers: {
+        'content-type': 'application/json',
+      },
+    });
+
+    const response = await PUT(request, { params: Promise.resolve({ id: '5' }) });
+
+    expect(response.status).toBe(200);
+    expect(mockedPrisma.announcement.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 5 },
+        data: expect.not.objectContaining({
+          publishedAt: expect.anything(),
+        }),
+      })
+    );
+  });
+
+  it('approves pending announcement flows when publishing from the management page', async () => {
+    mockedPrisma.announcement.update.mockResolvedValue({
+      id: 5,
+      title: 'published',
+      content: 'content',
+      priority: 'NORMAL',
+      category: 'GENERAL',
+      publisherId: 1,
+      isPublished: true,
+      publishedAt: new Date().toISOString(),
+      expiryDate: null,
+      isGlobalAnnouncement: true,
+      targetDepartments: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    } as never);
+    mockedPrisma.announcement.findUnique.mockResolvedValue({
+      id: 5,
+      title: 'draft announcement',
+      content: 'content',
+      priority: 'NORMAL',
+      category: 'GENERAL',
+      publisherId: 1,
+      isPublished: false,
+      publishedAt: null,
+      expiryDate: null,
+      isGlobalAnnouncement: true,
+      targetDepartments: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    } as never);
+    mockedPrisma.approvalInstance.findFirst.mockResolvedValue({
+      id: 12,
+      currentLevel: 1,
+      maxLevel: 2,
+      status: 'PENDING',
+    } as never);
+    mockedPrisma.employee.findUnique.mockResolvedValue({ name: '王小明' } as never);
+
+    const request = new NextRequest('http://localhost:3000/api/announcements/5', {
+      method: 'PUT',
+      body: JSON.stringify({ title: 'draft announcement', isPublished: true }),
+      headers: {
+        'content-type': 'application/json',
+      },
+    });
+
+    const response = await PUT(request, { params: Promise.resolve({ id: '5' }) });
+
+    expect(response.status).toBe(200);
+    expect(mockedPrisma.approvalReview.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          instanceId: 12,
+          reviewerId: 10,
+          reviewerName: '王小明',
+          reviewerRole: 'ADMIN',
+          action: 'APPROVE',
+        }),
+      })
+    );
+    expect(mockedPrisma.approvalInstance.update).toHaveBeenCalledWith({
+      where: { id: 12 },
+      data: {
+        status: 'APPROVED',
+        currentLevel: 2,
+      },
+    });
+  });
+
+  it('removes linked approval instances when deleting an announcement', async () => {
+    const request = new NextRequest('http://localhost:3000/api/announcements/5', {
+      method: 'DELETE',
+      headers: {
+        cookie: 'token=shared-session-token',
+      },
+    });
+
+    const response = await DELETE(request, { params: Promise.resolve({ id: '5' }) });
+
+    expect(response.status).toBe(200);
+    expect(mockedPrisma.approvalInstance.deleteMany).toHaveBeenCalledWith({
+      where: {
+        requestType: 'ANNOUNCEMENT',
+        requestId: 5,
+      },
+    });
+    expect(mockedPrisma.announcement.delete).toHaveBeenCalledWith({ where: { id: 5 } });
   });
 });

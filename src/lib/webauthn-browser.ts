@@ -4,6 +4,13 @@ export function base64UrlToUint8Array(value: string): Uint8Array {
   return Uint8Array.from(atob(base64 + padding), (char) => char.charCodeAt(0));
 }
 
+export function base64UrlToArrayBuffer(value: string): ArrayBuffer {
+  const bytes = base64UrlToUint8Array(value);
+  const buffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buffer).set(bytes);
+  return buffer;
+}
+
 export function arrayBufferToBase64Url(value: ArrayBuffer | Uint8Array): string {
   const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
   let binary = '';

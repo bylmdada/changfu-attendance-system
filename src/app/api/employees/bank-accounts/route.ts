@@ -53,7 +53,7 @@ export async function GET(request: NextRequest) {
     if (!user) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
-    if (!user || (user.role !== 'ADMIN' && user.role !== 'HR')) {
+    if (user.role !== 'ADMIN' && user.role !== 'HR') {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
 
@@ -139,7 +139,7 @@ export async function PUT(request: NextRequest) {
     if (!user) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
-    if (!user || (user.role !== 'ADMIN' && user.role !== 'HR')) {
+    if (user.role !== 'ADMIN' && user.role !== 'HR') {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
 
@@ -154,7 +154,11 @@ export async function PUT(request: NextRequest) {
     }
 
     const body = parsedBody.data;
-    
+
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json({ error: '請求內容格式無效' }, { status: 400 });
+    }
+
     const { employeeId, idNumber, bankAccount } = body;
 
     const normalizedEmployeeId = parsePositiveInteger(employeeId);
@@ -167,6 +171,10 @@ export async function PUT(request: NextRequest) {
     if (trimmedIdNumber && trimmedIdNumber.length > 0) {
       if (!isValidIdNumberFormat(trimmedIdNumber)) {
         return NextResponse.json({ error: '身分證字號格式不正確（應為1個英文字母加9個數字，例如：A123456789）' }, { status: 400 });
+      }
+
+      if (!validateTaiwanIdNumber(trimmedIdNumber)) {
+        return NextResponse.json({ error: '身分證字號格式不正確（檢查碼錯誤）' }, { status: 400 });
       }
     }
 
@@ -224,7 +232,7 @@ export async function POST(request: NextRequest) {
     if (!user) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
-    if (!user || (user.role !== 'ADMIN' && user.role !== 'HR')) {
+    if (user.role !== 'ADMIN' && user.role !== 'HR') {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
 
@@ -242,6 +250,25 @@ export async function POST(request: NextRequest) {
 
     if (!Array.isArray(records) || records.length === 0) {
       return NextResponse.json({ error: '請提供匯入資料' }, { status: 400 });
+    }
+
+    const activeEmployees = await prisma.employee.findMany({
+      where: { isActive: true },
+      select: { id: true, name: true, idNumber: true },
+      orderBy: { id: 'asc' },
+    });
+    const employeeByName = new Map<string, (typeof activeEmployees)[number]>();
+    const employeeByIdNumber = new Map<string, (typeof activeEmployees)[number]>();
+
+    for (const employee of activeEmployees) {
+      const normalizedEmployeeName = normalizeOptionalString(employee.name);
+      if (normalizedEmployeeName && !employeeByName.has(normalizedEmployeeName)) {
+        employeeByName.set(normalizedEmployeeName, employee);
+      }
+
+      if (employee.idNumber) {
+        employeeByIdNumber.set(decrypt(employee.idNumber), employee);
+      }
     }
 
     let successCount = 0;
@@ -287,25 +314,13 @@ export async function POST(request: NextRequest) {
 
         // 透過身分證字號或姓名找到員工
         let employee = null;
-        
+
         if (normalizedIdNumber) {
-          // 先查詢所有員工並解密比對
-          const allEmployees = await prisma.employee.findMany({
-            where: { isActive: true },
-            select: { id: true, name: true, idNumber: true }
-          });
-          
-          employee = allEmployees.find(emp => {
-            if (!emp.idNumber) return false;
-            return decrypt(emp.idNumber) === normalizedIdNumber;
-          });
+          employee = employeeByIdNumber.get(normalizedIdNumber) ?? null;
         }
-        
+
         if (!employee && normalizedName !== '未知') {
-          employee = await prisma.employee.findFirst({
-            where: { name: normalizedName, isActive: true },
-            select: { id: true, name: true, idNumber: true }
-          });
+          employee = employeeByName.get(normalizedName) ?? null;
         }
 
         if (!employee) {

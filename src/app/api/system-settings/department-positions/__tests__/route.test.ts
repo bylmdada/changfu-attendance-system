@@ -12,16 +12,24 @@ jest.mock('@/lib/database', () => ({
       findUnique: jest.fn(),
       update: jest.fn(),
       delete: jest.fn(),
+      aggregate: jest.fn(),
+      create: jest.fn(),
     },
     position: {
       findFirst: jest.fn(),
       findMany: jest.fn(),
+      findUnique: jest.fn(),
       aggregate: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
       delete: jest.fn(),
       deleteMany: jest.fn(),
     },
+    employee: {
+      count: jest.fn(),
+      updateMany: jest.fn(),
+    },
+    $transaction: jest.fn(),
   },
 }));
 
@@ -64,15 +72,36 @@ describe('department positions route guards', () => {
       },
     ] as never);
     mockedPrisma.department.findUnique.mockResolvedValue({ id: 1, name: '人資部' } as never);
+    mockedPrisma.department.aggregate.mockResolvedValue({ _max: { sortOrder: 1 } } as never);
+    mockedPrisma.department.create.mockResolvedValue({ id: 2, name: '新部門', sortOrder: 2, isActive: true, positions: [] } as never);
     mockedPrisma.department.update.mockResolvedValue({ id: 1, name: '人資部', sortOrder: 1, isActive: true, positions: [] } as never);
     mockedPrisma.department.delete.mockResolvedValue({ id: 1 } as never);
     mockedPrisma.position.findFirst.mockResolvedValue(null as never);
-    mockedPrisma.position.findMany.mockResolvedValue([{ id: 11 }] as never);
+    mockedPrisma.position.findMany.mockResolvedValue([{ id: 11, name: '專員', department: { name: '人資部' } }] as never);
+    mockedPrisma.position.findUnique.mockResolvedValue({
+      id: 11,
+      departmentId: 1,
+      name: '專員',
+      department: { name: '人資部' },
+    } as never);
     mockedPrisma.position.aggregate.mockResolvedValue({ _max: { sortOrder: 1 } } as never);
     mockedPrisma.position.create.mockResolvedValue({ id: 12, departmentId: 1, name: '主任', sortOrder: 2, isActive: true } as never);
     mockedPrisma.position.update.mockResolvedValue({ id: 11, departmentId: 1, name: '主任', sortOrder: 1, isActive: true } as never);
     mockedPrisma.position.delete.mockResolvedValue({ id: 11 } as never);
     mockedPrisma.position.deleteMany.mockResolvedValue({ count: 1 } as never);
+    mockedPrisma.employee.count.mockResolvedValue(0 as never);
+    mockedPrisma.employee.updateMany.mockResolvedValue({ count: 1 } as never);
+    mockedPrisma.$transaction.mockImplementation(async (arg: unknown) => {
+      if (typeof arg === 'function') {
+        return arg({
+          department: mockedPrisma.department,
+          position: mockedPrisma.position,
+          employee: mockedPrisma.employee,
+        } as never);
+      }
+
+      return arg;
+    });
   });
 
   it('rejects non-admin GET requests', async () => {
@@ -278,6 +307,67 @@ describe('department positions route guards', () => {
     expect(mockedPrisma.department.update).not.toHaveBeenCalled();
   });
 
+  it('cascades department rename to employee master data so existing employees stay aligned', async () => {
+    mockedGetUserFromRequest.mockResolvedValueOnce({
+      id: 1,
+      username: 'admin',
+      role: 'ADMIN',
+      employee: null,
+    } as never);
+    mockedPrisma.department.findUnique
+      .mockResolvedValueOnce({ id: 1, name: '人資部' } as never)
+      .mockResolvedValueOnce(null as never);
+    mockedPrisma.department.update.mockResolvedValue({
+      id: 1,
+      name: '行政部',
+      sortOrder: 1,
+      isActive: true,
+      positions: []
+    } as never);
+
+    const request = new NextRequest('http://localhost:3000/api/system-settings/department-positions', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'updateDepartment', id: 1, name: '行政部' }),
+    });
+
+    const response = await PUT(request);
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.success).toBe(true);
+    expect(mockedPrisma.employee.updateMany).toHaveBeenCalledWith({
+      where: { department: '人資部' },
+      data: { department: '行政部' }
+    });
+  });
+
+  it('rejects renaming a department to an existing department name', async () => {
+    mockedGetUserFromRequest.mockResolvedValueOnce({
+      id: 1,
+      username: 'admin',
+      role: 'ADMIN',
+      employee: null,
+    } as never);
+    mockedPrisma.department.findUnique
+      .mockResolvedValueOnce({ id: 1, name: '人資部' } as never)
+      .mockResolvedValueOnce({ id: 2, name: '行政部' } as never);
+
+    const request = new NextRequest('http://localhost:3000/api/system-settings/department-positions', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'updateDepartment', id: 1, name: '行政部' }),
+    });
+
+    const response = await PUT(request);
+    const data = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(data).toEqual({ error: '部門名稱已存在' });
+    expect(mockedPrisma.department.update).not.toHaveBeenCalled();
+    expect(mockedPrisma.employee.updateMany).not.toHaveBeenCalled();
+  });
+
   it('rejects invalid sortOrder types on updatePosition before updating records', async () => {
     mockedGetUserFromRequest.mockResolvedValueOnce({
       id: 1,
@@ -298,6 +388,79 @@ describe('department positions route guards', () => {
     expect(response.status).toBe(400);
     expect(data).toEqual({ error: '排序值格式無效' });
     expect(mockedPrisma.position.update).not.toHaveBeenCalled();
+  });
+
+  it('cascades position rename to employee master data inside the same department', async () => {
+    mockedGetUserFromRequest.mockResolvedValueOnce({
+      id: 1,
+      username: 'admin',
+      role: 'ADMIN',
+      employee: null,
+    } as never);
+    mockedPrisma.position.findUnique.mockResolvedValueOnce({
+      id: 11,
+      departmentId: 1,
+      name: '專員',
+      department: { name: '人資部' },
+    } as never);
+    mockedPrisma.position.findFirst.mockResolvedValueOnce(null as never);
+    mockedPrisma.position.update.mockResolvedValueOnce({
+      id: 11,
+      departmentId: 1,
+      name: '主任',
+      sortOrder: 1,
+      isActive: true,
+    } as never);
+
+    const request = new NextRequest('http://localhost:3000/api/system-settings/department-positions', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'updatePosition', id: 11, name: '主任' }),
+    });
+
+    const response = await PUT(request);
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.success).toBe(true);
+    expect(mockedPrisma.employee.updateMany).toHaveBeenCalledWith({
+      where: { department: '人資部', position: '專員' },
+      data: { position: '主任' }
+    });
+  });
+
+  it('rejects renaming a position to an existing name inside the same department', async () => {
+    mockedGetUserFromRequest.mockResolvedValueOnce({
+      id: 1,
+      username: 'admin',
+      role: 'ADMIN',
+      employee: null,
+    } as never);
+    mockedPrisma.position.findUnique.mockResolvedValueOnce({
+      id: 11,
+      departmentId: 1,
+      name: '專員',
+      department: { name: '人資部' },
+    } as never);
+    mockedPrisma.position.findFirst.mockResolvedValueOnce({
+      id: 12,
+      departmentId: 1,
+      name: '主任',
+    } as never);
+
+    const request = new NextRequest('http://localhost:3000/api/system-settings/department-positions', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'updatePosition', id: 11, name: '主任' }),
+    });
+
+    const response = await PUT(request);
+    const data = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(data).toEqual({ error: '該部門已有相同職位' });
+    expect(mockedPrisma.position.update).not.toHaveBeenCalled();
+    expect(mockedPrisma.employee.updateMany).not.toHaveBeenCalled();
   });
 
   it('rejects reorderPositions payloads containing non-object items before updating records', async () => {
@@ -400,7 +563,9 @@ describe('department positions route guards', () => {
       role: 'ADMIN',
       employee: null,
     } as never);
-    mockedPrisma.position.findMany.mockResolvedValueOnce([{ id: 11 }] as never);
+    mockedPrisma.position.findMany.mockResolvedValueOnce([
+      { id: 11, name: '專員', department: { name: '人資部' } }
+    ] as never);
     mockedPrisma.position.deleteMany.mockResolvedValueOnce({ count: 1 } as never);
 
     const request = new NextRequest('http://localhost:3000/api/system-settings/department-positions', {
@@ -423,5 +588,58 @@ describe('department positions route guards', () => {
     expect(mockedPrisma.position.deleteMany).toHaveBeenCalledWith({
       where: { id: { in: [11] } },
     });
+  });
+
+  it('rejects deleting a department that is still referenced by employees', async () => {
+    mockedGetUserFromRequest.mockResolvedValueOnce({
+      id: 1,
+      username: 'admin',
+      role: 'ADMIN',
+      employee: null,
+    } as never);
+    mockedPrisma.department.findUnique.mockResolvedValueOnce({ id: 1, name: '人資部' } as never);
+    mockedPrisma.employee.count.mockResolvedValueOnce(2 as never);
+
+    const request = new NextRequest('http://localhost:3000/api/system-settings/department-positions', {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'deleteDepartment', id: 1 }),
+    });
+
+    const response = await DELETE(request);
+    const data = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(data).toEqual({ error: '仍有 2 位員工使用此部門，無法刪除' });
+    expect(mockedPrisma.department.delete).not.toHaveBeenCalled();
+  });
+
+  it('rejects deleting a position that is still referenced by employees', async () => {
+    mockedGetUserFromRequest.mockResolvedValueOnce({
+      id: 1,
+      username: 'admin',
+      role: 'ADMIN',
+      employee: null,
+    } as never);
+    mockedPrisma.position.findUnique.mockResolvedValueOnce({
+      id: 11,
+      departmentId: 1,
+      name: '專員',
+      department: { name: '人資部' },
+    } as never);
+    mockedPrisma.employee.count.mockResolvedValueOnce(1 as never);
+
+    const request = new NextRequest('http://localhost:3000/api/system-settings/department-positions', {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'deletePosition', id: 11 }),
+    });
+
+    const response = await DELETE(request);
+    const data = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(data).toEqual({ error: '仍有 1 位員工使用此職位，無法刪除' });
+    expect(mockedPrisma.position.delete).not.toHaveBeenCalled();
   });
 });
