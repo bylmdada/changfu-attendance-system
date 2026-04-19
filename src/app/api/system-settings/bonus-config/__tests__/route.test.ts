@@ -5,6 +5,7 @@ jest.mock('@/lib/database', () => ({
       findUnique: jest.fn(),
       upsert: jest.fn(),
     },
+    $transaction: jest.fn(),
   },
 }));
 
@@ -45,6 +46,9 @@ describe('bonus config route regressions', () => {
       paymentSchedule: '{}',
       isActive: true,
     } as never);
+    mockPrisma.$transaction.mockImplementation(async (callback: (tx: typeof prisma) => unknown) => {
+      return callback(mockPrisma as never) as never;
+    });
   });
 
   it('rejects GET requests from users without admin or HR roles', async () => {
@@ -173,11 +177,13 @@ describe('bonus config route regressions', () => {
         where: { bonusType: 'YEAR_END' },
         update: expect.objectContaining({
           bonusTypeName: '新年終獎金',
+          isActive: true,
           eligibilityRules: JSON.stringify({ minimumServiceMonths: 6, includeProbation: false }),
           paymentSchedule: JSON.stringify({ month: 1, splitPayment: true }),
         }),
         create: expect.objectContaining({
           bonusTypeName: '新年終獎金',
+          isActive: true,
           eligibilityRules: JSON.stringify({ minimumServiceMonths: 6, includeProbation: false }),
           paymentSchedule: JSON.stringify({ month: 1, splitPayment: true }),
         }),
@@ -262,5 +268,55 @@ describe('bonus config route regressions', () => {
     expect(payload).toEqual({ error: '三節獎金資格規則格式無效' });
     expect(mockPrisma.bonusConfiguration.findUnique).not.toHaveBeenCalled();
     expect(mockPrisma.bonusConfiguration.upsert).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-boolean active flags before upserting bonus config', async () => {
+    const request = new NextRequest('http://localhost/api/system-settings/bonus-config', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        yearEndConfig: {
+          isActive: 'false',
+        },
+      }),
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload).toEqual({ error: '年終獎金啟用狀態必須為布林值' });
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+    expect(mockPrisma.bonusConfiguration.upsert).not.toHaveBeenCalled();
+  });
+
+  it('persists disabled state from incoming config instead of forcing active', async () => {
+    const request = new NextRequest('http://localhost/api/system-settings/bonus-config', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        festivalConfig: {
+          isActive: false,
+        },
+      }),
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload).toEqual({ success: true, message: '設定已儲存' });
+    expect(mockPrisma.$transaction).toHaveBeenCalled();
+    expect(mockPrisma.bonusConfiguration.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { bonusType: 'FESTIVAL' },
+        update: expect.objectContaining({ isActive: false }),
+        create: expect.objectContaining({ isActive: false }),
+      })
+    );
   });
 });

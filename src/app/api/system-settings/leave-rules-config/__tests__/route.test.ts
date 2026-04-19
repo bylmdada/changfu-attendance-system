@@ -107,6 +107,17 @@ describe('leave rules config route guards', () => {
     expect(mockedPrisma.leaveRulesConfig.findFirst).not.toHaveBeenCalled();
   });
 
+  it('returns 401 for unauthenticated GET requests', async () => {
+    mockedGetUserFromRequest.mockResolvedValueOnce(null as never);
+
+    const response = await GET(new NextRequest('http://localhost:3000/api/system-settings/leave-rules-config'));
+    const data = await response.json();
+
+    expect(response.status).toBe(401);
+    expect(data).toEqual({ error: '未授權訪問' });
+    expect(mockedPrisma.leaveRulesConfig.findFirst).not.toHaveBeenCalled();
+  });
+
   it('allows admin GET requests', async () => {
     mockedGetUserFromRequest.mockResolvedValueOnce({
       id: 1,
@@ -207,6 +218,166 @@ describe('leave rules config route guards', () => {
 
     expect(response.status).toBe(400);
     expect(data).toEqual({ error: '請提供有效的設定資料' });
+    expect(mockedPrisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects impossible effective dates before replacing the active leave rules config', async () => {
+    mockedGetUserFromRequest.mockResolvedValueOnce({
+      id: 1,
+      username: 'admin',
+      role: 'ADMIN',
+      employee: null,
+    } as never);
+
+    const response = await POST(new NextRequest('http://localhost:3000/api/system-settings/leave-rules-config', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: 'token=shared-session-token',
+      },
+      body: JSON.stringify({
+        parentalLeaveFlexible: true,
+        parentalLeaveMaxDays: 30,
+        parentalLeaveCombinedMax: 60,
+        familyCareLeaveMaxDays: 7,
+        familyCareHourlyEnabled: true,
+        familyCareHourlyMaxHours: 56,
+        familyCareNoDeductAttendance: true,
+        sickLeaveAnnualMax: 30,
+        sickLeaveNoDeductDays: 10,
+        sickLeaveHalfPay: true,
+        annualLeaveRollover: false,
+        annualLeaveRolloverMax: 0,
+        compLeaveRollover: false,
+        compLeaveRolloverMax: 0,
+        compLeaveExpiryMonths: 6,
+        effectiveDate: '2025-02-30',
+      }),
+    }));
+    const data = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(data).toEqual({ error: '生效日期格式無效' });
+    expect(mockedPrisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid numeric fields instead of silently falling back to defaults', async () => {
+    mockedGetUserFromRequest.mockResolvedValueOnce({
+      id: 1,
+      username: 'admin',
+      role: 'ADMIN',
+      employee: null,
+    } as never);
+
+    const response = await POST(new NextRequest('http://localhost:3000/api/system-settings/leave-rules-config', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: 'token=shared-session-token',
+      },
+      body: JSON.stringify({
+        parentalLeaveFlexible: true,
+        parentalLeaveMaxDays: 30,
+        parentalLeaveCombinedMax: 60,
+        familyCareLeaveMaxDays: 7,
+        familyCareHourlyEnabled: true,
+        familyCareHourlyMaxHours: 56,
+        familyCareNoDeductAttendance: true,
+        sickLeaveAnnualMax: 'abc',
+        sickLeaveNoDeductDays: 10,
+        sickLeaveHalfPay: true,
+        annualLeaveRollover: false,
+        annualLeaveRolloverMax: 0,
+        compLeaveRollover: false,
+        compLeaveRolloverMax: 0,
+        compLeaveExpiryMonths: 6,
+        effectiveDate: '2025-01-01',
+      }),
+    }));
+    const data = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(data).toEqual({ error: '病假年度上限必須為正整數' });
+    expect(mockedPrisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid boolean fields instead of silently falling back to defaults', async () => {
+    mockedGetUserFromRequest.mockResolvedValueOnce({
+      id: 1,
+      username: 'admin',
+      role: 'ADMIN',
+      employee: null,
+    } as never);
+
+    const response = await POST(new NextRequest('http://localhost:3000/api/system-settings/leave-rules-config', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: 'token=shared-session-token',
+      },
+      body: JSON.stringify({
+        parentalLeaveFlexible: true,
+        parentalLeaveMaxDays: 30,
+        parentalLeaveCombinedMax: 60,
+        familyCareLeaveMaxDays: 7,
+        familyCareHourlyEnabled: 'true',
+        familyCareHourlyMaxHours: 56,
+        familyCareNoDeductAttendance: true,
+        sickLeaveAnnualMax: 30,
+        sickLeaveNoDeductDays: 10,
+        sickLeaveHalfPay: true,
+        annualLeaveRollover: false,
+        annualLeaveRolloverMax: 0,
+        compLeaveRollover: false,
+        compLeaveRolloverMax: 0,
+        compLeaveExpiryMonths: 6,
+        effectiveDate: '2025-01-01',
+      }),
+    }));
+    const data = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(data).toEqual({ error: '家庭照顧假事假補充設定格式無效' });
+    expect(mockedPrisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects inconsistent parent and sick leave thresholds before replacing the active config', async () => {
+    mockedGetUserFromRequest.mockResolvedValueOnce({
+      id: 1,
+      username: 'admin',
+      role: 'ADMIN',
+      employee: null,
+    } as never);
+
+    const response = await POST(new NextRequest('http://localhost:3000/api/system-settings/leave-rules-config', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: 'token=shared-session-token',
+      },
+      body: JSON.stringify({
+        parentalLeaveFlexible: true,
+        parentalLeaveMaxDays: 30,
+        parentalLeaveCombinedMax: 20,
+        familyCareLeaveMaxDays: 7,
+        familyCareHourlyEnabled: true,
+        familyCareHourlyMaxHours: 56,
+        familyCareNoDeductAttendance: true,
+        sickLeaveAnnualMax: 30,
+        sickLeaveNoDeductDays: 10,
+        sickLeaveHalfPay: true,
+        annualLeaveRollover: false,
+        annualLeaveRolloverMax: 0,
+        compLeaveRollover: false,
+        compLeaveRolloverMax: 0,
+        compLeaveExpiryMonths: 6,
+        effectiveDate: '2025-01-01',
+      }),
+    }));
+    const data = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(data).toEqual({ error: '雙親合計上限不得低於個人上限' });
     expect(mockedPrisma.$transaction).not.toHaveBeenCalled();
   });
 });

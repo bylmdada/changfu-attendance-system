@@ -3,6 +3,8 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { getEmployeePDFPassword, getPasswordHint, PDFSecurityConfig, getDefaultSecurityConfig } from '@/lib/pdf-security';
 import { LOGO_BASE64 } from '@/lib/logoBase64';
+import { escapeHtml } from '@/lib/html';
+import { parseIntegerQueryParam } from '@/lib/query-params';
 
 interface PayslipData {
   companyInfo: {
@@ -30,6 +32,11 @@ interface PayslipData {
     basePay: number;
     overtimePay: number;
     grossPay: number;
+    adjustments: Array<{
+      id: number;
+      description: string;
+      amount: number;
+    }>;
   };
   deductions: {
     laborInsurance: number;
@@ -37,9 +44,19 @@ interface PayslipData {
     supplementaryInsurance: number;
     incomeTax: number;
     total: number;
+    adjustments: Array<{
+      id: number;
+      description: string;
+      amount: number;
+    }>;
   };
   netPay: number;
   generatedAt: string;
+}
+
+function parsePayrollId(payrollId: string) {
+  const parsed = parseIntegerQueryParam(payrollId, { min: 1, max: 99999999 });
+  return parsed.isValid ? parsed.value : null;
 }
 
 export async function GET(request: NextRequest) {
@@ -62,9 +79,14 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: '請提供薪資記錄ID' }, { status: 400 });
     }
 
+    const parsedPayrollId = parsePayrollId(payrollId);
+    if (parsedPayrollId === null) {
+      return NextResponse.json({ error: '薪資記錄ID格式無效' }, { status: 400 });
+    }
+
     // 獲取薪資記錄
     const payrollRecord = await prisma.payrollRecord.findUnique({
-      where: { id: parseInt(payrollId) },
+      where: { id: parsedPayrollId },
       include: {
         employee: {
           select: {
@@ -75,7 +97,16 @@ export async function GET(request: NextRequest) {
             position: true,
             baseSalary: true
           }
-        }
+        },
+        adjustments: {
+          select: {
+            id: true,
+            type: true,
+            description: true,
+            amount: true
+          },
+          orderBy: { id: 'asc' }
+        },
       }
     });
 
@@ -113,14 +144,28 @@ export async function GET(request: NextRequest) {
       salary: {
         basePay: payrollRecord.basePay,
         overtimePay: payrollRecord.overtimePay,
-        grossPay: payrollRecord.grossPay
+        grossPay: payrollRecord.grossPay,
+        adjustments: payrollRecord.adjustments
+          .filter(adjustment => adjustment.type === 'SUPPLEMENT')
+          .map(adjustment => ({
+            id: adjustment.id,
+            description: adjustment.description,
+            amount: adjustment.amount
+          }))
       },
       deductions: {
         laborInsurance: payrollRecord.laborInsurance,
         healthInsurance: payrollRecord.healthInsurance,
         supplementaryInsurance: payrollRecord.supplementaryInsurance,
         incomeTax: payrollRecord.incomeTax,
-        total: payrollRecord.totalDeductions
+        total: payrollRecord.totalDeductions,
+        adjustments: payrollRecord.adjustments
+          .filter(adjustment => adjustment.type === 'DEDUCTION')
+          .map(adjustment => ({
+            id: adjustment.id,
+            description: adjustment.description,
+            amount: adjustment.amount
+          }))
       },
       netPay: payrollRecord.netPay,
       generatedAt: new Date().toISOString()
@@ -181,12 +226,32 @@ export async function GET(request: NextRequest) {
 }
 
 function generatePayslipHTML(payslip: PayslipData) {
+  const safeCompanyName = escapeHtml(payslip.companyInfo.name);
+  const safeEmployeeId = escapeHtml(payslip.employee.employeeId);
+  const safeEmployeeName = escapeHtml(payslip.employee.name);
+  const safeEmployeeDepartment = escapeHtml(payslip.employee.department || 'N/A');
+  const safeEmployeePosition = escapeHtml(payslip.employee.position || 'N/A');
+  const safeMonthName = escapeHtml(payslip.period.monthName);
+  const safeGeneratedAt = escapeHtml(new Date(payslip.generatedAt).toLocaleString('zh-TW'));
+  const incomeAdjustmentRows = payslip.salary.adjustments.map(adjustment => `
+              <tr>
+                <td>${escapeHtml(adjustment.description)}</td>
+                <td class="income-amount">NT$ ${adjustment.amount.toLocaleString()}</td>
+              </tr>
+  `).join('');
+  const deductionAdjustmentRows = payslip.deductions.adjustments.map(adjustment => `
+              <tr>
+                <td>${escapeHtml(adjustment.description)}</td>
+                <td class="deduction-amount">NT$ ${adjustment.amount.toLocaleString()}</td>
+              </tr>
+  `).join('');
+
   return `
     <!DOCTYPE html>
     <html>
     <head>
       <meta charset="UTF-8">
-      <title>薪資條 - ${payslip.employee.name} - ${payslip.period.monthName}</title>
+      <title>薪資條 - ${safeEmployeeName} - ${safeMonthName}</title>
       <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         @page { size: A4; margin: 10mm; }
@@ -355,24 +420,24 @@ function generatePayslipHTML(payslip: PayslipData) {
           <!-- 標題區 -->
           <div class="header">
             <div class="header-left">
-              <img src="${LOGO_BASE64}" alt="長福會" class="logo" />
-              <div class="header-title">
-                <h1>薪資條</h1>
-                <p>${payslip.companyInfo.name}</p>
-              </div>
-            </div>
-            <div class="period-badge">${payslip.period.monthName}</div>
-          </div>
+               <img src="${LOGO_BASE64}" alt="長福會" class="logo" />
+               <div class="header-title">
+                 <h1>薪資條</h1>
+                 <p>${safeCompanyName}</p>
+               </div>
+             </div>
+             <div class="period-badge">${safeMonthName}</div>
+           </div>
 
           <!-- 員工資訊區 -->
           <div class="employee-info">
-            <div class="info-card">
-              <h3>👤 員工資訊</h3>
-              <div class="info-item"><span class="info-label">員工編號</span><span class="info-value">${payslip.employee.employeeId}</span></div>
-              <div class="info-item"><span class="info-label">姓名</span><span class="info-value">${payslip.employee.name}</span></div>
-              <div class="info-item"><span class="info-label">部門</span><span class="info-value">${payslip.employee.department || 'N/A'}</span></div>
-              <div class="info-item"><span class="info-label">職位</span><span class="info-value">${payslip.employee.position || 'N/A'}</span></div>
-            </div>
+             <div class="info-card">
+               <h3>👤 員工資訊</h3>
+               <div class="info-item"><span class="info-label">員工編號</span><span class="info-value">${safeEmployeeId}</span></div>
+               <div class="info-item"><span class="info-label">姓名</span><span class="info-value">${safeEmployeeName}</span></div>
+               <div class="info-item"><span class="info-label">部門</span><span class="info-value">${safeEmployeeDepartment}</span></div>
+               <div class="info-item"><span class="info-label">職位</span><span class="info-value">${safeEmployeePosition}</span></div>
+             </div>
             <div class="info-card">
               <h3>⏰ 工時統計</h3>
               <div class="info-item"><span class="info-label">正常工時</span><span class="info-value">${payslip.workHours.regular} 小時</span></div>
@@ -394,6 +459,7 @@ function generatePayslipHTML(payslip: PayslipData) {
                 <td>加班費</td>
                 <td class="income-amount">NT$ ${payslip.salary.overtimePay.toLocaleString()}</td>
               </tr>
+              ${incomeAdjustmentRows}
               <tr class="total-row">
                 <td>應發合計</td>
                 <td class="income-amount">NT$ ${payslip.salary.grossPay.toLocaleString()}</td>
@@ -419,6 +485,7 @@ function generatePayslipHTML(payslip: PayslipData) {
                 <td>所得稅</td>
                 <td class="deduction-amount">NT$ ${payslip.deductions.incomeTax.toLocaleString()}</td>
               </tr>
+              ${deductionAdjustmentRows}
               <tr class="total-row">
                 <td>扣除合計</td>
                 <td class="deduction-amount">NT$ ${payslip.deductions.total.toLocaleString()}</td>
@@ -433,13 +500,13 @@ function generatePayslipHTML(payslip: PayslipData) {
           </div>
 
           <!-- 頁尾 -->
-          <div class="footer">
-            <div class="confidential-notice">
-              🔒 本薪資條專供 ${payslip.employee.name} (${payslip.employee.employeeId}) 查閱，請妥善保管
-            </div>
-            <p>生成時間：${new Date(payslip.generatedAt).toLocaleString('zh-TW')}</p>
-            <p style="margin-top: 4px;">${payslip.companyInfo.name} | 如有疑問請洽人事部門</p>
-          </div>
+           <div class="footer">
+             <div class="confidential-notice">
+               🔒 本薪資條專供 ${safeEmployeeName} (${safeEmployeeId}) 查閱，請妥善保管
+             </div>
+             <p>生成時間：${safeGeneratedAt}</p>
+             <p style="margin-top: 4px;">${safeCompanyName} | 如有疑問請洽人事部門</p>
+           </div>
         </div>
       </div>
     </body>

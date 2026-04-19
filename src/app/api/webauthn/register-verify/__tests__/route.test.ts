@@ -13,6 +13,18 @@ jest.mock('next/headers', () => ({
   cookies: jest.fn()
 }));
 
+jest.mock('@/lib/auth', () => ({
+  getAuthResultFromRequest: jest.fn()
+}));
+
+jest.mock('@/lib/csrf', () => ({
+  validateCSRF: jest.fn()
+}));
+
+jest.mock('@/lib/rate-limit', () => ({
+  checkRateLimit: jest.fn()
+}));
+
 jest.mock('@simplewebauthn/server', () => ({
   verifyRegistrationResponse: jest.fn()
 }));
@@ -27,11 +39,18 @@ jest.mock('@/lib/webauthn', () => {
 });
 
 import { prisma } from '@/lib/database';
+import { getAuthResultFromRequest } from '@/lib/auth';
+import { validateCSRF } from '@/lib/csrf';
+import { checkRateLimit } from '@/lib/rate-limit';
 import { cookies } from 'next/headers';
 import { verifyRegistrationResponse } from '@simplewebauthn/server';
+import { NextRequest } from 'next/server';
 import { POST } from '../route';
 
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
+const mockGetAuthResultFromRequest = getAuthResultFromRequest as jest.MockedFunction<typeof getAuthResultFromRequest>;
+const mockValidateCSRF = validateCSRF as jest.MockedFunction<typeof validateCSRF>;
+const mockCheckRateLimit = checkRateLimit as jest.MockedFunction<typeof checkRateLimit>;
 const mockCookies = cookies as jest.MockedFunction<typeof cookies>;
 const mockVerifyRegistrationResponse = verifyRegistrationResponse as jest.MockedFunction<typeof verifyRegistrationResponse>;
 
@@ -39,8 +58,27 @@ describe('webauthn register-verify account guard', () => {
   beforeEach(() => {
     mockPrisma.user.findUnique.mockReset();
     mockPrisma.webAuthnCredential.create.mockReset();
+    mockGetAuthResultFromRequest.mockReset();
+    mockValidateCSRF.mockReset();
+    mockCheckRateLimit.mockReset();
     mockCookies.mockReset();
     mockVerifyRegistrationResponse.mockReset();
+    mockCheckRateLimit.mockResolvedValue({
+      allowed: true,
+      remainingRequests: 9,
+      resetTime: Date.now() + 1000,
+    });
+    mockGetAuthResultFromRequest.mockResolvedValue({
+      user: {
+        userId: 7,
+        employeeId: 22,
+        username: 'active.user',
+        role: 'EMPLOYEE',
+        sessionId: 'session-1'
+      },
+      reason: null
+    } as never);
+    mockValidateCSRF.mockResolvedValue({ valid: true } as never);
     mockCookies.mockResolvedValue({
       get: jest.fn((name: string) => {
         if (name === 'webauthn_challenge') return { value: 'challenge-1' };
@@ -51,7 +89,7 @@ describe('webauthn register-verify account guard', () => {
   });
 
   it('rejects null request bodies before destructuring registration verification payload', async () => {
-    const request = new Request('http://localhost/api/webauthn/register-verify', {
+    const request = new NextRequest('http://localhost/api/webauthn/register-verify', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: 'null'
@@ -68,7 +106,7 @@ describe('webauthn register-verify account guard', () => {
 
   it('returns 400 for malformed JSON bodies before registration verification starts', async () => {
     const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
-    const request = new Request('http://localhost/api/webauthn/register-verify', {
+    const request = new NextRequest('http://localhost/api/webauthn/register-verify', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: '{'
@@ -93,7 +131,7 @@ describe('webauthn register-verify account guard', () => {
       employeeId: 22
     } as never);
 
-    const request = new Request('http://localhost/api/webauthn/register-verify', {
+    const request = new NextRequest('http://localhost/api/webauthn/register-verify', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -133,7 +171,7 @@ describe('webauthn register-verify account guard', () => {
       new Error('Unexpected registration response origin "https://evil.example.com", expected one of: https://localhost:3001') as never
     );
 
-    const request = new Request('http://localhost/api/webauthn/register-verify', {
+    const request = new NextRequest('http://localhost/api/webauthn/register-verify', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -181,7 +219,7 @@ describe('webauthn register-verify account guard', () => {
       }) as never
     );
 
-    const request = new Request('http://localhost/api/webauthn/register-verify', {
+    const request = new NextRequest('http://localhost/api/webauthn/register-verify', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -216,7 +254,7 @@ describe('webauthn register-verify account guard', () => {
     } as never);
     mockPrisma.user.findUnique.mockRejectedValue(new Error('Invalid value for argument `id`: NaN'));
 
-    const request = new Request('http://localhost/api/webauthn/register-verify', {
+    const request = new NextRequest('http://localhost/api/webauthn/register-verify', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -235,6 +273,65 @@ describe('webauthn register-verify account guard', () => {
 
     expect(response.status).toBe(400);
     expect(payload).toEqual({ error: '註冊會話無效，請重新開始' });
+    expect(mockPrisma.user.findUnique).not.toHaveBeenCalled();
+    expect(mockPrisma.webAuthnCredential.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects registration verification when the challenge cookie belongs to another account', async () => {
+    mockCookies.mockResolvedValue({
+      get: jest.fn((name: string) => {
+        if (name === 'webauthn_challenge') return { value: 'challenge-1' };
+        if (name === 'webauthn_user_id') return { value: '8' };
+        return undefined;
+      })
+    } as never);
+
+    const request = new NextRequest('http://localhost/api/webauthn/register-verify', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-csrf-token': 'token' },
+      body: JSON.stringify({
+        credential: {
+          id: 'cred-1',
+          response: {
+            clientDataJSON: 'client-data',
+            attestationObject: 'attestation-object'
+          }
+        }
+      })
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(payload).toEqual({ error: '註冊會話與目前登入帳號不符，請重新開始' });
+    expect(mockValidateCSRF).not.toHaveBeenCalled();
+    expect(mockPrisma.user.findUnique).not.toHaveBeenCalled();
+    expect(mockPrisma.webAuthnCredential.create).not.toHaveBeenCalled();
+  });
+
+  it('requires csrf validation before creating a WebAuthn credential', async () => {
+    mockValidateCSRF.mockResolvedValue({ valid: false, error: '缺少CSRF令牌' } as never);
+
+    const request = new NextRequest('http://localhost/api/webauthn/register-verify', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        credential: {
+          id: 'cred-1',
+          response: {
+            clientDataJSON: 'client-data',
+            attestationObject: 'attestation-object'
+          }
+        }
+      })
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(payload).toEqual({ error: 'CSRF token validation failed' });
     expect(mockPrisma.user.findUnique).not.toHaveBeenCalled();
     expect(mockPrisma.webAuthnCredential.create).not.toHaveBeenCalled();
   });

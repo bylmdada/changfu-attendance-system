@@ -3,7 +3,7 @@ import { GET } from '@/app/api/overtime-requests/route';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
-import { getManageableDepartments } from '@/lib/schedule-management-permissions';
+import { getAttendancePermissionDepartments } from '@/lib/attendance-permission-scopes';
 
 jest.mock('@/lib/database', () => ({
   prisma: {
@@ -38,14 +38,14 @@ jest.mock('@/lib/approval-helper', () => ({
   createApprovalForRequest: jest.fn(),
 }));
 
-jest.mock('@/lib/schedule-management-permissions', () => ({
-  getManageableDepartments: jest.fn(),
+jest.mock('@/lib/attendance-permission-scopes', () => ({
+  getAttendancePermissionDepartments: jest.fn(),
 }));
 
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
 const mockCheckRateLimit = checkRateLimit as jest.MockedFunction<typeof checkRateLimit>;
-const mockGetManageableDepartments = getManageableDepartments as jest.MockedFunction<typeof getManageableDepartments>;
+const mockGetAttendancePermissionDepartments = getAttendancePermissionDepartments as jest.MockedFunction<typeof getAttendancePermissionDepartments>;
 
 describe('overtime request list authorization guards', () => {
   beforeEach(() => {
@@ -57,7 +57,7 @@ describe('overtime request list authorization guards', () => {
       role: 'MANAGER',
       username: 'manager',
     } as never);
-    mockGetManageableDepartments.mockResolvedValue(['製造部'] as never);
+    mockGetAttendancePermissionDepartments.mockResolvedValue(['製造部'] as never);
     mockPrisma.overtimeRequest.findMany.mockResolvedValue([] as never);
   });
 

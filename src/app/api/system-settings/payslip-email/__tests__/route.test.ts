@@ -131,4 +131,85 @@ describe('payslip email settings route', () => {
     expect(mockPrisma.payslipEmailSettings.update).not.toHaveBeenCalled();
     expect(mockPrisma.payslipEmailSettings.create).not.toHaveBeenCalled();
   });
+
+  it('rejects invalid field types before updating settings', async () => {
+    const request = new NextRequest('http://localhost/api/system-settings/payslip-email', {
+      method: 'PUT',
+      headers: {
+        'content-type': 'application/json',
+        cookie: 'token=shared-session-token',
+      },
+      body: JSON.stringify({
+        enabled: 'true',
+      }),
+    });
+
+    const response = await PUT(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload.error).toBe('啟用設定格式無效');
+    expect(mockPrisma.payslipEmailSettings.findFirst).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.payslipEmailSettings.update).not.toHaveBeenCalled();
+    expect(mockPrisma.payslipEmailSettings.create).not.toHaveBeenCalled();
+  });
+
+  it('preserves omitted fields when updating only the templates', async () => {
+    mockPrisma.payslipEmailSettings.findFirst.mockResolvedValue({
+      id: 11,
+      enabled: true,
+      smtpHost: 'smtp.example.com',
+      smtpPort: 465,
+      smtpSecure: false,
+      smtpUser: 'mailer@example.com',
+      smtpPassword: 'secret',
+      fromEmail: 'noreply@example.com',
+      fromName: '薪資系統',
+      subjectTemplate: 'old subject',
+      bodyTemplate: 'old body',
+    } as never);
+    mockPrisma.payslipEmailSettings.update.mockResolvedValue({
+      id: 11,
+      enabled: true,
+      smtpHost: 'smtp.example.com',
+      smtpPort: 465,
+      smtpSecure: false,
+      smtpUser: 'mailer@example.com',
+      smtpPassword: 'secret',
+      fromEmail: 'noreply@example.com',
+      fromName: '薪資系統',
+      subjectTemplate: 'new subject',
+      bodyTemplate: 'new body',
+    } as never);
+
+    const request = new NextRequest('http://localhost/api/system-settings/payslip-email', {
+      method: 'PUT',
+      headers: {
+        'content-type': 'application/json',
+        cookie: 'token=shared-session-token',
+      },
+      body: JSON.stringify({
+        subjectTemplate: 'new subject',
+        bodyTemplate: 'new body',
+      }),
+    });
+
+    const response = await PUT(request);
+
+    expect(response.status).toBe(200);
+    expect(mockPrisma.payslipEmailSettings.update).toHaveBeenCalledWith({
+      where: { id: 11 },
+      data: expect.objectContaining({
+        enabled: true,
+        smtpHost: 'smtp.example.com',
+        smtpPort: 465,
+        smtpSecure: false,
+        smtpUser: 'mailer@example.com',
+        fromEmail: 'noreply@example.com',
+        fromName: '薪資系統',
+        subjectTemplate: 'new subject',
+        bodyTemplate: 'new body',
+      }),
+    });
+  });
 });

@@ -82,7 +82,7 @@ export default function ResignationManagementPage() {
   const [currentUser, setCurrentUser] = useState<{ id: number; role: string; employee?: { id: number; name: string; department?: string } } | null>(null);
   const [applyForm, setApplyForm] = useState({
     expectedDate: '',
-    reasonType: 'PERSONAL',
+    reasonType: 'VOLUNTARY',
     reason: ''
   });
 
@@ -160,7 +160,7 @@ export default function ResignationManagementPage() {
       if (response.ok) {
         showToast('success', '離職申請已提交');
         setShowApplyModal(false);
-        setApplyForm({ expectedDate: '', reasonType: 'PERSONAL', reason: '' });
+        setApplyForm({ expectedDate: '', reasonType: 'VOLUNTARY', reason: '' });
         loadRecords();
       } else {
         const error = await response.json();
@@ -228,9 +228,13 @@ export default function ResignationManagementPage() {
       if (response.ok) {
         showToast('success', completed ? '已標記完成' : '已取消完成');
         loadRecords();
+      } else {
+        const error = await response.json();
+        showToast('error', error.error || '更新失敗');
       }
     } catch (error) {
       console.error('更新失敗:', error);
+      showToast('error', '更新失敗');
     }
   };
 
@@ -446,6 +450,7 @@ export default function ResignationManagementPage() {
                                 type="checkbox"
                                 checked={item.completed}
                                 onChange={(e) => handleHandoverUpdate(item.id, e.target.checked)}
+                                disabled={!isAdmin || actionLoading}
                                 className="h-5 w-5 text-blue-600"
                               />
                               <span className={`px-2 py-0.5 rounded text-xs ${CATEGORY_MAP[item.category]?.color}`}>
@@ -514,14 +519,15 @@ export default function ResignationManagementPage() {
                         </span>
                       )}
                       {/* 管理員操作 - 完成離職 */}
-                      {isAdmin && record.status === 'IN_HANDOVER' && (
-                        <button
-                          onClick={() => handleAction(record.id, 'complete')}
-                          disabled={actionLoading}
-                          className="flex items-center gap-2 px-4 py-2 bg-gray-800 text-white rounded-lg hover:bg-gray-900 disabled:opacity-50"
-                        >
-                          <CheckCircle className="h-4 w-4" />
-                          完成離職
+                        {isAdmin && record.status === 'IN_HANDOVER' && (
+                          <button
+                            onClick={() => handleAction(record.id, 'complete')}
+                            disabled={actionLoading || record.handoverItems.some(item => !item.completed)}
+                            className="flex items-center gap-2 px-4 py-2 bg-gray-800 text-white rounded-lg hover:bg-gray-900 disabled:opacity-50"
+                            title={record.handoverItems.some(item => !item.completed) ? '請先完成所有交接項目' : undefined}
+                          >
+                            <CheckCircle className="h-4 w-4" />
+                            完成離職
                         </button>
                       )}
                       {/* 員工視角 - 交接中 */}
@@ -682,11 +688,9 @@ export default function ResignationManagementPage() {
                     onChange={(e) => setApplyForm({ ...applyForm, reasonType: e.target.value })}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg text-gray-900"
                   >
-                    <option value="PERSONAL">個人因素</option>
-                    <option value="CAREER">職涯發展</option>
-                    <option value="FAMILY">家庭因素</option>
-                    <option value="HEALTH">健康因素</option>
-                    <option value="RELOCATION">搬遷</option>
+                    <option value="VOLUNTARY">自願離職</option>
+                    <option value="LAYOFF">資遣</option>
+                    <option value="RETIREMENT">退休</option>
                     <option value="OTHER">其他</option>
                   </select>
                 </div>

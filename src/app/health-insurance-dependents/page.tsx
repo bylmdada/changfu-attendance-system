@@ -29,6 +29,20 @@ interface DependentSummary {
   dependents: EmployeeDependent[];
 }
 
+function readLinkedApplicationId() {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  const rawId = new URLSearchParams(window.location.search).get('id');
+  if (!rawId) {
+    return null;
+  }
+
+  const parsedId = Number(rawId);
+  return Number.isInteger(parsedId) && parsedId > 0 ? parsedId : null;
+}
+
 export default function HealthInsuranceDependentsPage() {
   const router = useRouter();
   const [, setUser] = useState<{
@@ -53,6 +67,7 @@ export default function HealthInsuranceDependentsPage() {
   const [editingDependent, setEditingDependent] = useState<EmployeeDependent | null>(null);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<{ id: number; name: string } | null>(null);
+  const [linkedApplicationId, setLinkedApplicationId] = useState<number | null>(null);
   
   // 頁籤狀態
   const [activeTab, setActiveTab] = useState<'dependents' | 'enrollment' | 'statistics' | 'history' | 'applications'>('dependents');
@@ -128,12 +143,20 @@ export default function HealthInsuranceDependentsPage() {
           const userData = await response.json();
           const currentUser = userData.user || userData;
           
-          if (currentUser.role !== 'ADMIN') {
+          if (currentUser.role !== 'ADMIN' && currentUser.role !== 'HR') {
             router.push('/dashboard');
             return;
           }
           setUser(currentUser);
-          await loadDependents();
+
+          const requestId = readLinkedApplicationId();
+          if (requestId) {
+            setLinkedApplicationId(requestId);
+            setActiveTab('applications');
+            await Promise.all([loadDependents(), loadApplications()]);
+          } else {
+            await loadDependents();
+          }
         } else if (response.status === 401 || response.status === 403) {
           console.warn('Authentication failed, redirecting to login');
           router.push('/login');
@@ -258,24 +281,37 @@ export default function HealthInsuranceDependentsPage() {
     if (tab === 'applications') loadApplications();
   };
 
+  const saveDependentRecord = async (dependent: EmployeeDependent) => {
+    const response = await fetchJSONWithCSRF('/api/system-settings/health-insurance-dependents', {
+      method: 'POST',
+      body: dependent
+    });
+
+    if (response.ok) {
+      return { ok: true as const };
+    }
+
+    const errorData = await response.json();
+    return {
+      ok: false as const,
+      error: typeof errorData?.error === 'string' ? errorData.error : '儲存失敗'
+    };
+  };
+
   const handleSaveDependent = async (dependent: EmployeeDependent) => {
     setSaving(true);
     setMessage(null);
 
     try {
-      const response = await fetchJSONWithCSRF('/api/system-settings/health-insurance-dependents', {
-        method: 'POST',
-        body: dependent
-      });
+      const result = await saveDependentRecord(dependent);
 
-      if (response.ok) {
+      if (result.ok) {
         await loadDependents();
         setShowForm(false);
         setEditingDependent(null);
         setMessage({ type: 'success', text: '眷屬資料已儲存成功！' });
       } else {
-        const errorData = await response.json();
-        setMessage({ type: 'error', text: errorData.error || '儲存失敗' });
+        setMessage({ type: 'error', text: result.error });
       }
     } catch (error) {
       console.error('儲存眷屬資料失敗:', error);
@@ -710,7 +746,7 @@ export default function HealthInsuranceDependentsPage() {
                 </thead>
                 <tbody className="divide-y divide-gray-200">
                   {pendingApplications.map(app => (
-                    <tr key={app.id}>
+                    <tr key={app.id} className={linkedApplicationId === app.id ? 'bg-yellow-50' : undefined}>
                       <td className="px-4 py-3 text-gray-600 text-sm">{new Date(app.createdAt).toLocaleString()}</td>
                       <td className="px-4 py-3 text-gray-900 font-medium">{app.employeeName}</td>
                       <td className="px-4 py-3">
@@ -961,10 +997,46 @@ export default function HealthInsuranceDependentsPage() {
             employeeId={editingDependent.employeeId}
             employees={dependentSummaries}
             onSave={async (dependents) => {
-              for (const dep of dependents) {
-                await handleSaveDependent(dep);
+              setSaving(true);
+              setMessage(null);
+
+              let successCount = 0;
+              let firstError: string | null = null;
+
+              try {
+                for (const dep of dependents) {
+                  const result = await saveDependentRecord(dep);
+                  if (result.ok) {
+                    successCount += 1;
+                  } else {
+                    firstError = result.error;
+                    break;
+                  }
+                }
+
+                if (successCount > 0) {
+                  await loadDependents();
+                }
+
+                setMessage(
+                  firstError
+                    ? {
+                        type: 'error',
+                        text: successCount > 0
+                          ? `已成功儲存 ${successCount} 筆，但後續失敗：${firstError}`
+                          : firstError
+                      }
+                    : { type: 'success', text: `已批量儲存 ${successCount} 筆眷屬資料` }
+                );
+              } catch (error) {
+                console.error('批量儲存眷屬資料失敗:', error);
+                setMessage({ type: 'error', text: '批量儲存失敗，請稍後再試' });
+              } finally {
+                setSaving(false);
               }
+
               setShowBatchForm(false);
+              setEditingDependent(null);
             }}
             onCancel={() => {
               setShowBatchForm(false);
@@ -1345,9 +1417,9 @@ function BatchDependentForm({
     let hasError = false;
     
     dependents.forEach((dep, index) => {
-      if (!dep.dependentName.trim() || !dep.relationship || !dep.idNumber.trim()) {
-        newErrors[index] = '請填寫完整資料';
-        hasError = true;
+        if (!dep.dependentName.trim() || !dep.relationship || !dep.idNumber.trim() || !dep.birthDate.trim()) {
+          newErrors[index] = '請填寫完整資料';
+          hasError = true;
       } else {
         const result = validateTaiwanId(dep.idNumber);
         if (!result.valid) {
@@ -1442,6 +1514,7 @@ function BatchDependentForm({
                     value={dep.birthDate}
                     onChange={(e) => updateDependent(index, 'birthDate', e.target.value)}
                     className="px-3 py-2 border border-gray-300 rounded-md focus:ring-red-500 focus:border-red-500 text-gray-900"
+                    required
                   />
                 </div>
                 {errors[index] && (

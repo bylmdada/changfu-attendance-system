@@ -5,7 +5,11 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { checkRateLimit } from '@/lib/rate-limit';
-import { toTaiwanDateStr } from '@/lib/timezone';
+import {
+  calculatePensionContributionEffectiveDate,
+  getEffectivePensionContributionRate,
+} from '@/lib/pension-contribution';
+import { getTaiwanTodayEnd, toTaiwanDateStr } from '@/lib/timezone';
 import { safeParseJSON } from '@/lib/validation';
 
 /**
@@ -14,21 +18,19 @@ import { safeParseJSON } from '@/lib/validation';
  * - HR/ADMIN：查看所有申請（待審核列表）
  */
 
-// 計算生效日期（25日前申請次月生效，25日後申請隔月生效）
-function calculateEffectiveDate(applicationDate: Date): Date {
-  // 使用台灣時區判斷日期
-  const tw = new Date(applicationDate.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
-  const day = tw.getDate();
-  const year = tw.getFullYear();
-  const month = tw.getMonth();
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
-  if (day <= 25) {
-    // 25日前申請，次月1日生效
-    return new Date(Date.UTC(year, month + 1, 1) - 8 * 60 * 60 * 1000);
-  } else {
-    // 25日後申請，隔月1日生效
-    return new Date(Date.UTC(year, month + 2, 1) - 8 * 60 * 60 * 1000);
+function isDuplicatePendingApplicationError(error: unknown): boolean {
+  if (!isPlainObject(error)) {
+    return false;
   }
+
+  const code = typeof error.code === 'string' ? error.code : '';
+  const message = typeof error.message === 'string' ? error.message : '';
+
+  return code === 'P2002' || message.includes('UNIQUE constraint failed');
 }
 
 function parsePercentageValue(value: unknown) {
@@ -117,6 +119,13 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: '找不到員工資料' }, { status: 404 });
     }
 
+    const currentRate = await getEffectivePensionContributionRate(
+      prisma.pensionContributionApplication,
+      employee.id,
+      employee.laborPensionSelfRate || 0,
+      getTaiwanTodayEnd()
+    );
+
     // 取得申請歷史
     const applications = await prisma.pensionContributionApplication.findMany({
       where: { employeeId: user.employeeId },
@@ -129,7 +138,6 @@ export async function GET(request: NextRequest) {
     });
 
     // 計算目前自提金額（預估）
-    const currentRate = employee.laborPensionSelfRate || 0;
     const insuredBase = employee.insuredBase || employee.baseSalary || 0;
     const monthlyAmount = Math.round(insuredBase * currentRate / 100);
 
@@ -191,7 +199,7 @@ export async function POST(request: NextRequest) {
     }
 
     const requestedRate = parsePercentageValue(parsedBody.data?.requestedRate);
-    const reason = typeof parsedBody.data?.reason === 'string' ? parsedBody.data.reason : null;
+    const reason = typeof parsedBody.data?.reason === 'string' ? parsedBody.data.reason.trim() : null;
 
     // 驗證比例範圍
     if (requestedRate === null || requestedRate < 0 || requestedRate > 6) {
@@ -230,7 +238,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 計算生效日期
-    const effectiveDate = calculateEffectiveDate(new Date());
+    const effectiveDate = calculatePensionContributionEffectiveDate(new Date());
 
     // 建立申請
     const application = await prisma.pensionContributionApplication.create({
@@ -256,6 +264,11 @@ export async function POST(request: NextRequest) {
     }, { status: 201 });
   } catch (error) {
     console.error('提交勞退自提申請失敗:', error);
+    if (isDuplicatePendingApplicationError(error)) {
+      return NextResponse.json({
+        error: '您有待處理的申請，請等待審核完成後再提出新申請'
+      }, { status: 400 });
+    }
     return NextResponse.json({ error: '系統錯誤' }, { status: 500 });
   }
 }

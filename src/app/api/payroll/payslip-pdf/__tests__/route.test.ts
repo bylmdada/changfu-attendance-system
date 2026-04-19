@@ -59,6 +59,7 @@ describe('payslip pdf template settings integration', () => {
       incomeTax: 200,
       totalDeductions: 1300,
       netPay: 32700,
+      adjustments: [],
       employee: {
         id: 10,
         employeeId: 'E001',
@@ -107,5 +108,98 @@ describe('payslip pdf template settings integration', () => {
     expect(mockPrisma.systemSettings.findUnique).toHaveBeenCalledWith({
       where: { key: 'payslip_templates' },
     });
+  });
+
+  it('rejects mixed payroll ids before querying the database', async () => {
+    const request = new NextRequest('http://localhost:3000/api/payroll/payslip-pdf?payrollId=12abc');
+
+    const response = await GET(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload.error).toBe('薪資記錄ID格式無效');
+    expect(mockPrisma.payrollRecord.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('renders payroll dispute adjustments into the payslip html', async () => {
+    mockPrisma.payrollRecord.findUnique.mockResolvedValue({
+      id: 1,
+      employeeId: 10,
+      payYear: 2026,
+      payMonth: 4,
+      regularHours: 160,
+      overtimeHours: 8,
+      basePay: 32000,
+      overtimePay: 2000,
+      grossPay: 34500,
+      laborInsurance: 500,
+      healthInsurance: 600,
+      supplementaryInsurance: 0,
+      incomeTax: 200,
+      totalDeductions: 1600,
+      netPay: 32900,
+      adjustments: [
+        { id: 1, type: 'SUPPLEMENT', description: '3月加班費補發', amount: 500 },
+        { id: 2, type: 'DEDUCTION', description: '重複津貼扣回', amount: 300 },
+      ],
+      employee: {
+        id: 10,
+        employeeId: 'E001',
+        name: '王小明',
+        department: '製造部',
+        position: '照服員',
+        baseSalary: 32000,
+      },
+    } as never);
+
+    const request = new NextRequest('http://localhost:3000/api/payroll/payslip-pdf?payrollId=1');
+    const response = await GET(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.htmlContent).toContain('3月加班費補發');
+    expect(payload.htmlContent).toContain('重複津貼扣回');
+  });
+
+  it('escapes employee and adjustment text before rendering html', async () => {
+    mockPrisma.payrollRecord.findUnique.mockResolvedValue({
+      id: 1,
+      employeeId: 10,
+      payYear: 2026,
+      payMonth: 4,
+      regularHours: 160,
+      overtimeHours: 8,
+      basePay: 32000,
+      overtimePay: 2000,
+      grossPay: 34500,
+      laborInsurance: 500,
+      healthInsurance: 600,
+      supplementaryInsurance: 0,
+      incomeTax: 200,
+      totalDeductions: 1600,
+      netPay: 32900,
+      adjustments: [
+        { id: 1, type: 'SUPPLEMENT', description: '<script>alert(1)</script>', amount: 500 },
+      ],
+      employee: {
+        id: 10,
+        employeeId: 'E001',
+        name: '<img src=x onerror=alert(1)>',
+        department: '研發 & <b>測試</b>',
+        position: '工程師',
+        baseSalary: 32000,
+      },
+    } as never);
+
+    const request = new NextRequest('http://localhost:3000/api/payroll/payslip-pdf?payrollId=1');
+    const response = await GET(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.htmlContent).toContain('&lt;img src=x onerror=alert(1)&gt;');
+    expect(payload.htmlContent).toContain('研發 &amp; &lt;b&gt;測試&lt;/b&gt;');
+    expect(payload.htmlContent).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+    expect(payload.htmlContent).not.toContain('<script>alert(1)</script>');
+    expect(payload.htmlContent).not.toContain('<img src=x onerror=alert(1)>');
   });
 });

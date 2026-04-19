@@ -26,6 +26,13 @@ export default function DashboardPage() {
     id: number;
     username: string;
     role: string;
+    hasSchedulePermission?: boolean;
+    attendancePermissions?: {
+      leaveRequests?: string[];
+      overtimeRequests?: string[];
+      shiftExchanges?: string[];
+      scheduleManagement?: string[];
+    };
     employee: {
       id: number;
       employeeId: string;
@@ -103,10 +110,6 @@ export default function DashboardPage() {
       loadCompLeaveBalance();
       loadAnnualLeaveBalance();
       loadScheduleConfirmStatus(); // 載入班表確認狀態
-      // 員工可能有班表管理權限
-      if (user.role !== 'ADMIN' && user.role !== 'HR' && user.employee?.id) {
-        loadSchedulePermission(user.employee.id);
-      }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
@@ -121,9 +124,11 @@ export default function DashboardPage() {
         // 確保正確設置用戶數據
         if (userData && userData.user) {
           setUser(userData.user);
+          setHasSchedulePermission(Boolean(userData.user.hasSchedulePermission));
         } else if (userData && userData.id) {
           // 如果 API 返回的是直接的用戶對象（向後兼容）
           setUser(userData);
+          setHasSchedulePermission(Boolean(userData.hasSchedulePermission));
         }
       } else {
         console.error('Auth check failed:', response.status);
@@ -286,23 +291,6 @@ export default function DashboardPage() {
       }
     } catch (error) {
       console.error('載入年假餘額失敗:', error);
-    }
-  };
-
-  // 載入班表管理權限
-  const loadSchedulePermission = async (employeeId: number) => {
-    try {
-      const response = await fetch(`/api/attendance-permissions/${employeeId}`, {
-        credentials: 'include'
-      });
-      if (response.ok) {
-        const data = await response.json();
-        if (data.permission?.scheduleManagement && data.permission.scheduleManagement.length > 0) {
-          setHasSchedulePermission(true);
-        }
-      }
-    } catch (error) {
-      console.error('載入班表權限失敗:', error);
     }
   };
 

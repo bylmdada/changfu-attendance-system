@@ -9,6 +9,7 @@ import { verifyTOTP } from '@/lib/totp';
 import { decrypt } from '@/lib/encryption';
 import { validateCSRF } from '@/lib/csrf';
 import { safeParseJSON } from '@/lib/validation';
+import { checkRateLimit } from '@/lib/rate-limit';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -19,6 +20,14 @@ export async function POST(request: NextRequest) {
     const csrfResult = await validateCSRF(request);
     if (!csrfResult.valid) {
       return NextResponse.json({ error: 'CSRF 驗證失敗' }, { status: 403 });
+    }
+
+    const rateLimitResult = await checkRateLimit(request, '/api/auth/2fa/verify');
+    if (!rateLimitResult.allowed) {
+      return NextResponse.json(
+        { error: '操作過於頻繁', retryAfter: rateLimitResult.retryAfter },
+        { status: 429 }
+      );
     }
 
     const user = await getUserFromRequest(request);

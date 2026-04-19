@@ -1,6 +1,22 @@
 const mockPrisma = {
   approvalReview: {
     findFirst: jest.fn()
+  },
+  approvalWorkflow: {
+    findUnique: jest.fn()
+  },
+  approvalInstance: {
+    create: jest.fn()
+  },
+  departmentManager: {
+    findFirst: jest.fn(),
+    findMany: jest.fn()
+  },
+  managerDeputy: {
+    findFirst: jest.fn()
+  },
+  approvalDelegate: {
+    findMany: jest.fn()
   }
 };
 
@@ -8,7 +24,14 @@ jest.mock('@/lib/database', () => ({
   prisma: mockPrisma
 }));
 
-import { determineApprovalTransition, ensureApprovalReviewAllowed, isTerminalApprovalStatus } from '@/lib/approval-service';
+import {
+  createApprovalInstance,
+  determineApprovalTransition,
+  ensureApprovalReviewAllowed,
+  getDepartmentManager,
+  isReviewerFor,
+  isTerminalApprovalStatus
+} from '@/lib/approval-service';
 
 describe('approval review guards', () => {
   beforeEach(() => {
@@ -77,6 +100,109 @@ describe('approval review guards', () => {
     ).toEqual({
       newStatus: 'APPROVED',
       newLevel: 2,
+    });
+  });
+
+  it('loads department managers with deputies constrained by both start and end dates', async () => {
+    mockPrisma.departmentManager.findFirst.mockResolvedValue(null);
+
+    await getDepartmentManager('Operations');
+
+    expect(mockPrisma.departmentManager.findFirst).toHaveBeenCalledWith({
+      where: {
+        department: 'Operations',
+        isPrimary: true,
+        isActive: true
+      },
+      include: {
+        employee: {
+          select: { id: true, name: true }
+        },
+        deputies: {
+          where: {
+            isActive: true,
+            AND: [
+              {
+                OR: [
+                  { startDate: null },
+                  { startDate: { lte: expect.any(Date) } }
+                ]
+              },
+              {
+                OR: [
+                  { endDate: null },
+                  { endDate: { gte: expect.any(Date) } }
+                ]
+              }
+            ]
+          },
+          include: {
+            deputyEmployee: {
+              select: { id: true, name: true }
+            }
+          }
+        }
+      }
+    });
+  });
+
+  it('treats active approval delegates as level-one reviewers when the request type matches', async () => {
+    mockPrisma.departmentManager.findFirst.mockResolvedValueOnce(null);
+    mockPrisma.managerDeputy.findFirst.mockResolvedValue(null);
+    mockPrisma.approvalDelegate.findMany.mockResolvedValue([
+      { delegatorId: 5, resourceTypes: JSON.stringify(['LEAVE']) }
+    ]);
+    mockPrisma.departmentManager.findMany.mockResolvedValue([
+      { employeeId: 5, department: 'Operations' }
+    ]);
+
+    await expect(isReviewerFor(99, 'Operations', 'LEAVE')).resolves.toEqual({
+      isReviewer: true,
+      role: 'DEPUTY'
+    });
+  });
+
+  it('does not grant approval-delegate access for request types outside the delegated scope', async () => {
+    mockPrisma.departmentManager.findFirst.mockResolvedValueOnce(null);
+    mockPrisma.managerDeputy.findFirst.mockResolvedValue(null);
+    mockPrisma.approvalDelegate.findMany.mockResolvedValue([
+      { delegatorId: 5, resourceTypes: JSON.stringify(['LEAVE']) }
+    ]);
+    mockPrisma.departmentManager.findMany.mockResolvedValue([
+      { employeeId: 5, department: 'Operations' }
+    ]);
+
+    await expect(isReviewerFor(99, 'Operations', 'PURCHASE')).resolves.toEqual({
+      isReviewer: false,
+      role: null
+    });
+  });
+
+  it('creates direct-admin instances as single-stage level-one reviews', async () => {
+    mockPrisma.approvalWorkflow.findUnique.mockResolvedValue({
+      approvalLevel: 3,
+      requireManager: false,
+      finalApprover: 'MANAGER',
+      deadlineMode: 'FIXED',
+      deadlineHours: 24
+    });
+    mockPrisma.approvalInstance.create.mockResolvedValue({ id: 55 });
+
+    await createApprovalInstance({
+      requestType: 'ANNOUNCEMENT',
+      requestId: 8,
+      applicantId: 5,
+      applicantName: '申請人',
+      department: 'Operations'
+    });
+
+    expect(mockPrisma.approvalInstance.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        currentLevel: 1,
+        maxLevel: 1,
+        requireManager: false,
+        status: 'LEVEL1_REVIEWING'
+      })
     });
   });
 });

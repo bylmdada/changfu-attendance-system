@@ -14,6 +14,7 @@ import {
   FileText
 } from 'lucide-react';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import { formatPensionContributionEffectiveDatePreview } from '@/lib/pension-contribution';
 
 interface CurrentInfo {
   currentRate: number;
@@ -63,6 +64,8 @@ const STATUS_LABELS: Record<string, { label: string; color: string; icon: React.
   REJECTED: { label: '已駁回', color: 'bg-red-100 text-red-800', icon: <XCircle className="w-4 h-4" /> }
 };
 
+const PENSION_RATE_OPTIONS = Array.from({ length: 13 }, (_, index) => index * 0.5);
+
 export default function PensionContributionPage() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
@@ -107,23 +110,23 @@ export default function PensionContributionPage() {
   // 取得資料
   const fetchData = useCallback(async () => {
     setLoading(true);
-    try {
-      // 取得個人資訊
-      const personalRes = await fetch('/api/pension-contribution');
-      if (!personalRes.ok) {
-        console.error('API error:', personalRes.status);
-        return;
-      }
-      const personalData = await personalRes.json();
-      
-      if (personalData.success) {
-        setCurrentInfo(personalData.currentInfo);
-        setApplications(personalData.applications);
-        setHasPending(personalData.hasPendingApplication);
-      }
+      try {
+        // 取得個人資訊
+        const personalRes = await fetch('/api/pension-contribution');
+        if (personalRes.ok) {
+          const personalData = await personalRes.json();
 
-      // HR/Admin 取得待審核列表
-      if (isAdminOrHR) {
+          if (personalData.success) {
+            setCurrentInfo(personalData.currentInfo);
+            setApplications(personalData.applications);
+            setHasPending(personalData.hasPendingApplication);
+          }
+        } else {
+          console.error('API error:', personalRes.status);
+        }
+
+        // HR/Admin 取得待審核列表
+        if (isAdminOrHR) {
         const pendingRes = await fetch('/api/pension-contribution?mode=pending');
         const pendingData = await pendingRes.json();
         if (pendingData.success) {
@@ -417,7 +420,7 @@ export default function PensionContributionPage() {
                   選擇新的提繳比例
                 </label>
                 <div className="grid grid-cols-4 gap-2">
-                  {[0, 1, 2, 3, 4, 5, 6].map(rate => (
+                  {PENSION_RATE_OPTIONS.map(rate => (
                     <button
                       key={rate}
                       onClick={() => setRequestedRate(rate)}
@@ -440,14 +443,7 @@ export default function PensionContributionPage() {
                   <p className="text-sm font-medium text-blue-800 mb-1">
                     📅 預計生效日期：<strong>
                       {(() => {
-                        const today = new Date();
-                        const day = today.getDate();
-                        const year = today.getFullYear();
-                        const month = today.getMonth();
-                        const effectiveDate = day <= 25 
-                          ? new Date(year, month + 1, 1)
-                          : new Date(year, month + 2, 1);
-                        return effectiveDate.toLocaleDateString('zh-TW', { year: 'numeric', month: 'long', day: 'numeric' });
+                        return formatPensionContributionEffectiveDatePreview(new Date());
                       })()}
                     </strong>
                   </p>

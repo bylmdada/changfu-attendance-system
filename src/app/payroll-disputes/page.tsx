@@ -19,6 +19,15 @@ import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import ApprovalProgress, { ApprovalReviewRecord } from '@/components/ApprovalProgress';
 
+function getNextPayrollPeriod() {
+  const now = new Date();
+  const nextMonth = now.getMonth() + 2;
+
+  return nextMonth > 12
+    ? { year: now.getFullYear() + 1, month: 1 }
+    : { year: now.getFullYear(), month: nextMonth };
+}
+
 
 interface PayrollDispute {
   id: number;
@@ -121,8 +130,8 @@ export default function PayrollDisputesPage() {
     action: null,
     reviewNote: '',
     adjustedAmount: '',
-    adjustInYear: new Date().getFullYear(),
-    adjustInMonth: new Date().getMonth() + 2 > 12 ? 1 : new Date().getMonth() + 2
+    adjustInYear: getNextPayrollPeriod().year,
+    adjustInMonth: getNextPayrollPeriod().month
   });
   
   // 統計
@@ -184,6 +193,22 @@ export default function PayrollDisputesPage() {
       fetchDisputes();
     }
   }, [currentUser, fetchDisputes]);
+
+  useEffect(() => {
+    const rawId = new URLSearchParams(window.location.search).get('id');
+    if (!rawId) {
+      return;
+    }
+
+    const targetId = Number(rawId);
+    if (!Number.isInteger(targetId) || targetId < 1) {
+      return;
+    }
+
+    if (disputes.some(dispute => dispute.id === targetId)) {
+      setExpandedId(targetId);
+    }
+  }, [disputes]);
 
   // 提交異議申請
   const handleSubmitDispute = async (e: React.FormEvent) => {
@@ -252,6 +277,7 @@ export default function PayrollDisputesPage() {
 
       if (response.ok) {
         const data = await response.json();
+        const nextPeriod = getNextPayrollPeriod();
         showToast('success', data.message);
         setReviewModal({
           show: false,
@@ -259,8 +285,8 @@ export default function PayrollDisputesPage() {
           action: null,
           reviewNote: '',
           adjustedAmount: '',
-          adjustInYear: new Date().getFullYear(),
-          adjustInMonth: new Date().getMonth() + 2 > 12 ? 1 : new Date().getMonth() + 2
+          adjustInYear: nextPeriod.year,
+          adjustInMonth: nextPeriod.month
         });
         fetchDisputes();
       } else {
@@ -521,30 +547,36 @@ export default function PayrollDisputesPage() {
                         {isAdmin && dispute.status === 'PENDING' && (
                           <>
                             <button
-                              onClick={() => setReviewModal({
+                              onClick={() => {
+                                const nextPeriod = getNextPayrollPeriod();
+                                setReviewModal({
                                 show: true,
                                 disputeId: dispute.id,
                                 action: 'approve',
                                 reviewNote: '',
                                 adjustedAmount: dispute.requestedAmount?.toString() || '',
-                                adjustInYear: new Date().getFullYear(),
-                                adjustInMonth: new Date().getMonth() + 2 > 12 ? 1 : new Date().getMonth() + 2
-                              })}
+                                adjustInYear: nextPeriod.year,
+                                adjustInMonth: nextPeriod.month
+                              });
+                              }}
                               className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
                             >
                               <CheckCircle className="h-4 w-4" />
                               核准
                             </button>
                             <button
-                              onClick={() => setReviewModal({
+                              onClick={() => {
+                                const nextPeriod = getNextPayrollPeriod();
+                                setReviewModal({
                                 show: true,
                                 disputeId: dispute.id,
                                 action: 'reject',
                                 reviewNote: '',
                                 adjustedAmount: '',
-                                adjustInYear: new Date().getFullYear(),
-                                adjustInMonth: new Date().getMonth() + 2
-                              })}
+                                adjustInYear: nextPeriod.year,
+                                adjustInMonth: nextPeriod.month
+                              });
+                              }}
                               className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700"
                             >
                               <XCircle className="h-4 w-4" />

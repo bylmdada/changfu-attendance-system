@@ -77,6 +77,12 @@ interface User {
   role: string;
   isDepartmentManager?: boolean;
   isDeputyManager?: boolean;
+  attendancePermissions?: {
+    leaveRequests?: string[];
+    overtimeRequests?: string[];
+    shiftExchanges?: string[];
+    scheduleManagement?: string[];
+  };
   employee?: {
     id: number;
     employeeId: string;
@@ -267,28 +273,8 @@ export default function ScheduleManagementPage() {
     }
   }, [currentDate, fetchMonthlySchedules]);
 
-  // 獲取用戶的班表管理權限
-  const fetchSchedulePermissions = async (employeeId: number) => {
-    try {
-      const response = await fetch(`/api/attendance-permissions/${employeeId}`, {
-        credentials: 'include'
-      });
-      if (response.ok) {
-        const data = await response.json();
-        if (data.permission?.scheduleManagement) {
-          setSchedulePermissions(data.permission.scheduleManagement);
-        }
-      }
-    } catch (error) {
-      console.error('獲取班表權限失敗:', error);
-    }
-  };
-
-  // 當用戶資料載入後，獲取其班表權限
   useEffect(() => {
-    if (user?.employee?.id) {
-      fetchSchedulePermissions(user.employee.id);
-    }
+    setSchedulePermissions(user?.attendancePermissions?.scheduleManagement || []);
   }, [user]);
 
   const fetchUser = async () => {

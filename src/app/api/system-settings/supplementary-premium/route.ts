@@ -4,76 +4,12 @@ import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { safeParseJSON } from '@/lib/validation';
-import { safeParseSystemSettingsValue } from '@/lib/system-settings-json';
-
-interface SupplementaryPremiumSettings {
-  isEnabled: boolean;
-  premiumRate: number;
-  exemptThresholdMultiplier: number;
-  minimumThreshold: number;
-  maxMonthlyPremium: number;
-  exemptionThreshold: number;
-  annualMaxDeduction: number;
-  salaryThreshold: number;
-  dividendThreshold: number;
-  salaryIncludeItems: {
-    overtime: boolean;
-    bonus: boolean;
-    allowance: boolean;
-    commission: boolean;
-  };
-  calculationMethod: 'CUMULATIVE' | 'MONTHLY';
-  resetPeriod: 'YEARLY' | 'MONTHLY';
-  applyToAllEmployees: boolean;
-  description: string;
-}
-
-const SETTINGS_KEY = 'supplementary_premium_settings';
-
-const DEFAULT_SETTINGS: SupplementaryPremiumSettings = {
-  isEnabled: true,
-  premiumRate: 2.11,
-  exemptThresholdMultiplier: 4,
-  minimumThreshold: 5000,
-  maxMonthlyPremium: 1000000,
-  exemptionThreshold: 20000,
-  annualMaxDeduction: 1000000,
-  salaryThreshold: 183200,
-  dividendThreshold: 20000,
-  salaryIncludeItems: {
-    overtime: false,
-    bonus: true,
-    allowance: true,
-    commission: true,
-  },
-  calculationMethod: 'CUMULATIVE',
-  resetPeriod: 'YEARLY',
-  applyToAllEmployees: true,
-  description: '依據全民健康保險法規定之補充保費計算設定',
-};
-
-function getDefaultSettings(): SupplementaryPremiumSettings {
-  return {
-    ...DEFAULT_SETTINGS,
-    salaryIncludeItems: {
-      ...DEFAULT_SETTINGS.salaryIncludeItems,
-    },
-  };
-}
-
-async function getStoredSettings(): Promise<SupplementaryPremiumSettings> {
-  const setting = await prisma.systemSettings.findUnique({
-    where: { key: SETTINGS_KEY },
-  });
-
-  if (!setting) {
-    return getDefaultSettings();
-  }
-
-  return normalizeSettings(
-    safeParseSystemSettingsValue<Partial<SupplementaryPremiumSettings>>(setting.value, {}, SETTINGS_KEY)
-  );
-}
+import {
+  normalizeSupplementaryPremiumSettings,
+  SUPPLEMENTARY_PREMIUM_SETTINGS_KEY,
+  type SupplementaryPremiumSettings,
+} from '@/lib/supplementary-premium-config';
+import { getStoredSupplementaryPremiumSettings } from '@/lib/supplementary-premium-settings';
 
 async function verifyAdmin(request: NextRequest) {
   const user = await getUserFromRequest(request);
@@ -87,32 +23,6 @@ async function verifyAdmin(request: NextRequest) {
   }
 
   return null;
-}
-
-function normalizeSettings(input: Partial<SupplementaryPremiumSettings>): SupplementaryPremiumSettings {
-  const defaults = getDefaultSettings();
-
-  return {
-    isEnabled: input.isEnabled ?? defaults.isEnabled,
-    premiumRate: Number(input.premiumRate ?? defaults.premiumRate),
-    exemptThresholdMultiplier: Number(input.exemptThresholdMultiplier ?? defaults.exemptThresholdMultiplier),
-    minimumThreshold: Number(input.minimumThreshold ?? defaults.minimumThreshold),
-    maxMonthlyPremium: Number(input.maxMonthlyPremium ?? defaults.maxMonthlyPremium),
-    exemptionThreshold: Number(input.exemptionThreshold ?? defaults.exemptionThreshold),
-    annualMaxDeduction: Number(input.annualMaxDeduction ?? defaults.annualMaxDeduction),
-    salaryThreshold: Number(input.salaryThreshold ?? defaults.salaryThreshold),
-    dividendThreshold: Number(input.dividendThreshold ?? defaults.dividendThreshold),
-    salaryIncludeItems: {
-      overtime: input.salaryIncludeItems?.overtime ?? defaults.salaryIncludeItems.overtime,
-      bonus: input.salaryIncludeItems?.bonus ?? defaults.salaryIncludeItems.bonus,
-      allowance: input.salaryIncludeItems?.allowance ?? defaults.salaryIncludeItems.allowance,
-      commission: input.salaryIncludeItems?.commission ?? defaults.salaryIncludeItems.commission,
-    },
-    calculationMethod: input.calculationMethod ?? defaults.calculationMethod,
-    resetPeriod: input.resetPeriod ?? defaults.resetPeriod,
-    applyToAllEmployees: input.applyToAllEmployees ?? defaults.applyToAllEmployees,
-    description: input.description?.trim() || defaults.description,
-  };
 }
 
 function validateSettings(settings: SupplementaryPremiumSettings) {
@@ -148,12 +58,20 @@ function validateSettings(settings: SupplementaryPremiumSettings) {
 
 export async function GET(request: NextRequest) {
   try {
+    const rateLimitResult = await checkRateLimit(request, '/api/system-settings/supplementary-premium');
+    if (!rateLimitResult.allowed) {
+      return NextResponse.json(
+        { error: '補充保費設定操作過於頻繁，請稍後再試' },
+        { status: 429 }
+      );
+    }
+
     const authError = await verifyAdmin(request);
     if (authError) {
       return authError;
     }
 
-    const settings = await getStoredSettings();
+    const settings = await getStoredSupplementaryPremiumSettings();
 
     return NextResponse.json({ success: true, settings });
   } catch (error) {
@@ -203,8 +121,8 @@ export async function POST(request: NextRequest) {
       salaryIncludeItems?: Partial<SupplementaryPremiumSettings['salaryIncludeItems']>;
     };
 
-    const existingSettings = await getStoredSettings();
-    const settings = normalizeSettings({
+    const existingSettings = await getStoredSupplementaryPremiumSettings();
+    const settings = normalizeSupplementaryPremiumSettings({
       ...existingSettings,
       ...input,
       salaryIncludeItems: {
@@ -219,9 +137,9 @@ export async function POST(request: NextRequest) {
     }
 
     await prisma.systemSettings.upsert({
-      where: { key: SETTINGS_KEY },
+      where: { key: SUPPLEMENTARY_PREMIUM_SETTINGS_KEY },
       create: {
-        key: SETTINGS_KEY,
+        key: SUPPLEMENTARY_PREMIUM_SETTINGS_KEY,
         value: JSON.stringify(settings),
         description: '補充保費計算設定',
       },

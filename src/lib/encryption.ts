@@ -5,13 +5,25 @@
 
 import crypto from 'crypto';
 
-// 加密金鑰（從環境變數取得，或使用預設值）
-const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || 'changfu-attendance-system-key-32';
+const DEFAULT_DEVELOPMENT_ENCRYPTION_KEY = 'changfu-attendance-system-key-32';
 const IV_LENGTH = 16;
+
+function getConfiguredEncryptionKey(): string {
+  const configuredKey = process.env.ENCRYPTION_KEY;
+  if (configuredKey) {
+    return configuredKey;
+  }
+
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('ENCRYPTION_KEY 環境變數未設定');
+  }
+
+  return DEFAULT_DEVELOPMENT_ENCRYPTION_KEY;
+}
 
 // 確保金鑰長度為 32 bytes
 function getKey(): Buffer {
-  const key = Buffer.from(ENCRYPTION_KEY);
+  const key = Buffer.from(getConfiguredEncryptionKey(), 'utf8');
   if (key.length >= 32) {
     return key.slice(0, 32);
   }

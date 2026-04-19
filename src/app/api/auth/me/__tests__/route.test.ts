@@ -13,6 +13,9 @@ jest.mock('@/lib/database', () => ({
     managerDeputy: {
       findFirst: jest.fn()
     },
+    approvalDelegate: {
+      findMany: jest.fn()
+    },
     attendancePermission: {
       findUnique: jest.fn()
     }
@@ -67,8 +70,12 @@ describe('/api/auth/me', () => {
     } as never);
     mockPrisma.departmentManager.findFirst.mockResolvedValue({ id: 1 } as never);
     mockPrisma.managerDeputy.findFirst.mockResolvedValue(null as never);
+    mockPrisma.approvalDelegate.findMany.mockResolvedValue([] as never);
     mockPrisma.attendancePermission.findUnique.mockResolvedValue({
       permissions: {
+        leaveRequests: ['資訊部'],
+        overtimeRequests: ['資訊部', '人資部'],
+        shiftExchanges: [],
         scheduleManagement: ['view', 'edit']
       }
     } as never);
@@ -106,7 +113,63 @@ describe('/api/auth/me', () => {
         },
         isDepartmentManager: true,
         isDeputyManager: false,
-        hasSchedulePermission: true
+        hasSchedulePermission: true,
+        attendancePermissions: {
+          leaveRequests: ['資訊部'],
+          overtimeRequests: ['資訊部', '人資部'],
+          shiftExchanges: [],
+          scheduleManagement: ['view', 'edit']
+        }
+      }
+    });
+  });
+
+  it('marks approval delegates as deputy managers when they proxy an active manager', async () => {
+    mockGetAuthResultFromRequest.mockResolvedValue({
+      user: {
+        userId: 7,
+        username: 'delegate.user',
+        role: 'USER',
+        sessionId: 'session-1'
+      },
+      reason: null
+    } as never);
+
+    mockPrisma.user.findUnique.mockResolvedValue({
+      id: 7,
+      username: 'delegate.user',
+      role: 'USER',
+      currentSessionId: 'session-1',
+      employee: {
+        id: 11,
+        employeeId: 'EMP001',
+        name: '代理審核員',
+        department: '資訊部',
+        position: '工程師'
+      }
+    } as never);
+    mockPrisma.departmentManager.findFirst
+      .mockResolvedValueOnce(null as never)
+      .mockResolvedValueOnce({ id: 2 } as never);
+    mockPrisma.managerDeputy.findFirst.mockResolvedValue(null as never);
+    mockPrisma.approvalDelegate.findMany.mockResolvedValue([{ delegatorId: 25 }] as never);
+    mockPrisma.attendancePermission.findUnique.mockResolvedValue({ permissions: undefined } as never);
+
+    const response = await GET(new NextRequest('http://localhost/api/auth/me'));
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.user.isDepartmentManager).toBe(false);
+    expect(payload.user.isDeputyManager).toBe(true);
+    expect(mockPrisma.approvalDelegate.findMany).toHaveBeenCalledWith({
+      where: {
+        delegateId: 11,
+        isActive: true,
+        startDate: { lte: expect.any(Date) },
+        endDate: { gte: expect.any(Date) }
+      },
+      select: {
+        delegatorId: true
       }
     });
   });
@@ -128,6 +191,7 @@ describe('/api/auth/me', () => {
     expect(mockPrisma.user.findUnique).not.toHaveBeenCalled();
     expect(mockPrisma.departmentManager.findFirst).not.toHaveBeenCalled();
     expect(mockPrisma.managerDeputy.findFirst).not.toHaveBeenCalled();
+    expect(mockPrisma.approvalDelegate.findMany).not.toHaveBeenCalled();
     expect(mockPrisma.attendancePermission.findUnique).not.toHaveBeenCalled();
   });
 });

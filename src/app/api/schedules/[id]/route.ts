@@ -154,22 +154,6 @@ export async function PUT(
     }
     const scheduleId = scheduleIdResult.value;
 
-    // 查詢要更新的排程
-    const scheduleToUpdate = await prisma.schedule.findUnique({
-      where: { id: scheduleId },
-      select: { employeeId: true }
-    });
-
-    if (!scheduleToUpdate) {
-      return NextResponse.json({ error: '找不到排程' }, { status: 404 });
-    }
-
-    // 權限檢查：確認有權限管理該員工
-    const canManage = await canManageScheduleEmployee(user, scheduleToUpdate.employeeId);
-    if (!canManage) {
-      return NextResponse.json({ error: '無權限管理該員工的排程' }, { status: 403 });
-    }
-
     const parseResult = await safeParseJSON(request);
     if (!parseResult.success) {
       return NextResponse.json(
@@ -228,36 +212,69 @@ export async function PUT(
       }
     }
 
-    const updatedSchedule = await prisma.schedule.update({
-      where: { id: scheduleId },
-      data: updateData,
-      include: {
-        employee: {
-          select: {
-            employeeId: true,
-            name: true,
-            department: true
+    const updatedScheduleResult = await prisma.$transaction(async (tx) => {
+      const scheduleToUpdate = await tx.schedule.findUnique({
+        where: { id: scheduleId },
+        select: { employeeId: true }
+      });
+
+      if (!scheduleToUpdate) {
+        return {
+          ok: false as const,
+          status: 404,
+          body: { error: '找不到排程' }
+        };
+      }
+
+      const canManage = await canManageScheduleEmployee(user, scheduleToUpdate.employeeId, new Date(), tx);
+      if (!canManage) {
+        return {
+          ok: false as const,
+          status: 403,
+          body: { error: '無權限管理該員工的排程' }
+        };
+      }
+
+      const schedule = await tx.schedule.update({
+        where: { id: scheduleId },
+        data: updateData,
+        include: {
+          employee: {
+            select: {
+              employeeId: true,
+              name: true,
+              department: true
+            }
           }
         }
-      }
+      });
+
+      return {
+        ok: true as const,
+        schedule
+      };
     });
 
+    if (!updatedScheduleResult.ok) {
+      return NextResponse.json(updatedScheduleResult.body, { status: updatedScheduleResult.status });
+    }
+
     // 觸發重新確認機制
-    await invalidateScheduleConfirmation(updatedSchedule.employeeId, updatedSchedule.workDate);
+    await invalidateScheduleConfirmation(updatedScheduleResult.schedule.employeeId, updatedScheduleResult.schedule.workDate);
 
     return NextResponse.json({
       success: true,
       message: '排程更新成功',
       schedule: {
-        id: updatedSchedule.id,
-        employeeId: updatedSchedule.employee.employeeId,
-        employeeName: updatedSchedule.employee.name,
-        department: updatedSchedule.employee.department,
-        date: updatedSchedule.workDate,
-        startTime: updatedSchedule.startTime,
-        endTime: updatedSchedule.endTime,
-        breakTime: updatedSchedule.breakTime,
-        shiftType: updatedSchedule.shiftType
+        id: updatedScheduleResult.schedule.id,
+        employeeId: updatedScheduleResult.schedule.employee.employeeId,
+        employeeName: updatedScheduleResult.schedule.employee.name,
+        department: updatedScheduleResult.schedule.employee.department,
+        date: updatedScheduleResult.schedule.workDate,
+        startTime: updatedScheduleResult.schedule.startTime,
+        endTime: updatedScheduleResult.schedule.endTime,
+        breakTime: updatedScheduleResult.schedule.breakTime,
+        shiftType: updatedScheduleResult.schedule.shiftType
       }
     });
   } catch (error) {
@@ -298,30 +315,45 @@ export async function DELETE(
     }
     const scheduleId = scheduleIdResult.value;
 
-    // 先查詢班表資訊以便觸發重新確認和權限檢查
-    const scheduleToDelete = await prisma.schedule.findUnique({
-      where: { id: scheduleId },
-      select: { employeeId: true, workDate: true }
+    const deletedScheduleResult = await prisma.$transaction(async (tx) => {
+      const scheduleToDelete = await tx.schedule.findUnique({
+        where: { id: scheduleId },
+        select: { employeeId: true, workDate: true }
+      });
+
+      if (!scheduleToDelete) {
+        return {
+          ok: false as const,
+          status: 404,
+          body: { error: '找不到排程' }
+        };
+      }
+
+      const canManage = await canManageScheduleEmployee(user, scheduleToDelete.employeeId, new Date(), tx);
+      if (!canManage) {
+        return {
+          ok: false as const,
+          status: 403,
+          body: { error: '無權限管理該員工的排程' }
+        };
+      }
+
+      await tx.schedule.delete({
+        where: { id: scheduleId }
+      });
+
+      return {
+        ok: true as const,
+        schedule: scheduleToDelete
+      };
     });
 
-    if (!scheduleToDelete) {
-      return NextResponse.json({ error: '找不到排程' }, { status: 404 });
+    if (!deletedScheduleResult.ok) {
+      return NextResponse.json(deletedScheduleResult.body, { status: deletedScheduleResult.status });
     }
-
-    // 權限檢查：確認有權限管理該員工
-    const canManage = await canManageScheduleEmployee(user, scheduleToDelete.employeeId);
-    if (!canManage) {
-      return NextResponse.json({ error: '無權限管理該員工的排程' }, { status: 403 });
-    }
-
-    await prisma.schedule.delete({
-      where: { id: scheduleId }
-    });
 
     // 觸發重新確認機制
-    if (scheduleToDelete) {
-      await invalidateScheduleConfirmation(scheduleToDelete.employeeId, scheduleToDelete.workDate);
-    }
+    await invalidateScheduleConfirmation(deletedScheduleResult.schedule.employeeId, deletedScheduleResult.schedule.workDate);
 
     return NextResponse.json({
       success: true,

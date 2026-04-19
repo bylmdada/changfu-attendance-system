@@ -47,6 +47,15 @@ interface EmailContent {
   html?: string;
 }
 
+function normalizeConfigString(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed === '' ? null : trimmed;
+}
+
 function getSafeEmailErrorMessage() {
   return '郵件發送失敗，請檢查 SMTP 設定後再試';
 }
@@ -112,19 +121,25 @@ async function getEmailConfig(): Promise<EmailConfig | null> {
   try {
     // 嘗試從系統設定取得 SMTP 配置
     const smtpSettings = await prisma.smtpSettings.findFirst();
-    
-    if (!smtpSettings || !smtpSettings.smtpHost || !smtpSettings.smtpUser || !smtpSettings.smtpPassword) {
+
+    const smtpHost = normalizeConfigString(smtpSettings?.smtpHost);
+    const smtpUser = normalizeConfigString(smtpSettings?.smtpUser);
+    const smtpPassword = typeof smtpSettings?.smtpPassword === 'string' && smtpSettings.smtpPassword !== ''
+      ? smtpSettings.smtpPassword
+      : null;
+
+    if (!smtpSettings || !smtpHost || !smtpUser || !smtpPassword) {
       return null;
     }
 
     return {
-      host: smtpSettings.smtpHost,
-      port: smtpSettings.smtpPort || 587,
-      secure: smtpSettings.smtpSecure || false,
-      user: smtpSettings.smtpUser,
-      password: smtpSettings.smtpPassword,
-      fromName: smtpSettings.fromName || '長福會考勤系統',
-      fromEmail: smtpSettings.fromEmail || smtpSettings.smtpUser,
+      host: smtpHost,
+      port: smtpSettings.smtpPort ?? 587,
+      secure: smtpSettings.smtpSecure ?? false,
+      user: smtpUser,
+      password: smtpPassword,
+      fromName: normalizeConfigString(smtpSettings.fromName) || '長福考勤系統',
+      fromEmail: normalizeConfigString(smtpSettings.fromEmail) || smtpUser,
     };
   } catch (error) {
     console.error('取得郵件配置失敗:', error);
@@ -716,4 +731,3 @@ export async function sendAnnualLeaveExpiryReminders(): Promise<{
 
   return results;
 }
-

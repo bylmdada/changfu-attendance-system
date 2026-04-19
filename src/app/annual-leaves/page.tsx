@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Calendar, Plus, Search, Users, Clock, X, RefreshCw, CheckCircle, AlertTriangle } from 'lucide-react';
 import { buildAuthMeRequest, buildCookieSessionRequest } from '@/lib/admin-session-client';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
@@ -225,11 +225,7 @@ export default function AnnualLeaveManagementPage() {
       if (response.ok) {
         const data = await response.json();
         setBatchEmployees(data.employees);
-        
-        // 取得部門列表
-        const depts = [...new Set(data.employees.map((e: { department: string }) => e.department))] as string[];
-        setDepartments(depts);
-        
+
         // 預設選取「未設定」的員工
         const notSetIds = data.employees
           .filter((e: { status: string }) => e.status === 'NOT_SET')
@@ -242,6 +238,14 @@ export default function AnnualLeaveManagementPage() {
       setBatchLoading(false);
     }
   }, [batchYear, batchDepartment]);
+
+  useEffect(() => {
+    if (!showBatchModal) {
+      return;
+    }
+
+    fetchBatchCalculation();
+  }, [showBatchModal, fetchBatchCalculation]);
 
   // 處理批量設定
   const handleBatchSetup = async () => {
@@ -285,19 +289,14 @@ export default function AnnualLeaveManagementPage() {
   // 開啟批量設定模態框
   const openBatchModal = () => {
     setShowBatchModal(true);
-    fetchBatchCalculation();
   };
 
   // 切換全選
   const toggleSelectAll = () => {
-    const eligibleEmployees = batchEmployees.filter(e => 
-      e.status !== 'NOT_ELIGIBLE' && (!excludeExisting || e.status !== 'ALREADY_SET')
-    );
-    
-    if (selectedBatchIds.size === eligibleEmployees.length) {
+    if (selectedBatchIds.size === eligibleBatchEmployees.length) {
       setSelectedBatchIds(new Set());
     } else {
-      setSelectedBatchIds(new Set(eligibleEmployees.map(e => e.id)));
+      setSelectedBatchIds(new Set(eligibleBatchEmployees.map(e => e.id)));
     }
   };
 
@@ -313,10 +312,33 @@ export default function AnnualLeaveManagementPage() {
   };
 
   // 篩選批量員工
-  const filteredBatchEmployees = batchEmployees.filter(e => {
-    if (excludeExisting && e.status === 'ALREADY_SET') return false;
-    return true;
-  });
+  const filteredBatchEmployees = useMemo(() => (
+    batchEmployees.filter(e => !excludeExisting || e.status !== 'ALREADY_SET')
+  ), [batchEmployees, excludeExisting]);
+
+  const eligibleBatchEmployees = useMemo(() => (
+    filteredBatchEmployees.filter(e => e.status !== 'NOT_ELIGIBLE')
+  ), [filteredBatchEmployees]);
+
+  useEffect(() => {
+    const eligibleIds = new Set(eligibleBatchEmployees.map(employee => employee.id));
+
+    setSelectedBatchIds(prev => {
+      let changed = false;
+      for (const id of prev) {
+        if (!eligibleIds.has(id)) {
+          changed = true;
+          break;
+        }
+      }
+
+      if (!changed) {
+        return prev;
+      }
+
+      return new Set([...prev].filter(id => eligibleIds.has(id)));
+    });
+  }, [eligibleBatchEmployees]);
 
   // 計算統計
   const batchStats = {
@@ -747,14 +769,13 @@ export default function AnnualLeaveManagementPage() {
               <div className="flex flex-wrap items-center gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">設定年度</label>
-                  <select
-                    value={batchYear}
-                    onChange={(e) => {
-                      setBatchYear(e.target.value);
-                      fetchBatchCalculation();
-                    }}
-                    className="border border-gray-300 rounded-lg px-3 py-2 text-gray-900"
-                  >
+                    <select
+                      value={batchYear}
+                      onChange={(e) => {
+                        setBatchYear(e.target.value);
+                      }}
+                      className="border border-gray-300 rounded-lg px-3 py-2 text-gray-900"
+                    >
                     {Array.from({ length: 5 }, (_, i) => {
                       const year = new Date().getFullYear() - 2 + i;
                       return <option key={year} value={year}>{year}年</option>;
@@ -764,14 +785,13 @@ export default function AnnualLeaveManagementPage() {
                 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">部門篩選</label>
-                  <select
-                    value={batchDepartment}
-                    onChange={(e) => {
-                      setBatchDepartment(e.target.value);
-                      fetchBatchCalculation();
-                    }}
-                    className="border border-gray-300 rounded-lg px-3 py-2 text-gray-900"
-                  >
+                    <select
+                      value={batchDepartment}
+                      onChange={(e) => {
+                        setBatchDepartment(e.target.value);
+                      }}
+                      className="border border-gray-300 rounded-lg px-3 py-2 text-gray-900"
+                    >
                     <option value="">全部部門</option>
                     {departments.map(dept => (
                       <option key={dept} value={dept}>{dept}</option>
@@ -818,12 +838,12 @@ export default function AnnualLeaveManagementPage() {
                       <input
                         type="checkbox"
                         checked={selectedBatchIds.size > 0 && 
-                          selectedBatchIds.size === filteredBatchEmployees.filter(e => e.status !== 'NOT_ELIGIBLE').length}
+                          selectedBatchIds.size === eligibleBatchEmployees.length}
                         onChange={toggleSelectAll}
                         className="rounded border-gray-300 text-blue-600"
                       />
                       <span className="text-sm font-medium text-gray-700">
-                        全選 ({selectedBatchIds.size}/{filteredBatchEmployees.filter(e => e.status !== 'NOT_ELIGIBLE').length})
+                        全選 ({selectedBatchIds.size}/{eligibleBatchEmployees.length})
                       </span>
                     </label>
                     <div className="text-sm text-gray-500">

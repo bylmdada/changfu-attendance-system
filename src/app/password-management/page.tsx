@@ -4,44 +4,13 @@ import { useState, useEffect } from 'react';
 import { Key, Eye, EyeOff, Shield, Users, Lock, X } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
-
-interface PasswordPolicy {
-  minLength: number;
-  requireUppercase: boolean;
-  requireLowercase: boolean;
-  requireNumbers: boolean;
-  requireSpecialChars: boolean;
-  allowedSpecialChars?: string;
-  expirationMonths: number;
-  preventPasswordReuse: boolean;
-  passwordHistoryCount: number;
-  preventSequentialChars: boolean;
-  preventBirthdate: boolean;
-  preventCommonPasswords: boolean;
-  customBlockedPasswords: string[];
-  enableStrengthMeter: boolean;
-  minimumStrengthScore: number;
-  allowAdminExceptions: boolean;
-  requireExceptionReason: boolean;
-  enablePasswordHints: boolean;
-  lockoutAfterFailedAttempts: boolean;
-  maxFailedAttempts: number;
-  lockoutDurationMinutes: number;
-  enableTwoFactorAuth: boolean;
-  notifyPasswordExpiration: boolean;
-  notificationDaysBefore: number;
-}
-
-interface PasswordStrengthResult {
-  isValid: boolean;
-  score: number;
-  feedback: string[];
-  violations: string[];
-  suggestions: string[];
-  strengthLabel: string;
-  strengthColor: string;
-  passesPolicy: boolean;
-}
+import {
+  type PasswordPolicy,
+  type PasswordStrengthResult,
+  evaluatePasswordStrength,
+  getDefaultPasswordPolicy,
+  generatePasswordForPolicy,
+} from '@/lib/password-policy';
 
 interface User {
   id: number;
@@ -157,28 +126,20 @@ export default function PasswordManagement() {
 
   // 密碼產生器
   const generateSecurePassword = () => {
-    const length = passwordPolicy?.minLength || 12;
-    const uppercase = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-    const lowercase = 'abcdefghijklmnopqrstuvwxyz';
-    const numbers = '0123456789';
-    const special = passwordPolicy?.allowedSpecialChars || '!@#$%^&*()_+-=[]{}|;:,.<>?';
-    
-    let chars = '';
-    let password = '';
-    
-    if (passwordPolicy?.requireUppercase) { chars += uppercase; password += uppercase[Math.floor(Math.random() * uppercase.length)]; }
-    if (passwordPolicy?.requireLowercase) { chars += lowercase; password += lowercase[Math.floor(Math.random() * lowercase.length)]; }
-    if (passwordPolicy?.requireNumbers) { chars += numbers; password += numbers[Math.floor(Math.random() * numbers.length)]; }
-    if (passwordPolicy?.requireSpecialChars) { chars += special; password += special[Math.floor(Math.random() * special.length)]; }
-    
-    if (!chars) chars = uppercase + lowercase + numbers + special;
-    
-    while (password.length < length) {
-      password += chars[Math.floor(Math.random() * chars.length)];
+    try {
+      return generatePasswordForPolicy(passwordPolicy ?? getDefaultPasswordPolicy());
+    } catch {
+      return generatePasswordForPolicy(getDefaultPasswordPolicy());
     }
-    
-    // 打亂密碼順序
-    return password.split('').sort(() => Math.random() - 0.5).join('');
+  };
+
+  const validatePasswordInput = (password: string) => {
+    if (!passwordPolicy) {
+      return password.length >= 8 ? null : '新密碼長度至少8位';
+    }
+
+    const evaluation = evaluatePasswordStrength(password, passwordPolicy);
+    return evaluation.passesPolicy ? null : `密碼不符合安全政策：${evaluation.violations.join('、')}`;
   };
 
   // 排序函數
@@ -216,8 +177,14 @@ export default function PasswordManagement() {
 
   // 批量重置密碼
   const handleBatchReset = async () => {
-    if (!batchResetPassword || batchResetPassword.length < 8) {
-      showToast('error', '密碼長度至少 8 位');
+    if (!batchResetPassword) {
+      showToast('error', '請輸入要設定的新密碼');
+      return;
+    }
+
+    const batchPasswordError = validatePasswordInput(batchResetPassword);
+    if (batchPasswordError) {
+      showToast('error', batchPasswordError);
       return;
     }
     
@@ -293,22 +260,9 @@ export default function PasswordManagement() {
     }
   };
 
-  const checkPasswordStrength = async (password: string) => {
+  const checkPasswordStrength = (password: string) => {
     if (!password || !passwordPolicy) return;
-
-    try {
-      const response = await fetchJSONWithCSRF('/api/auth/test-password-strength', {
-        method: 'POST',
-        body: { password, policy: passwordPolicy }
-      });
-
-      if (response.ok) {
-        const results = await response.json();
-        setPasswordStrength(results);
-      }
-    } catch (error) {
-      console.error('密碼強度檢查失敗:', error);
-    }
+    setPasswordStrength(evaluatePasswordStrength(password, passwordPolicy));
   };
 
   const fetchCurrentUser = async () => {
@@ -419,17 +373,15 @@ export default function PasswordManagement() {
         return;
       }
 
-      // 檢查密碼強度
-      if (passwordStrength && !passwordStrength.passesPolicy) {
-        const violations = passwordStrength.violations.join('、');
-        showToast('error', `密碼不符合安全政策：${violations}`);
+      const evaluation = evaluatePasswordStrength(changePasswordForm.newPassword, passwordPolicy);
+      setPasswordStrength(evaluation);
+      if (!evaluation.passesPolicy) {
+        showToast('error', `密碼不符合安全政策：${evaluation.violations.join('、')}`);
         return;
       }
-    } else {
-      if (changePasswordForm.newPassword.length < 8) {
-        showToast('error', '新密碼長度至少8位');
-        return;
-      }
+    } else if (changePasswordForm.newPassword.length < 8) {
+      showToast('error', '新密碼長度至少8位');
+      return;
     }
 
     setChangePasswordLoading(true);
@@ -446,13 +398,18 @@ export default function PasswordManagement() {
       const data = await response.json();
 
       if (response.ok) {
-        showToast('success', '密碼修改成功！');
+        showToast('success', data.message || '密碼修改成功！');
         setChangePasswordForm({
           currentPassword: '',
           newPassword: '',
           confirmPassword: ''
         });
         setPasswordStrength(null);
+        if (data.requireRelogin) {
+          window.setTimeout(() => {
+            window.location.href = '/login';
+          }, 1000);
+        }
       } else {
         showToast('error', data.error || '密碼修改失敗');
       }
@@ -472,9 +429,9 @@ export default function PasswordManagement() {
       return;
     }
 
-    // 密碼長度驗證
-    if (resetPasswordForm.newPassword.length < 8) {
-      showToast('error', '新密碼長度至少8位');
+    const resetPasswordError = validatePasswordInput(resetPasswordForm.newPassword);
+    if (resetPasswordError) {
+      showToast('error', resetPasswordError);
       return;
     }
 
@@ -492,7 +449,7 @@ export default function PasswordManagement() {
       const data = await response.json();
 
       if (response.ok) {
-        showToast('success', '密碼重置成功！');
+        showToast('success', data.message || '密碼重置成功！');
         setResetPasswordForm({
           userId: '',
           newPassword: '',

@@ -15,6 +15,7 @@ import { parseIntegerQueryParam } from '@/lib/query-params';
 // Minimal types to avoid using any
 type AttachmentLite = { id: number; fileName: string; originalName: string; fileSize: number; mimeType: string };
 type PublisherLite = { id: number; employeeId: string; name: string; department: string | null; position: string | null };
+type ApprovalInstanceLite = { id: number; currentLevel: number; maxLevel: number; status: string };
 interface AnnouncementLite {
   id: number;
   title: string;
@@ -35,12 +36,30 @@ interface AnnouncementLite {
 interface PrismaAnnouncementClient {
   announcement: {
     findUnique: (args: { where: { id: number }; include?: { publisher?: { select: Record<string, boolean> }; attachments?: { select: Record<string, boolean> } } }) => Promise<AnnouncementLite | null>;
-    update: (args: { where: { id: number }; data: Partial<{ title: string; content: string; priority: 'HIGH' | 'NORMAL' | 'LOW'; category: 'PERSONNEL' | 'POLICY' | 'EVENT' | 'SYSTEM' | 'BENEFITS' | 'URGENT' | 'GENERAL'; isPublished: boolean; publishedAt: Date | null; expiryDate: Date | null; isGlobalAnnouncement: boolean; targetDepartments: string | null }> }) => Promise<AnnouncementLite>;
+    update: (args: { where: { id: number }; data: Partial<{ title: string; content: string; priority: 'HIGH' | 'NORMAL' | 'LOW'; category: 'PERSONNEL' | 'POLICY' | 'EVENT' | 'SYSTEM' | 'BENEFITS' | 'URGENT' | 'GENERAL'; isPublished: boolean; publishedAt: Date | null; expiryDate: Date | null; scheduledPublishAt: Date | null; isGlobalAnnouncement: boolean; targetDepartments: string | null }> }) => Promise<AnnouncementLite>;
     delete: (args: { where: { id: number } }) => Promise<AnnouncementLite>;
   };
   announcementAttachment: {
     findMany: (args: { where: { announcementId: number } }) => Promise<AttachmentLite[]>;
   };
+  approvalInstance: {
+    findFirst: (args: { where: { requestType: string; requestId: number } }) => Promise<ApprovalInstanceLite | null>;
+    update: (args: { where: { id: number }; data: { status: string; currentLevel: number } }) => Promise<ApprovalInstanceLite>;
+    deleteMany: (args: { where: { requestType: string; requestId: number } }) => Promise<{ count: number }>;
+  };
+  approvalReview: {
+    create: (args: { data: { instanceId: number; level: number; reviewerId: number; reviewerName: string; reviewerRole: string; action: string; comment?: string } }) => Promise<unknown>;
+  };
+  employee: {
+    findUnique: (args: { where: { id: number }; select: { name?: boolean } }) => Promise<{ name?: string | null } | null>;
+  };
+  $transaction: <T>(callback: (tx: PrismaAnnouncementTransactionClient) => Promise<T>) => Promise<T>;
+}
+
+interface PrismaAnnouncementTransactionClient {
+  announcement: PrismaAnnouncementClient['announcement'];
+  approvalInstance: Pick<PrismaAnnouncementClient['approvalInstance'], 'update' | 'deleteMany'>;
+  approvalReview: PrismaAnnouncementClient['approvalReview'];
 }
 
 const db = prisma as unknown as PrismaAnnouncementClient;
@@ -195,32 +214,90 @@ export async function PUT(
       return NextResponse.json({ error: expiryDateResult.error }, { status: 400 });
     }
 
+    const existingAnnouncement = await db.announcement.findUnique({
+      where: { id }
+    });
+    if (!existingAnnouncement) {
+      return NextResponse.json({ error: '找不到公告' }, { status: 404 });
+    }
+
     // 決定 publishedAt 變化
     let publishedAtUpdate: Date | null | undefined = undefined;
     if (typeof isPublished === 'boolean') {
-      if (isPublished) {
+      if (isPublished && !existingAnnouncement.isPublished) {
         publishedAtUpdate = new Date();
-      } else {
+      } else if (!isPublished && existingAnnouncement.isPublished) {
         publishedAtUpdate = null;
       }
     }
 
-    const updated = await db.announcement.update({
-      where: { id },
-      data: {
-        ...(title !== undefined ? { title } : {}),
-        ...(content !== undefined ? { content } : {}),
-        ...(priority !== undefined ? { priority } : {}),
-        ...(category !== undefined ? { category } : {}),
-        ...(isPublished !== undefined ? { isPublished } : {}),
-        ...(publishedAtUpdate !== undefined ? { publishedAt: publishedAtUpdate } : {}),
-        ...(expiryDate !== undefined ? { expiryDate: expiryDateResult.value } : {}),
-        ...(isGlobalAnnouncement !== undefined ? { isGlobalAnnouncement } : {}),
-        ...(targetDepartments !== undefined || isGlobalAnnouncement === true
-          ? { targetDepartments: isGlobalAnnouncement ? null : normalizedTargetDepartments?.normalized ?? targetDepartments ?? null }
-          : {})
-      }
-    });
+    const updateData = {
+      ...(title !== undefined ? { title: String(title).trim() } : {}),
+      ...(content !== undefined ? { content: String(content).trim() } : {}),
+      ...(priority !== undefined ? { priority } : {}),
+      ...(category !== undefined ? { category } : {}),
+      ...(isPublished !== undefined ? { isPublished } : {}),
+      ...(publishedAtUpdate !== undefined ? { publishedAt: publishedAtUpdate } : {}),
+      ...(expiryDate !== undefined ? { expiryDate: expiryDateResult.value } : {}),
+      ...(typeof isPublished === 'boolean' && isPublished ? { scheduledPublishAt: null } : {}),
+      ...(isGlobalAnnouncement !== undefined ? { isGlobalAnnouncement } : {}),
+      ...(targetDepartments !== undefined || isGlobalAnnouncement === true
+        ? { targetDepartments: isGlobalAnnouncement ? null : normalizedTargetDepartments?.normalized ?? targetDepartments ?? null }
+        : {})
+    };
+
+    const shouldApprovePendingFlow = isPublished === true && !existingAnnouncement.isPublished;
+    const approvalInstance = shouldApprovePendingFlow
+      ? await db.approvalInstance.findFirst({
+          where: {
+            requestType: 'ANNOUNCEMENT',
+            requestId: id,
+          },
+        })
+      : null;
+
+    const reviewerProfile = shouldApprovePendingFlow
+      ? await db.employee.findUnique({
+          where: { id: user.employeeId },
+          select: { name: true },
+        })
+      : null;
+
+    const reviewerName = reviewerProfile?.name?.trim() || user.username;
+
+    const updated = shouldApprovePendingFlow && approvalInstance && approvalInstance.status !== 'APPROVED'
+      ? await db.$transaction(async (tx) => {
+          const announcement = await tx.announcement.update({
+            where: { id },
+            data: updateData,
+          });
+
+          await tx.approvalReview.create({
+            data: {
+              instanceId: approvalInstance.id,
+              level: approvalInstance.currentLevel,
+              reviewerId: user.employeeId,
+              reviewerName,
+              reviewerRole: user.role,
+              action: 'APPROVE',
+              comment: '由公告管理頁面直接發布',
+            },
+          });
+
+          await tx.approvalInstance.update({
+            where: { id: approvalInstance.id },
+            data: {
+              status: 'APPROVED',
+              currentLevel: approvalInstance.maxLevel,
+            },
+          });
+
+          return announcement;
+        })
+      : await db.announcement.update({
+          where: { id },
+          data: updateData,
+        });
 
     return NextResponse.json({ success: true, message: '公告更新成功', announcement: updated });
   } catch (error) {
@@ -251,12 +328,27 @@ export async function DELETE(
       return NextResponse.json({ error: '無效的公告ID' }, { status: 400 });
     }
 
+    const existingAnnouncement = await db.announcement.findUnique({
+      where: { id }
+    });
+    if (!existingAnnouncement) {
+      return NextResponse.json({ error: '找不到公告' }, { status: 404 });
+    }
+
     // 先查附件以便刪除檔案
     const attachments = await (prisma as unknown as { announcementAttachment: { findMany: (args: { where: { announcementId: number } }) => Promise<AttachmentLite[]> } }).announcementAttachment.findMany({
       where: { announcementId: id }
     });
 
-    await db.announcement.delete({ where: { id } });
+    await db.$transaction(async (tx) => {
+      await tx.approvalInstance.deleteMany({
+        where: {
+          requestType: 'ANNOUNCEMENT',
+          requestId: id,
+        },
+      });
+      await tx.announcement.delete({ where: { id } });
+    });
 
     // 嘗試刪除檔案（忽略錯誤）
     for (const att of attachments) {

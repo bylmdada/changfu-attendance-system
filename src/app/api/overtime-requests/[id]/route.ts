@@ -6,24 +6,14 @@ import { calculateOvertimePayForRequest, OvertimeType } from '@/lib/salary-utils
 import { toTaiwanDateStr, getTaiwanYearMonth } from '@/lib/timezone';
 import { notifyHRAfterManagerReview } from '@/lib/hr-notification';
 import { getApprovalWorkflow } from '@/lib/approval-workflow';
+import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
+import { canAccessAttendanceDepartment } from '@/lib/attendance-permission-scopes';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-async function getManagedDepartments(employeeId: number): Promise<string[]> {
-  const records = await prisma.departmentManager.findMany({
-    where: {
-      employeeId,
-      isActive: true,
-    },
-    select: { department: true },
-  });
-
-  return records.map((record) => record.department).filter(Boolean);
 }
 
 // 審核或編輯加班申請
@@ -32,6 +22,11 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const rateLimitResult = await checkRateLimit(request, '/api/overtime-requests/[id]');
+    if (!rateLimitResult.allowed) {
+      return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
+    }
+
     const csrfValidation = await validateCSRF(request);
     if (!csrfValidation.valid) {
       return NextResponse.json({ error: `CSRF驗證失敗: ${csrfValidation.error}` }, { status: 403 });
@@ -63,7 +58,7 @@ export async function PATCH(
     }
 
     const requestedStatus = typeof body.status === 'string' ? body.status : undefined;
-    const requestedOpinion = typeof body.opinion === 'string' ? body.opinion : undefined;
+    const requestedOpinion = body.opinion === 'AGREE' || body.opinion === 'DISAGREE' ? body.opinion : undefined;
     const note = typeof body.note === 'string' ? body.note : undefined;
     const requestedOvertimeType = typeof body.overtimeType === 'string'
       ? body.overtimeType as OvertimeType
@@ -87,19 +82,21 @@ export async function PATCH(
 
     // 若傳入 status 或 opinion，視為審核
     if (requestedStatus || requestedOpinion) {
-      // 主管審核（提供意見，轉交 Admin）
-      if (user.role === 'MANAGER' && existing.status === 'PENDING') {
-        const managedDepartments = await getManagedDepartments(user.employeeId);
-        if (
-          managedDepartments.length === 0 ||
-          !existing.employee.department ||
-          !managedDepartments.includes(existing.employee.department)
-        ) {
+      const managerOpinion: 'AGREE' | 'DISAGREE' | undefined = requestedOpinion
+        ?? (requestedStatus === 'APPROVED' ? 'AGREE' : requestedStatus === 'REJECTED' ? 'DISAGREE' : undefined);
+
+      if (user.role !== 'ADMIN' && user.role !== 'HR' && existing.status === 'PENDING' && managerOpinion) {
+        const canReviewDepartment = await canAccessAttendanceDepartment(
+          { role: user.role, employeeId: user.employeeId },
+          existing.employee.department,
+          'overtimeRequests'
+        );
+
+        if (!canReviewDepartment || !user.employeeId) {
           return NextResponse.json({ error: '無權限審核此部門的加班申請' }, { status: 403 });
         }
 
-        const opinion = requestedOpinion as 'AGREE' | 'DISAGREE';
-        if (!['AGREE', 'DISAGREE'].includes(opinion ?? '')) {
+        if (!['AGREE', 'DISAGREE'].includes(managerOpinion)) {
           return NextResponse.json({ error: '請選擇同意或不同意' }, { status: 400 });
         }
 
@@ -114,7 +111,7 @@ export async function PATCH(
           data: {
             status: 'PENDING_ADMIN',
             managerReviewerId: user.employeeId,
-            managerOpinion: opinion,
+            managerOpinion,
             managerNote: note || null,
             managerReviewedAt: new Date()
           }
@@ -129,19 +126,19 @@ export async function PATCH(
             employeeName: existing.employee.name,
             employeeDepartment: existing.employee.department || '未指定',
             managerName: manager?.name || '主管',
-            managerOpinion: opinion,
+            managerOpinion,
             managerNote: note
           });
         }
 
         return NextResponse.json({
           success: true,
-          message: '主管審核完成，已轉交管理員決核'
+          message: '主管審核完成，已轉交最終審核'
         });
       }
 
-      // Admin 最終決核
-      if (user.role === 'ADMIN') {
+      // ADMIN / HR 最終決核
+      if (user.role === 'ADMIN' || user.role === 'HR') {
         const status = requestedStatus as 'APPROVED' | 'REJECTED';
 
         if (!['APPROVED', 'REJECTED'].includes(status ?? '')) {
@@ -266,8 +263,7 @@ export async function PATCH(
         });
       }
 
-      // HR 不能直接審核
-      return NextResponse.json({ error: '無權限執行此操作，加班需由主管審核後由管理員決核' }, { status: 403 });
+      return NextResponse.json({ error: '無權限執行此操作' }, { status: 403 });
     }
 
     // 否則視為「編輯」：申請人自己或管理員/HR可在待審核狀態下修改
@@ -341,6 +337,11 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const rateLimitResult = await checkRateLimit(request, '/api/overtime-requests/[id]');
+    if (!rateLimitResult.allowed) {
+      return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
+    }
+
     const csrfValidation = await validateCSRF(request);
     if (!csrfValidation.valid) {
       return NextResponse.json({ error: `CSRF驗證失敗: ${csrfValidation.error}` }, { status: 403 });

@@ -8,6 +8,16 @@ import {
   calculateHourlyWage,
   OvertimeCalculationResult 
 } from './overtime-calculator';
+import {
+  getDefaultSupplementaryPremiumSettings,
+  getSupplementaryPremiumExemptThreshold,
+  getSupplementaryPremiumRateDecimal,
+  type SupplementaryPremiumSettings,
+} from './supplementary-premium-config';
+import {
+  DEFAULT_LABOR_LAW_CONFIG,
+  type LaborLawConfigValues,
+} from './labor-law-config-defaults';
 
 // 薪資計算結果接口
 export interface PayrollCalculationResult {
@@ -55,6 +65,21 @@ export interface PayrollDeductions {
   laborPensionSelf: number;      // 勞退自提
   incomeTax: number;            // 所得稅
   other: number;                // 其他扣除
+}
+
+export interface PayrollTotals {
+  grossPay: number;
+  deductions: PayrollDeductions;
+  totalDeductions: number;
+  netPay: number;
+}
+
+export function normalizeDependentsCount(dependents: unknown, maxDependents = 10): number {
+  if (typeof dependents !== 'number' || !Number.isFinite(dependents)) {
+    return 0;
+  }
+
+  return Math.min(Math.max(Math.trunc(dependents), 0), maxDependents);
 }
 
 // 員工基本資訊（用於薪資計算）
@@ -180,11 +205,7 @@ export function calculateMonthlyPayroll(
   const grossPay = basePay + totalOvertimePay;
 
   // 計算扣除項目
-  const deductions = calculateDeductions(employee, grossPay);
-  const totalDeductions = Object.values(deductions).reduce((sum, amount) => sum + amount, 0);
-
-  // 計算實領薪資
-  const netPay = grossPay - totalDeductions;
+  const totals = calculatePayrollTotals(employee, grossPay);
 
   // 生成計算備註
   const calculationNotes = generateCalculationNotes(employee, overtimeBreakdown, overtimeDetails);
@@ -199,10 +220,10 @@ export function calculateMonthlyPayroll(
     basePay,
     hourlyWage,
     totalOvertimePay,
-    grossPay,
-    deductions,
-    totalDeductions,
-    netPay,
+    grossPay: totals.grossPay,
+    deductions: totals.deductions,
+    totalDeductions: totals.totalDeductions,
+    netPay: totals.netPay,
     overtimeDetails,
     calculationNotes
   };
@@ -215,7 +236,12 @@ export function calculateMonthlyPayroll(
  * @param grossPay 總薪資
  * @returns 扣除項目詳細
  */
-function calculateDeductions(employee: EmployeePayrollInfo, grossPay: number): PayrollDeductions {
+export function calculatePayrollDeductions(
+  employee: EmployeePayrollInfo,
+  grossPay: number,
+  supplementarySettings: SupplementaryPremiumSettings = getDefaultSupplementaryPremiumSettings(),
+  laborLawConfig: LaborLawConfigValues = DEFAULT_LABOR_LAW_CONFIG
+): PayrollDeductions {
   // 使用投保薪資或實際薪資計算勞健保
   const insuredSalary = employee.insuredBase || grossPay;
   
@@ -223,24 +249,27 @@ function calculateDeductions(employee: EmployeePayrollInfo, grossPay: number): P
   // 如果員工不參加勞保，則不扣除
   let laborInsurance = 0;
   if (employee.laborInsuranceActive !== false) {
-    const laborInsuranceRate = 0.115; // 11.5%總費率
-    const employeeLaborRate = 0.2; // 員工負擔20%
-    laborInsurance = Math.round(insuredSalary * laborInsuranceRate * employeeLaborRate);
+    const laborInsuredSalary = Math.min(insuredSalary, laborLawConfig.laborInsuranceMax);
+    laborInsurance = Math.round(
+      laborInsuredSalary * laborLawConfig.laborInsuranceRate * laborLawConfig.laborEmployeeRate
+    );
   }
 
   // 健保費計算（員工負擔30%，眷屬加計）
-  const healthInsuranceRate = 0.0517; // 5.17%
-  const employeeHealthRate = 0.3; // 員工負擔30%
-  const dependents = employee.dependents || 0;
-  const healthInsuranceUnit = Math.round(insuredSalary * healthInsuranceRate);
-  const healthInsurance = Math.round(healthInsuranceUnit * employeeHealthRate * (1 + dependents));
-
-  // 補充保費計算（2.11%，薪資超過投保金額上限時）
-  let supplementaryInsurance = 0;
-  const supplementaryThreshold = 84000; // 2024年補充保費門檻
-  if (grossPay > supplementaryThreshold) {
-    supplementaryInsurance = Math.round((grossPay - supplementaryThreshold) * 0.0211);
+  let healthInsurance = 0;
+  if (employee.healthInsuranceActive !== false) {
+    const healthInsuranceRate = 0.0517; // 5.17%
+    const employeeHealthRate = 0.3; // 員工負擔30%
+    const dependents = normalizeDependentsCount(employee.dependents);
+    const healthInsuranceUnit = Math.round(insuredSalary * healthInsuranceRate);
+    healthInsurance = Math.round(healthInsuranceUnit * employeeHealthRate * (1 + dependents));
   }
+
+  const supplementaryInsurance = calculatePayrollSupplementaryInsurance(
+    grossPay,
+    insuredSalary,
+    supplementarySettings
+  );
 
   // 勞退自提計算（0-6%，員工自願提繳）
   const laborPensionSelfRate = employee.laborPensionSelfRate || 0;
@@ -258,6 +287,61 @@ function calculateDeductions(employee: EmployeePayrollInfo, grossPay: number): P
     incomeTax,
     other: 0
   };
+}
+
+export function calculatePayrollTotals(
+  employee: EmployeePayrollInfo,
+  grossPay: number,
+  totalBonus = 0,
+  supplementarySettings: SupplementaryPremiumSettings = getDefaultSupplementaryPremiumSettings(),
+  laborLawConfig: LaborLawConfigValues = DEFAULT_LABOR_LAW_CONFIG
+): PayrollTotals {
+  const baseDeductions = calculatePayrollDeductions(
+    employee,
+    grossPay,
+    supplementarySettings,
+    laborLawConfig
+  );
+  const adjustedGrossPay = grossPay + totalBonus;
+  const deductions = totalBonus > 0
+    ? {
+        ...baseDeductions,
+        supplementaryInsurance: calculatePayrollSupplementaryInsurance(
+          adjustedGrossPay,
+          employee.insuredBase || grossPay,
+          supplementarySettings
+        ),
+        incomeTax: calculateSimpleIncomeTax(adjustedGrossPay - baseDeductions.laborPensionSelf),
+      }
+    : baseDeductions;
+  const totalDeductions = Object.values(deductions).reduce((sum, amount) => sum + amount, 0);
+
+  return {
+    grossPay: adjustedGrossPay,
+    deductions,
+    totalDeductions,
+    netPay: adjustedGrossPay - totalDeductions,
+  };
+}
+
+function calculatePayrollSupplementaryInsurance(
+  grossPay: number,
+  insuredAmount: number,
+  supplementarySettings: SupplementaryPremiumSettings
+): number {
+  if (!supplementarySettings.isEnabled) {
+    return 0;
+  }
+
+  const supplementaryThreshold = getSupplementaryPremiumExemptThreshold(insuredAmount, supplementarySettings);
+  if (grossPay <= supplementaryThreshold) {
+    return 0;
+  }
+
+  const calculatedPremium = Math.round(
+    (grossPay - supplementaryThreshold) * getSupplementaryPremiumRateDecimal(supplementarySettings)
+  );
+  return Math.min(calculatedPremium, supplementarySettings.maxMonthlyPremium);
 }
 
 /**

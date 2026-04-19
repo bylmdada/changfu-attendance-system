@@ -10,6 +10,7 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { parseIntegerQueryParam } from '@/lib/query-params';
+import { summarizePayrollDisputeAdjustments } from '@/lib/payroll-processing';
 import { safeParseJSON } from '@/lib/validation';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -194,14 +195,9 @@ export async function PUT(
         return NextResponse.json({ error: 'adjustInMonth 格式錯誤' }, { status: 400 });
       }
 
-      // 找到調整計入的薪資記錄
-      const targetPayroll = await prisma.payrollRecord.findFirst({
-        where: {
-          employeeId: dispute.employeeId,
-          payYear: adjustInYearResult.value,
-          payMonth: adjustInMonthResult.value
-        }
-      });
+      const adjustedAmount = adjustedAmountResult.value;
+      const adjustInYear = adjustInYearResult.value;
+      const adjustInMonth = adjustInMonthResult.value;
 
       // 如果還沒有該月薪資記錄，先記錄調整資訊，等產生薪資時再計入
       const adjustmentData: {
@@ -214,35 +210,95 @@ export async function PUT(
         createdBy: number;
         payrollId?: number;
       } = {
-        type: adjustedAmountResult.value >= 0 ? 'SUPPLEMENT' : 'DEDUCTION',
+        type: adjustedAmount >= 0 ? 'SUPPLEMENT' : 'DEDUCTION',
         category: dispute.type === 'OVERTIME_MISSING' ? 'OVERTIME' : 
                   dispute.type === 'LEAVE_MISSING' ? 'LEAVE' : 
                   dispute.type === 'ALLOWANCE_MISSING' ? 'ALLOWANCE' : 'OTHER',
         description: getAdjustmentDescription(dispute.type, dispute.payYear, dispute.payMonth),
-        amount: Math.abs(adjustedAmountResult.value),
+        amount: Math.abs(adjustedAmount),
         originalYear: dispute.payYear,
         originalMonth: dispute.payMonth,
         createdBy: user.employeeId
       };
 
       // 使用交易確保數據一致性
+      let appliedToExistingPayroll = false;
       await prisma.$transaction(async (tx) => {
-        // 更新異議狀態
-        await tx.payrollDispute.update({
-          where: { id: disputeId },
+        const updatedDispute = await tx.payrollDispute.updateMany({
+          where: {
+            id: disputeId,
+            status: 'PENDING',
+          },
           data: {
             status: 'APPROVED',
             reviewedBy: user.employeeId,
             reviewedAt: new Date(),
             reviewNote: reviewNote || null,
-            adjustedAmount: adjustedAmountResult.value,
-            adjustInYear: adjustInYearResult.value,
-            adjustInMonth: adjustInMonthResult.value
+            adjustedAmount,
+            adjustInYear,
+            adjustInMonth
+          }
+        });
+
+        if (updatedDispute.count !== 1) {
+          throw new Error('異議狀態已變更，請重新整理後再試');
+        }
+
+        const approvalInstance = await tx.approvalInstance.findFirst({
+          where: {
+            requestType: 'PAYROLL_DISPUTE',
+            requestId: disputeId,
+          },
+        });
+
+        if (approvalInstance) {
+          await tx.approvalReview.create({
+            data: {
+              instanceId: approvalInstance.id,
+              level: approvalInstance.currentLevel,
+              reviewerId: user.employeeId,
+              reviewerName: user.username,
+              reviewerRole: user.role,
+              action: 'APPROVE',
+              comment: reviewNote || null,
+            }
+          });
+
+          const updatedInstance = await tx.approvalInstance.updateMany({
+            where: {
+              id: approvalInstance.id,
+              currentLevel: approvalInstance.currentLevel,
+              status: approvalInstance.status,
+            },
+            data: {
+              status: 'APPROVED',
+              currentLevel: approvalInstance.maxLevel,
+            }
+          });
+
+          if (updatedInstance.count !== 1) {
+            throw new Error('審核流程狀態已變更，請重新整理後再試');
+          }
+        }
+
+        const targetPayroll = await tx.payrollRecord.findFirst({
+          where: {
+            employeeId: dispute.employeeId,
+            payYear: adjustInYear,
+            payMonth: adjustInMonth
           }
         });
 
         // 如果有對應薪資記錄，建立調整項目
         if (targetPayroll) {
+          const adjustmentSummary = summarizePayrollDisputeAdjustments([
+            {
+              type: adjustmentData.type as 'SUPPLEMENT' | 'DEDUCTION',
+              description: adjustmentData.description,
+              amount: adjustmentData.amount,
+            },
+          ]);
+
           await tx.payrollAdjustment.create({
             data: {
               ...adjustmentData,
@@ -251,23 +307,25 @@ export async function PUT(
             }
           });
 
-          // 更新薪資記錄的金額
-          const adjustAmount = adjustedAmountResult.value;
+          // 更新薪資記錄的金額，補發列入應發，扣除列入扣除合計
           await tx.payrollRecord.update({
             where: { id: targetPayroll.id },
             data: {
-              grossPay: { increment: adjustAmount },
-              netPay: { increment: adjustAmount }
+              grossPay: { increment: adjustmentSummary.supplementTotal },
+              totalDeductions: { increment: adjustmentSummary.deductionTotal },
+              netPay: { increment: adjustmentSummary.netAdjustment }
             }
           });
+
+          appliedToExistingPayroll = true;
         }
       });
 
       return NextResponse.json({
         success: true,
-        message: targetPayroll 
-          ? `已核准，調整 $${Math.abs(adjustedAmountResult.value)} 計入 ${adjustInYearResult.value}年${adjustInMonthResult.value}月薪資`
-          : `已核准，待 ${adjustInYearResult.value}年${adjustInMonthResult.value}月薪資產生時自動計入`
+        message: appliedToExistingPayroll 
+          ? `已核准，調整 $${Math.abs(adjustedAmount)} 計入 ${adjustInYear}年${adjustInMonth}月薪資`
+          : `已核准，待 ${adjustInYear}年${adjustInMonth}月薪資產生時自動計入`
       });
 
     } else if (action === 'reject') {
@@ -276,13 +334,61 @@ export async function PUT(
         return NextResponse.json({ error: '請填寫拒絕原因' }, { status: 400 });
       }
 
-      await prisma.payrollDispute.update({
-        where: { id: disputeId },
-        data: {
-          status: 'REJECTED',
-          reviewedBy: user.employeeId,
-          reviewedAt: new Date(),
-          reviewNote
+      await prisma.$transaction(async (tx) => {
+        const updatedDispute = await tx.payrollDispute.updateMany({
+          where: {
+            id: disputeId,
+            status: 'PENDING',
+          },
+          data: {
+            status: 'REJECTED',
+            reviewedBy: user.employeeId,
+            reviewedAt: new Date(),
+            reviewNote
+          }
+        });
+
+        if (updatedDispute.count !== 1) {
+          throw new Error('異議狀態已變更，請重新整理後再試');
+        }
+
+        const approvalInstance = await tx.approvalInstance.findFirst({
+          where: {
+            requestType: 'PAYROLL_DISPUTE',
+            requestId: disputeId,
+          },
+        });
+
+        if (!approvalInstance) {
+          return;
+        }
+
+        await tx.approvalReview.create({
+          data: {
+            instanceId: approvalInstance.id,
+            level: approvalInstance.currentLevel,
+            reviewerId: user.employeeId,
+            reviewerName: user.username,
+            reviewerRole: user.role,
+            action: 'REJECT',
+            comment: reviewNote,
+          }
+        });
+
+        const updatedInstance = await tx.approvalInstance.updateMany({
+          where: {
+            id: approvalInstance.id,
+            currentLevel: approvalInstance.currentLevel,
+            status: approvalInstance.status,
+          },
+          data: {
+            status: 'REJECTED',
+            currentLevel: approvalInstance.maxLevel,
+          }
+        });
+
+        if (updatedInstance.count !== 1) {
+          throw new Error('審核流程狀態已變更，請重新整理後再試');
         }
       });
 

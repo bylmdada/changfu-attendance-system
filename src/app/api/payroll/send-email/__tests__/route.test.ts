@@ -3,6 +3,9 @@ jest.mock('@/lib/database', () => ({
     payslipEmailSettings: {
       findFirst: jest.fn(),
     },
+    smtpSettings: {
+      findFirst: jest.fn(),
+    },
     payrollRecord: {
       findMany: jest.fn(),
     },
@@ -36,7 +39,7 @@ import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
-import { POST } from '../route';
+import { GET, POST } from '../route';
 
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
@@ -59,6 +62,10 @@ describe('payroll send email route', () => {
 
     mockPrisma.payslipEmailSettings.findFirst.mockResolvedValue({
       enabled: true,
+      subjectTemplate: '%YEAR%/%MONTH% 薪資條',
+      bodyTemplate: 'Hi %NAME% - %YEAR%/%MONTH%',
+    } as never);
+    mockPrisma.smtpSettings.findFirst.mockResolvedValue({
       smtpHost: 'smtp.example.com',
       smtpPort: 587,
       smtpSecure: false,
@@ -66,8 +73,6 @@ describe('payroll send email route', () => {
       smtpPassword: 'super-secret',
       fromEmail: 'payroll@example.com',
       fromName: 'Payroll Bot',
-      subjectTemplate: '%YEAR%/%MONTH% 薪資條',
-      bodyTemplate: 'Hi %NAME% - %YEAR%/%MONTH%',
     } as never);
 
     mockPrisma.payrollRecord.findMany.mockResolvedValue([
@@ -85,6 +90,7 @@ describe('payroll send email route', () => {
     ] as never);
 
     mockPrisma.payslipSendHistory.create.mockResolvedValue({ id: 1 } as never);
+    mockPrisma.payslipSendHistory.findMany.mockResolvedValue([] as never);
   });
 
   afterEach(() => {
@@ -119,6 +125,7 @@ describe('payroll send email route', () => {
     expect(payload.results).toEqual({
       success: 0,
       failed: 1,
+      skipped: 0,
       errors: ['王小明: 郵件發送失敗，請檢查 SMTP 設定後再試'],
     });
     expect(payload.results.errors[0]).not.toContain('535 Invalid login');
@@ -141,6 +148,7 @@ describe('payroll send email route', () => {
       code: 'EAUTH',
       responseCode: 535,
     });
+    expect(mockPrisma.smtpSettings.findFirst).toHaveBeenCalled();
   });
 
   it('returns 400 for malformed email request JSON before loading SMTP settings', async () => {
@@ -159,6 +167,103 @@ describe('payroll send email route', () => {
     expect(response.status).toBe(400);
     expect(payload).toEqual({ error: '無效的 JSON 格式' });
     expect(mockPrisma.payslipEmailSettings.findFirst).not.toHaveBeenCalled();
+    expect(mockPrisma.smtpSettings.findFirst).not.toHaveBeenCalled();
     expect(mockPrisma.payrollRecord.findMany).not.toHaveBeenCalled();
+  });
+
+  it('validates history query params before loading send history', async () => {
+    const request = new NextRequest('http://localhost/api/payroll/send-email?year=abc', {
+      headers: {
+        cookie: 'auth-token=session-token',
+      },
+    });
+
+    const response = await GET(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload).toEqual({ error: '年份格式無效' });
+    expect(mockPrisma.payslipSendHistory.findMany).not.toHaveBeenCalled();
+  });
+
+  it('escapes generated email html content before sending', async () => {
+    sendMail.mockResolvedValue({ messageId: 'ok' });
+    mockPrisma.payrollRecord.findMany.mockResolvedValue([
+      {
+        id: 101,
+        payYear: 2024,
+        payMonth: 8,
+        employee: {
+          id: 501,
+          employeeId: 'EMP001',
+          name: '<b>王小明</b>',
+          email: 'employee@example.com',
+        },
+      },
+    ] as never);
+    mockPrisma.payslipEmailSettings.findFirst.mockResolvedValue({
+      enabled: true,
+      subjectTemplate: '%YEAR%/%MONTH% 薪資條',
+      bodyTemplate: 'Hi %NAME%\nLine 2',
+    } as never);
+
+    const request = new NextRequest('http://localhost/api/payroll/send-email', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: 'auth-token=session-token',
+      },
+      body: JSON.stringify({
+        payrollIds: [101],
+      }),
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.results.success).toBe(1);
+    expect(payload.results.skipped).toBe(0);
+    expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({
+      html: 'Hi &lt;b&gt;王小明&lt;/b&gt;<br>Line 2',
+      text: 'Hi <b>王小明</b>\nLine 2',
+    }));
+  });
+
+  it('skips payrolls that already have a successful send history', async () => {
+    sendMail.mockResolvedValue({ messageId: 'ok' });
+    mockPrisma.payslipSendHistory.findMany.mockResolvedValue([
+      {
+        payrollId: 101,
+        employeeName: '王小明',
+      },
+    ] as never);
+    mockPrisma.payrollRecord.findMany.mockResolvedValue([] as never);
+
+    const request = new NextRequest('http://localhost/api/payroll/send-email', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: 'auth-token=session-token',
+      },
+      body: JSON.stringify({
+        payrollIds: [101],
+      }),
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.results).toEqual({
+      success: 0,
+      failed: 0,
+      skipped: 1,
+      errors: ['王小明: 薪資條已寄送過，已略過重複發送'],
+    });
+    expect(sendMail).not.toHaveBeenCalled();
+    expect(mockPrisma.payrollRecord.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: { in: [] } },
+    }));
   });
 });

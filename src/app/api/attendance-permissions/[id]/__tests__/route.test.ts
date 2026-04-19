@@ -7,8 +7,12 @@ import { validateCSRF } from '@/lib/csrf';
 jest.mock('@/lib/database', () => ({
   prisma: {
     attendancePermission: {
+      findUnique: jest.fn(),
       update: jest.fn(),
       delete: jest.fn(),
+    },
+    department: {
+      findMany: jest.fn(),
     },
   },
 }));
@@ -29,6 +33,8 @@ describe('attendance permission item csrf guards', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockedValidateCSRF.mockResolvedValue({ valid: false, error: '缺少CSRF令牌' });
+    mockPrisma.attendancePermission.findUnique.mockResolvedValue({ id: 3 } as never);
+    mockPrisma.department.findMany.mockResolvedValue([{ name: '資訊部' }] as never);
   });
 
   it('rejects PATCH requests with an invalid CSRF token', async () => {
@@ -76,6 +82,8 @@ describe('attendance permission item body guards', () => {
       username: 'admin',
       role: 'ADMIN',
     } as never);
+    mockPrisma.attendancePermission.findUnique.mockResolvedValue({ id: 3 } as never);
+    mockPrisma.department.findMany.mockResolvedValue([{ name: '資訊部' }] as never);
   });
 
   it('rejects malformed PATCH JSON bodies before updating permissions', async () => {
@@ -133,6 +141,24 @@ describe('attendance permission item body guards', () => {
     expect(response.status).toBe(400);
     expect(data).toEqual({ error: '無效的權限ID' });
     expect(mockedGetUserFromRequest).not.toHaveBeenCalled();
+    expect(mockPrisma.attendancePermission.delete).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 when deleting a missing permission record', async () => {
+    mockPrisma.attendancePermission.findUnique.mockResolvedValueOnce(null as never);
+
+    const request = new NextRequest('http://localhost:3000/api/attendance-permissions/3', {
+      method: 'DELETE',
+      headers: {
+        cookie: 'auth-token=legacy-auth-token',
+      },
+    });
+
+    const response = await DELETE(request, { params: Promise.resolve({ id: '3' }) });
+    const data = await response.json();
+
+    expect(response.status).toBe(404);
+    expect(data).toEqual({ error: '找不到權限設定' });
     expect(mockPrisma.attendancePermission.delete).not.toHaveBeenCalled();
   });
 });

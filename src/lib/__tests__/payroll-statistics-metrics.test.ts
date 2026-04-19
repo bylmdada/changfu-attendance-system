@@ -1,5 +1,6 @@
 import {
   calculateAverageMonthlyGrossPay,
+  calculateOvertimePayShare,
   countMonthsWithPayroll,
 } from '@/lib/payroll-statistics-metrics';
 
@@ -32,5 +33,13 @@ describe('payroll statistics metrics', () => {
         { totalGrossPay: 200000 },
       ])
     ).toBe(150000);
+  });
+
+  it('calculates overtime pay share from actual overtime pay', () => {
+    expect(calculateOvertimePayShare(12000, 80000)).toBe(15);
+  });
+
+  it('returns zero overtime pay share when gross pay is zero', () => {
+    expect(calculateOvertimePayShare(12000, 0)).toBe(0);
   });
 });

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
+import { parseIntegerQueryParam } from '@/lib/query-params';
 
 export async function GET(request: NextRequest) {
   try {
@@ -22,9 +23,22 @@ export async function GET(request: NextRequest) {
     }
 
     const { searchParams } = new URL(request.url);
-    const year = searchParams.get('year') || new Date().getFullYear().toString();
-    const month = searchParams.get('month');
+    const yearInput = searchParams.get('year') ?? new Date().getFullYear().toString();
+    const monthInput = searchParams.get('month');
     const department = searchParams.get('department');
+
+    const yearResult = parseIntegerQueryParam(yearInput, { min: 1900, max: 9999 });
+    if (!yearResult.isValid || yearResult.value === null) {
+      return NextResponse.json({ error: 'year 格式錯誤' }, { status: 400 });
+    }
+
+    const monthResult = parseIntegerQueryParam(monthInput, { min: 1, max: 12 });
+    if (!monthResult.isValid) {
+      return NextResponse.json({ error: 'month 格式錯誤' }, { status: 400 });
+    }
+
+    const year = yearResult.value;
+    const month = monthResult.value;
 
     const employeeFilter = department
       ? {
@@ -45,12 +59,12 @@ export async function GET(request: NextRequest) {
         };
       };
     } = {
-      payYear: parseInt(year),
+      payYear: year,
       ...employeeFilter,
     };
 
-    if (month) {
-      whereCondition.payMonth = parseInt(month);
+    if (month !== null) {
+      whereCondition.payMonth = month;
     }
 
     // 獲取薪資統計數據
@@ -80,7 +94,12 @@ export async function GET(request: NextRequest) {
     // 獲取部門薪資統計
     const departmentStats = await prisma.payrollRecord.findMany({
       where: whereCondition,
-      include: {
+      select: {
+        employeeId: true,
+        grossPay: true,
+        netPay: true,
+        regularHours: true,
+        overtimeHours: true,
         employee: {
           select: {
             department: true
@@ -90,6 +109,18 @@ export async function GET(request: NextRequest) {
     });
 
     // 按部門分組統計
+    interface DepartmentSummaryAccumulator {
+      department: string;
+      recordCount: number;
+      employeeIds: Set<number>;
+      totalGrossPay: number;
+      totalNetPay: number;
+      totalRegularHours: number;
+      totalOvertimeHours: number;
+      avgGrossPay: number;
+      avgNetPay: number;
+    }
+
     interface DepartmentSummary {
       department: string;
       employeeCount: number;
@@ -107,7 +138,8 @@ export async function GET(request: NextRequest) {
       if (!acc[dept]) {
         acc[dept] = {
           department: dept,
-          employeeCount: 0,
+          recordCount: 0,
+          employeeIds: new Set<number>(),
           totalGrossPay: 0,
           totalNetPay: 0,
           totalRegularHours: 0,
@@ -117,27 +149,38 @@ export async function GET(request: NextRequest) {
         };
       }
       
-      acc[dept].employeeCount += 1;
+      acc[dept].recordCount += 1;
+      acc[dept].employeeIds.add(record.employeeId);
       acc[dept].totalGrossPay += record.grossPay;
       acc[dept].totalNetPay += record.netPay;
       acc[dept].totalRegularHours += record.regularHours;
       acc[dept].totalOvertimeHours += record.overtimeHours;
       
       return acc;
-    }, {} as Record<string, DepartmentSummary>);
+    }, {} as Record<string, DepartmentSummaryAccumulator>);
 
-    // 計算部門平均值
-    Object.values(departmentSummary).forEach((dept: DepartmentSummary) => {
-      dept.avgGrossPay = dept.totalGrossPay / dept.employeeCount;
-      dept.avgNetPay = dept.totalNetPay / dept.employeeCount;
-    });
+    const normalizedDepartmentSummary = Object.values(departmentSummary)
+      .map((dept): DepartmentSummary => ({
+        department: dept.department,
+        employeeCount: dept.employeeIds.size,
+        totalGrossPay: dept.totalGrossPay,
+        totalNetPay: dept.totalNetPay,
+        totalRegularHours: dept.totalRegularHours,
+        totalOvertimeHours: dept.totalOvertimeHours,
+        avgGrossPay: dept.recordCount > 0 ? dept.totalGrossPay / dept.recordCount : 0,
+        avgNetPay: dept.recordCount > 0 ? dept.totalNetPay / dept.recordCount : 0,
+      }))
+      .sort((a, b) => b.totalGrossPay - a.totalGrossPay);
 
-    // 獲取月度趨勢數據（當年每月統計）
+    // 獲取月度趨勢數據（有指定月份時只查該月份）
+    const monthsToQuery = month !== null
+      ? [month]
+      : Array.from({ length: 12 }, (_, index) => index + 1);
     const monthlyTrends = [];
-    for (let m = 1; m <= 12; m++) {
+    for (const m of monthsToQuery) {
       const monthlyStats = await prisma.payrollRecord.aggregate({
         where: {
-          payYear: parseInt(year),
+          payYear: year,
           payMonth: m,
           ...employeeFilter,
         },
@@ -186,7 +229,7 @@ export async function GET(request: NextRequest) {
             lt?: number;
           };
         } = {
-          payYear: parseInt(year),
+          payYear: year,
           ...employeeFilter,
           grossPay: {
             gte: range.min
@@ -197,8 +240,8 @@ export async function GET(request: NextRequest) {
           whereCondition.grossPay.lt = range.max;
         }
 
-        if (month) {
-          whereCondition.payMonth = parseInt(month);
+        if (month !== null) {
+          whereCondition.payMonth = month;
         }
 
         const count = await prisma.payrollRecord.count({
@@ -221,6 +264,7 @@ export async function GET(request: NextRequest) {
           totalRecords: payrollStats._count.id,
           totalGrossPay: payrollStats._sum.grossPay || 0,
           totalNetPay: payrollStats._sum.netPay || 0,
+          totalOvertimePay: payrollStats._sum.overtimePay || 0,
           totalRegularHours: payrollStats._sum.regularHours || 0,
           totalOvertimeHours: payrollStats._sum.overtimeHours || 0,
           avgGrossPay: payrollStats._avg.grossPay || 0,
@@ -228,7 +272,7 @@ export async function GET(request: NextRequest) {
           avgRegularHours: payrollStats._avg.regularHours || 0,
           avgOvertimeHours: payrollStats._avg.overtimeHours || 0
         },
-        departmentStats: Object.values(departmentSummary),
+        departmentStats: normalizedDepartmentSummary,
         monthlyTrends,
         salaryDistribution
       }

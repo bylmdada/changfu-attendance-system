@@ -3,6 +3,7 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { checkRateLimit } from '@/lib/rate-limit';
+import { DEFAULT_LABOR_LAW_CONFIG } from '@/lib/labor-law-config-defaults';
 import { safeParseJSON } from '@/lib/validation';
 
 function parseDateOnly(value: unknown): Date | null {
@@ -31,6 +32,39 @@ function parseDateOnly(value: unknown): Date | null {
   return date;
 }
 
+function parseFiniteNumber(value: unknown): number | null {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
+}
+
+function parsePositiveInteger(value: unknown): number | null {
+  const parsed = parseFiniteNumber(value);
+
+  if (parsed === null || !Number.isInteger(parsed) || parsed <= 0) {
+    return null;
+  }
+
+  return parsed;
+}
+
+function parseRate(value: unknown): number | null {
+  const parsed = parseFiniteNumber(value);
+
+  if (parsed === null || parsed <= 0 || parsed > 1) {
+    return null;
+  }
+
+  return parsed;
+}
+
 // GET - 取得目前生效的法規參數設定（勞保與基本工資）
 export async function GET(request: NextRequest) {
   try {
@@ -51,10 +85,7 @@ export async function GET(request: NextRequest) {
         success: true,
         config: {
           id: null,
-          basicWage: 29500,
-          laborInsuranceRate: 0.115,
-          laborInsuranceMax: 45800,
-          laborEmployeeRate: 0.2,
+          ...DEFAULT_LABOR_LAW_CONFIG,
           effectiveDate: new Date().toISOString().split('T')[0],
           isActive: true,
           description: '系統預設值'
@@ -138,11 +169,39 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '生效日期格式無效' }, { status: 400 });
     }
 
+    const parsedBasicWage = parsePositiveInteger(basicWage);
+    if (parsedBasicWage === null) {
+      return NextResponse.json({ error: '基本工資必須為正整數' }, { status: 400 });
+    }
+
+    const parsedLaborInsuranceRate = parseRate(laborInsuranceRate);
+    if (parsedLaborInsuranceRate === null) {
+      return NextResponse.json({ error: '勞保費率必須為 0 到 1 之間的數值' }, { status: 400 });
+    }
+
+    const parsedLaborInsuranceMax = parsePositiveInteger(laborInsuranceMax);
+    if (parsedLaborInsuranceMax === null) {
+      return NextResponse.json({ error: '投保薪資上限必須為正整數' }, { status: 400 });
+    }
+
+    if (parsedLaborInsuranceMax < parsedBasicWage) {
+      return NextResponse.json({ error: '投保薪資上限不得低於基本工資' }, { status: 400 });
+    }
+
+    const parsedLaborEmployeeRate = parseRate(laborEmployeeRate);
+    if (parsedLaborEmployeeRate === null) {
+      return NextResponse.json({ error: '員工負擔比例必須為 0 到 1 之間的數值' }, { status: 400 });
+    }
+
+    if (description !== undefined && description !== null && typeof description !== 'string') {
+      return NextResponse.json({ error: '說明備註格式無效' }, { status: 400 });
+    }
+
     const newConfigData = {
-      basicWage: parseInt(String(basicWage)) || 29500,
-      laborInsuranceRate: parseFloat(String(laborInsuranceRate)) || 0.115,
-      laborInsuranceMax: parseInt(String(laborInsuranceMax)) || 45800,
-      laborEmployeeRate: parseFloat(String(laborEmployeeRate)) || 0.2,
+      basicWage: parsedBasicWage,
+      laborInsuranceRate: parsedLaborInsuranceRate,
+      laborInsuranceMax: parsedLaborInsuranceMax,
+      laborEmployeeRate: parsedLaborEmployeeRate,
       effectiveDate: parsedEffectiveDate,
       description: typeof description === 'string' && description.trim() ? description : null,
       isActive: true

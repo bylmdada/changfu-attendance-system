@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getUserFromRequest } from '@/lib/auth';
+import { getUserFromRequest, hashPassword } from '@/lib/auth';
 import { prisma } from '@/lib/database';
 import { getManageableDepartments } from '@/lib/schedule-management-permissions';
-import bcrypt from 'bcryptjs';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
+import { evaluatePasswordStrength } from '@/lib/password-policy';
+import { getStoredPasswordPolicy } from '@/lib/password-policy-store';
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
@@ -98,9 +99,7 @@ export async function GET(request: NextRequest) {
     if (search) {
       where.OR = [
         { name: { contains: search } },
-        { employeeId: { contains: search } },
-        { department: { contains: search } },
-        { position: { contains: search } }
+        { employeeId: { contains: search } }
       ];
     }
 
@@ -188,6 +187,7 @@ export async function POST(request: NextRequest) {
       name,
       birthday,
       phone,
+      email,
       address,
       emergencyContact,
       emergencyPhone,
@@ -205,6 +205,7 @@ export async function POST(request: NextRequest) {
 
     const normalizedEmployeeId = isNonEmptyString(employeeId) ? employeeId.trim() : '';
     const normalizedName = isNonEmptyString(name) ? name.trim() : '';
+    const normalizedEmail = isNonEmptyString(email) ? email.trim() : '';
     const normalizedDepartment = isNonEmptyString(department) ? department.trim() : '';
     const normalizedPosition = isNonEmptyString(position) ? position.trim() : '';
     const normalizedUsername = isNonEmptyString(username) ? username.trim() : '';
@@ -245,6 +246,17 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    if (createAccount && normalizedPassword) {
+      const passwordPolicy = await getStoredPasswordPolicy();
+      const passwordValidation = evaluatePasswordStrength(normalizedPassword, passwordPolicy);
+      if (!passwordValidation.passesPolicy) {
+        return NextResponse.json({
+          error: '密碼不符合安全要求',
+          details: passwordValidation.violations
+        }, { status: 400 });
+      }
+    }
+
     // 開始事務處理
     const result = await prisma.$transaction(async (tx) => {
       // 建立員工記錄
@@ -254,6 +266,7 @@ export async function POST(request: NextRequest) {
           name: normalizedName,
           birthday: new Date(birthday),
           phone: isNonEmptyString(phone) ? phone.trim() : '',
+          email: normalizedEmail || null,
           address: isNonEmptyString(address) ? address.trim() : '',
           emergencyContact: isNonEmptyString(emergencyContact) ? emergencyContact.trim() : '',
           emergencyPhone: isNonEmptyString(emergencyPhone) ? emergencyPhone.trim() : '',
@@ -269,7 +282,7 @@ export async function POST(request: NextRequest) {
 
       // 如果需要創建帳號
       if (createAccount && normalizedUsername && normalizedPassword) {
-        const hashedPassword = bcrypt.hashSync(normalizedPassword, 10);
+        const hashedPassword = await hashPassword(normalizedPassword);
         
         await tx.user.create({
           data: {

@@ -9,6 +9,7 @@ import { getAnnualLeaveYearBreakdown } from '@/lib/annual-leave';
 import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
 import { calculateOvertimePayForRequest, OvertimeType } from '@/lib/salary-utils';
 import { getTaiwanYearMonth } from '@/lib/timezone';
+import { isAnnualLeaveType } from '@/lib/leave-types';
 
 function isReviewableStatus(status?: string | null) {
   return status === 'PENDING' || status === 'PENDING_ADMIN';
@@ -42,6 +43,19 @@ function parsePositiveInteger(value: unknown): number | undefined {
 interface SelfChangePayload {
   type?: string;
   new?: string;
+}
+
+function parseSelfChangePayload(requestReason?: string | null): SelfChangePayload | null {
+  if (!requestReason) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(requestReason) as SelfChangePayload;
+    return parsed?.type === 'SELF_CHANGE' ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 interface PrismaWithSchedule {
@@ -84,14 +98,9 @@ async function applyApprovedShiftExchange(
   approvedAt: Date,
   adminRemarks: string | null
 ) {
-  let parsed: SelfChangePayload | null = null;
-  try {
-    parsed = shiftExchangeRequest.requestReason ? JSON.parse(shiftExchangeRequest.requestReason) as SelfChangePayload : null;
-  } catch {}
+  const parsed = parseSelfChangePayload(shiftExchangeRequest.requestReason);
 
-  const isSelfChange = parsed?.type === 'SELF_CHANGE';
-
-  if (isSelfChange) {
+  if (parsed) {
     const newShift = parsed?.new ?? 'A';
     const template = getTemplateByShift(newShift);
     const requesterSchedule = await tx.schedule.findFirst({
@@ -127,54 +136,7 @@ async function applyApprovedShiftExchange(
     return;
   }
 
-  const [requesterSchedule, targetSchedule] = await Promise.all([
-    tx.schedule.findFirst({
-      where: {
-        employeeId: shiftExchangeRequest.requesterId,
-        workDate: shiftExchangeRequest.originalWorkDate,
-      },
-    }),
-    tx.schedule.findFirst({
-      where: {
-        employeeId: shiftExchangeRequest.targetEmployeeId,
-        workDate: shiftExchangeRequest.targetWorkDate,
-      },
-    }),
-  ]);
-
-  if (!requesterSchedule || !targetSchedule) {
-    throw new Error('找不到對應班表，無法核准調班申請');
-  }
-
-  const requesterOriginal = {
-    shiftType: requesterSchedule.shiftType,
-    startTime: requesterSchedule.startTime,
-    endTime: requesterSchedule.endTime,
-  };
-
-  await tx.schedule.update({
-    where: { id: requesterSchedule.id },
-    data: {
-      shiftType: targetSchedule.shiftType,
-      startTime: targetSchedule.startTime,
-      endTime: targetSchedule.endTime,
-    },
-  });
-
-  await tx.schedule.update({
-    where: { id: targetSchedule.id },
-    data: requesterOriginal,
-  });
-
-  await tx.shiftExchangeRequest.update({
-    where: { id: shiftExchangeRequest.id },
-    data: {
-      status: 'APPROVED',
-      approvedBy: approverEmployeeId,
-      approvedAt,
-      adminRemarks,
-    },
-  });
+  throw new Error('員工互調功能已停用，無法核准舊互調申請');
 }
 
 // POST - 批次審核
@@ -340,7 +302,7 @@ export async function POST(request: NextRequest) {
                 const startDate = new Date(existing.startDate);
                 const endDate = new Date(existing.endDate);
 
-                if (existing.leaveType === 'ANNUAL_LEAVE') {
+                if (isAnnualLeaveType(existing.leaveType)) {
                   for (const { year, days } of getAnnualLeaveYearBreakdown(startDate, endDate)) {
                     await tx.annualLeave.updateMany({
                       where: {
@@ -560,30 +522,21 @@ export async function POST(request: NextRequest) {
                 }
               });
             } else if (status === 'APPROVED') {
+              if (!parseSelfChangePayload(existing.requestReason)) {
+                results.push({ id, success: false, error: '員工互調功能已停用，無法核准舊互調申請' });
+                continue;
+              }
+
               const originalDateObj = new Date(existing.originalWorkDate);
               const freezeCheck = await checkAttendanceFreeze(originalDateObj);
               if (freezeCheck.isFrozen) {
-                const freezeDateStr = freezeCheck.freezeInfo?.freezeDate.toLocaleString('zh-TW');
+                const freezeDateStr = freezeCheck.freezeInfo?.freezeDate.toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', hour12: false });
                 results.push({
                   id,
                   success: false,
                   error: `該月份已被凍結，無法核准調班申請。凍結時間：${freezeDateStr}，操作者：${freezeCheck.freezeInfo?.creator.name}`
                 });
                 continue;
-              }
-
-              if (existing.originalWorkDate !== existing.targetWorkDate) {
-                const targetDateObj = new Date(existing.targetWorkDate);
-                const targetFreezeCheck = await checkAttendanceFreeze(targetDateObj);
-                if (targetFreezeCheck.isFrozen) {
-                  const freezeDateStr = targetFreezeCheck.freezeInfo?.freezeDate.toLocaleString('zh-TW');
-                  results.push({
-                    id,
-                    success: false,
-                    error: `目標月份已被凍結，無法核准調班申請。凍結時間：${freezeDateStr}，操作者：${targetFreezeCheck.freezeInfo?.creator.name}`
-                  });
-                  continue;
-                }
               }
 
               await prisma.$transaction(async (tx) => {

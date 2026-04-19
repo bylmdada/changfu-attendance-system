@@ -19,12 +19,12 @@ interface CompLeaveBalance {
 
 interface Transaction {
   id: number;
-  transactionType: 'EARN' | 'USE' | 'ADJUST';
+  transactionType: string;
   hours: number;
   isFrozen: boolean;
-  referenceType?: string;
+  referenceType?: string | null;
   referenceId?: number;
-  remark?: string;
+  description?: string | null;
   yearMonth: string;
   createdAt: string;
 }
@@ -101,7 +101,8 @@ export default function MyCompLeavePage() {
     switch (type) {
       case 'EARN': return '獲得';
       case 'USE': return '使用';
-      case 'ADJUST': return '調整';
+      case 'SETTLE': return '結算';
+      case 'EXPIRE': return '到期';
       default: return type;
     }
   };
@@ -110,10 +111,34 @@ export default function MyCompLeavePage() {
     switch (type) {
       case 'EARN': return 'text-green-600 bg-green-100';
       case 'USE': return 'text-red-600 bg-red-100';
-      case 'ADJUST': return 'text-blue-600 bg-blue-100';
+      case 'SETTLE': return 'text-orange-600 bg-orange-100';
+      case 'EXPIRE': return 'text-gray-600 bg-gray-200';
       default: return 'text-gray-600 bg-gray-100';
     }
   };
+
+  const getTransactionDescription = (tx: Transaction) => {
+    if (tx.description) {
+      return tx.description;
+    }
+
+    switch (tx.referenceType) {
+      case 'OVERTIME':
+        return '加班補休';
+      case 'LEAVE':
+        return '補休請假';
+      case 'IMPORT':
+        return '餘額匯入';
+      case 'ADJUSTMENT':
+        return '手動調整';
+      case 'RESIGNATION':
+        return '離職結算';
+      default:
+        return '補休異動';
+    }
+  };
+
+  const isDecrementTransaction = (type: string) => type === 'USE' || type === 'SETTLE' || type === 'EXPIRE';
 
   if (loading) {
     return (
@@ -228,7 +253,7 @@ export default function MyCompLeavePage() {
                       </span>
                       <div>
                         <p className="text-sm font-medium text-gray-900">
-                          {tx.remark || (tx.referenceType === 'OVERTIME' ? '加班補休' : tx.referenceType === 'LEAVE' ? '補休請假' : '補休異動')}
+                          {getTransactionDescription(tx)}
                         </p>
                         <p className="text-xs text-gray-500">
                           {new Date(tx.createdAt).toLocaleDateString('zh-TW')} {tx.yearMonth && `(${tx.yearMonth})`}
@@ -236,8 +261,8 @@ export default function MyCompLeavePage() {
                       </div>
                     </div>
                     <div className="text-right">
-                      <p className={`font-bold ${tx.transactionType === 'USE' ? 'text-red-600' : 'text-green-600'}`}>
-                        {tx.transactionType === 'USE' ? '-' : '+'}{formatHours(tx.hours)}
+                      <p className={`font-bold ${isDecrementTransaction(tx.transactionType) ? 'text-red-600' : 'text-green-600'}`}>
+                        {isDecrementTransaction(tx.transactionType) ? '-' : '+'}{formatHours(tx.hours)}
                       </p>
                       <p className="text-xs text-gray-400">
                         {tx.isFrozen ? '✓ 已確認' : '⏳ 待確認'}

@@ -10,8 +10,16 @@ import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { updateRequestStatus, WorkflowType } from '@/lib/approval-helper';
 import { notifyApplicant, notifyReviewers } from '@/lib/approval-notifications';
-import { determineApprovalTransition, ensureApprovalReviewAllowed, isReviewerFor } from '@/lib/approval-service';
+import {
+  determineApprovalTransition,
+  ensureApprovalReviewAllowed,
+  getActiveApprovalDelegateScopes,
+  isReviewerFor,
+  resourceTypesAllowRequest
+} from '@/lib/approval-service';
 import { safeParseJSON } from '@/lib/validation';
+import { getLeaveTypeLabel } from '@/lib/leave-types';
+import { buildActiveDeputyAssignmentWhere } from '@/lib/schedule-management-permissions';
 
 // 申請類型名稱對照
 const REQUEST_TYPE_NAMES: Record<string, string> = {
@@ -105,6 +113,9 @@ export async function GET(request: NextRequest) {
     const where: WhereCondition = {
       status: { in: ['PENDING', 'LEVEL1_REVIEWING', 'LEVEL2_REVIEWING', 'LEVEL3_REVIEWING'] }
     };
+    const managedDepartments = new Set<string>();
+    const deputyDepartments = new Set<string>();
+    const approvalDelegateScopes = [] as Awaited<ReturnType<typeof getActiveApprovalDelegateScopes>>;
 
     if (user.role === 'ADMIN') {
       // 管理員可看所有待審核項目（HR只是會簽，決核權在管理員）
@@ -117,6 +128,7 @@ export async function GET(request: NextRequest) {
       ];
     } else {
       // 主管和代理人看自己部門的一階項目
+      const now = new Date();
       
       // 1. 查詢作為部門主管的部門
       const managedDepts = await prisma.departmentManager.findMany({
@@ -126,28 +138,30 @@ export async function GET(request: NextRequest) {
       
       // 2. 查詢作為代理人的部門
       const deputyDepts = await prisma.managerDeputy.findMany({
-        where: { 
-          deputyEmployeeId: user.employeeId, 
-          isActive: true,
-          OR: [
-            { startDate: null },
-            { startDate: { lte: new Date() } }
-          ]
-        },
+        where: buildActiveDeputyAssignmentWhere(user.employeeId, now),
         include: {
           manager: {
             select: { department: true }
           }
         }
       });
+
+      approvalDelegateScopes.push(...await getActiveApprovalDelegateScopes(user.employeeId, now));
       
       // 合併所有可審核的部門
       const allDepartments = new Set<string>();
-      managedDepts.forEach(d => allDepartments.add(d.department));
+      managedDepts.forEach(d => {
+        managedDepartments.add(d.department);
+        allDepartments.add(d.department);
+      });
       deputyDepts.forEach(d => {
         if (d.manager?.department) {
+          deputyDepartments.add(d.manager.department);
           allDepartments.add(d.manager.department);
         }
+      });
+      approvalDelegateScopes.forEach(scope => {
+        allDepartments.add(scope.department);
       });
 
       if (allDepartments.size === 0) {
@@ -182,7 +196,27 @@ export async function GET(request: NextRequest) {
       const hasReviewedAtCurrentLevel = inst.reviews.some(
         r => r.reviewerId === user.employeeId && r.level === inst.currentLevel
       );
-      return !hasReviewedAtCurrentLevel;
+
+      if (hasReviewedAtCurrentLevel) {
+        return false;
+      }
+
+      if (user.role === 'ADMIN' || user.role === 'HR') {
+        return true;
+      }
+
+      if (inst.currentLevel !== 1 || !inst.department) {
+        return false;
+      }
+
+      if (managedDepartments.has(inst.department) || deputyDepartments.has(inst.department)) {
+        return true;
+      }
+
+      return approvalDelegateScopes.some((scope) => (
+        scope.department === inst.department &&
+        resourceTypesAllowRequest(scope.resourceTypes, inst.requestType)
+      ));
     });
 
     const now = new Date();
@@ -203,15 +237,9 @@ export async function GET(request: NextRequest) {
               }
             });
             if (leave) {
-              const LEAVE_TYPES: Record<string, string> = {
-                ANNUAL: '特休假', SICK: '病假', PERSONAL: '事假',
-                MARRIAGE: '婚假', BEREAVEMENT: '喪假', MATERNITY: '產假',
-                PATERNITY_CHECKUP: '陪產檢及陪產假', COMPENSATORY: '補休',
-                PRENATAL_CHECKUP: '產檢假', OFFICIAL: '公假'
-              };
               return {
                 type: 'leave',
-                leaveType: LEAVE_TYPES[leave.leaveType] || leave.leaveType,
+                leaveType: getLeaveTypeLabel(leave.leaveType),
                 startDate: leave.startDate?.toISOString().split('T')[0],
                 endDate: leave.endDate?.toISOString().split('T')[0],
                 totalDays: leave.totalDays,
@@ -497,7 +525,7 @@ export async function POST(request: NextRequest) {
           return NextResponse.json({ error: '此審核缺少部門資訊' }, { status: 400 });
         }
 
-        const reviewerPermission = await isReviewerFor(user.employeeId, instance.department);
+        const reviewerPermission = await isReviewerFor(user.employeeId, instance.department, instance.requestType);
         if (!reviewerPermission.isReviewer) {
           return NextResponse.json({ error: '您不是此部門的審核者' }, { status: 403 });
         }

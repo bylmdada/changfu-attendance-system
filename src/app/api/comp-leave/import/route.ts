@@ -6,6 +6,7 @@ import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import * as XLSX from 'xlsx';
 import { validateCSRF } from '@/lib/csrf';
+import { getTaiwanYearMonth } from '@/lib/timezone';
 
 // POST - 批量匯入補休餘額
 export async function POST(request: NextRequest) {
@@ -91,8 +92,7 @@ export async function POST(request: NextRequest) {
     const employeeMap = new Map(employees.map(e => [e.employeeId, e]));
 
     // 取得當前年月
-    const now = new Date();
-    const yearMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const yearMonth = getTaiwanYearMonth();
 
     // 解析資料
     const results: { success: number; failed: number; errors: string[] } = {

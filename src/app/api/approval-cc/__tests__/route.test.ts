@@ -91,6 +91,7 @@ describe('approval cc route guards', () => {
     mockPrisma.approvalInstance.findUnique.mockResolvedValue({
       id: 15,
       currentLevel: 1,
+      requestType: 'LEAVE',
       department: 'Operations',
       status: 'LEVEL1_REVIEWING'
     } as never);
@@ -115,7 +116,7 @@ describe('approval cc route guards', () => {
 
     expect(response.status).toBe(200);
     expect(payload.success).toBe(true);
-    expect(mockIsReviewerFor).toHaveBeenCalledWith(18, 'Operations');
+    expect(mockIsReviewerFor).toHaveBeenCalledWith(18, 'Operations', 'LEAVE');
     expect(mockPrisma.approvalCC.create).toHaveBeenCalled();
   });
 

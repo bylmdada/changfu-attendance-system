@@ -8,6 +8,7 @@ import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { generateTOTPSecret, generateQRCode, generateBackupCodes } from '@/lib/totp';
 import { encrypt } from '@/lib/encryption';
+import { checkRateLimit } from '@/lib/rate-limit';
 
 export async function POST(request: NextRequest) {
   try {
@@ -19,6 +20,14 @@ export async function POST(request: NextRequest) {
     const csrfResult = await validateCSRF(request);
     if (!csrfResult.valid) {
       return NextResponse.json({ error: 'CSRF驗證失敗，請重新操作' }, { status: 403 });
+    }
+
+    const rateLimitResult = await checkRateLimit(request, '/api/auth/2fa/setup');
+    if (!rateLimitResult.allowed) {
+      return NextResponse.json(
+        { error: '操作過於頻繁', retryAfter: rateLimitResult.retryAfter },
+        { status: 429 }
+      );
     }
 
     // 取得用戶資料

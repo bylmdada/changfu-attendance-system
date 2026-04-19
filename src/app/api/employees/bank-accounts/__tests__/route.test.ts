@@ -4,6 +4,7 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest, getUserFromToken } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { cookies } from 'next/headers';
+import { validateTaiwanIdNumber } from '@/lib/encryption';
 
 jest.mock('@/lib/database', () => ({
   prisma: {
@@ -41,6 +42,7 @@ const mockedGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeo
 const mockedGetUserFromToken = getUserFromToken as jest.MockedFunction<typeof getUserFromToken>;
 const mockedValidateCSRF = validateCSRF as jest.MockedFunction<typeof validateCSRF>;
 const mockedCookies = cookies as jest.MockedFunction<typeof cookies>;
+const mockedValidateTaiwanIdNumber = validateTaiwanIdNumber as jest.MockedFunction<typeof validateTaiwanIdNumber>;
 
 describe('employee bank accounts route guards', () => {
   beforeEach(() => {
@@ -58,6 +60,7 @@ describe('employee bank accounts route guards', () => {
     mockedCookies.mockResolvedValue({
       get: jest.fn().mockReturnValue(undefined),
     } as never);
+    mockedValidateTaiwanIdNumber.mockReturnValue(true);
 
     mockedPrisma.employee.update.mockResolvedValue({
       id: 10,
@@ -65,7 +68,13 @@ describe('employee bank accounts route guards', () => {
       name: '王小明',
       department: '行政部',
     } as never);
-    mockedPrisma.employee.findMany.mockResolvedValue([] as never);
+    mockedPrisma.employee.findMany.mockResolvedValue([
+      {
+        id: 10,
+        name: '王小明',
+        idNumber: null,
+      },
+    ] as never);
     mockedPrisma.employee.findFirst.mockResolvedValue({
       id: 10,
       name: '王小明',
@@ -150,6 +159,30 @@ describe('employee bank accounts route guards', () => {
     expect(mockedPrisma.employee.update).not.toHaveBeenCalled();
   });
 
+  it('rejects PUT requests with invalid id-number checksums', async () => {
+    mockedValidateTaiwanIdNumber.mockReturnValue(false);
+
+    const request = new NextRequest('http://localhost:3000/api/employees/bank-accounts', {
+      method: 'PUT',
+      headers: {
+        'content-type': 'application/json',
+        cookie: 'token=shared-session-token',
+        'x-csrf-token': 'csrf-token',
+      },
+      body: JSON.stringify({
+        employeeId: 10,
+        idNumber: 'A123456789',
+      }),
+    });
+
+    const response = await PUT(request);
+    const data = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(data).toEqual({ error: '身分證字號格式不正確（檢查碼錯誤）' });
+    expect(mockedPrisma.employee.update).not.toHaveBeenCalled();
+  });
+
   it('accepts shared token cookie extraction on POST requests', async () => {
     const request = new NextRequest('http://localhost:3000/api/employees/bank-accounts', {
       method: 'POST',
@@ -174,6 +207,8 @@ describe('employee bank accounts route guards', () => {
     expect(response.status).toBe(200);
     expect(data.success).toBe(true);
     expect(data.successCount).toBe(1);
+    expect(mockedPrisma.employee.findMany).toHaveBeenCalledTimes(1);
+    expect(mockedPrisma.employee.findFirst).not.toHaveBeenCalled();
   });
 
   it('rejects POST requests with an invalid CSRF token', async () => {

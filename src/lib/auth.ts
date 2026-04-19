@@ -2,6 +2,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/database';
+import { evaluatePasswordStrength, getDefaultPasswordPolicy } from '@/lib/password-policy';
 
 export interface JWTPayload {
   userId: number;
@@ -29,31 +30,11 @@ export async function hashPassword(password: string): Promise<string> {
 }
 
 export function validatePassword(password: string): { isValid: boolean; errors: string[] } {
-  const errors: string[] = [];
-  
-  if (password.length < 8) {
-    errors.push('密碼長度至少需要8個字符');
-  }
-  
-  if (!/[A-Z]/.test(password)) {
-    errors.push('密碼需要包含至少一個大寫字母');
-  }
-  
-  if (!/[a-z]/.test(password)) {
-    errors.push('密碼需要包含至少一個小寫字母');
-  }
-  
-  if (!/\d/.test(password)) {
-    errors.push('密碼需要包含至少一個數字');
-  }
-  
-  if (!/[!@#$%^&*(),.?":{}|<>]/.test(password)) {
-    errors.push('密碼需要包含至少一個特殊字符');
-  }
-  
+  const result = evaluatePasswordStrength(password, getDefaultPasswordPolicy());
+
   return {
-    isValid: errors.length === 0,
-    errors
+    isValid: result.passesPolicy,
+    errors: result.violations
   };
 }
 

@@ -8,6 +8,10 @@ import { prisma } from '@/lib/database';
 // 加班類型
 export type OvertimeType = 'WEEKDAY' | 'REST_DAY' | 'HOLIDAY';
 
+const WEEKDAY_FIRST_TWO_HOURS_RATE = 4 / 3;
+const WEEKDAY_AFTER_TWO_HOURS_RATE = 5 / 3;
+const REST_DAY_AFTER_EIGHT_HOURS_RATE = 8 / 3;
+
 // 調薪類型
 export type AdjustmentType = 'INITIAL' | 'RAISE' | 'PROMOTION' | 'ADJUSTMENT';
 
@@ -64,13 +68,13 @@ export async function getEffectiveSalary(employeeId: number, date: Date) {
  * 計算加班費
  * 
  * 平日加班：
- *   前 2 小時：時薪 × 1.34
- *   第 3 小時起：時薪 × 1.67
+ *   前 2 小時：時薪 × (4/3)
+ *   第 3 小時起：時薪 × (5/3)
  * 
  * 休息日加班：
- *   前 2 小時：時薪 × 1.34
- *   第 3-8 小時：時薪 × 1.67
- *   第 9 小時起：時薪 × 2.67
+ *   前 2 小時：時薪 × (4/3)
+ *   第 3-8 小時：時薪 × (5/3)
+ *   第 9 小時起：時薪 × (8/3)
  * 
  * 國定假日/例假日：
  *   全部：時薪 × 2
@@ -90,10 +94,10 @@ export function calculateOvertimePay(
   // 平日加班
   if (overtimeType === 'WEEKDAY') {
     if (hours <= 2) {
-      return Math.round(hourlyRate * hours * 1.34);
+      return Math.round(hourlyRate * hours * WEEKDAY_FIRST_TWO_HOURS_RATE);
     } else {
-      const first2Hours = hourlyRate * 2 * 1.34;
-      const remainingHours = hourlyRate * (hours - 2) * 1.67;
+      const first2Hours = hourlyRate * 2 * WEEKDAY_FIRST_TWO_HOURS_RATE;
+      const remainingHours = hourlyRate * (hours - 2) * WEEKDAY_AFTER_TWO_HOURS_RATE;
       return Math.round(first2Hours + remainingHours);
     }
   }
@@ -101,15 +105,15 @@ export function calculateOvertimePay(
   // 休息日加班
   if (overtimeType === 'REST_DAY') {
     if (hours <= 2) {
-      return Math.round(hourlyRate * hours * 1.34);
+      return Math.round(hourlyRate * hours * WEEKDAY_FIRST_TWO_HOURS_RATE);
     } else if (hours <= 8) {
-      const first2Hours = hourlyRate * 2 * 1.34;
-      const hours3to8 = hourlyRate * (hours - 2) * 1.67;
+      const first2Hours = hourlyRate * 2 * WEEKDAY_FIRST_TWO_HOURS_RATE;
+      const hours3to8 = hourlyRate * (hours - 2) * WEEKDAY_AFTER_TWO_HOURS_RATE;
       return Math.round(first2Hours + hours3to8);
     } else {
-      const first2Hours = hourlyRate * 2 * 1.34;
-      const hours3to8 = hourlyRate * 6 * 1.67;
-      const hoursAfter8 = hourlyRate * (hours - 8) * 2.67;
+      const first2Hours = hourlyRate * 2 * WEEKDAY_FIRST_TWO_HOURS_RATE;
+      const hours3to8 = hourlyRate * 6 * WEEKDAY_AFTER_TWO_HOURS_RATE;
+      const hoursAfter8 = hourlyRate * (hours - 8) * REST_DAY_AFTER_EIGHT_HOURS_RATE;
       return Math.round(first2Hours + hours3to8 + hoursAfter8);
     }
   }
@@ -164,26 +168,26 @@ function getOvertimeCalculationDetail(
 
   if (overtimeType === 'WEEKDAY') {
     if (hours <= 2) {
-      return `${hourlyRate} × ${hours} × 1.34 = ${Math.round(hourlyRate * hours * 1.34)}`;
+      return `${hourlyRate} × ${hours} × 4/3 = ${Math.round(hourlyRate * hours * WEEKDAY_FIRST_TWO_HOURS_RATE)}`;
     } else {
-      const part1 = Math.round(hourlyRate * 2 * 1.34);
-      const part2 = Math.round(hourlyRate * (hours - 2) * 1.67);
-      return `(${hourlyRate} × 2 × 1.34 = ${part1}) + (${hourlyRate} × ${hours - 2} × 1.67 = ${part2}) = ${part1 + part2}`;
+      const part1 = Math.round(hourlyRate * 2 * WEEKDAY_FIRST_TWO_HOURS_RATE);
+      const part2 = Math.round(hourlyRate * (hours - 2) * WEEKDAY_AFTER_TWO_HOURS_RATE);
+      return `(${hourlyRate} × 2 × 4/3 = ${part1}) + (${hourlyRate} × ${hours - 2} × 5/3 = ${part2}) = ${part1 + part2}`;
     }
   }
 
   if (overtimeType === 'REST_DAY') {
     if (hours <= 2) {
-      return `${hourlyRate} × ${hours} × 1.34 = ${Math.round(hourlyRate * hours * 1.34)}`;
+      return `${hourlyRate} × ${hours} × 4/3 = ${Math.round(hourlyRate * hours * WEEKDAY_FIRST_TWO_HOURS_RATE)}`;
     } else if (hours <= 8) {
-      const part1 = Math.round(hourlyRate * 2 * 1.34);
-      const part2 = Math.round(hourlyRate * (hours - 2) * 1.67);
-      return `(${hourlyRate} × 2 × 1.34) + (${hourlyRate} × ${hours - 2} × 1.67) = ${part1 + part2}`;
+      const part1 = Math.round(hourlyRate * 2 * WEEKDAY_FIRST_TWO_HOURS_RATE);
+      const part2 = Math.round(hourlyRate * (hours - 2) * WEEKDAY_AFTER_TWO_HOURS_RATE);
+      return `(${hourlyRate} × 2 × 4/3 = ${part1}) + (${hourlyRate} × ${hours - 2} × 5/3 = ${part2}) = ${part1 + part2}`;
     } else {
-      const part1 = Math.round(hourlyRate * 2 * 1.34);
-      const part2 = Math.round(hourlyRate * 6 * 1.67);
-      const part3 = Math.round(hourlyRate * (hours - 8) * 2.67);
-      return `(${hourlyRate} × 2 × 1.34) + (${hourlyRate} × 6 × 1.67) + (${hourlyRate} × ${hours - 8} × 2.67) = ${part1 + part2 + part3}`;
+      const part1 = Math.round(hourlyRate * 2 * WEEKDAY_FIRST_TWO_HOURS_RATE);
+      const part2 = Math.round(hourlyRate * 6 * WEEKDAY_AFTER_TWO_HOURS_RATE);
+      const part3 = Math.round(hourlyRate * (hours - 8) * REST_DAY_AFTER_EIGHT_HOURS_RATE);
+      return `(${hourlyRate} × 2 × 4/3 = ${part1}) + (${hourlyRate} × 6 × 5/3 = ${part2}) + (${hourlyRate} × ${hours - 8} × 8/3 = ${part3}) = ${part1 + part2 + part3}`;
     }
   }
 

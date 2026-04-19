@@ -1,6 +1,9 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { verifyRegistrationResponse } from '@simplewebauthn/server';
 import { prisma } from '@/lib/database';
+import { getAuthResultFromRequest } from '@/lib/auth';
+import { validateCSRF } from '@/lib/csrf';
+import { checkRateLimit } from '@/lib/rate-limit';
 import { cookies } from 'next/headers';
 import {
   convertCredentialPublicKeyToSpki,
@@ -8,6 +11,7 @@ import {
   normalizeRegistrationCredential,
   WEBAUTHN_RP_ID,
 } from '@/lib/webauthn';
+import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -60,8 +64,37 @@ function mapRegistrationErrorMessage(error: unknown): string {
   return message;
 }
 
-export async function POST(request: Request) {
+function normalizeDeviceName(deviceName: string | undefined): string {
+  if (!deviceName) {
+    return '未命名裝置';
+  }
+
+  const trimmed = deviceName.trim();
+  return trimmed ? trimmed.slice(0, 100) : '未命名裝置';
+}
+
+export async function POST(request: NextRequest) {
   try {
+    const rateLimitResult = await checkRateLimit(request, '/api/webauthn/register-verify');
+    if (!rateLimitResult.allowed) {
+      return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
+    }
+
+    const authResult = await getAuthResultFromRequest(request);
+    if (authResult.reason === 'session_invalid') {
+      return NextResponse.json(
+        {
+          error: '您已在其他裝置登入，此會話已失效',
+          code: 'SESSION_INVALID',
+        },
+        { status: 401 }
+      );
+    }
+
+    if (!authResult.user) {
+      return NextResponse.json({ error: '未授權' }, { status: 401 });
+    }
+
     const cookieStore = await cookies();
     const challengeCookie = cookieStore.get('webauthn_challenge');
     const userIdCookie = cookieStore.get('webauthn_user_id');
@@ -71,10 +104,19 @@ export async function POST(request: Request) {
     }
 
     const expectedChallenge = challengeCookie.value;
-    const userId = parseInt(userIdCookie.value);
+    const parsedUserId = parseIntegerQueryParam(userIdCookie.value, { min: 1, max: 99999999 });
 
-    if (!Number.isInteger(userId) || userId <= 0) {
+    if (!parsedUserId.isValid || parsedUserId.value === null) {
       return NextResponse.json({ error: '註冊會話無效，請重新開始' }, { status: 400 });
+    }
+
+    if (parsedUserId.value !== authResult.user.userId) {
+      return NextResponse.json({ error: '註冊會話與目前登入帳號不符，請重新開始' }, { status: 403 });
+    }
+
+    const csrfResult = await validateCSRF(request);
+    if (!csrfResult.valid) {
+      return NextResponse.json({ error: 'CSRF token validation failed' }, { status: 403 });
     }
 
     const parseResult = await safeParseJSON(request);
@@ -84,14 +126,16 @@ export async function POST(request: Request) {
 
     const body = parseResult.data;
     const credential = isPlainObject(body) && isPlainObject(body.credential) ? body.credential : null;
-    const deviceName = isPlainObject(body) && typeof body.deviceName === 'string' ? body.deviceName : undefined;
+    const deviceName = isPlainObject(body) && typeof body.deviceName === 'string'
+      ? normalizeDeviceName(body.deviceName)
+      : normalizeDeviceName(undefined);
 
     if (!credential || typeof credential.id !== 'string' || !isPlainObject(credential.response)) {
       return NextResponse.json({ error: '無效的憑證資料' }, { status: 400 });
     }
 
     const user = await prisma.user.findUnique({
-      where: { id: userId },
+      where: { id: authResult.user.userId },
       select: {
         id: true,
         isActive: true,
@@ -133,7 +177,7 @@ export async function POST(request: Request) {
         credentialId: verifiedCredential.id,
         publicKey: convertCredentialPublicKeyToSpki(verifiedCredential.publicKey),
         counter: verifiedCredential.counter,
-        deviceName: deviceName || '未命名裝置',
+        deviceName,
         transports: verifiedCredential.transports ? JSON.stringify(verifiedCredential.transports) : null,
         userId: user.id
       }

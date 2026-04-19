@@ -214,9 +214,10 @@ export default function ApprovalDashboardPage() {
       // 勞退自提使用專屬 API
       if (selectedItem.requestType === 'PENSION_CONTRIBUTION') {
         response = await fetchJSONWithCSRF(`/api/pension-contribution/${selectedItem.requestId}`, {
-          method: 'PATCH',
+          method: 'PUT',
           body: {
             action: action === 'APPROVE' ? 'APPROVE' : 'REJECT',
+            opinion: action === 'APPROVE' ? 'AGREE' : 'DISAGREE',
             note: reviewComment
           }
         });
@@ -257,7 +258,7 @@ export default function ApprovalDashboardPage() {
       OVERTIME: `/overtime-management?id=${item.requestId}`,
       MISSED_CLOCK: `/missed-clock?id=${item.requestId}`,
       SHIFT_CHANGE: `/schedule-management?id=${item.requestId}`,
-      SHIFT_SWAP: `/shift-swap?id=${item.requestId}`,
+      SHIFT_SWAP: '/shift-exchange',
       PURCHASE: `/purchase-requests?id=${item.requestId}`,
       RESIGNATION: `/resignation-management?id=${item.requestId}`,
       PAYROLL_DISPUTE: `/payroll-disputes?id=${item.requestId}`,

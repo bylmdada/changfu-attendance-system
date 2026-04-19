@@ -243,4 +243,75 @@ describe('overtime-requests quick auth account status', () => {
     expect(response.status).toBe(401);
     expect(payload.error).toBe('未授權訪問');
   });
+
+  it('falls back to default overtime limits when settings JSON is malformed', async () => {
+    mockGetUserFromRequest.mockResolvedValue({
+      userId: 11,
+      employeeId: 99,
+      role: 'EMPLOYEE',
+      username: 'session.user'
+    } as never);
+    mockPrisma.systemSettings.findUnique.mockResolvedValue({
+      key: 'overtime_limit_settings',
+      value: '{bad-json'
+    } as never);
+    mockPrisma.overtimeRequest.create.mockResolvedValue({
+      id: 124,
+      employeeId: 99,
+      status: 'PENDING',
+      employee: {
+        id: 99,
+        employeeId: 'E099',
+        name: '一般員工',
+        department: '製造部',
+        position: '技術員'
+      }
+    } as never);
+
+    const request = new NextRequest('http://localhost/api/overtime-requests', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        workDate: '2025-01-01',
+        startTime: '18:00',
+        endTime: '20:00',
+        reason: '補資料'
+      })
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.success).toBe(true);
+  });
+
+  it('returns a duplicate-date error when the create hits a unique constraint race', async () => {
+    mockGetUserFromRequest.mockResolvedValue({
+      userId: 11,
+      employeeId: 99,
+      role: 'EMPLOYEE',
+      username: 'session.user'
+    } as never);
+    mockPrisma.overtimeRequest.create.mockRejectedValue(Object.assign(new Error('Unique constraint failed'), {
+      code: 'P2002'
+    }) as never);
+
+    const request = new NextRequest('http://localhost/api/overtime-requests', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        workDate: '2025-01-01',
+        startTime: '18:00',
+        endTime: '20:00',
+        reason: '補資料'
+      })
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload.error).toBe('該日期已有加班申請');
+  });
 });

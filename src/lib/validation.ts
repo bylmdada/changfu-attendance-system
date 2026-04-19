@@ -114,7 +114,7 @@ export const LeaveRequestSchemas = {
   create: z.object({
     startDate: BaseSchemas.datetime,
     endDate: BaseSchemas.datetime,
-    leaveType: z.enum(['SICK', 'PERSONAL', 'ANNUAL', 'MATERNITY', 'PATERNITY', 'BEREAVEMENT', 'COMPENSATORY', 'MENSTRUAL', 'OFFICIAL', 'FAMILY_CARE', 'EMERGENCY']),
+    leaveType: z.enum(['SICK', 'PERSONAL', 'ANNUAL', 'MATERNITY', 'PATERNITY', 'BEREAVEMENT', 'COMPENSATORY', 'MENSTRUAL', 'OFFICIAL', 'FAMILY_CARE']),
     reason: z.string().min(1).max(500),
     totalHours: BaseSchemas.hours
   }).refine(
@@ -176,27 +176,18 @@ export const OvertimeRequestSchemas = {
 // 調班申請驗證
 export const ShiftExchangeSchemas = {
   create: z.object({
-    // 自調班
-    shiftDate: BaseSchemas.date.optional(),
-    originalShiftType: z.string().optional(),
-    newShiftType: z.string().optional(),
-    reason: z.string().min(1).max(500).optional(),
-    
-    // 互調班
-    targetEmployeeId: BaseSchemas.id.optional(),
-    originalWorkDate: BaseSchemas.date.optional(),
-    targetWorkDate: BaseSchemas.date.optional(),
-    requestReason: z.string().min(1).max(500).optional()
+    shiftDate: BaseSchemas.date,
+    originalShiftType: z.string().min(1).max(20),
+    newShiftType: z.string().min(1).max(20),
+    reason: z.string().min(1).max(500),
+    leaveType: z.string().max(50).optional()
   }).refine(
     (data) => {
-      // 必須是自調班或互調班其中一種
-      const isSelfChange = !!(data.shiftDate || (data.originalShiftType && data.newShiftType));
-      const isExchange = !!(data.targetEmployeeId && data.originalWorkDate);
-      return isSelfChange || isExchange;
+      return data.originalShiftType !== data.newShiftType;
     },
     {
-      message: '必須提供自調班或互調班的必要信息',
-      path: ['shiftDate']
+      message: '原班別與新班別不可相同',
+      path: ['newShiftType']
     }
   ),
   

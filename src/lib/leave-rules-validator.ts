@@ -5,41 +5,12 @@
  */
 
 import { prisma } from '@/lib/database';
+import {
+  DEFAULT_LEAVE_RULES_SETTINGS,
+  type LeaveRulesSettingsValues,
+} from '@/lib/leave-rules-config-defaults';
 
-// 預設假別規則設定
-const DEFAULT_LEAVE_RULES = {
-  // 育嬰留停
-  parentalLeaveFlexible: true,
-  parentalLeaveMaxDays: 30,
-  parentalLeaveCombinedMax: 60,
-  // 家庭照顧假
-  familyCareLeaveMaxDays: 7,
-  familyCareHourlyEnabled: true,
-  familyCareHourlyMaxHours: 56,
-  familyCareNoDeductAttendance: true,
-  // 病假
-  sickLeaveAnnualMax: 30,
-  sickLeaveNoDeductDays: 10,
-  sickLeaveHalfPay: true,
-  // 特休假
-  annualLeaveRollover: false,
-  annualLeaveRolloverMax: 0
-};
-
-export interface LeaveRulesConfig {
-  parentalLeaveFlexible: boolean;
-  parentalLeaveMaxDays: number;
-  parentalLeaveCombinedMax: number;
-  familyCareLeaveMaxDays: number;
-  familyCareHourlyEnabled: boolean;
-  familyCareHourlyMaxHours: number;
-  familyCareNoDeductAttendance: boolean;
-  sickLeaveAnnualMax: number;
-  sickLeaveNoDeductDays: number;
-  sickLeaveHalfPay: boolean;
-  annualLeaveRollover: boolean;
-  annualLeaveRolloverMax: number;
-}
+export type LeaveRulesConfig = LeaveRulesSettingsValues;
 
 export interface LeaveValidationResult {
   valid: boolean;
@@ -71,14 +42,17 @@ export async function getLeaveRulesConfig(): Promise<LeaveRulesConfig> {
         sickLeaveNoDeductDays: config.sickLeaveNoDeductDays,
         sickLeaveHalfPay: config.sickLeaveHalfPay,
         annualLeaveRollover: config.annualLeaveRollover,
-        annualLeaveRolloverMax: config.annualLeaveRolloverMax
+        annualLeaveRolloverMax: config.annualLeaveRolloverMax,
+        compLeaveRollover: config.compLeaveRollover,
+        compLeaveRolloverMax: config.compLeaveRolloverMax,
+        compLeaveExpiryMonths: config.compLeaveExpiryMonths,
       };
     }
 
-    return DEFAULT_LEAVE_RULES;
+    return DEFAULT_LEAVE_RULES_SETTINGS;
   } catch (error) {
     console.error('取得假別規則設定失敗:', error);
-    return DEFAULT_LEAVE_RULES;
+    return DEFAULT_LEAVE_RULES_SETTINGS;
   }
 }
 
@@ -133,12 +107,11 @@ export async function validateLeaveRequest(
     case 'FAMILY_CARE':
       // 家庭照顧假上限驗證
       if (requestedTotal > config.familyCareLeaveMaxDays) {
-        // 如果啟用事假補充
         if (config.familyCareHourlyEnabled) {
           return {
-            valid: true,
-            warning: `家庭照顧假已達 ${config.familyCareLeaveMaxDays} 天上限，超出部分將以事假計算（年度最多 ${config.familyCareHourlyMaxHours} 小時）`,
-            rulesApplied: ['familyCareLeaveMaxDays', 'familyCareHourlyEnabled']
+            valid: false,
+            error: `家庭照顧假年度上限為 ${config.familyCareLeaveMaxDays} 天，您已使用 ${usedDays} 天。超出部分請改以事假另行申請（系統不會自動轉換，年度最多 ${config.familyCareHourlyMaxHours} 小時）`,
+            rulesApplied: ['familyCareLeaveMaxDays', 'familyCareHourlyEnabled', 'familyCareHourlyMaxHours']
           };
         }
         return {

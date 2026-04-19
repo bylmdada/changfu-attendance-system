@@ -78,6 +78,7 @@ describe('approval reviews route authorization', () => {
     mockPrisma.approvalInstance.findFirst.mockResolvedValue({
       applicantId: 1,
       department: 'Operations',
+      requestType: 'LEAVE',
       currentLevel: 2,
       maxLevel: 3,
       status: 'LEVEL2_REVIEWING',
@@ -90,7 +91,7 @@ describe('approval reviews route authorization', () => {
 
     expect(response.status).toBe(403);
     expect(payload.error).toBe('無權查看此審核歷程');
-    expect(mockIsReviewerFor).toHaveBeenCalledWith(99, 'Operations');
+    expect(mockIsReviewerFor).toHaveBeenCalledWith(99, 'Operations', 'LEAVE');
   });
 
   it('allows the applicant to view their own review history', async () => {
@@ -98,6 +99,7 @@ describe('approval reviews route authorization', () => {
     mockPrisma.approvalInstance.findFirst.mockResolvedValue({
       applicantId: 1,
       department: 'Operations',
+      requestType: 'LEAVE',
       currentLevel: 2,
       maxLevel: 3,
       status: 'LEVEL2_REVIEWING',
@@ -129,6 +131,7 @@ describe('approval reviews route authorization', () => {
     mockPrisma.approvalInstance.findFirst.mockResolvedValue({
       applicantId: 1,
       department: 'Operations',
+      requestType: 'LEAVE',
       currentLevel: 1,
       maxLevel: 3,
       status: 'LEVEL1_REVIEWING',
@@ -141,6 +144,6 @@ describe('approval reviews route authorization', () => {
 
     expect(response.status).toBe(200);
     expect(payload.success).toBe(true);
-    expect(mockIsReviewerFor).toHaveBeenCalledWith(18, 'Operations');
+    expect(mockIsReviewerFor).toHaveBeenCalledWith(18, 'Operations', 'LEAVE');
   });
 });

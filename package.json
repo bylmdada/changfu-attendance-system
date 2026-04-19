@@ -18,6 +18,7 @@
     "test:coverage": "jest --coverage",
     "audit:api-routes": "tsx scripts/audit-api-routes.ts",
     "repair:comp-leave-imports": "tsx scripts/repair-comp-leave-import-baselines.ts",
+    "repair:schedule-break-times": "tsx scripts/repair-schedule-break-times.ts",
     "test:e2e": "playwright test"
   },
   "prisma": {

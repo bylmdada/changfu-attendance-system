@@ -8,6 +8,7 @@ import { validateLeaveRequest } from '@/lib/leave-rules-validator';
 import { createApprovalForRequest } from '@/lib/approval-helper';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
+import { getAttendancePermissionDepartments } from '@/lib/attendance-permission-scopes';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -56,19 +57,13 @@ export async function GET(request: NextRequest) {
         where.employeeId = employeeIdResult.value;
       }
     } else {
-      // 檢查是否為部門主管
-      const managedDepartments = await prisma.departmentManager.findMany({
-        where: {
-          employeeId: user.employeeId,
-          isActive: true
-        },
-        select: { department: true }
-      });
-      
+      const managedDepartments = await getAttendancePermissionDepartments({
+        role: user.role,
+        employeeId: user.employeeId,
+      }, 'leaveRequests');
+
       if (managedDepartments.length > 0) {
-        // 部門主管可以看到所屬部門員工的請假記錄
-        const departments = managedDepartments.map(d => d.department);
-        where.employee = { department: { in: departments } };
+        where.employee = { department: { in: managedDepartments } };
         
         // 如果有指定 employeeId，額外過濾
         if (employeeId) {
@@ -177,7 +172,7 @@ export async function POST(request: NextRequest) {
     const freezeCheck = await checkAttendanceFreeze(startDateObj);
 
     if (freezeCheck.isFrozen) {
-      const freezeDateStr = freezeCheck.freezeInfo?.freezeDate.toLocaleString('zh-TW');
+      const freezeDateStr = freezeCheck.freezeInfo?.freezeDate.toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', hour12: false });
       return NextResponse.json({
         error: `該月份已被凍結，無法提交請假申請。凍結時間：${freezeDateStr}，操作者：${freezeCheck.freezeInfo?.creator.name}`
       }, { status: 403 });

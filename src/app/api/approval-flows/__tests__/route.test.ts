@@ -59,6 +59,33 @@ describe('approval flows route guards', () => {
     expect(mockGetUserFromRequest).toHaveBeenCalled();
   });
 
+  it('falls back to safe defaults when stored JSON is malformed on GET', async () => {
+    const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    mockPrisma.approvalFlow.findMany.mockResolvedValue([
+      {
+        id: 1,
+        name: '請假流程',
+        resourceType: 'LEAVE',
+        steps: '{bad-json',
+        autoApproveRules: '{bad-json',
+        isActive: true
+      }
+    ] as never);
+
+    const response = await GET(new NextRequest('http://localhost/api/approval-flows'));
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.flows).toEqual([
+      expect.objectContaining({
+        steps: [],
+        autoApproveRules: null
+      })
+    ]);
+
+    consoleSpy.mockRestore();
+  });
+
   it('accepts shared token cookie extraction on POST requests', async () => {
     mockPrisma.approvalFlow.upsert.mockResolvedValue({
       id: 1,

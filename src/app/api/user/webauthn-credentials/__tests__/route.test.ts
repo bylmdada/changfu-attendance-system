@@ -95,4 +95,30 @@ describe('webauthn credentials route guards', () => {
     expect(mockPrisma.webAuthnCredential.findFirst).not.toHaveBeenCalled();
     expect(mockPrisma.webAuthnCredential.delete).not.toHaveBeenCalled();
   });
+
+  it('does not allow deleting another user\'s credential even with a valid credential id', async () => {
+    mockPrisma.webAuthnCredential.findFirst.mockResolvedValue(null as never);
+
+    const request = new NextRequest('http://localhost/api/user/webauthn-credentials', {
+      method: 'DELETE',
+      headers: {
+        cookie: 'token=session-token',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ credentialId: 12 }),
+    });
+
+    const response = await DELETE(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(404);
+    expect(payload).toEqual({ error: '憑證不存在或無權限刪除' });
+    expect(mockPrisma.webAuthnCredential.findFirst).toHaveBeenCalledWith({
+      where: {
+        id: 12,
+        userId: 9
+      }
+    });
+    expect(mockPrisma.webAuthnCredential.delete).not.toHaveBeenCalled();
+  });
 });

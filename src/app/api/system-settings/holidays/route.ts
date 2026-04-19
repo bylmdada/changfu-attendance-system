@@ -48,6 +48,52 @@ function parseDateValue(value: unknown) {
   return parsedDate;
 }
 
+function buildUTCDate(year: number, month: number, day: number) {
+  const parsedDate = new Date(Date.UTC(year, month - 1, day));
+
+  if (
+    Number.isNaN(parsedDate.getTime()) ||
+    parsedDate.getUTCFullYear() !== year ||
+    parsedDate.getUTCMonth() !== month - 1 ||
+    parsedDate.getUTCDate() !== day
+  ) {
+    return null;
+  }
+
+  return parsedDate;
+}
+
+function parseImportedHolidayDate(value: unknown, expectedYear: number) {
+  if (typeof value !== 'string' || value.trim() === '') {
+    return null;
+  }
+
+  const normalizedValue = value.trim();
+  const supportedPatterns = [
+    /^(\d{4})(\d{2})(\d{2})$/,
+    /^(\d{4})-(\d{1,2})-(\d{1,2})$/,
+    /^(\d{4})\/(\d{1,2})\/(\d{1,2})$/,
+  ];
+
+  for (const pattern of supportedPatterns) {
+    const match = normalizedValue.match(pattern);
+    if (!match) {
+      continue;
+    }
+
+    const [, year, month, day] = match;
+    const parsedDate = buildUTCDate(Number(year), Number(month), Number(day));
+
+    if (!parsedDate || parsedDate.getUTCFullYear() !== expectedYear) {
+      return null;
+    }
+
+    return parsedDate;
+  }
+
+  return null;
+}
+
 // 取得國定假日列表
 export async function GET(request: NextRequest) {
   try {
@@ -125,7 +171,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '年份、日期和名稱為必填' }, { status: 400 });
     }
 
-    if (!parsedYear || !parsedDate) {
+    if (!parsedYear || !parsedDate || parsedDate.getUTCFullYear() !== parsedYear) {
       return NextResponse.json({ error: '年份或日期格式無效' }, { status: 400 });
     }
 
@@ -186,102 +232,61 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: '年份格式無效' }, { status: 400 });
     }
 
-    console.log('📥 收到假日匯入請求:', { year, count: holidays.length });
-    console.log('📥 第一筆資料樣本:', holidays[0]);
+    const holidayImports = holidays as unknown[];
+    const seenDateKeys = new Set<string>();
+    const validHolidays: Array<{
+      year: number;
+      date: Date;
+      name: string;
+      description: string | null;
+    }> = [];
 
-    // 驗證並轉換日期
-    const holidayImports = holidays as Array<{ date?: unknown; name?: unknown; description?: unknown }>;
+    for (const holidayImport of holidayImports) {
+      if (!holidayImport || typeof holidayImport !== 'object' || Array.isArray(holidayImport)) {
+        return NextResponse.json({ error: '假日列表包含無效資料' }, { status: 400 });
+      }
 
-    const validHolidays = holidayImports
-      .filter((h) => {
-        if (!h.date) {
-          console.log('⚠️ 缺少日期:', h);
-          return false;
-        }
-        if (!h.name) {
-          console.log('⚠️ 缺少名稱:', h);
-          return false;
-        }
-        return true;
-      })
-      .map((h) => {
-        // 確保日期格式正確
-        const dateStr = String(h.date).trim();
-        const holidayName = typeof h.name === 'string' ? h.name.trim() : String(h.name ?? '').trim();
-        
-        let dateObj: Date | null = null;
-        
-        // 格式 1: YYYYMMDD (政府行事曆格式)
-        const match0 = dateStr.match(/^(\d{4})(\d{2})(\d{2})$/);
-        if (match0) {
-          const [, y, m, d] = match0;
-          dateObj = new Date(Date.UTC(parseInt(y), parseInt(m) - 1, parseInt(d)));
-        }
-        
-        // 格式 2: YYYY-MM-DD
-        if (!dateObj) {
-          const match1 = dateStr.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-          if (match1) {
-            const [, y, m, d] = match1;
-            dateObj = new Date(Date.UTC(parseInt(y), parseInt(m) - 1, parseInt(d)));
-          }
-        }
-        
-        // 格式 3: YYYY/MM/DD
-        if (!dateObj) {
-          const match2 = dateStr.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})$/);
-          if (match2) {
-            const [, y, m, d] = match2;
-            dateObj = new Date(Date.UTC(parseInt(y), parseInt(m) - 1, parseInt(d)));
-          }
-        }
-        
-        // 格式 4: 直接使用 Date 解析
-        if (!dateObj) {
-          const parsed = new Date(dateStr);
-          if (!isNaN(parsed.getTime())) {
-            dateObj = parsed;
-          }
-        }
-        
-        if (!dateObj || isNaN(dateObj.getTime())) {
-          console.log('⚠️ 無法解析日期:', dateStr);
-          return null;
-        }
-        
-        return {
-          year: parsedYear,
-          date: dateObj,
-          name: holidayName,
-          description: typeof h.description === 'string' && h.description.trim() ? h.description : null
-        };
-      })
-      .filter((h): h is NonNullable<typeof h> => h !== null && h.name.length > 0);
+      const holidayRecord = holidayImport as Record<string, unknown>;
+      const holidayName = typeof holidayRecord.name === 'string' ? holidayRecord.name.trim() : '';
+      const parsedDate = parseImportedHolidayDate(holidayRecord.date, parsedYear);
 
-    console.log('✅ 有效假日數量:', validHolidays.length);
-    if (validHolidays.length > 0) {
-      console.log('✅ 第一筆有效資料:', validHolidays[0]);
+      if (!holidayName || !parsedDate) {
+        return NextResponse.json({ error: '假日列表包含無效的日期或名稱' }, { status: 400 });
+      }
+
+      const dateKey = parsedDate.toISOString().slice(0, 10);
+      if (seenDateKeys.has(dateKey)) {
+        return NextResponse.json({ error: '假日日期不可重複' }, { status: 400 });
+      }
+      seenDateKeys.add(dateKey);
+
+      validHolidays.push({
+        year: parsedYear,
+        date: parsedDate,
+        name: holidayName,
+        description: typeof holidayRecord.description === 'string' && holidayRecord.description.trim()
+          ? holidayRecord.description.trim()
+          : null,
+      });
     }
 
     if (validHolidays.length === 0) {
       return NextResponse.json({ error: '沒有有效的假日資料，請確認日期格式正確' }, { status: 400 });
     }
 
-    // 刪除該年度舊資料
-    await prisma.holiday.deleteMany({
-      where: { year: parsedYear }
-    });
+    const created = await prisma.$transaction(async (tx) => {
+      await tx.holiday.deleteMany({
+        where: { year: parsedYear }
+      });
 
-    // 批量新增
-    const created = await prisma.holiday.createMany({
-      data: validHolidays
+      return tx.holiday.createMany({
+        data: validHolidays
+      });
     });
 
     if (created.count === 0) {
       return NextResponse.json({ error: '假日匯入失敗，未新增任何資料' }, { status: 400 });
     }
-
-    console.log('✅ 假日匯入成功:', created.count);
 
     return NextResponse.json({ 
       message: `已新增 ${created.count} 筆假日`,

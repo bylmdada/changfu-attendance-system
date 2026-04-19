@@ -25,15 +25,21 @@ jest.mock('@/lib/encryption', () => ({
   encrypt: jest.fn((value: string) => `encrypted:${value}`),
 }));
 
+jest.mock('@/lib/rate-limit', () => ({
+  checkRateLimit: jest.fn()
+}));
+
 import { NextRequest } from 'next/server';
 import { POST } from '@/app/api/auth/2fa/setup/route';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
+import { checkRateLimit } from '@/lib/rate-limit';
 
 const mockedPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockedGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
 const mockedValidateCSRF = validateCSRF as jest.MockedFunction<typeof validateCSRF>;
+const mockedCheckRateLimit = checkRateLimit as jest.MockedFunction<typeof checkRateLimit>;
 
 describe('2fa setup csrf guard', () => {
   beforeEach(() => {
@@ -46,6 +52,11 @@ describe('2fa setup csrf guard', () => {
       sessionId: 'session-1',
     } as never);
     mockedValidateCSRF.mockResolvedValue({ valid: true } as never);
+    mockedCheckRateLimit.mockResolvedValue({
+      allowed: true,
+      remainingRequests: 4,
+      resetTime: Date.now() + 60_000
+    } as never);
   });
 
   it('rejects POST when csrf validation fails before generating 2FA secrets', async () => {
@@ -84,5 +95,26 @@ describe('2fa setup csrf guard', () => {
     expect(response.status).toBe(409);
     expect(payload.error).toContain('已啟用');
     expect(mockedPrisma.user.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects setup when rate limit is exceeded', async () => {
+    mockedCheckRateLimit.mockResolvedValueOnce({
+      allowed: false,
+      remainingRequests: 0,
+      resetTime: Date.now() + 60_000,
+      retryAfter: 45
+    } as never);
+
+    const response = await POST(new NextRequest('http://localhost/api/auth/2fa/setup', {
+      method: 'POST',
+      headers: {
+        cookie: 'auth-token=session-token',
+      },
+    }));
+    const payload = await response.json();
+
+    expect(response.status).toBe(429);
+    expect(payload).toEqual({ error: '操作過於頻繁', retryAfter: 45 });
+    expect(mockedPrisma.user.findUnique).not.toHaveBeenCalled();
   });
 });

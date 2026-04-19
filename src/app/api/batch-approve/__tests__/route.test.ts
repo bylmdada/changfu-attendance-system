@@ -518,7 +518,7 @@ describe('batch approve supervisor scope guards', () => {
     mockPrisma.leaveRequest.findUnique.mockResolvedValue({
       id: 102,
       status: 'PENDING',
-      leaveType: 'ANNUAL_LEAVE',
+      leaveType: 'ANNUAL',
       employeeId: 55,
       startDate: new Date('2026-04-03T00:00:00.000Z'),
       endDate: new Date('2026-04-04T00:00:00.000Z'),

@@ -53,7 +53,7 @@ export async function GET(request: NextRequest) {
     let canView = isPrivilegedRole || isApplicant;
 
     if (!canView && instance.department) {
-      const reviewerPermission = await isReviewerFor(user.employeeId, instance.department);
+      const reviewerPermission = await isReviewerFor(user.employeeId, instance.department, instance.requestType);
       canView = reviewerPermission.isReviewer;
     }
 

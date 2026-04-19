@@ -15,6 +15,15 @@ interface SelfChangePayload {
   original?: string;
 }
 
+function parseSelfChangePayload(requestReason: string): SelfChangePayload | null {
+  try {
+    const parsed = JSON.parse(requestReason) as SelfChangePayload;
+    return parsed?.type === 'SELF_CHANGE' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 type ShiftExchangeReversalClient = Pick<typeof prisma, 'schedule'>;
 
 function getTemplateByShift(shift: string): { startTime: string; endTime: string } {
@@ -37,14 +46,9 @@ async function restoreApprovedShiftExchange(
     requestReason: string;
   }
 ) {
-  let parsed: SelfChangePayload | null = null;
-  try {
-    parsed = JSON.parse(shiftExchangeRequest.requestReason) as SelfChangePayload;
-  } catch {}
+  const parsed = parseSelfChangePayload(shiftExchangeRequest.requestReason);
 
-  const isSelfChange = parsed?.type === 'SELF_CHANGE';
-
-  if (isSelfChange) {
+  if (parsed) {
     const originalShift = parsed?.original ?? 'A';
     const template = getTemplateByShift(originalShift);
     const existingSchedule = await tx.schedule.findFirst({
@@ -68,42 +72,7 @@ async function restoreApprovedShiftExchange(
     return;
   }
 
-  const [requesterSchedule, targetSchedule] = await Promise.all([
-    tx.schedule.findFirst({
-      where: {
-        employeeId: shiftExchangeRequest.requesterId,
-        workDate: shiftExchangeRequest.originalWorkDate,
-      },
-    }),
-    tx.schedule.findFirst({
-      where: {
-        employeeId: shiftExchangeRequest.targetEmployeeId,
-        workDate: shiftExchangeRequest.targetWorkDate,
-      },
-    }),
-  ]);
-
-  if (requesterSchedule && targetSchedule) {
-    const requesterOriginal = {
-      shiftType: requesterSchedule.shiftType,
-      startTime: requesterSchedule.startTime,
-      endTime: requesterSchedule.endTime,
-    };
-
-    await tx.schedule.update({
-      where: { id: requesterSchedule.id },
-      data: {
-        shiftType: targetSchedule.shiftType,
-        startTime: targetSchedule.startTime,
-        endTime: targetSchedule.endTime,
-      },
-    });
-
-    await tx.schedule.update({
-      where: { id: targetSchedule.id },
-      data: requesterOriginal,
-    });
-  }
+  throw new Error('員工互調功能已停用，無法作廢舊互調申請');
 }
 
 // POST: ADMIN/HR 直接作廢調班申請
@@ -167,6 +136,10 @@ export async function POST(
 
     if (shiftExchangeRequest.status !== 'APPROVED') {
       return NextResponse.json({ error: '只能作廢已核准的申請' }, { status: 400 });
+    }
+
+    if (!parseSelfChangePayload(shiftExchangeRequest.requestReason)) {
+      return NextResponse.json({ error: '員工互調功能已停用，無法作廢舊互調申請' }, { status: 400 });
     }
 
     await prisma.$transaction(async (tx) => {

@@ -8,6 +8,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
+import { escapeHtml } from '@/lib/html';
+import { parseIntegerQueryParam } from '@/lib/query-params';
 import nodemailer from 'nodemailer';
 import { safeParseJSON } from '@/lib/validation';
 
@@ -60,6 +62,44 @@ function parsePositiveInteger(value: unknown): number | undefined {
   return undefined;
 }
 
+function normalizeConfigString(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed === '' ? null : trimmed;
+}
+
+function parseHistoryFilter(rawValue: string | null, options: { min: number; max: number }) {
+  const parsed = parseIntegerQueryParam(rawValue, options);
+  return parsed.isValid ? parsed.value : null;
+}
+
+async function getPayslipSmtpConfig() {
+  const smtpSettings = await prisma.smtpSettings.findFirst();
+
+  const smtpHost = normalizeConfigString(smtpSettings?.smtpHost);
+  const smtpUser = normalizeConfigString(smtpSettings?.smtpUser);
+  const smtpPassword = typeof smtpSettings?.smtpPassword === 'string' && smtpSettings.smtpPassword !== ''
+    ? smtpSettings.smtpPassword
+    : null;
+
+  if (!smtpSettings || !smtpHost || !smtpUser || !smtpPassword) {
+    return null;
+  }
+
+  return {
+    host: smtpHost,
+    port: smtpSettings.smtpPort ?? 587,
+    secure: smtpSettings.smtpSecure ?? false,
+    user: smtpUser,
+    password: smtpPassword,
+    fromName: normalizeConfigString(smtpSettings.fromName) || '長福考勤系統',
+    fromEmail: normalizeConfigString(smtpSettings.fromEmail) || smtpUser,
+  };
+}
+
 export async function GET(request: NextRequest) {
   try {
     const user = await getUserFromRequest(request);
@@ -74,10 +114,20 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const year = searchParams.get('year');
     const month = searchParams.get('month');
+    const parsedYear = parseHistoryFilter(year, { min: 1900, max: 9999 });
+    const parsedMonth = parseHistoryFilter(month, { min: 1, max: 12 });
+
+    if (year && parsedYear === null) {
+      return NextResponse.json({ error: '年份格式無效' }, { status: 400 });
+    }
+
+    if (month && parsedMonth === null) {
+      return NextResponse.json({ error: '月份格式無效' }, { status: 400 });
+    }
 
     const where: Record<string, unknown> = {};
-    if (year) where.year = parseInt(year);
-    if (month) where.month = parseInt(month);
+    if (parsedYear !== null) where.year = parsedYear;
+    if (parsedMonth !== null) where.month = parsedMonth;
 
     const history = await prisma.payslipSendHistory.findMany({
       where,
@@ -127,10 +177,11 @@ export async function POST(request: NextRequest) {
           return validPayrollIds;
         }, [])
       : undefined;
+    const uniquePayrollIds = payrollIds ? Array.from(new Set(payrollIds)) : undefined;
     const year = isPlainObject(data) ? parsePositiveInteger(data.year) : undefined;
     const month = isPlainObject(data) ? parsePositiveInteger(data.month) : undefined;
 
-    if (!payrollIds || !Array.isArray(payrollIds) || payrollIds.length === 0) {
+    if (!uniquePayrollIds || !Array.isArray(uniquePayrollIds) || uniquePayrollIds.length === 0) {
       return NextResponse.json({ error: '請選擇要發送的薪資條' }, { status: 400 });
     }
 
@@ -140,24 +191,41 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Email 發送功能未啟用' }, { status: 400 });
     }
 
-    if (!settings.smtpHost || !settings.smtpUser || !settings.smtpPassword) {
+    const smtpConfig = await getPayslipSmtpConfig();
+    if (!smtpConfig) {
       return NextResponse.json({ error: 'SMTP 設定不完整' }, { status: 400 });
     }
 
+    const successfulHistory = await prisma.payslipSendHistory.findMany({
+      where: {
+        payrollId: { in: uniquePayrollIds },
+        status: 'SUCCESS',
+      },
+      select: {
+        payrollId: true,
+        employeeName: true,
+      },
+    });
+    const successfulPayrollIds = new Set(successfulHistory.map((record) => record.payrollId));
+
     // 建立 SMTP transporter
     const transporter = nodemailer.createTransport({
-      host: settings.smtpHost,
-      port: settings.smtpPort || 587,
-      secure: settings.smtpSecure,
+      host: smtpConfig.host,
+      port: smtpConfig.port,
+      secure: smtpConfig.secure,
       auth: {
-        user: settings.smtpUser,
-        pass: settings.smtpPassword
+        user: smtpConfig.user,
+        pass: smtpConfig.password
       }
     });
 
     // 取得薪資條資料
     const payrolls = await prisma.payrollRecord.findMany({
-      where: { id: { in: payrollIds } },
+      where: {
+        id: {
+          in: uniquePayrollIds.filter((payrollId) => !successfulPayrollIds.has(payrollId)),
+        },
+      },
       include: {
         employee: {
           select: {
@@ -170,11 +238,17 @@ export async function POST(request: NextRequest) {
       }
     });
 
-    const results: { success: number; failed: number; errors: string[] } = {
+    const results: { success: number; failed: number; skipped: number; errors: string[] } = {
       success: 0,
       failed: 0,
+      skipped: 0,
       errors: []
     };
+
+    for (const record of successfulHistory) {
+      results.skipped++;
+      results.errors.push(`${record.employeeName}: 薪資條已寄送過，已略過重複發送`);
+    }
 
     for (const payroll of payrolls) {
       const employee = payroll.employee;
@@ -213,11 +287,11 @@ export async function POST(request: NextRequest) {
 
         // 發送 Email
         await transporter.sendMail({
-          from: `"${settings.fromName || '薪資系統'}" <${settings.fromEmail || settings.smtpUser}>`,
+          from: `"${smtpConfig.fromName}" <${smtpConfig.fromEmail}>`,
           to: employee.email,
           subject,
           text: body,
-          html: body.replace(/\n/g, '<br>')
+          html: escapeHtml(body).replace(/\n/g, '<br>')
         });
 
         results.success++;
@@ -259,7 +333,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      message: `發送完成：成功 ${results.success} 筆，失敗 ${results.failed} 筆`,
+      message: `發送完成：成功 ${results.success} 筆，失敗 ${results.failed} 筆，略過 ${results.skipped} 筆`,
       results
     });
 
@@ -268,4 +342,3 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: '系統錯誤' }, { status: 500 });
   }
 }
-

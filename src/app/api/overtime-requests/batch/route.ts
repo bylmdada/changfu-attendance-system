@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
+import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { calculateOvertimePayForRequest, OvertimeType } from '@/lib/salary-utils';
 import { getTaiwanYearMonth } from '@/lib/timezone';
@@ -16,6 +17,11 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  */
 export async function POST(request: NextRequest) {
   try {
+    const rateLimitResult = await checkRateLimit(request, '/api/overtime-requests/batch');
+    if (!rateLimitResult.allowed) {
+      return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
+    }
+
     const csrfValidation = await validateCSRF(request);
     if (!csrfValidation.valid) {
       return NextResponse.json({ error: `CSRF驗證失敗: ${csrfValidation.error}` }, { status: 403 });

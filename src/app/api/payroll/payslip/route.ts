@@ -2,6 +2,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { buildSuccessPayload } from '@/lib/api-response';
+import { parseIntegerQueryParam } from '@/lib/query-params';
+
+function parsePayrollId(payrollId: string) {
+  const parsed = parseIntegerQueryParam(payrollId, { min: 1, max: 99999999 });
+  return parsed.isValid ? parsed.value : null;
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -17,9 +23,14 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: '薪資記錄ID為必填' }, { status: 400 });
     }
 
+    const parsedPayrollId = parsePayrollId(payrollId);
+    if (parsedPayrollId === null) {
+      return NextResponse.json({ error: '薪資記錄ID格式無效' }, { status: 400 });
+    }
+
     // 獲取薪資記錄 - 先簡化查詢
     const payrollRecord = await prisma.payrollRecord.findUnique({
-      where: { id: parseInt(payrollId) },
+      where: { id: parsedPayrollId },
       include: {
         employee: {
           select: {
@@ -32,7 +43,16 @@ export async function GET(request: NextRequest) {
             hourlyRate: true,
             hireDate: true
           }
-        }
+        },
+        adjustments: {
+          select: {
+            id: true,
+            type: true,
+            description: true,
+            amount: true
+          },
+          orderBy: { id: 'asc' }
+        },
       }
     });
 
@@ -42,7 +62,7 @@ export async function GET(request: NextRequest) {
 
     // 權限檢查：員工只能查看自己的薪資條
     if (user.role !== 'ADMIN' && user.role !== 'HR' &&
-        user.employeeId !== payrollRecord.employee.id) {
+        payrollRecord.employeeId !== user.employeeId) {
       return NextResponse.json({ error: '無權限查看此薪資條' }, { status: 403 });
     }
 
@@ -66,6 +86,21 @@ export async function GET(request: NextRequest) {
         quantity: payrollRecord.overtimeHours,
         unitPrice: payrollRecord.overtimePay / payrollRecord.overtimeHours,
         description: '加班時數薪資'
+      });
+    }
+
+    for (const adjustment of payrollRecord.adjustments) {
+      if (adjustment.type !== 'SUPPLEMENT') {
+        continue;
+      }
+
+      earnings.push({
+        code: `PAYROLL_ADJUSTMENT_${adjustment.id}`,
+        name: '薪資異議補發',
+        amount: adjustment.amount,
+        quantity: 1,
+        unitPrice: adjustment.amount,
+        description: adjustment.description
       });
     }
 
@@ -96,6 +131,21 @@ export async function GET(request: NextRequest) {
         quantity: 1,
         unitPrice: payrollRecord.incomeTax,
         description: '代扣所得稅'
+      });
+    }
+
+    for (const adjustment of payrollRecord.adjustments) {
+      if (adjustment.type !== 'DEDUCTION') {
+        continue;
+      }
+
+      deductions.push({
+        code: `PAYROLL_ADJUSTMENT_${adjustment.id}`,
+        name: '薪資異議扣除',
+        amount: adjustment.amount,
+        quantity: 1,
+        unitPrice: adjustment.amount,
+        description: adjustment.description
       });
     }
 

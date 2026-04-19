@@ -12,8 +12,10 @@ jest.mock('@/lib/auth', () => ({
 
 jest.mock('@/lib/database', () => ({
   prisma: {
+    $transaction: jest.fn(),
     schedule: {
       findUnique: jest.fn(),
+      update: jest.fn(),
       delete: jest.fn(),
     },
     scheduleMonthlyRelease: {
@@ -57,6 +59,7 @@ describe('schedule item route guards', () => {
       role: 'ADMIN',
     } as never);
     mockCanManageScheduleEmployee.mockResolvedValue(true as never);
+    mockPrisma.$transaction.mockImplementation((async (callback: (tx: typeof mockPrisma) => unknown) => callback(mockPrisma)) as never);
     mockPrisma.schedule.findUnique.mockResolvedValue({
       employeeId: 31,
       workDate: '2026-05-08',
@@ -145,7 +148,7 @@ describe('schedule item route guards', () => {
 
     expect(response.status).toBe(400);
     expect(payload.error).toBe('無效的 JSON 格式');
-    expect(mockPrisma.schedule.findUnique).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.schedule.findUnique).not.toHaveBeenCalled();
     expect(mockPrisma.schedule.delete).not.toHaveBeenCalled();
   });
 });

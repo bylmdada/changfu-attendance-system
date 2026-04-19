@@ -43,7 +43,7 @@ interface ShiftExchangeRequest {
   newShiftType: string; // 新班別
   leaveType?: string; // 請假類型（當FDL時）
   reason: string;
-  status: 'PENDING' | 'APPROVED' | 'REJECTED';
+  status: 'PENDING' | 'PENDING_ADMIN' | 'APPROVED' | 'REJECTED';
   approvedBy?: number;
   approvedAt?: string;
   createdAt: string;
@@ -56,6 +56,14 @@ interface User {
   id: number;
   username: string;
   role: string;
+  isDepartmentManager?: boolean;
+  isDeputyManager?: boolean;
+  attendancePermissions?: {
+    leaveRequests?: string[];
+    overtimeRequests?: string[];
+    shiftExchanges?: string[];
+    scheduleManagement?: string[];
+  };
   employee?: {
     id: number;
     employeeId: string;
@@ -94,18 +102,21 @@ const LEAVE_TYPES = {
 
 const STATUS_LABELS = {
   PENDING: '待審核',
+  PENDING_ADMIN: '待管理員決核',
   APPROVED: '已批准',
   REJECTED: '已拒絕'
 };
 
 const STATUS_COLORS = {
   PENDING: 'bg-yellow-100 text-yellow-800',
+  PENDING_ADMIN: 'bg-blue-100 text-blue-800',
   APPROVED: 'bg-green-100 text-green-800',
   REJECTED: 'bg-red-100 text-red-800'
 };
 
 const STATUS_ICONS = {
   PENDING: AlertCircle,
+  PENDING_ADMIN: Clock,
   APPROVED: CheckCircle,
   REJECTED: XCircle
 };
@@ -113,7 +124,6 @@ const STATUS_ICONS = {
 export default function ShiftExchangePage() {
   const [shiftExchanges, setShiftExchanges] = useState<ShiftExchangeRequest[]>([]);
   const [filteredRequests, setFilteredRequests] = useState<ShiftExchangeRequest[]>([]);
-  const [employees, setEmployees] = useState<Employee[]>([]);
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [showNewRequestForm, setShowNewRequestForm] = useState(false);
@@ -134,7 +144,6 @@ export default function ShiftExchangePage() {
 
   // 新申請表單狀態
   const [newRequest, setNewRequest] = useState({
-    targetEmployeeId: '',
     shiftDate: '', // 調班日期
     originalShiftType: 'A', // 原班別
     newShiftType: 'A', // 新班別
@@ -162,9 +171,6 @@ export default function ShiftExchangePage() {
     endDate: '',
     search: ''
   });
-
-  // 是否為互換模式
-  const [isSwapMode, setIsSwapMode] = useState(false);
 
   // Toast 訊息狀態
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -207,8 +213,6 @@ export default function ShiftExchangePage() {
       filtered = filtered.filter(req =>
         req.requester.name.toLowerCase().includes(filters.search.toLowerCase()) ||
         req.requester.employeeId.toLowerCase().includes(filters.search.toLowerCase()) ||
-        (req.targetEmployee?.name.toLowerCase().includes(filters.search.toLowerCase())) ||
-        (req.targetEmployee?.employeeId.toLowerCase().includes(filters.search.toLowerCase())) ||
         req.reason.toLowerCase().includes(filters.search.toLowerCase())
       );
     }
@@ -261,23 +265,6 @@ export default function ShiftExchangePage() {
           setShiftExchanges(exchangesData);
         } else {
           console.warn('Failed to load shift-exchanges:', exchangesRes.status);
-        }
-
-        // 僅 ADMIN/HR 取員工清單
-        if (currentUser?.role === 'ADMIN' || currentUser?.role === 'HR') {
-          const employeesRequest = buildSessionRequest('/api/employees');
-          const employeesRes = await fetch(employeesRequest.url, employeesRequest.options);
-          if (employeesRes.ok) {
-            const employeesData = await employeesRes.json();
-            const list = Array.isArray(employeesData)
-              ? employeesData
-              : Array.isArray(employeesData?.employees)
-                ? employeesData.employees
-                : Array.isArray(employeesData?.data)
-                  ? employeesData.data
-                  : [];
-            setEmployees(list as Employee[]);
-          }
         }
       } catch (error) {
         console.error('Failed to fetch data:', error);
@@ -334,24 +321,15 @@ export default function ShiftExchangePage() {
       if (!ping.ok && ping.status !== 401) {
         console.warn('Ping shift-exchanges failed:', ping.status);
       }
-      const payload = isSwapMode && newRequest.targetEmployeeId
-        ? {
-            targetEmployeeId: Number(newRequest.targetEmployeeId),
-            originalWorkDate: newRequest.shiftDate,
-            targetWorkDate: newRequest.shiftDate,
-            requestReason: newRequest.reason === '其它' 
-              ? `${newRequest.reason}：${newRequest.reasonDetail}` 
-              : newRequest.reason || '調班互換'
-          }
-        : {
-            shiftDate: newRequest.shiftDate,
-            originalShiftType: newRequest.originalShiftType,
-            newShiftType: newRequest.newShiftType,
-            leaveType: newRequest.newShiftType === 'FDL' ? newRequest.leaveType : undefined,
-            reason: newRequest.reason === '其它' 
-              ? `${newRequest.reason}：${newRequest.reasonDetail}` 
-              : newRequest.reason
-          };
+      const payload = {
+        shiftDate: newRequest.shiftDate,
+        originalShiftType: newRequest.originalShiftType,
+        newShiftType: newRequest.newShiftType,
+        leaveType: newRequest.newShiftType === 'FDL' ? newRequest.leaveType : undefined,
+        reason: newRequest.reason === '其它'
+          ? `${newRequest.reason}：${newRequest.reasonDetail}`
+          : newRequest.reason
+      };
       const response = await fetchJSONWithCSRF('/api/shift-exchanges', {
         method: 'POST',
         body: payload
@@ -363,7 +341,6 @@ export default function ShiftExchangePage() {
         setShiftExchanges(prev => [newExchange, ...prev]);
         setShowNewRequestForm(false);
         setNewRequest({
-          targetEmployeeId: '',
           shiftDate: '',
           originalShiftType: 'A',
           newShiftType: 'A',
@@ -463,7 +440,7 @@ export default function ShiftExchangePage() {
         // If approved and current user is affected, refresh schedules
         if (updatedExchange.status === 'APPROVED' && user?.employee?.id) {
           const myId = user.employee.id;
-          if (myId === updatedExchange.requesterId || myId === updatedExchange.targetEmployeeId) {
+          if (myId === updatedExchange.requesterId) {
             try {
               const schedulesRequest = buildSessionRequest(`/api/schedules?employeeId=${myId}`);
               const schedulesRes = await fetch(schedulesRequest.url, schedulesRequest.options);
@@ -685,7 +662,7 @@ export default function ShiftExchangePage() {
       SHIFT_TYPE_LABELS[r.originalShiftType as keyof typeof SHIFT_TYPE_LABELS] || r.originalShiftType,
       SHIFT_TYPE_LABELS[r.newShiftType as keyof typeof SHIFT_TYPE_LABELS] || r.newShiftType,
       r.reason,
-      r.status === 'PENDING' ? '待審核' : r.status === 'APPROVED' ? '已批准' : '已拒絕',
+      STATUS_LABELS[r.status],
       r.approver?.name || '-',
       r.approvedAt ? new Date(r.approvedAt).toLocaleDateString('zh-TW') : '-'
     ]);
@@ -707,7 +684,12 @@ export default function ShiftExchangePage() {
       case 'shiftDate':
         return (new Date(a.shiftDate).getTime() - new Date(b.shiftDate).getTime()) * direction;
       case 'status': {
-        const statusOrder = { PENDING: 1, APPROVED: 2, REJECTED: 3 };
+        const statusOrder: Record<ShiftExchangeRequest['status'], number> = {
+          PENDING: 1,
+          PENDING_ADMIN: 2,
+          APPROVED: 3,
+          REJECTED: 4
+        };
         return (statusOrder[a.status] - statusOrder[b.status]) * direction;
       }
       case 'requester':
@@ -831,7 +813,11 @@ export default function ShiftExchangePage() {
     }
   };
 
-  const canManage = user?.role === 'ADMIN' || user?.role === 'HR';
+  const canManage = user?.role === 'ADMIN'
+    || user?.role === 'HR'
+    || user?.isDepartmentManager
+    || user?.isDeputyManager
+    || Boolean(user?.attendancePermissions?.shiftExchanges?.length);
 
   if (loading) {
     return (
@@ -1102,7 +1088,7 @@ export default function ShiftExchangePage() {
                     newShiftType?: string;
                     leaveType?: string;
                     reason?: string;
-                    status?: 'PENDING' | 'APPROVED' | 'REJECTED';
+                    status?: 'PENDING' | 'PENDING_ADMIN' | 'APPROVED' | 'REJECTED';
                     approver?: { id?: number; name?: string } | null;
                     approvedAt?: string | null;
                     approvedBy?: number | null;
@@ -1118,6 +1104,10 @@ export default function ShiftExchangePage() {
 
                   const requesterName = r.requester?.name ?? '已刪除';
                   const requesterEmployeeId = r.requester?.employeeId ?? String(r.requesterId ?? '');
+                  const canFinalApprove = user?.role === 'ADMIN' || user?.role === 'HR';
+                  const canDepartmentReview = canManage && !canFinalApprove;
+                  const canReviewPending = canDepartmentReview && r.status === 'PENDING';
+                  const canReviewFinal = canFinalApprove && (r.status === 'PENDING' || r.status === 'PENDING_ADMIN');
 
                   const shiftDateStr = r.shiftDate ?? r.originalWorkDate ?? r.targetWorkDate ?? '';
                   const shiftDateDisplay = shiftDateStr ? new Date(shiftDateStr).toLocaleDateString('zh-TW') : '';
@@ -1205,8 +1195,8 @@ export default function ShiftExchangePage() {
                        </td>
                        <td className="px-6 py-4 whitespace-nowrap">
                         {/* 管理員操作：審核 */}
-                        {canManage && r.status === 'PENDING' && (
-                          <div className="flex space-x-2">
+                         {(canReviewPending || canReviewFinal) && (
+                           <div className="flex space-x-2">
                             <button
                               onClick={() => handleApprove(r.id)}
                               className="px-3 py-1 bg-green-600 text-white text-sm rounded-md hover:bg-green-700 transition-colors"
@@ -1299,32 +1289,6 @@ export default function ShiftExchangePage() {
             </div>
 
             <form onSubmit={handleSubmitRequest} className="space-y-4">
-              {/* 員工權限移除調班對象欄位 - 只有管理員可以看到 */}
-              {canManage && (
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">調班對象</label>
-                  <select
-                    value={newRequest.targetEmployeeId}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      setNewRequest({ ...newRequest, targetEmployeeId: v });
-                      setIsSwapMode(!!v);
-                    }}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
-                    required={false}
-                  >
-                    <option value="">請選擇調班對象（不選為自調）</option>
-                    {employees
-                      .filter(emp => emp.id !== user?.employee?.id)
-                      .map((employee) => (
-                        <option key={employee.id} value={employee.id}>
-                          {employee.employeeId} - {employee.name} ({employee.department})
-                        </option>
-                      ))}
-                  </select>
-                </div>
-              )}
-
               <div className="grid grid-cols-1 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">調班日期</label>

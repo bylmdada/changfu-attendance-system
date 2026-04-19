@@ -123,6 +123,24 @@ describe('tax declaration report route auth guards', () => {
     expect(csvContent).not.toContain(',=EMP001,');
   });
 
+  it('subtracts labor pension self contribution and exempt overtime from taxable income', async () => {
+    const request = new NextRequest('http://localhost/api/reports/tax-declaration?year=2026', {
+      headers: {
+        cookie: 'token=shared-session-token',
+      },
+    });
+
+    const response = await GET(request);
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.records[0]).toMatchObject({
+      taxExempt: 2000,
+      taxableIncome: 27000,
+    });
+    expect(data.summary.totalTaxableIncome).toBe(27000);
+  });
+
   it('returns 400 for an invalid year query param', async () => {
     const request = new NextRequest('http://localhost/api/reports/tax-declaration?year=abc', {
       headers: {

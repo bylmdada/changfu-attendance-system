@@ -287,4 +287,59 @@ describe('password policy route guards', () => {
     expect(mockPrisma.systemSettings.findUnique).not.toHaveBeenCalled();
     expect(mockPrisma.systemSettings.upsert).not.toHaveBeenCalled();
   });
+
+  it('accepts a maximum password strength score of 5', async () => {
+    mockGetUserFromRequest.mockResolvedValue({
+      userId: 1,
+      employeeId: 1,
+      username: 'admin',
+      role: 'ADMIN',
+    } as never);
+
+    const request = new NextRequest('http://localhost/api/system-settings/password-policy', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        policy: {
+          minimumStrengthScore: 5,
+        },
+      }),
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.policy.minimumStrengthScore).toBe(5);
+  });
+
+  it('rejects enabling special character requirements without an allowed character list', async () => {
+    mockGetUserFromRequest.mockResolvedValue({
+      userId: 1,
+      employeeId: 1,
+      username: 'admin',
+      role: 'ADMIN',
+    } as never);
+
+    const request = new NextRequest('http://localhost/api/system-settings/password-policy', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        policy: {
+          requireSpecialChars: true,
+          allowedSpecialChars: '',
+        },
+      }),
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload).toEqual({ error: '啟用特殊字元要求時，必須提供可用的特殊字元清單' });
+  });
 });

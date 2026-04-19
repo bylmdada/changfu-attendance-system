@@ -32,6 +32,10 @@ function normalizeOptionalString(value: unknown): string | undefined {
   return normalized ? normalized : undefined;
 }
 
+function canModifyHandover(status: string): boolean {
+  return status === 'APPROVED' || status === 'IN_HANDOVER';
+}
+
 export async function PUT(request: NextRequest) {
   try {
     // CSRF 驗證
@@ -69,19 +73,30 @@ export async function PUT(request: NextRequest) {
     }
 
     const item = await prisma.handoverItem.findUnique({
-      where: { id: itemId }
+      where: { id: itemId },
+      include: {
+        resignation: {
+          select: {
+            status: true
+          }
+        }
+      }
     });
 
     if (!item) {
       return NextResponse.json({ error: '找不到交接項目' }, { status: 404 });
     }
 
+    if (!canModifyHandover(item.resignation.status)) {
+      return NextResponse.json({ error: '目前離職狀態不可修改交接項目' }, { status: 400 });
+    }
+
     const updated = await prisma.handoverItem.update({
       where: { id: itemId },
       data: {
         completed: completed ?? item.completed,
-        completedAt: completed ? new Date() : null,
-        completedBy: completed ? user.username : null,
+        completedAt: completed !== undefined ? (completed ? new Date() : null) : item.completedAt,
+        completedBy: completed !== undefined ? (completed ? user.username : null) : item.completedBy,
         notes: notes ?? item.notes,
         assignedTo: assignedTo ?? item.assignedTo
       }
@@ -135,6 +150,21 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '請填寫必要欄位' }, { status: 400 });
     }
 
+    const resignation = await prisma.resignationRecord.findUnique({
+      where: { id: resignationId },
+      select: {
+        status: true
+      }
+    });
+
+    if (!resignation) {
+      return NextResponse.json({ error: '找不到離職申請' }, { status: 404 });
+    }
+
+    if (!canModifyHandover(resignation.status)) {
+      return NextResponse.json({ error: '目前離職狀態不可修改交接項目' }, { status: 400 });
+    }
+
     const item = await prisma.handoverItem.create({
       data: {
         resignationId,
@@ -179,6 +209,25 @@ export async function DELETE(request: NextRequest) {
 
     if (!parsedItemId.isValid || parsedItemId.value === null) {
       return NextResponse.json({ error: '項目ID格式無效' }, { status: 400 });
+    }
+
+    const item = await prisma.handoverItem.findUnique({
+      where: { id: parsedItemId.value },
+      include: {
+        resignation: {
+          select: {
+            status: true
+          }
+        }
+      }
+    });
+
+    if (!item) {
+      return NextResponse.json({ error: '找不到交接項目' }, { status: 404 });
+    }
+
+    if (!canModifyHandover(item.resignation.status)) {
+      return NextResponse.json({ error: '目前離職狀態不可修改交接項目' }, { status: 400 });
     }
 
     await prisma.handoverItem.delete({

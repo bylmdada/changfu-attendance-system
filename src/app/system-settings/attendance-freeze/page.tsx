@@ -5,6 +5,10 @@ import { useRouter } from 'next/navigation';
 import { Save, AlertTriangle, Lock } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import {
+  getFreezeExecutionDateForTargetMonth,
+  getNextAttendanceFreezeExecutionDate,
+} from '@/lib/attendance-freeze-rules';
+import {
   buildAttendanceFreezeRequest,
   buildAuthMeRequest,
 } from '@/lib/attendance-freeze-client';
@@ -123,34 +127,36 @@ export default function AttendanceFreezePage() {
 
   const getCurrentStatus = () => {
     const now = new Date();
-    const currentDay = now.getDate();
-    const currentHour = now.getHours();
-    const currentMinute = now.getMinutes();
-    const [freezeHour, freezeMinute] = settings.freezeTime.split(':').map(Number);
-    
-    const isAfterFreezeTime = currentHour > freezeHour || 
-      (currentHour === freezeHour && currentMinute >= freezeMinute);
-    
+
     if (!settings.isEnabled) {
       return { status: 'disabled', message: '考勤凍結功能已停用' };
     }
-    
-    if (currentDay >= settings.freezeDay && isAfterFreezeTime) {
-      return { 
-        status: 'frozen', 
-        message: `本月考勤已於 ${settings.freezeDay} 日 ${settings.freezeTime} 凍結` 
-      };
-    } else {
-      const nextFreezeDate = new Date(now.getFullYear(), now.getMonth(), settings.freezeDay);
-      if (currentDay >= settings.freezeDay) {
-        nextFreezeDate.setMonth(nextFreezeDate.getMonth() + 1);
-      }
-      
-      return { 
-        status: 'active', 
-        message: `下次凍結時間：${nextFreezeDate.getFullYear()}/${(nextFreezeDate.getMonth() + 1).toString().padStart(2, '0')}/${settings.freezeDay.toString().padStart(2, '0')} ${settings.freezeTime}` 
+
+    const currentExecutionDate = getFreezeExecutionDateForTargetMonth(
+      new Date(now.getFullYear(), now.getMonth() - 1, 1),
+      settings
+    );
+
+    if (now >= currentExecutionDate) {
+      return {
+        status: 'frozen',
+        message: `前一個月考勤已於 ${currentExecutionDate.toLocaleString('zh-TW', {
+          timeZone: 'Asia/Taipei',
+          hour12: false
+        })}（台灣時間）凍結`
       };
     }
+
+    const nextFreezeDate = getNextAttendanceFreezeExecutionDate(settings, now);
+    return {
+      status: 'active',
+      message: nextFreezeDate
+        ? `下次凍結時間：${nextFreezeDate.toLocaleString('zh-TW', {
+            timeZone: 'Asia/Taipei',
+            hour12: false
+          })}（台灣時間）`
+        : '考勤凍結功能已停用'
+    };
   };
 
   if (loading) {

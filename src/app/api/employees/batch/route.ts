@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getUserFromRequest } from '@/lib/auth';
+import { getUserFromRequest, hashPassword } from '@/lib/auth';
 import { prisma } from '@/lib/database';
-import bcrypt from 'bcryptjs';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { safeParseJSON } from '@/lib/validation';
+import { generatePasswordForPolicy } from '@/lib/password-policy';
+import { getStoredPasswordPolicy } from '@/lib/password-policy-store';
 
 interface EmployeeData {
   employeeId: string;
@@ -27,6 +28,7 @@ interface ImportResult {
   success: boolean;
   employeeId: string;
   name: string;
+  temporaryPassword?: string;
   error?: string;
 }
 
@@ -46,6 +48,21 @@ function parsePayrollNumber(value: unknown): number | null {
 
 function isValidDateInput(value: unknown): value is string {
   return isNonEmptyString(value) && !Number.isNaN(Date.parse(value));
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isDuplicateEmployeeImportError(error: unknown): boolean {
+  if (!isPlainObject(error)) {
+    return false;
+  }
+
+  const code = typeof error.code === 'string' ? error.code : '';
+  const message = typeof error.message === 'string' ? error.message : '';
+
+  return code === 'P2002' || message.includes('UNIQUE constraint failed');
 }
 
 // POST - 批量匯入員工
@@ -93,6 +110,7 @@ export async function POST(request: NextRequest) {
     const results: ImportResult[] = [];
     let successCount = 0;
     let failCount = 0;
+    const passwordPolicy = await getStoredPasswordPolicy();
 
     // 獲取所有現有員工編號，用於檢查重複
     const existingEmployees = await prisma.employee.findMany({
@@ -188,9 +206,8 @@ export async function POST(request: NextRequest) {
           continue;
         }
 
-        // 生成預設密碼 (員工編號 + 123)
-        const defaultPassword = `${employeeId}123`;
-        const hashedPassword = await bcrypt.hash(defaultPassword, 10);
+        const temporaryPassword = generatePasswordForPolicy(passwordPolicy);
+        const hashedPassword = await hashPassword(temporaryPassword);
 
         // 創建員工和用戶帳號
         await prisma.employee.create({
@@ -228,7 +245,8 @@ export async function POST(request: NextRequest) {
         results.push({
           success: true,
           employeeId: employeeId,
-          name: normalizedName
+          name: normalizedName,
+          temporaryPassword
         });
         successCount++;
 
@@ -238,7 +256,11 @@ export async function POST(request: NextRequest) {
           success: false,
           employeeId: emp.employeeId || '未知',
           name: emp.name || '未知',
-          error: error instanceof Error ? error.message : '系統錯誤'
+          error: isDuplicateEmployeeImportError(error)
+            ? '員工編號或帳號已存在'
+            : error instanceof Error
+              ? error.message
+              : '系統錯誤'
         });
         failCount++;
       }

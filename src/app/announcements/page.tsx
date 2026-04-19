@@ -114,6 +114,19 @@ const CATEGORY_COLORS: Record<string, string> = {
   GENERAL: 'bg-slate-100 text-slate-800'
 };
 
+function parseTargetDepartments(targetDepartments?: string | null): string[] {
+  if (!targetDepartments) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(targetDepartments);
+    return Array.isArray(parsed) ? parsed.filter((department): department is string => typeof department === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
 export default function AnnouncementsPage() {
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [filteredAnnouncements, setFilteredAnnouncements] = useState<Announcement[]>([]);
@@ -141,6 +154,10 @@ export default function AnnouncementsPage() {
   });
 
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [creatingAnnouncement, setCreatingAnnouncement] = useState(false);
+  const [updatingAnnouncement, setUpdatingAnnouncement] = useState(false);
+  const [pendingLinkedAnnouncementId, setPendingLinkedAnnouncementId] = useState<number | null>(null);
+  const [highlightedAnnouncementId, setHighlightedAnnouncementId] = useState<number | null>(null);
 
   // 篩選狀態
   const [filters, setFilters] = useState({
@@ -183,6 +200,22 @@ export default function AnnouncementsPage() {
     fetchAnnouncements();
   }, []);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const rawId = new URLSearchParams(window.location.search).get('id');
+    if (!rawId) {
+      return;
+    }
+
+    const parsedId = Number(rawId);
+    if (Number.isInteger(parsedId) && parsedId > 0) {
+      setPendingLinkedAnnouncementId(parsedId);
+    }
+  }, []);
+
   const filterAnnouncements = useCallback(() => {
     let filtered = announcements || [];
 
@@ -214,6 +247,39 @@ export default function AnnouncementsPage() {
   useEffect(() => {
     filterAnnouncements();
   }, [filterAnnouncements]);
+
+  useEffect(() => {
+    if (pendingLinkedAnnouncementId === null || loading) {
+      return;
+    }
+
+    const clearLinkedAnnouncementQuery = () => {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('id');
+      window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+    };
+
+    const linkedAnnouncement = announcements.find((announcement) => announcement.id === pendingLinkedAnnouncementId);
+    if (!linkedAnnouncement) {
+      setToast({ type: 'error', message: '找不到指定公告' });
+      window.setTimeout(() => setToast(null), 3000);
+      clearLinkedAnnouncementQuery();
+      setPendingLinkedAnnouncementId(null);
+      return;
+    }
+
+    setPreviewAnnouncement(linkedAnnouncement);
+    setHighlightedAnnouncementId(linkedAnnouncement.id);
+    clearLinkedAnnouncementQuery();
+    setPendingLinkedAnnouncementId(null);
+
+    requestAnimationFrame(() => {
+      document.getElementById(`announcement-card-${linkedAnnouncement.id}`)?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center',
+      });
+    });
+  }, [announcements, loading, pendingLinkedAnnouncementId]);
 
   const fetchCurrentUser = async () => {
     try {
@@ -266,6 +332,10 @@ export default function AnnouncementsPage() {
   const handleSubmitAnnouncement = async (e: React.FormEvent) => {
     e.preventDefault();
 
+    if (creatingAnnouncement) {
+      return;
+    }
+
     // 驗證部門選擇
     if (!newAnnouncement.isGlobalAnnouncement && newAnnouncement.selectedDepartments.length === 0) {
       alert('請至少選擇一個部門，或選擇全部部門發送通告');
@@ -273,6 +343,7 @@ export default function AnnouncementsPage() {
     }
 
     try {
+      setCreatingAnnouncement(true);
       const formData = new FormData();
       formData.append('title', newAnnouncement.title);
       formData.append('content', newAnnouncement.content);
@@ -316,18 +387,18 @@ export default function AnnouncementsPage() {
       }
     } catch {
       alert('提交失敗，請稍後再試');
+    } finally {
+      setCreatingAnnouncement(false);
     }
   };
 
   const handleUpdateAnnouncement = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingAnnouncement) return;
+    if (!editingAnnouncement || updatingAnnouncement) return;
 
     // 驗證部門選擇
     if (editingAnnouncement.isGlobalAnnouncement === false) {
-      const selectedDepts = editingAnnouncement.targetDepartments 
-        ? JSON.parse(editingAnnouncement.targetDepartments) 
-        : [];
+      const selectedDepts = parseTargetDepartments(editingAnnouncement.targetDepartments);
       if (selectedDepts.length === 0) {
         alert('請至少選擇一個部門，或選擇全部部門發送通告');
         return;
@@ -335,6 +406,7 @@ export default function AnnouncementsPage() {
     }
 
     try {
+      setUpdatingAnnouncement(true);
       const response = await fetchJSONWithCSRF(`/api/announcements/${editingAnnouncement.id}`, {
         method: 'PUT',
         body: {
@@ -363,6 +435,8 @@ export default function AnnouncementsPage() {
       }
     } catch {
       alert('更新失敗，請稍後再試');
+    } finally {
+      setUpdatingAnnouncement(false);
     }
   };
 
@@ -443,9 +517,7 @@ export default function AnnouncementsPage() {
       expiryDate: '',
       scheduledPublishAt: '',
       isGlobalAnnouncement: announcement.isGlobalAnnouncement ?? true,
-      selectedDepartments: announcement.targetDepartments 
-        ? JSON.parse(announcement.targetDepartments) 
-        : []
+      selectedDepartments: parseTargetDepartments(announcement.targetDepartments)
     });
     setShowNewAnnouncementForm(true);
     showToast('success', '已複製公告內容，請修改後儲存');
@@ -981,12 +1053,13 @@ export default function AnnouncementsPage() {
         <div className="space-y-6">
           {sortedAnnouncements.map((announcement) => (
             <div 
+              id={`announcement-card-${announcement.id}`}
               key={announcement.id} 
               className={`bg-white rounded-lg shadow border-l-4 ${
                 announcement.category === 'URGENT' 
                   ? 'border-l-red-500 bg-red-50/30' 
                   : PRIORITY_BORDER[announcement.priority]
-              } ${selectedIds.has(announcement.id) ? 'ring-2 ring-blue-400' : ''}`}
+              } ${(selectedIds.has(announcement.id) || highlightedAnnouncementId === announcement.id) ? 'ring-2 ring-blue-400' : ''}`}
             >
               <div className="p-6">
                 <div className="flex items-start justify-between mb-4">
@@ -1085,7 +1158,7 @@ export default function AnnouncementsPage() {
                           <>
                             <span className="font-medium">指定部門：</span>
                             <span className="ml-1">
-                              {JSON.parse(announcement.targetDepartments).join('、')}
+                              {parseTargetDepartments(announcement.targetDepartments).join('、')}
                             </span>
                           </>
                         ) : (
@@ -1394,24 +1467,27 @@ export default function AnnouncementsPage() {
                 </div>
 
                 <div className="flex space-x-3 pt-4">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowNewAnnouncementForm(false);
-                      resetForm();
-                    }}
-                    className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50"
-                  >
-                    取消
-                  </button>
-                  <button
-                    type="submit"
-                    className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
-                  >
-                    {newAnnouncement.isPublished ? '發布公告' : '儲存草稿'}
-                  </button>
-                </div>
-              </form>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (creatingAnnouncement) return;
+                        setShowNewAnnouncementForm(false);
+                        resetForm();
+                      }}
+                      disabled={creatingAnnouncement}
+                      className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      取消
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={creatingAnnouncement}
+                      className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      {creatingAnnouncement ? '處理中...' : newAnnouncement.isPublished ? '發布公告' : '儲存草稿'}
+                    </button>
+                  </div>
+                </form>
             </div>
           </div>
         </div>
@@ -1541,9 +1617,7 @@ export default function AnnouncementsPage() {
                         {editingAnnouncement.isGlobalAnnouncement === false && (
                           <div className="mt-2 grid grid-cols-2 gap-2 p-3 border border-gray-200 rounded-md bg-gray-50">
                             {DEPARTMENT_OPTIONS.map((department) => {
-                              const currentDepartments = editingAnnouncement.targetDepartments 
-                                ? JSON.parse(editingAnnouncement.targetDepartments) 
-                                : [];
+                              const currentDepartments = parseTargetDepartments(editingAnnouncement.targetDepartments);
                               return (
                                 <div key={department} className="flex items-center">
                                   <input
@@ -1551,9 +1625,7 @@ export default function AnnouncementsPage() {
                                     id={`edit-dept-${department}`}
                                     checked={currentDepartments.includes(department)}
                                     onChange={(e) => {
-                                      const currentDepts = editingAnnouncement.targetDepartments 
-                                        ? JSON.parse(editingAnnouncement.targetDepartments) 
-                                        : [];
+                                      const currentDepts = parseTargetDepartments(editingAnnouncement.targetDepartments);
                                       let newDepts;
                                       if (e.target.checked) {
                                         newDepts = [...currentDepts, department];
@@ -1597,18 +1669,21 @@ export default function AnnouncementsPage() {
                   <button
                     type="button"
                     onClick={() => {
+                      if (updatingAnnouncement) return;
                       setShowEditForm(false);
                       setEditingAnnouncement(null);
                     }}
-                    className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50"
+                    disabled={updatingAnnouncement}
+                    className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 disabled:opacity-60 disabled:cursor-not-allowed"
                   >
                     取消
                   </button>
                   <button
                     type="submit"
-                    className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+                    disabled={updatingAnnouncement}
+                    className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed"
                   >
-                    更新公告
+                    {updatingAnnouncement ? '處理中...' : '更新公告'}
                   </button>
                 </div>
               </form>

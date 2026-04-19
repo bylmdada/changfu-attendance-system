@@ -4,6 +4,7 @@ import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { safeParseJSON } from '@/lib/validation';
 import { parseIntegerQueryParam } from '@/lib/query-params';
+import { normalizeAttendancePermissions } from '@/lib/attendance-permission-scopes';
 
 interface DecodedToken {
   role: string;
@@ -14,8 +15,12 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function normalizePermissionList(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+async function loadDepartmentNames(): Promise<Set<string>> {
+  const departments = await prisma.department.findMany({
+    select: { name: true }
+  });
+
+  return new Set(departments.map((department) => department.name));
 }
 
 function parseAttendancePermissionId(rawId: string): number | null {
@@ -45,7 +50,7 @@ export async function PATCH(
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    if (!decoded || decoded.role !== 'ADMIN') {
+    if (decoded.role !== 'ADMIN') {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
 
@@ -59,12 +64,7 @@ export async function PATCH(
 
     const data = parseResult.data;
     const permissions = isPlainObject(data) && isPlainObject(data.permissions)
-      ? {
-          leaveRequests: normalizePermissionList(data.permissions.leaveRequests),
-          overtimeRequests: normalizePermissionList(data.permissions.overtimeRequests),
-          shiftExchanges: normalizePermissionList(data.permissions.shiftExchanges),
-          scheduleManagement: normalizePermissionList(data.permissions.scheduleManagement),
-        }
+      ? normalizeAttendancePermissions(data.permissions)
       : undefined;
 
     // 驗證權限數據
@@ -81,9 +81,29 @@ export async function PATCH(
       return NextResponse.json({ error: '請至少選擇一個權限' }, { status: 400 });
     }
 
+    const existingPermission = await prisma.attendancePermission.findUnique({
+      where: { id },
+      select: { id: true }
+    });
+
+    if (!existingPermission) {
+      return NextResponse.json({ error: '找不到權限設定' }, { status: 404 });
+    }
+
+    const departmentNames = await loadDepartmentNames();
+    const invalidDepartments = [...new Set(
+      Object.values(permissions).flat().filter((department) => !departmentNames.has(department))
+    )];
+
+    if (invalidDepartments.length > 0) {
+      return NextResponse.json(
+        { error: `包含無效的部門：${invalidDepartments.join('、')}` },
+        { status: 400 }
+      );
+    }
+
     // 更新權限設定
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const updatedPermission = await (prisma as any).attendancePermission.update({
+    const updatedPermission = await prisma.attendancePermission.update({
       where: { id },
       data: {
         permissions
@@ -133,13 +153,21 @@ export async function DELETE(
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    if (!decoded || decoded.role !== 'ADMIN') {
+    if (decoded.role !== 'ADMIN') {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
 
+    const existingPermission = await prisma.attendancePermission.findUnique({
+      where: { id },
+      select: { id: true }
+    });
+
+    if (!existingPermission) {
+      return NextResponse.json({ error: '找不到權限設定' }, { status: 404 });
+    }
+
     // 刪除權限設定
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await (prisma as any).attendancePermission.delete({
+    await prisma.attendancePermission.delete({
       where: { id }
     });
 

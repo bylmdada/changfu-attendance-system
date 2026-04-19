@@ -75,4 +75,22 @@ describe('comp leave adjust body guards', () => {
     expect(payload).toEqual({ error: '請提供有效的補休調整資料' });
     expect(mockPrisma.$transaction).not.toHaveBeenCalled();
   });
+
+  it('rejects array POST bodies before starting a transaction', async () => {
+    const request = new NextRequest('http://localhost:3000/api/comp-leave/adjust', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-csrf-token': 'csrf-token',
+      },
+      body: '[]',
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload).toEqual({ error: '請提供有效的補休調整資料' });
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+  });
 });

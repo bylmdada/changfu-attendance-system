@@ -175,7 +175,7 @@ export default function BankAccountsPage() {
         const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1 }) as (string | number)[][];
 
         // 解析元大格式：從第3行開始（跳過標題）
-        const importRecords = [];
+        const importRecords: Array<{ idNumber: string; bankAccount: string; name: string }> = [];
         for (let i = 2; i < jsonData.length; i++) {
           const row = jsonData[i];
           if (!row || row.length < 4) continue;
@@ -197,14 +197,16 @@ export default function BankAccountsPage() {
         // 發送匯入請求
         const response = await fetchJSONWithCSRF('/api/employees/bank-accounts', {
           method: 'POST',
-          body: JSON.stringify({ records: importRecords })
-        }) as { success?: boolean; message?: string; error?: string };
+          body: { records: importRecords }
+        });
 
-        if (response.success) {
-          showToast('success', response.message || '匯入成功');
+        const payload = await response.json() as { success?: boolean; message?: string; error?: string };
+
+        if (response.ok && payload.success) {
+          showToast('success', payload.message || '匯入成功');
           loadData(showFull);
         } else {
-          showToast('error', response.error || '匯入失敗');
+          showToast('error', payload.error || '匯入失敗');
         }
       };
 

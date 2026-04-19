@@ -2,14 +2,74 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
+import { DEFAULT_LEAVE_RULES_SETTINGS } from '@/lib/leave-rules-config-defaults';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { safeParseJSON } from '@/lib/validation';
+
+function parseDateOnly(value: unknown): Date | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) {
+    return null;
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
+    return null;
+  }
+
+  return date;
+}
+
+function parseIntegerField(
+  value: unknown,
+  options: { min: number; max?: number }
+): number | null {
+  if (typeof value !== 'number' && typeof value !== 'string') {
+    return null;
+  }
+
+  const normalized = typeof value === 'string' ? value.trim() : value;
+  if (normalized === '') {
+    return null;
+  }
+
+  const parsed = typeof normalized === 'number' ? normalized : Number(normalized);
+  if (!Number.isInteger(parsed) || parsed < options.min) {
+    return null;
+  }
+
+  if (options.max !== undefined && parsed > options.max) {
+    return null;
+  }
+
+  return parsed;
+}
+
+function parseBooleanField(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null;
+}
 
 // GET - 取得目前生效的假別規則設定
 export async function GET(request: NextRequest) {
   try {
     const user = await getUserFromRequest(request);
-    if (!user || user.role !== 'ADMIN') {
+    if (!user) {
+      return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
+    }
+
+    if (user.role !== 'ADMIN') {
       return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
     }
 
@@ -25,26 +85,7 @@ export async function GET(request: NextRequest) {
         success: true,
         config: {
           id: null,
-          // 育嬰留停
-          parentalLeaveFlexible: true,
-          parentalLeaveMaxDays: 30,
-          parentalLeaveCombinedMax: 60,
-          // 家庭照顧假
-          familyCareLeaveMaxDays: 7,
-          familyCareHourlyEnabled: true,
-          familyCareHourlyMaxHours: 56,
-          familyCareNoDeductAttendance: true,
-          // 病假
-          sickLeaveAnnualMax: 30,
-          sickLeaveNoDeductDays: 10,
-          sickLeaveHalfPay: true,
-          // 特休假
-          annualLeaveRollover: false,
-          annualLeaveRolloverMax: 0,
-          // 補休
-          compLeaveRollover: false,
-          compLeaveRolloverMax: 0,
-          compLeaveExpiryMonths: 6,
+          ...DEFAULT_LEAVE_RULES_SETTINGS,
           // 生效設定
           effectiveDate: new Date().toISOString().split('T')[0],
           isActive: true,
@@ -137,37 +178,116 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '請填寫生效日期' }, { status: 400 });
     }
 
-    const parseIntegerField = (value: unknown, fallback: number) => {
-      if (typeof value === 'number' && Number.isFinite(value)) {
-        return Math.trunc(value);
-      }
+    const parsedEffectiveDate = parseDateOnly(normalizedEffectiveDate);
+    if (!parsedEffectiveDate) {
+      return NextResponse.json({ error: '生效日期格式無效' }, { status: 400 });
+    }
 
-      const parsed = Number.parseInt(String(value ?? ''), 10);
-      return Number.isNaN(parsed) ? fallback : parsed;
-    };
+    const parsedParentalLeaveFlexible = parseBooleanField(parentalLeaveFlexible);
+    if (parsedParentalLeaveFlexible === null) {
+      return NextResponse.json({ error: '育嬰留停單日申請設定格式無效' }, { status: 400 });
+    }
 
-    const parseBooleanField = (value: unknown, fallback: boolean) => {
-      return typeof value === 'boolean' ? value : fallback;
-    };
+    const parsedParentalLeaveMaxDays = parseIntegerField(parentalLeaveMaxDays, { min: 1 });
+    if (parsedParentalLeaveMaxDays === null) {
+      return NextResponse.json({ error: '育嬰留停個人上限必須為正整數' }, { status: 400 });
+    }
+
+    const parsedParentalLeaveCombinedMax = parseIntegerField(parentalLeaveCombinedMax, { min: 1 });
+    if (parsedParentalLeaveCombinedMax === null) {
+      return NextResponse.json({ error: '育嬰留停雙親合計上限必須為正整數' }, { status: 400 });
+    }
+
+    if (parsedParentalLeaveCombinedMax < parsedParentalLeaveMaxDays) {
+      return NextResponse.json({ error: '雙親合計上限不得低於個人上限' }, { status: 400 });
+    }
+
+    const parsedFamilyCareLeaveMaxDays = parseIntegerField(familyCareLeaveMaxDays, { min: 0 });
+    if (parsedFamilyCareLeaveMaxDays === null) {
+      return NextResponse.json({ error: '家庭照顧假上限必須為非負整數' }, { status: 400 });
+    }
+
+    const parsedFamilyCareHourlyEnabled = parseBooleanField(familyCareHourlyEnabled);
+    if (parsedFamilyCareHourlyEnabled === null) {
+      return NextResponse.json({ error: '家庭照顧假事假補充設定格式無效' }, { status: 400 });
+    }
+
+    const parsedFamilyCareHourlyMaxHours = parseIntegerField(familyCareHourlyMaxHours, { min: 0 });
+    if (parsedFamilyCareHourlyMaxHours === null) {
+      return NextResponse.json({ error: '家庭照顧假事假補充時數上限必須為非負整數' }, { status: 400 });
+    }
+
+    const parsedFamilyCareNoDeductAttendance = parseBooleanField(familyCareNoDeductAttendance);
+    if (parsedFamilyCareNoDeductAttendance === null) {
+      return NextResponse.json({ error: '家庭照顧假全勤設定格式無效' }, { status: 400 });
+    }
+
+    const parsedSickLeaveAnnualMax = parseIntegerField(sickLeaveAnnualMax, { min: 1 });
+    if (parsedSickLeaveAnnualMax === null) {
+      return NextResponse.json({ error: '病假年度上限必須為正整數' }, { status: 400 });
+    }
+
+    const parsedSickLeaveNoDeductDays = parseIntegerField(sickLeaveNoDeductDays, { min: 0 });
+    if (parsedSickLeaveNoDeductDays === null) {
+      return NextResponse.json({ error: '病假免扣全勤天數必須為非負整數' }, { status: 400 });
+    }
+
+    if (parsedSickLeaveNoDeductDays > parsedSickLeaveAnnualMax) {
+      return NextResponse.json({ error: '病假免扣全勤天數不得高於病假年度上限' }, { status: 400 });
+    }
+
+    const parsedSickLeaveHalfPay = parseBooleanField(sickLeaveHalfPay);
+    if (parsedSickLeaveHalfPay === null) {
+      return NextResponse.json({ error: '病假半薪設定格式無效' }, { status: 400 });
+    }
+
+    const parsedAnnualLeaveRollover = parseBooleanField(annualLeaveRollover);
+    if (parsedAnnualLeaveRollover === null) {
+      return NextResponse.json({ error: '特休遞延設定格式無效' }, { status: 400 });
+    }
+
+    const parsedAnnualLeaveRolloverMax = parseIntegerField(annualLeaveRolloverMax, { min: 0 });
+    if (parsedAnnualLeaveRolloverMax === null) {
+      return NextResponse.json({ error: '特休遞延上限必須為非負整數' }, { status: 400 });
+    }
+
+    const parsedCompLeaveRollover = parseBooleanField(compLeaveRollover);
+    if (parsedCompLeaveRollover === null) {
+      return NextResponse.json({ error: '補休遞延設定格式無效' }, { status: 400 });
+    }
+
+    const parsedCompLeaveRolloverMax = parseIntegerField(compLeaveRolloverMax, { min: 0 });
+    if (parsedCompLeaveRolloverMax === null) {
+      return NextResponse.json({ error: '補休遞延上限必須為非負整數' }, { status: 400 });
+    }
+
+    const parsedCompLeaveExpiryMonths = parseIntegerField(compLeaveExpiryMonths, { min: 1, max: 24 });
+    if (parsedCompLeaveExpiryMonths === null) {
+      return NextResponse.json({ error: '補休有效期必須為 1 到 24 個月的整數' }, { status: 400 });
+    }
+
+    if (description !== undefined && description !== null && typeof description !== 'string') {
+      return NextResponse.json({ error: '說明備註格式無效' }, { status: 400 });
+    }
 
     const newConfigData = {
-      parentalLeaveFlexible: parseBooleanField(parentalLeaveFlexible, true),
-      parentalLeaveMaxDays: parseIntegerField(parentalLeaveMaxDays, 30),
-      parentalLeaveCombinedMax: parseIntegerField(parentalLeaveCombinedMax, 60),
-      familyCareLeaveMaxDays: parseIntegerField(familyCareLeaveMaxDays, 7),
-      familyCareHourlyEnabled: parseBooleanField(familyCareHourlyEnabled, true),
-      familyCareHourlyMaxHours: parseIntegerField(familyCareHourlyMaxHours, 56),
-      familyCareNoDeductAttendance: parseBooleanField(familyCareNoDeductAttendance, true),
-      sickLeaveAnnualMax: parseIntegerField(sickLeaveAnnualMax, 30),
-      sickLeaveNoDeductDays: parseIntegerField(sickLeaveNoDeductDays, 10),
-      sickLeaveHalfPay: parseBooleanField(sickLeaveHalfPay, true),
-      annualLeaveRollover: parseBooleanField(annualLeaveRollover, false),
-      annualLeaveRolloverMax: parseIntegerField(annualLeaveRolloverMax, 0),
-      compLeaveRollover: parseBooleanField(compLeaveRollover, false),
-      compLeaveRolloverMax: parseIntegerField(compLeaveRolloverMax, 0),
-      compLeaveExpiryMonths: parseIntegerField(compLeaveExpiryMonths, 6),
-      effectiveDate: new Date(normalizedEffectiveDate),
-      description: typeof description === 'string' && description ? description : null,
+      parentalLeaveFlexible: parsedParentalLeaveFlexible,
+      parentalLeaveMaxDays: parsedParentalLeaveMaxDays,
+      parentalLeaveCombinedMax: parsedParentalLeaveCombinedMax,
+      familyCareLeaveMaxDays: parsedFamilyCareLeaveMaxDays,
+      familyCareHourlyEnabled: parsedFamilyCareHourlyEnabled,
+      familyCareHourlyMaxHours: parsedFamilyCareHourlyMaxHours,
+      familyCareNoDeductAttendance: parsedFamilyCareNoDeductAttendance,
+      sickLeaveAnnualMax: parsedSickLeaveAnnualMax,
+      sickLeaveNoDeductDays: parsedSickLeaveNoDeductDays,
+      sickLeaveHalfPay: parsedSickLeaveHalfPay,
+      annualLeaveRollover: parsedAnnualLeaveRollover,
+      annualLeaveRolloverMax: parsedAnnualLeaveRolloverMax,
+      compLeaveRollover: parsedCompLeaveRollover,
+      compLeaveRolloverMax: parsedCompLeaveRolloverMax,
+      compLeaveExpiryMonths: parsedCompLeaveExpiryMonths,
+      effectiveDate: parsedEffectiveDate,
+      description: typeof description === 'string' && description.trim() ? description.trim() : null,
       isActive: true
     };
 

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
-import { mkdir, writeFile } from 'fs/promises';
+import { mkdir, unlink, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { Prisma } from '@prisma/client';
@@ -54,13 +54,48 @@ interface PrismaAnnouncementClient {
         { publisher: { connect: { id: number } } }
       )
     ) }) => Promise<AnnouncementLite>;
+    delete: (args: { where: { id: number } }) => Promise<AnnouncementLite>;
   };
   announcementAttachment: {
     create: (args: { data: { announcementId: number; fileName: string; originalName: string; filePath: string; fileSize: number; mimeType: string } }) => Promise<AttachmentLite>;
   };
+  approvalInstance: {
+    deleteMany: (args: { where: { requestType: string; requestId: number } }) => Promise<{ count: number }>;
+  };
 }
 
 const db = prisma as unknown as PrismaAnnouncementClient;
+const uploadDir = join(process.cwd(), 'uploads', 'announcements');
+
+async function cleanupFailedAnnouncementCreation(announcementId: number, savedFileNames: string[]) {
+  try {
+    await db.approvalInstance.deleteMany({
+      where: {
+        requestType: 'ANNOUNCEMENT',
+        requestId: announcementId,
+      },
+    });
+  } catch (error) {
+    console.error('清理公告審核流程失敗:', error);
+  }
+
+  try {
+    await db.announcement.delete({ where: { id: announcementId } });
+  } catch (error) {
+    console.error('清理失敗公告資料失敗:', error);
+  }
+
+  for (const fileName of savedFileNames) {
+    const filePath = join(uploadDir, fileName);
+    try {
+      if (existsSync(filePath)) {
+        await unlink(filePath);
+      }
+    } catch (error) {
+      console.error(`清理公告附件失敗: ${fileName}`, error);
+    }
+  }
+}
 
 // GET: 取得公告列表（依角色與查詢條件過濾）
 export async function GET(request: NextRequest) {
@@ -234,6 +269,30 @@ export async function POST(request: NextRequest) {
     const announcementModel = Prisma.dmmf.datamodel.models.find(m => m.name === 'Announcement');
     const fieldSet = new Set((announcementModel?.fields ?? []).map(f => f.name));
 
+    const attachments = form.getAll('attachments');
+    const uploadFiles: File[] = [];
+    for (const item of attachments) {
+      if (typeof item === 'string') continue;
+      const file = item as File;
+      if (file && file.name) {
+        uploadFiles.push(file);
+      }
+    }
+
+    if (uploadFiles.length > 0) {
+      const { validateFiles, FILE_SIZE_LIMITS, ALLOWED_MIME_TYPES, ALLOWED_EXTENSIONS } = await import('@/lib/upload-validation');
+      const validation = validateFiles(uploadFiles, {
+        maxSize: FILE_SIZE_LIMITS.ATTACHMENT,
+        maxTotalSize: FILE_SIZE_LIMITS.TOTAL_UPLOAD,
+        allowedMimeTypes: ALLOWED_MIME_TYPES.ALL,
+        allowedExtensions: ALLOWED_EXTENSIONS.ALL
+      });
+
+      if (!validation.valid) {
+        return NextResponse.json({ success: false, error: validation.error }, { status: 400 });
+      }
+    }
+
     // 非 ADMIN/HR 用戶的公告強制設為未發布（需審核）
     const finalIsPublished = canDirectPublish ? (scheduledPublishAt ? false : isPublished) : false;
     
@@ -248,9 +307,7 @@ export async function POST(request: NextRequest) {
       scheduledPublishAt: canDirectPublish ? scheduledPublishAt : null, // 員工不支持定時發布
       // 新增：部門相關字段
       isGlobalAnnouncement,
-      targetDepartments: isGlobalAnnouncement ? null : normalizedTargetDepartments.normalized,
-      // 新增：審核狀態
-      status: canDirectPublish ? 'APPROVED' : 'PENDING_APPROVAL'
+      targetDepartments: isGlobalAnnouncement ? null : normalizedTargetDepartments.normalized
     } as const;
 
     let createData:
@@ -273,21 +330,65 @@ export async function POST(request: NextRequest) {
       data: createData,
     });
 
-    // 如果不是立即發布或需要審核（非 ADMIN/HR），建立審核實例
-    if (!canDirectPublish || (!finalIsPublished && canDirectPublish)) {
-      // 取得發布者資訊
-      const publisher = await prisma.employee.findUnique({
-        where: { id: user.employeeId },
-        select: { id: true, name: true, department: true }
-      });
-      
-      await createApprovalForRequest({
-        requestType: 'ANNOUNCEMENT',
-        requestId: created.id,
-        applicantId: user.employeeId,
-        applicantName: publisher?.name || user.username,
-        department: publisher?.department || null
-      });
+    const createdAttachments: AttachmentLite[] = [];
+    const savedFileNames: string[] = [];
+
+    try {
+      // 只有無直接發布權限的使用者需要送審
+      if (!canDirectPublish) {
+        const publisher = await prisma.employee.findUnique({
+          where: { id: user.employeeId },
+          select: { id: true, name: true, department: true }
+        });
+        
+        await createApprovalForRequest({
+          requestType: 'ANNOUNCEMENT',
+          requestId: created.id,
+          applicantId: user.employeeId,
+          applicantName: publisher?.name || user.username,
+          department: publisher?.department || null
+        });
+      }
+
+      if (uploadFiles.length > 0) {
+        if (!existsSync(uploadDir)) {
+          await mkdir(uploadDir, { recursive: true });
+        }
+
+        for (const file of uploadFiles) {
+          const arrayBuffer = await file.arrayBuffer();
+          const buffer = Buffer.from(arrayBuffer);
+
+          const safeOriginal = file.name.replace(/[^\w.\-]+/g, '_');
+          const uniqueName = `${Date.now()}_${Math.random().toString(36).slice(2)}_${safeOriginal}`;
+          const filePath = join(uploadDir, uniqueName);
+
+          await writeFile(filePath, buffer);
+          savedFileNames.push(uniqueName);
+
+          const createdAttachment = await db.announcementAttachment.create({
+            data: {
+              announcementId: created.id,
+              fileName: uniqueName,
+              originalName: file.name,
+              filePath: `uploads/announcements/${uniqueName}`,
+              fileSize: buffer.length,
+              mimeType: file.type || 'application/octet-stream'
+            }
+          });
+          createdAttachments.push({
+            id: createdAttachment.id,
+            fileName: createdAttachment.fileName,
+            originalName: createdAttachment.originalName,
+            fileSize: createdAttachment.fileSize,
+            mimeType: createdAttachment.mimeType
+          });
+        }
+      }
+    } catch (error) {
+      console.error('公告建立後續處理失敗:', error);
+      await cleanupFailedAnnouncementCreation(created.id, savedFileNames);
+      return NextResponse.json({ success: false, error: '公告建立失敗，請稍後再試' }, { status: 500 });
     }
 
     // 如果是緊急通知或高優先級且直接發布（ADMIN/HR），發送即時通知
@@ -309,82 +410,13 @@ export async function POST(request: NextRequest) {
         console.log(`📢 已發送公告通知: ${title}`);
       } catch (notifError) {
         console.error('發送公告通知失敗:', notifError);
-        // 不影響公告創建成功的回應
       }
-    }
-
-    // 儲存附件（若有）
-    const uploadDir = join(process.cwd(), 'uploads', 'announcements');
-    if (!existsSync(uploadDir)) {
-      await mkdir(uploadDir, { recursive: true });
-    }
-
-    const attachments = form.getAll('attachments');
-    const createdAttachments: AttachmentLite[] = [];
-
-    // 驗證附件大小和類型
-    const uploadFiles: File[] = [];
-    for (const item of attachments) {
-      if (typeof item === 'string') continue;
-      const file = item as File;
-      if (file && file.name) {
-        uploadFiles.push(file);
-      }
-    }
-
-    if (uploadFiles.length > 0) {
-      const { validateFiles, FILE_SIZE_LIMITS, ALLOWED_MIME_TYPES, ALLOWED_EXTENSIONS } = await import('@/lib/upload-validation');
-      const validation = validateFiles(uploadFiles, {
-        maxSize: FILE_SIZE_LIMITS.ATTACHMENT,
-        maxTotalSize: FILE_SIZE_LIMITS.TOTAL_UPLOAD,
-        allowedMimeTypes: ALLOWED_MIME_TYPES.ALL,
-        allowedExtensions: ALLOWED_EXTENSIONS.ALL
-      });
-      
-      if (!validation.valid) {
-        return NextResponse.json({ success: false, error: validation.error }, { status: 400 });
-      }
-    }
-
-
-    for (const item of attachments) {
-      if (typeof item === 'string') continue; // 跳過非檔案
-      const file = item as File;
-      if (!file || !file.name) continue;
-
-      const arrayBuffer = await file.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
-
-      // 以時間戳+隨機字串避免重名
-      const safeOriginal = file.name.replace(/[^\w.\-]+/g, '_');
-      const uniqueName = `${Date.now()}_${Math.random().toString(36).slice(2)}_${safeOriginal}`;
-      const filePath = join(uploadDir, uniqueName);
-
-      await writeFile(filePath, buffer);
-
-      const createdAttachment = await (prisma as unknown as { announcementAttachment: { create: (args: { data: { announcementId: number; fileName: string; originalName: string; filePath: string; fileSize: number; mimeType: string } }) => Promise<AttachmentLite> } }).announcementAttachment.create({
-        data: {
-          announcementId: created.id,
-          fileName: uniqueName,
-          originalName: file.name,
-          filePath: `uploads/announcements/${uniqueName}`,
-          fileSize: buffer.length,
-          mimeType: file.type || 'application/octet-stream'
-        }
-      });
-      createdAttachments.push({
-        id: createdAttachment.id,
-        fileName: createdAttachment.fileName,
-        originalName: createdAttachment.originalName,
-        fileSize: createdAttachment.fileSize,
-        mimeType: createdAttachment.mimeType
-      });
     }
 
     return NextResponse.json({
       success: true,
       message: canDirectPublish 
-        ? (finalIsPublished ? '公告已發布' : '公告已儲存，將於指定時間發布')
+        ? (finalIsPublished ? '公告已發布' : scheduledPublishAt ? '公告已儲存，將於指定時間發布' : '公告已儲存為草稿')
         : '公告已提交，待審核通過後發布',
       needsApproval: !canDirectPublish,
       announcement: {

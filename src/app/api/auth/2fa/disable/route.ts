@@ -7,6 +7,7 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { safeParseJSON } from '@/lib/validation';
+import { checkRateLimit } from '@/lib/rate-limit';
 import bcrypt from 'bcryptjs';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -18,6 +19,14 @@ export async function POST(request: NextRequest) {
     const csrfResult = await validateCSRF(request);
     if (!csrfResult.valid) {
       return NextResponse.json({ error: 'CSRF 驗證失敗' }, { status: 403 });
+    }
+
+    const rateLimitResult = await checkRateLimit(request, '/api/auth/2fa/disable');
+    if (!rateLimitResult.allowed) {
+      return NextResponse.json(
+        { error: '操作過於頻繁', retryAfter: rateLimitResult.retryAfter },
+        { status: 429 }
+      );
     }
 
     const user = await getUserFromRequest(request);

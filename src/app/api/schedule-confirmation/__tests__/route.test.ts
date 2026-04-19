@@ -30,6 +30,10 @@ jest.mock('@/lib/csrf', () => ({
   validateCSRF: jest.fn(),
 }));
 
+jest.mock('@/lib/rate-limit', () => ({
+  checkRateLimit: jest.fn(),
+}));
+
 jest.mock('@/lib/schedule-confirm-service', () => ({
   sendSchedulePublishNotification: jest.fn(),
   sendReminderToUnconfirmed: jest.fn(),
@@ -39,15 +43,18 @@ import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
+import { checkRateLimit } from '@/lib/rate-limit';
 import { GET, POST } from '../route';
 
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
 const mockValidateCSRF = validateCSRF as jest.MockedFunction<typeof validateCSRF>;
+const mockCheckRateLimit = checkRateLimit as jest.MockedFunction<typeof checkRateLimit>;
 
 describe('schedule confirmation csrf guard', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockCheckRateLimit.mockResolvedValue({ allowed: true } as never);
     mockGetUserFromRequest.mockResolvedValue({
       userId: 2,
       employeeId: 31,
@@ -167,5 +174,34 @@ describe('schedule confirmation csrf guard', () => {
     expect(payload.error).toBe('請提供有效的班表確認資料');
     expect(mockPrisma.employee.findUnique).not.toHaveBeenCalled();
     expect(mockPrisma.scheduleMonthlyRelease.upsert).not.toHaveBeenCalled();
+  });
+
+  it('rejects confirm POST when the month has not been published yet', async () => {
+    const bcrypt = await import('bcryptjs');
+    mockPrisma.user.findFirst.mockResolvedValue({
+      passwordHash: await bcrypt.hash('Password123!', 4)
+    } as never);
+    mockPrisma.scheduleMonthlyRelease.findFirst.mockResolvedValue(null as never);
+
+    const request = new NextRequest('http://localhost/api/schedule-confirmation', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: 'token=shared-session-token',
+      },
+      body: JSON.stringify({
+        action: 'confirm',
+        yearMonth: '2026-04',
+        password: 'Password123!'
+      }),
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(payload.error).toBe('本月班表尚未發布，無法確認');
+    expect(mockPrisma.scheduleMonthlyRelease.create).not.toHaveBeenCalled();
+    expect(mockPrisma.scheduleConfirmation.upsert).not.toHaveBeenCalled();
   });
 });

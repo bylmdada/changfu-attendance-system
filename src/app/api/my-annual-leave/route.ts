@@ -2,16 +2,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { parseIntegerQueryParam } from '@/lib/query-params';
+import {
+  calculateAnnualLeaveDaysByTotalMonths,
+  calculateServiceDuration,
+  formatYearsOfServiceInput,
+} from '@/lib/annual-leave-rules';
 
-// 計算勞基法應給天數（依年資）
-function calculateLegalDays(years: number): number {
-  if (years < 0.5) return 0;
-  if (years < 1) return 3;
-  if (years < 2) return 7;
-  if (years < 3) return 10;
-  if (years < 5) return 14;
-  if (years < 10) return 15;
-  return Math.min(30, 15 + Math.floor(years - 10) + 1);
+function formatServiceYears(totalMonths: number): number {
+  return Number(formatYearsOfServiceInput(totalMonths));
 }
 
 /**
@@ -89,9 +87,8 @@ export async function GET(request: NextRequest) {
       // 組合資料
       const employeesWithLeave = employees.map(emp => {
         const hireDate = new Date(emp.hireDate);
-        const yearsOfService = Math.floor(
-          (today.getTime() - hireDate.getTime()) / (365.25 * 24 * 60 * 60 * 1000)
-        );
+        const serviceDuration = calculateServiceDuration(hireDate, today);
+        const yearsOfService = formatServiceYears(serviceDuration.totalMonths);
         
         const currentLeave = currentYearLeaves.find(l => l.employeeId === emp.id);
         const lastLeave = lastYearLeaves.find(l => l.employeeId === emp.id);
@@ -104,7 +101,7 @@ export async function GET(request: NextRequest) {
           ...emp,
           hireDate: emp.hireDate,
           yearsOfService,
-          legalDays: calculateLegalDays(yearsOfService),
+          legalDays: calculateAnnualLeaveDaysByTotalMonths(serviceDuration.totalMonths),
           currentYear: currentLeave ? {
             totalDays: currentLeave.totalDays,
             usedDays: currentLeave.usedDays,
@@ -160,9 +157,8 @@ export async function GET(request: NextRequest) {
 
     // 計算年資
     const hireDate = new Date(employee.hireDate);
-    const yearsOfService = Math.floor(
-      (today.getTime() - hireDate.getTime()) / (365.25 * 24 * 60 * 60 * 1000)
-    );
+    const serviceDuration = calculateServiceDuration(hireDate, today);
+    const yearsOfService = formatServiceYears(serviceDuration.totalMonths);
 
     // 計算週年制給假日
     const grantMonth = hireDate.getMonth();
@@ -196,7 +192,7 @@ export async function GET(request: NextRequest) {
     const recentLeaveRequests = await prisma.leaveRequest.findMany({
       where: {
         employeeId: targetEmpId,
-        leaveType: 'ANNUAL',
+        leaveType: { in: ['ANNUAL', 'ANNUAL_LEAVE'] },
         status: { in: ['PENDING', 'APPROVED'] }
       },
       orderBy: { createdAt: 'desc' },
@@ -212,7 +208,7 @@ export async function GET(request: NextRequest) {
       }
     });
 
-    const legalDays = calculateLegalDays(yearsOfService);
+    const legalDays = calculateAnnualLeaveDaysByTotalMonths(serviceDuration.totalMonths);
 
     const daysToExpiry = currentYearLeave?.expiryDate
       ? Math.ceil((new Date(currentYearLeave.expiryDate).getTime() - today.getTime()) / (24 * 60 * 60 * 1000))

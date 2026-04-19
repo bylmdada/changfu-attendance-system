@@ -3,6 +3,11 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import {
+  normalizeSupplementaryPremiumSettings,
+  SUPPLEMENTARY_PREMIUM_SETTINGS_KEY,
+} from '@/lib/supplementary-premium-config';
+import { getStoredSupplementaryPremiumSettings } from '@/lib/supplementary-premium-settings';
 import { safeParseJSON } from '@/lib/validation';
 
 const DEFAULT_HEALTH_INSURANCE_CONFIG = {
@@ -64,6 +69,22 @@ function parseSalaryLevelEntry(value: unknown) {
   };
 }
 
+function parseEffectiveDate(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return null;
+  }
+
+  const parsedDate = new Date(`${value}T00:00:00.000Z`);
+  if (
+    Number.isNaN(parsedDate.getTime()) ||
+    parsedDate.toISOString().slice(0, 10) !== value
+  ) {
+    return null;
+  }
+
+  return parsedDate;
+}
+
 // 驗證 admin 權限
 async function verifyAdmin(request: NextRequest) {
   try {
@@ -77,10 +98,12 @@ async function verifyAdmin(request: NextRequest) {
 // GET - 取得健保配置設定
 export async function GET(request: NextRequest) {
   try {
-    const user = await verifyAdmin(request);
+    const user = await getUserFromRequest(request);
     if (!user) {
-      return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
+      return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
+
+    const supplementarySettings = await getStoredSupplementaryPremiumSettings();
 
     // 取得最新的健保配置
     const config = await prisma.healthInsuranceConfig.findFirst({
@@ -99,6 +122,8 @@ export async function GET(request: NextRequest) {
         success: true,
         config: {
           ...DEFAULT_HEALTH_INSURANCE_CONFIG,
+          supplementaryRate: supplementarySettings.premiumRate / 100,
+          supplementaryThreshold: supplementarySettings.exemptThresholdMultiplier,
           effectiveDate: new Date().toISOString().split('T')[0]
         },
         salaryLevels: DEFAULT_HEALTH_INSURANCE_SALARY_LEVELS.map(level => ({
@@ -117,8 +142,8 @@ export async function GET(request: NextRequest) {
         premiumRate: config.premiumRate,
         employeeContributionRatio: config.employeeContributionRatio,
         maxDependents: config.maxDependents,
-        supplementaryRate: config.supplementaryRate,
-        supplementaryThreshold: config.supplementaryThreshold,
+        supplementaryRate: supplementarySettings.premiumRate / 100,
+        supplementaryThreshold: supplementarySettings.exemptThresholdMultiplier,
         effectiveDate: config.effectiveDate.toISOString().split('T')[0],
         isActive: config.isActive
       },
@@ -282,6 +307,35 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if (!Number.isInteger(normalizedConfig.maxDependents) || normalizedConfig.maxDependents < 0) {
+      return NextResponse.json(
+        { error: '最大眷屬人數必須為 0 以上整數' },
+        { status: 400 }
+      );
+    }
+
+    if (normalizedConfig.supplementaryRate < 0 || normalizedConfig.supplementaryRate > 0.1) {
+      return NextResponse.json(
+        { error: '補充保費費率必須在 0% 到 10% 之間' },
+        { status: 400 }
+      );
+    }
+
+    if (normalizedConfig.supplementaryThreshold <= 0) {
+      return NextResponse.json(
+        { error: '補充保費免扣門檻倍數必須大於 0' },
+        { status: 400 }
+      );
+    }
+
+    const parsedEffectiveDate = parseEffectiveDate(normalizedConfig.effectiveDate);
+    if (!parsedEffectiveDate) {
+      return NextResponse.json(
+        { error: '生效日期格式無效' },
+        { status: 400 }
+      );
+    }
+
     const validatedConfig = {
       id: normalizedConfig.id,
       premiumRate: normalizedConfig.premiumRate,
@@ -292,6 +346,12 @@ export async function POST(request: NextRequest) {
       effectiveDate: normalizedConfig.effectiveDate,
       isActive: normalizedConfig.isActive,
     };
+    const storedSupplementarySettings = await getStoredSupplementaryPremiumSettings();
+    const syncedSupplementarySettings = normalizeSupplementaryPremiumSettings({
+      ...storedSupplementarySettings,
+      premiumRate: validatedConfig.supplementaryRate * 100,
+      exemptThresholdMultiplier: validatedConfig.supplementaryThreshold,
+    });
 
     // 驗證薪資級距
     if (validatedSalaryLevels.length > 0) {
@@ -323,7 +383,7 @@ export async function POST(request: NextRequest) {
             maxDependents: validatedConfig.maxDependents,
             supplementaryRate: validatedConfig.supplementaryRate,
             supplementaryThreshold: validatedConfig.supplementaryThreshold,
-            effectiveDate: new Date(validatedConfig.effectiveDate),
+            effectiveDate: parsedEffectiveDate,
             isActive: validatedConfig.isActive
           }
         });
@@ -341,7 +401,7 @@ export async function POST(request: NextRequest) {
             maxDependents: validatedConfig.maxDependents,
             supplementaryRate: validatedConfig.supplementaryRate,
             supplementaryThreshold: validatedConfig.supplementaryThreshold,
-            effectiveDate: new Date(validatedConfig.effectiveDate),
+            effectiveDate: parsedEffectiveDate,
             isActive: validatedConfig.isActive
           }
         });
@@ -362,6 +422,31 @@ export async function POST(request: NextRequest) {
         }
       }
 
+      const systemSettingsModel = (tx as typeof tx & {
+        systemSettings?: {
+          upsert: (args: {
+            where: { key: string };
+            update: { value: string };
+            create: { key: string; value: string; category: string; description: string };
+          }) => Promise<unknown>;
+        };
+      }).systemSettings;
+
+      if (systemSettingsModel?.upsert) {
+        await systemSettingsModel.upsert({
+          where: { key: SUPPLEMENTARY_PREMIUM_SETTINGS_KEY },
+          update: {
+            value: JSON.stringify(syncedSupplementarySettings),
+          },
+          create: {
+            key: SUPPLEMENTARY_PREMIUM_SETTINGS_KEY,
+            value: JSON.stringify(syncedSupplementarySettings),
+            category: 'insurance',
+            description: '補充保費計算設定',
+          },
+        });
+      }
+
       return savedConfig;
     });
 
@@ -372,8 +457,8 @@ export async function POST(request: NextRequest) {
         premiumRate: result.premiumRate,
         employeeContributionRatio: result.employeeContributionRatio,
         maxDependents: result.maxDependents,
-        supplementaryRate: result.supplementaryRate,
-        supplementaryThreshold: result.supplementaryThreshold,
+        supplementaryRate: syncedSupplementarySettings.premiumRate / 100,
+        supplementaryThreshold: syncedSupplementarySettings.exemptThresholdMultiplier,
         effectiveDate: result.effectiveDate.toISOString().split('T')[0],
         isActive: result.isActive
       }

@@ -156,8 +156,30 @@ export async function getRateLimitStats() {
 export const PROTECTED_ENDPOINTS = {
   '/api/auth/login': { maxRequests: 5, windowMs: 15 * 60 * 1000 }, // 15分鐘5次
   '/api/auth/forgot-password': { maxRequests: 3, windowMs: 60 * 60 * 1000 }, // 1小時3次
+  '/api/auth/2fa/setup': { maxRequests: 5, windowMs: 15 * 60 * 1000 },
+  '/api/auth/2fa/verify': { maxRequests: 10, windowMs: 15 * 60 * 1000 },
+  '/api/auth/2fa/disable': { maxRequests: 5, windowMs: 15 * 60 * 1000 },
+  '/api/approval-delegates': { maxRequests: 30, windowMs: 60 * 1000 },
+  '/api/bonuses': { maxRequests: 20, windowMs: 60 * 1000 },
+  '/api/overtime-requests': { maxRequests: 30, windowMs: 60 * 1000 },
+  '/api/overtime-requests/[id]': { maxRequests: 30, windowMs: 60 * 1000 },
+  '/api/overtime-requests/batch': { maxRequests: 10, windowMs: 60 * 1000 },
+  '/api/overtime-requests/batch-approve': { maxRequests: 10, windowMs: 60 * 1000 },
+  '/api/payroll': { maxRequests: 30, windowMs: 60 * 1000 },
+  '/api/payroll/preview': { maxRequests: 10, windowMs: 60 * 1000 },
+  '/api/payroll/generate': { maxRequests: 10, windowMs: 60 * 1000 },
+  '/api/payroll/[id]': { maxRequests: 30, windowMs: 60 * 1000 },
+  '/api/pro-rated-bonuses': { maxRequests: 10, windowMs: 60 * 1000 },
+  '/api/schedule-confirmation': { maxRequests: 120, windowMs: 60 * 1000 },
+  '/api/schedule-confirmation/confirm': { maxRequests: 10, windowMs: 15 * 60 * 1000 },
+  '/api/system-settings/approval-workflows': { maxRequests: 30, windowMs: 60 * 1000 },
+  '/api/system-settings/schedule-confirm': { maxRequests: 30, windowMs: 60 * 1000 },
+  '/api/system-settings/login-logs': { maxRequests: 60, windowMs: 60 * 1000 },
+  '/api/system-settings/supplementary-premium': { maxRequests: 30, windowMs: 60 * 1000 },
   '/api/password': { maxRequests: 3, windowMs: 60 * 60 * 1000 }, // 1小時3次
   '/api/setup-employee': { maxRequests: 3, windowMs: 60 * 60 * 1000 }, // 1小時3次
+  '/api/webauthn/register-options': { maxRequests: 5, windowMs: 15 * 60 * 1000 }, // 15分鐘5次
+  '/api/webauthn/register-verify': { maxRequests: 10, windowMs: 15 * 60 * 1000 }, // 15分鐘10次
   '/api/attendance/verify-clock': { maxRequests: 10, windowMs: 60 * 1000 }, // 1分鐘10次
 } as const;
 

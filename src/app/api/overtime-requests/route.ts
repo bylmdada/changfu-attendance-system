@@ -6,9 +6,10 @@ import { checkRateLimit } from '@/lib/rate-limit';
 import { toTaiwanDateStr } from '@/lib/timezone';
 import { validateCSRF } from '@/lib/csrf';
 import { createApprovalForRequest } from '@/lib/approval-helper';
-import { getManageableDepartments } from '@/lib/schedule-management-permissions';
 import { parseIntegerQueryParam } from '@/lib/query-params';
+import { safeParseSystemSettingsValue } from '@/lib/system-settings-json';
 import { safeParseJSON } from '@/lib/validation';
+import { getAttendancePermissionDepartments } from '@/lib/attendance-permission-scopes';
 
 // 簡易型別：避免直接耦合到 Prisma 生成客戶端
 interface ScheduleLite { shiftType: string; startTime: string; endTime: string }
@@ -31,11 +32,79 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+interface OvertimeLimitSettings {
+  monthlyLimit: number;
+  warningThreshold: number;
+  exceedMode: 'BLOCK' | 'FORCE_REVIEW';
+  enabled: boolean;
+}
+
+const DEFAULT_OVERTIME_LIMIT_SETTINGS: OvertimeLimitSettings = {
+  monthlyLimit: 46,
+  warningThreshold: 36,
+  exceedMode: 'BLOCK',
+  enabled: true
+};
+
+const ACTIVE_OVERTIME_REQUEST_STATUSES = ['PENDING', 'PENDING_ADMIN', 'APPROVED'] as const;
+const TAIWAN_UTC_OFFSET_MS = 8 * 60 * 60 * 1000;
+
+function normalizeOvertimeLimitSettings(value: unknown): OvertimeLimitSettings {
+  if (!isPlainObject(value)) {
+    return { ...DEFAULT_OVERTIME_LIMIT_SETTINGS };
+  }
+
+  const monthlyLimit = typeof value.monthlyLimit === 'number' && Number.isFinite(value.monthlyLimit)
+    ? value.monthlyLimit
+    : DEFAULT_OVERTIME_LIMIT_SETTINGS.monthlyLimit;
+  const warningThreshold = typeof value.warningThreshold === 'number' && Number.isFinite(value.warningThreshold)
+    ? value.warningThreshold
+    : DEFAULT_OVERTIME_LIMIT_SETTINGS.warningThreshold;
+  const exceedMode = value.exceedMode === 'FORCE_REVIEW' ? 'FORCE_REVIEW' : 'BLOCK';
+  const enabled = typeof value.enabled === 'boolean'
+    ? value.enabled
+    : DEFAULT_OVERTIME_LIMIT_SETTINGS.enabled;
+
+  return {
+    monthlyLimit,
+    warningThreshold,
+    exceedMode,
+    enabled
+  };
+}
+
+function isDuplicateOvertimeRequestError(error: unknown): boolean {
+  if (!isPlainObject(error)) {
+    return false;
+  }
+
+  const code = typeof error.code === 'string' ? error.code : '';
+  const message = typeof error.message === 'string' ? error.message : '';
+
+  return code === 'P2002' || message.includes('UNIQUE constraint failed');
+}
+
+function getTaiwanMonthRangeUtc(date: Date): { monthStart: Date; monthEndExclusive: Date } {
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Taipei',
+    year: 'numeric',
+    month: '2-digit'
+  });
+  const parts = formatter.formatToParts(date);
+  const year = Number(parts.find((part) => part.type === 'year')?.value);
+  const month = Number(parts.find((part) => part.type === 'month')?.value);
+
+  const monthStart = new Date(Date.UTC(year, month - 1, 1) - TAIWAN_UTC_OFFSET_MS);
+  const monthEndExclusive = new Date(Date.UTC(year, month, 1) - TAIWAN_UTC_OFFSET_MS);
+
+  return { monthStart, monthEndExclusive };
+}
+
 // 獲取加班申請列表
 export async function GET(request: NextRequest) {
   try {
     // Rate limiting
-    const rateLimitResult = await checkRateLimit(request);
+    const rateLimitResult = await checkRateLimit(request, '/api/overtime-requests');
     if (!rateLimitResult.allowed) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
@@ -70,10 +139,10 @@ export async function GET(request: NextRequest) {
         whereClause.employeeId = employeeIdResult.value;
       }
     } else {
-      const manageableDepartments = await getManageableDepartments({
+      const manageableDepartments = await getAttendancePermissionDepartments({
         role: user.role,
         employeeId: user.employeeId,
-      });
+      }, 'overtimeRequests');
 
       if (manageableDepartments.length > 0) {
         whereClause.employee = {
@@ -164,7 +233,7 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     // Rate limiting
-    const rateLimitResult = await checkRateLimit(request);
+    const rateLimitResult = await checkRateLimit(request, '/api/overtime-requests');
     if (!rateLimitResult.allowed) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
@@ -246,7 +315,7 @@ export async function POST(request: NextRequest) {
     const freezeCheck = await checkAttendanceFreeze(overtimeDateObj);
 
     if (freezeCheck.isFrozen) {
-      const freezeDateStr = freezeCheck.freezeInfo?.freezeDate.toLocaleString('zh-TW');
+      const freezeDateStr = freezeCheck.freezeInfo?.freezeDate.toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', hour12: false });
       return NextResponse.json({
         error: `該月份已被凍結，無法提交加班申請。凍結時間：${freezeDateStr}，操作者：${freezeCheck.freezeInfo?.creator.name}`
       }, { status: 403 });
@@ -275,7 +344,7 @@ export async function POST(request: NextRequest) {
       where: {
         employeeId: employeeId,
         overtimeDate: new Date(finalOvertimeDate),
-        status: { in: ['PENDING', 'APPROVED'] }
+        status: { in: [...ACTIVE_OVERTIME_REQUEST_STATUSES] }
       }
     });
 
@@ -294,9 +363,13 @@ export async function POST(request: NextRequest) {
       where: { key: 'overtime_limit_settings' }
     });
 
-    const limits = limitSettings 
-      ? JSON.parse(limitSettings.value)
-      : { monthlyLimit: 46, warningThreshold: 36, exceedMode: 'BLOCK', enabled: true };
+    const limits = normalizeOvertimeLimitSettings(
+      safeParseSystemSettingsValue<unknown>(
+        limitSettings?.value,
+        DEFAULT_OVERTIME_LIMIT_SETTINGS,
+        'overtime_limit_settings'
+      )
+    );
 
     let overtimeLimitWarning = null;
     let requireForceReview = false;
@@ -304,9 +377,7 @@ export async function POST(request: NextRequest) {
     if (limits.enabled) {
       // 計算當月已核准的加班時數
       const overtimeDateObj = new Date(finalOvertimeDate);
-      const twDate = new Date(overtimeDateObj.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
-      const monthStart = new Date(Date.UTC(twDate.getFullYear(), twDate.getMonth(), 1) - 8 * 60 * 60 * 1000);
-      const monthEnd = new Date(Date.UTC(twDate.getFullYear(), twDate.getMonth() + 1, 1) - 8 * 60 * 60 * 1000);
+      const { monthStart, monthEndExclusive } = getTaiwanMonthRangeUtc(overtimeDateObj);
 
       const monthlyApproved = await prisma.overtimeRequest.findMany({
         where: {
@@ -314,7 +385,7 @@ export async function POST(request: NextRequest) {
           status: 'APPROVED',
           overtimeDate: {
             gte: monthStart,
-            lte: monthEnd
+            lt: monthEndExclusive
           }
         }
       });
@@ -349,30 +420,39 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '無效的補償方式' }, { status: 400 });
     }
 
-    const overtimeRequest = await prisma.overtimeRequest.create({
-      data: {
-        employeeId: employeeId,
-        overtimeDate: new Date(finalOvertimeDate),
-        startTime,
-        endTime,
-        totalHours,
-        reason,
-        workContent: workContent || '',
-        compensationType,
-        status: 'PENDING'
-      },
-      include: {
-        employee: {
-          select: {
-            id: true,
-            employeeId: true,
-            name: true,
-            department: true,
-            position: true
+    let overtimeRequest;
+    try {
+      overtimeRequest = await prisma.overtimeRequest.create({
+        data: {
+          employeeId: employeeId,
+          overtimeDate: new Date(finalOvertimeDate),
+          startTime,
+          endTime,
+          totalHours,
+          reason,
+          workContent: workContent || '',
+          compensationType,
+          status: 'PENDING'
+        },
+        include: {
+          employee: {
+            select: {
+              id: true,
+              employeeId: true,
+              name: true,
+              department: true,
+              position: true
+            }
           }
         }
+      });
+    } catch (error) {
+      if (isDuplicateOvertimeRequestError(error)) {
+        return NextResponse.json({ error: '該日期已有加班申請' }, { status: 400 });
       }
-    });
+
+      throw error;
+    }
 
     // 建立審核實例
     await createApprovalForRequest({

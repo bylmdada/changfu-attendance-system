@@ -5,6 +5,10 @@ import { useRouter } from 'next/navigation';
 import { Save, Info, Baby, Heart, Thermometer, Calendar, History, Loader2 } from 'lucide-react';
 import SystemNavbar from '@/components/SystemNavbar';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
+import {
+  DEFAULT_LEAVE_RULES_SETTINGS,
+  type LeaveRulesSettingsValues,
+} from '@/lib/leave-rules-config-defaults';
 
 interface User {
   id: number;
@@ -19,29 +23,8 @@ interface User {
   };
 }
 
-interface LeaveRulesConfig {
+interface LeaveRulesConfig extends LeaveRulesSettingsValues {
   id: number | null;
-  // 育嬰留停
-  parentalLeaveFlexible: boolean;
-  parentalLeaveMaxDays: number;
-  parentalLeaveCombinedMax: number;
-  // 家庭照顧假
-  familyCareLeaveMaxDays: number;
-  familyCareHourlyEnabled: boolean;
-  familyCareHourlyMaxHours: number;
-  familyCareNoDeductAttendance: boolean;
-  // 病假
-  sickLeaveAnnualMax: number;
-  sickLeaveNoDeductDays: number;
-  sickLeaveHalfPay: boolean;
-  // 特休假
-  annualLeaveRollover: boolean;
-  annualLeaveRolloverMax: number;
-  // 補休
-  compLeaveRollover: boolean;
-  compLeaveRolloverMax: number;
-  compLeaveExpiryMonths: number;
-  // 生效設定
   effectiveDate: string;
   isActive: boolean;
   description: string;
@@ -57,21 +40,7 @@ export default function LeaveRulesConfigPage() {
   
   const [config, setConfig] = useState<LeaveRulesConfig>({
     id: null,
-    parentalLeaveFlexible: true,
-    parentalLeaveMaxDays: 30,
-    parentalLeaveCombinedMax: 60,
-    familyCareLeaveMaxDays: 7,
-    familyCareHourlyEnabled: true,
-    familyCareHourlyMaxHours: 56,
-    familyCareNoDeductAttendance: true,
-    sickLeaveAnnualMax: 30,
-    sickLeaveNoDeductDays: 10,
-    sickLeaveHalfPay: true,
-    annualLeaveRollover: false,
-    annualLeaveRolloverMax: 0,
-    compLeaveRollover: false,
-    compLeaveRolloverMax: 0,
-    compLeaveExpiryMonths: 6,
+    ...DEFAULT_LEAVE_RULES_SETTINGS,
     effectiveDate: new Date().toISOString().split('T')[0],
     isActive: true,
     description: ''
@@ -239,6 +208,7 @@ export default function LeaveRulesConfigPage() {
                 </label>
                 <input
                   type="number"
+                  min="1"
                   value={config.parentalLeaveMaxDays}
                   onChange={(e) => handleInputChange('parentalLeaveMaxDays', parseInt(e.target.value) || 0)}
                   className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-gray-900"
@@ -251,6 +221,7 @@ export default function LeaveRulesConfigPage() {
                 </label>
                 <input
                   type="number"
+                  min="1"
                   value={config.parentalLeaveCombinedMax}
                   onChange={(e) => handleInputChange('parentalLeaveCombinedMax', parseInt(e.target.value) || 0)}
                   className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-gray-900"
@@ -276,6 +247,7 @@ export default function LeaveRulesConfigPage() {
                 </label>
                 <input
                   type="number"
+                  min="0"
                   value={config.familyCareLeaveMaxDays}
                   onChange={(e) => handleInputChange('familyCareLeaveMaxDays', parseInt(e.target.value) || 0)}
                   className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-gray-900"
@@ -287,6 +259,7 @@ export default function LeaveRulesConfigPage() {
                 </label>
                 <input
                   type="number"
+                  min="0"
                   value={config.familyCareHourlyMaxHours}
                   onChange={(e) => handleInputChange('familyCareHourlyMaxHours', parseInt(e.target.value) || 0)}
                   className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-gray-900"
@@ -335,6 +308,7 @@ export default function LeaveRulesConfigPage() {
                 </label>
                 <input
                   type="number"
+                  min="1"
                   value={config.sickLeaveAnnualMax}
                   onChange={(e) => handleInputChange('sickLeaveAnnualMax', parseInt(e.target.value) || 0)}
                   className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-gray-900"
@@ -346,6 +320,7 @@ export default function LeaveRulesConfigPage() {
                 </label>
                 <input
                   type="number"
+                  min="0"
                   value={config.sickLeaveNoDeductDays}
                   onChange={(e) => handleInputChange('sickLeaveNoDeductDays', parseInt(e.target.value) || 0)}
                   className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-gray-900"
@@ -395,6 +370,7 @@ export default function LeaveRulesConfigPage() {
                   </label>
                   <input
                     type="number"
+                    min="0"
                     value={config.annualLeaveRolloverMax}
                     onChange={(e) => handleInputChange('annualLeaveRolloverMax', parseInt(e.target.value) || 0)}
                     className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-gray-900"
@@ -423,6 +399,7 @@ export default function LeaveRulesConfigPage() {
                   </label>
                   <input
                     type="number"
+                    min="0"
                     value={config.compLeaveRolloverMax}
                     onChange={(e) => handleInputChange('compLeaveRolloverMax', parseInt(e.target.value) || 0)}
                     className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-gray-900"

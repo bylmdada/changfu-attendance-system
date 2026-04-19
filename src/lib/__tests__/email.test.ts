@@ -92,4 +92,33 @@ describe('email notification sanitization', () => {
       responseCode: 535,
     });
   });
+
+  it('treats whitespace-only smtp host values as not configured', async () => {
+    mockPrisma.smtpSettings.findFirst.mockResolvedValue({
+      smtpHost: '   ',
+      smtpPort: 587,
+      smtpSecure: false,
+      smtpUser: 'mailer@example.com',
+      smtpPassword: 'super-secret',
+      fromName: '長福考勤系統',
+      fromEmail: 'mailer@example.com',
+    } as never);
+
+    const result = await sendNotification({
+      type: 'ANNUAL_LEAVE_EXPIRY',
+      recipientEmployeeId: 1,
+      recipientEmail: 'employee@example.com',
+      recipientName: '王小明',
+      title: '年假即將到期提醒',
+      message: 'test message',
+    });
+
+    expect(result).toEqual({
+      success: false,
+      emailSent: false,
+      inAppSent: false,
+      errors: ['郵件: SMTP 未設定'],
+    });
+    expect(sendMail).not.toHaveBeenCalled();
+  });
 });

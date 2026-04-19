@@ -7,6 +7,7 @@ const mockPrisma = {
     update: jest.fn()
   },
   scheduleConfirmation: {
+    findUnique: jest.fn(),
     updateMany: jest.fn()
   },
   employee: {
@@ -21,11 +22,26 @@ jest.mock('@/lib/database', () => ({
   prisma: mockPrisma
 }));
 
-import { invalidateConfirmation } from '@/lib/schedule-confirm-service';
+import { canEmployeeClockIn, invalidateConfirmation } from '@/lib/schedule-confirm-service';
 
 describe('invalidateConfirmation', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  it('blocks clock-in when the active month has not been published yet', async () => {
+    mockPrisma.systemSettings.findMany.mockResolvedValue([
+      { key: 'scheduleConfirm.enabled', value: 'true' },
+      { key: 'scheduleConfirm.blockClock', value: 'true' }
+    ]);
+    mockPrisma.employee.findUnique.mockResolvedValue({ id: 7, department: '行政部' });
+    mockPrisma.scheduleMonthlyRelease.findFirst.mockResolvedValue(null);
+
+    await expect(canEmployeeClockIn(7, new Date('2026-04-10T08:00:00.000Z'))).resolves.toEqual({
+      allowed: false,
+      reason: '本月班表尚未發布，請聯繫排班管理員'
+    });
+    expect(mockPrisma.scheduleConfirmation.findUnique).not.toHaveBeenCalled();
   });
 
   it('invalidates only the target employee confirmation without bumping the release version', async () => {

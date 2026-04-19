@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest, type JWTPayload } from '@/lib/auth';
+import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { 
   calculateYearEndBonus,
@@ -15,6 +16,10 @@ import {
 } from '@/lib/tax-calculator';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
+import {
+  getBonusSupplementaryPremiumContext,
+  getStoredSupplementaryPremiumSettings,
+} from '@/lib/supplementary-premium-settings';
 
 interface BonusResults {
   yearEndBonus?: unknown;
@@ -41,6 +46,14 @@ function parsePositiveInteger(value: string | number, max: number) {
 
 export async function GET(request: NextRequest) {
   try {
+    const rateLimitResult = await checkRateLimit(request, '/api/pro-rated-bonuses');
+    if (!rateLimitResult.allowed) {
+      return NextResponse.json(
+        { success: false, error: '請求過於頻繁' },
+        { status: 429 }
+      );
+    }
+
     const user = await getUserFromRequest(request);
     if (!isBonusManager(user)) {
       return NextResponse.json(
@@ -90,6 +103,14 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
+    const rateLimitResult = await checkRateLimit(request, '/api/pro-rated-bonuses');
+    if (!rateLimitResult.allowed) {
+      return NextResponse.json(
+        { success: false, error: '請求過於頻繁' },
+        { status: 429 }
+      );
+    }
+
     const user = await getUserFromRequest(request);
     if (!isBonusManager(user)) {
       return NextResponse.json(
@@ -390,6 +411,10 @@ async function handleBatchCalculateAndCreate(
     );
   }
 
+  const supplementarySettings = autoCreateRecords
+    ? await getStoredSupplementaryPremiumSettings()
+    : null;
+
   for (const employee of employees) {
     let bonusCalculation: BonusCalculation;
     let payrollMonth: number;
@@ -459,46 +484,55 @@ async function handleBatchCalculateAndCreate(
           update: {}
         });
 
-        // 計算補充保費
+        const { currentPeriodBonusTotal, currentYearPremiumTotal } = await getBonusSupplementaryPremiumContext({
+          employeeId: employee.id,
+          payrollYear: year,
+          payrollMonth,
+          settings: supplementarySettings!,
+        });
         const supplementaryCalculation = calculateBonusSupplementaryPremium(
           insuredAmount,
-          annualBonus.totalBonusAmount,
-          bonusCalculation.proRatedAmount
+          currentPeriodBonusTotal,
+          bonusCalculation.proRatedAmount,
+          supplementarySettings!,
+          currentYearPremiumTotal
         );
 
-        // 創建獎金記錄
-        const bonusRecord = await prisma.bonusRecord.create({
-          data: {
-            employeeId: employee.id,
-            annualBonusId: annualBonus.id,
-            bonusType: bonusCalculation.bonusType,
-            bonusTypeName: bonusCalculation.bonusTypeName,
-            amount: bonusCalculation.proRatedAmount,
-            payrollYear: year,
-            payrollMonth: payrollMonth,
-            insuredAmount,
-            exemptThreshold: supplementaryCalculation.exemptThreshold,
-            cumulativeBonusBefore: supplementaryCalculation.currentYearBonusTotal,
-            cumulativeBonusAfter: supplementaryCalculation.currentYearBonusTotal + bonusCalculation.proRatedAmount,
-            calculationBase: supplementaryCalculation.calculationBase,
-            supplementaryPremium: supplementaryCalculation.premiumAmount,
-            premiumRate: supplementaryCalculation.premiumRate,
-            isAdjustment: false,
-            createdBy
-          }
-        });
-
-        // 更新年度累計記錄
-        await prisma.employeeAnnualBonus.update({
-          where: { id: annualBonus.id },
-          data: {
-            totalBonusAmount: {
-              increment: bonusCalculation.proRatedAmount
-            },
-            supplementaryPremium: {
-              increment: supplementaryCalculation.premiumAmount
+        const bonusRecord = await prisma.$transaction(async (tx) => {
+          const createdBonusRecord = await tx.bonusRecord.create({
+            data: {
+              employeeId: employee.id,
+              annualBonusId: annualBonus.id,
+              bonusType: bonusCalculation.bonusType,
+              bonusTypeName: bonusCalculation.bonusTypeName,
+              amount: bonusCalculation.proRatedAmount,
+              payrollYear: year,
+              payrollMonth: payrollMonth,
+              insuredAmount,
+              exemptThreshold: supplementaryCalculation.exemptThreshold,
+              cumulativeBonusBefore: currentPeriodBonusTotal,
+              cumulativeBonusAfter: currentPeriodBonusTotal + bonusCalculation.proRatedAmount,
+              calculationBase: supplementaryCalculation.calculationBase,
+              supplementaryPremium: supplementaryCalculation.premiumAmount,
+              premiumRate: supplementaryCalculation.premiumRate,
+              isAdjustment: false,
+              createdBy
             }
-          }
+          });
+
+          await tx.employeeAnnualBonus.update({
+            where: { id: annualBonus.id },
+            data: {
+              totalBonusAmount: {
+                increment: bonusCalculation.proRatedAmount
+              },
+              supplementaryPremium: {
+                increment: supplementaryCalculation.premiumAmount
+              }
+            }
+          });
+
+          return createdBonusRecord;
         });
 
         createdRecords.push({

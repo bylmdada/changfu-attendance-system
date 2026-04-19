@@ -6,6 +6,7 @@ import { validateCSRF } from '@/lib/csrf';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
 import { getAnnualLeaveYearBreakdown } from '@/lib/annual-leave';
+import { isAnnualLeaveType } from '@/lib/leave-types';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -83,7 +84,7 @@ export async function POST(
         }
       });
 
-      if (leaveRequest.leaveType === 'ANNUAL_LEAVE') {
+      if (isAnnualLeaveType(leaveRequest.leaveType)) {
         const startDate = new Date(leaveRequest.startDate);
         const endDate = new Date(leaveRequest.endDate);
         for (const { year, days } of getAnnualLeaveYearBreakdown(startDate, endDate)) {

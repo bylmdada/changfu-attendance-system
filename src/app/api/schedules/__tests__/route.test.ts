@@ -1,9 +1,11 @@
 jest.mock('@/lib/database', () => ({
   prisma: {
+    $transaction: jest.fn(),
     schedule: {
       findMany: jest.fn(),
       findUnique: jest.fn(),
       create: jest.fn(),
+      update: jest.fn(),
       delete: jest.fn()
     },
     employee: {
@@ -70,6 +72,7 @@ describe('schedules route regressions', () => {
     mockGetManageableDepartments.mockResolvedValue(['護理部'] as never);
     mockCanManageScheduleEmployee.mockResolvedValue(true as never);
     mockInvalidateConfirmation.mockResolvedValue({ invalidated: false } as never);
+    mockPrisma.$transaction.mockImplementation((async (callback: (tx: typeof mockPrisma) => unknown) => callback(mockPrisma)) as never);
     mockPrisma.schedule.findMany.mockResolvedValue([] as never);
     mockPrisma.schedule.findUnique.mockResolvedValue(null as never);
     mockPrisma.employee.findFirst.mockResolvedValue({

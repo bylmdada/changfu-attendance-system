@@ -61,7 +61,7 @@ describe('leave request cancellation authorization guards', () => {
       id: 8,
       employeeId: 10,
       cancellationStatus: 'PENDING_MANAGER',
-      leaveType: 'ANNUAL_LEAVE',
+      leaveType: 'ANNUAL',
       startDate: new Date('2026-04-10T00:00:00.000Z'),
       endDate: new Date('2026-04-10T00:00:00.000Z'),
       employee: {
@@ -216,7 +216,7 @@ describe('leave request cancellation authorization guards', () => {
       employeeId: 10,
       status: 'APPROVED',
       cancellationStatus: 'PENDING_ADMIN',
-      leaveType: 'ANNUAL_LEAVE',
+      leaveType: 'ANNUAL',
       startDate: new Date('2026-04-10T00:00:00.000Z'),
       endDate: new Date('2026-04-11T00:00:00.000Z'),
       employee: {

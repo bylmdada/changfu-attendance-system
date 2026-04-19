@@ -69,7 +69,7 @@ describe('shift exchanges route guards', () => {
     expect(mockPrisma.shiftExchangeRequest.findMany).not.toHaveBeenCalled();
   });
 
-  it('rejects malformed targetEmployeeId on POST before creating the request', async () => {
+  it('rejects incomplete self-change payloads on POST before creating the request', async () => {
     mockGetUserFromRequest.mockResolvedValue({
       role: 'EMPLOYEE',
       employeeId: 10,
@@ -83,10 +83,8 @@ describe('shift exchanges route guards', () => {
         'content-type': 'application/json',
       },
       body: JSON.stringify({
-        targetEmployeeId: 'abc',
-        originalWorkDate: '2026-04-01',
-        targetWorkDate: '2026-04-02',
-        requestReason: '互調',
+        shiftDate: '2026-04-01',
+        originalShiftType: 'A',
       }),
     });
 
@@ -94,7 +92,7 @@ describe('shift exchanges route guards', () => {
     const payload = await response.json();
 
     expect(response.status).toBe(400);
-    expect(payload.error).toBe('targetEmployeeId 格式錯誤');
+    expect(payload.error).toBe('調班日期、原班別、新班別與申請原因為必填');
     expect(mockPrisma.shiftExchangeRequest.create).not.toHaveBeenCalled();
     expect(mockCreateApprovalForRequest).not.toHaveBeenCalled();
   });
@@ -137,7 +135,7 @@ describe('shift exchanges route guards', () => {
         cookie: 'token=session-token',
         'content-type': 'application/json',
       },
-      body: '{"targetEmployeeId":',
+      body: '{"shiftDate":',
     });
 
     const response = await POST(request);

@@ -6,6 +6,7 @@ import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import { buildPayrollStatisticsRequest } from '@/lib/payroll-statistics-client';
 import {
   calculateAverageMonthlyGrossPay,
+  calculateOvertimePayShare,
   countMonthsWithPayroll,
 } from '@/lib/payroll-statistics-metrics';
 
@@ -14,6 +15,7 @@ interface PayrollStatistics {
     totalRecords: number;
     totalGrossPay: number;
     totalNetPay: number;
+    totalOvertimePay: number;
     totalRegularHours: number;
     totalOvertimeHours: number;
     avgGrossPay: number;
@@ -82,6 +84,7 @@ export default function PayrollStatisticsPage() {
 
   useEffect(() => {
     const loadStatistics = async () => {
+      setLoading(true);
       try {
         // 首先獲取用戶信息
         const authResponse = await fetch('/api/auth/me', {
@@ -684,13 +687,16 @@ export default function PayrollStatisticsPage() {
                   </div>
                 </div>
                 <div className="text-center p-4 bg-green-50 rounded-lg">
-                  <div className="text-sm text-gray-600 mb-1">加班費占比</div>
-                  <div className="text-2xl font-bold text-green-600">
-                    {statistics.overall.totalGrossPay > 0 
-                      ? `${((statistics.overall.totalOvertimeHours * 200 / statistics.overall.totalGrossPay) * 100).toFixed(1)}%`
-                      : '0%'}
-                  </div>
+                <div className="text-sm text-gray-600 mb-1">加班費占比</div>
+                <div className="text-2xl font-bold text-green-600">
+                  {statistics.overall.totalGrossPay > 0 
+                    ? `${calculateOvertimePayShare(
+                        statistics.overall.totalOvertimePay,
+                        statistics.overall.totalGrossPay
+                      ).toFixed(1)}%`
+                    : '0%'}
                 </div>
+              </div>
                 <div className="text-center p-4 bg-purple-50 rounded-lg">
                   <div className="text-sm text-gray-600 mb-1">加班時數占比</div>
                   <div className="text-2xl font-bold text-purple-600">

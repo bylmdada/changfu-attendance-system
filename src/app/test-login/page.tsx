@@ -6,6 +6,7 @@ import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 export default function TestLoginPage() {
   const [result, setResult] = useState<string>('');
   const [loading, setLoading] = useState(false);
+  const [testPassword, setTestPassword] = useState('');
 
   if (process.env.NODE_ENV === 'production') {
     return (
@@ -26,6 +27,9 @@ export default function TestLoginPage() {
         body: {}
       });
       const data = await response.json();
+      if (typeof data?.testAccount?.password === 'string') {
+        setTestPassword(data.testAccount.password);
+      }
       setResult(JSON.stringify(data, null, 2));
     } catch (error) {
       setResult(`錯誤: ${error}`);
@@ -34,15 +38,20 @@ export default function TestLoginPage() {
   };
 
   const testLogin = async () => {
+    if (!testPassword) {
+      setResult('請先執行「創建/檢查測試帳號」以取得目前測試密碼');
+      return;
+    }
+
     setLoading(true);
     try {
-      const response = await fetchJSONWithCSRF('/api/auth/login', {
-        method: 'POST',
-        body: {
-          username: 'employee',
-          password: 'emp123'
-        }
-      });
+        const response = await fetchJSONWithCSRF('/api/auth/login', {
+          method: 'POST',
+          body: {
+            username: 'employee',
+            password: testPassword
+          }
+        });
       const data = await response.json();
       setResult(JSON.stringify(data, null, 2));
     } catch (error) {
@@ -60,7 +69,7 @@ export default function TestLoginPage() {
           <h2 className="text-xl font-semibold mb-4">測試帳號資訊</h2>
           <div className="bg-gray-50 p-4 rounded">
             <p><strong>帳號:</strong> employee</p>
-            <p><strong>密碼:</strong> emp123</p>
+            <p><strong>密碼:</strong> {testPassword || '請先按「創建/檢查測試帳號」取得目前密碼'}</p>
           </div>
         </div>
 

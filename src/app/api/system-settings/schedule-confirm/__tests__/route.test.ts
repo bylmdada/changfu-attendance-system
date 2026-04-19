@@ -16,19 +16,26 @@ jest.mock('@/lib/csrf', () => ({
   validateCSRF: jest.fn(),
 }));
 
+jest.mock('@/lib/rate-limit', () => ({
+  checkRateLimit: jest.fn(),
+}));
+
 import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
+import { checkRateLimit } from '@/lib/rate-limit';
 import { POST } from '../route';
 
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
 const mockValidateCSRF = validateCSRF as jest.MockedFunction<typeof validateCSRF>;
+const mockCheckRateLimit = checkRateLimit as jest.MockedFunction<typeof checkRateLimit>;
 
 describe('schedule confirm route csrf guard', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockCheckRateLimit.mockResolvedValue({ allowed: true } as never);
     mockGetUserFromRequest.mockResolvedValue({
       id: 1,
       username: 'admin',
@@ -116,6 +123,28 @@ describe('schedule confirm route csrf guard', () => {
 
     expect(response.status).toBe(400);
     expect(payload.error).toBe('啟用狀態必須是布林值');
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects POST when rate limit is exceeded', async () => {
+    mockCheckRateLimit.mockResolvedValue({ allowed: false } as never);
+
+    const request = new NextRequest('http://localhost/api/system-settings/schedule-confirm', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: 'token=shared-session-token',
+      },
+      body: JSON.stringify({
+        enabled: true,
+      }),
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(429);
+    expect(payload).toEqual({ error: 'Too many requests' });
     expect(mockPrisma.$transaction).not.toHaveBeenCalled();
   });
 });

@@ -9,6 +9,7 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import { getEmployeePDFPassword, PDFSecurityConfig, getDefaultSecurityConfig } from '@/lib/pdf-security';
+import { parseIntegerQueryParam } from '@/lib/query-params';
 
 interface PayslipData {
   employee: {
@@ -37,6 +38,69 @@ interface PayslipData {
   netPay: number;
 }
 
+function parsePayrollId(payrollId: string) {
+  const parsed = parseIntegerQueryParam(payrollId, { min: 1, max: 99999999 });
+  return parsed.isValid ? parsed.value : null;
+}
+
+function formatPdfAmount(amount: number) {
+  return amount.toLocaleString('en-US', {
+    maximumFractionDigits: 0,
+    minimumFractionDigits: 0,
+  });
+}
+
+function formatPdfTimestamp(date: Date) {
+  return date.toISOString().replace('T', ' ').slice(0, 19);
+}
+
+async function encryptPdfWithPassword(pdfBytes: Uint8Array, password: string): Promise<Buffer> {
+  const { execFile } = await import('child_process');
+  const { readFile, unlink, writeFile } = await import('fs/promises');
+  const { tmpdir } = await import('os');
+  const { join } = await import('path');
+
+  const tempId = `${Date.now()}_${process.pid}`;
+  const inputPath = join(tmpdir(), `payslip_${tempId}_input.pdf`);
+  const outputPath = join(tmpdir(), `payslip_${tempId}_output.pdf`);
+
+  try {
+    await writeFile(inputPath, Buffer.from(pdfBytes));
+
+    await new Promise<void>((resolve, reject) => {
+      execFile(
+        'qpdf',
+        ['--encrypt', password, password, '256', '--', inputPath, outputPath],
+        (error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+
+          resolve();
+        }
+      );
+    });
+
+    return await readFile(outputPath);
+  } finally {
+    for (const filePath of [inputPath, outputPath]) {
+      try {
+        await unlink(filePath);
+      } catch (error) {
+        const errorCode =
+          typeof error === 'object' && error !== null && 'code' in error
+            ? (error as { code?: unknown }).code
+            : undefined;
+
+        if (errorCode !== 'ENOENT') {
+          console.warn('清理暫存 PDF 檔案失敗:', { filePath, error });
+        }
+      }
+    }
+  }
+}
+
 export async function GET(request: NextRequest) {
   try {
     const user = await getUserFromRequest(request);
@@ -52,9 +116,14 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: '請提供薪資記錄ID' }, { status: 400 });
     }
 
+    const parsedPayrollId = parsePayrollId(payrollId);
+    if (parsedPayrollId === null) {
+      return NextResponse.json({ error: '薪資記錄ID格式無效' }, { status: 400 });
+    }
+
     // 獲取薪資記錄
     const payrollRecord = await prisma.payrollRecord.findUnique({
-      where: { id: parseInt(payrollId) },
+      where: { id: parsedPayrollId },
       include: {
         employee: {
           select: {
@@ -136,40 +205,10 @@ export async function GET(request: NextRequest) {
     // 生成 PDF
     let pdfBytes = await generateEncryptedPDF(payslipData, password);
 
-    // 如果有密碼，使用 qpdf 加密
+    // 如果有密碼，使用 qpdf 加密；若加密失敗，直接回傳錯誤避免降級成未加密 PDF
     if (password) {
-      try {
-        const { exec } = await import('child_process');
-        const { promisify } = await import('util');
-        const { writeFile, readFile, unlink } = await import('fs/promises');
-        const { tmpdir } = await import('os');
-        const { join } = await import('path');
-        const execAsync = promisify(exec);
-        
-        // 建立暫存檔
-        const tempId = Date.now();
-        const inputPath = join(tmpdir(), `payslip_${tempId}_input.pdf`);
-        const outputPath = join(tmpdir(), `payslip_${tempId}_output.pdf`);
-        
-        // 寫入暫存檔
-        await writeFile(inputPath, Buffer.from(pdfBytes));
-        
-        // 使用 qpdf 加密
-        const qpdfCmd = `qpdf --encrypt "${password}" "${password}" 256 -- "${inputPath}" "${outputPath}"`;
-        await execAsync(qpdfCmd);
-        
-        // 讀取加密後的檔案
-        pdfBytes = await readFile(outputPath);
-        
-        // 清理暫存檔
-        await unlink(inputPath).catch(() => {});
-        await unlink(outputPath).catch(() => {});
-        
-        console.log(`PDF encrypted with password for employee: ${payslipData.employee.employeeId}`);
-      } catch (encryptError) {
-        console.error('PDF 加密失敗，返回未加密版本:', encryptError);
-        // 如果加密失敗，繼續返回未加密的 PDF
-      }
+      pdfBytes = await encryptPdfWithPassword(pdfBytes, password);
+      console.log(`PDF encrypted with password for employee: ${payslipData.employee.employeeId}`);
     }
 
     // 返回 PDF 檔案
@@ -302,7 +341,7 @@ async function generateEncryptedPDF(payslip: PayslipData, password: string | nul
 
   const drawAmountRow = (label: string, amount: number, isDeduction = false) => {
     page.drawText(label, { x: leftMargin, y, size: 10, font, color: rgb(0.5, 0.5, 0.5) });
-    const amountStr = `NT$ ${amount.toLocaleString()}`;
+    const amountStr = `NT$ ${formatPdfAmount(amount)}`;
     const color = isDeduction ? rgb(0.8, 0.2, 0.2) : rgb(0.2, 0.6, 0.2);
     page.drawText(isDeduction ? `-${amountStr}` : amountStr, {
       x: width - leftMargin - 100,
@@ -373,7 +412,7 @@ async function generateEncryptedPDF(payslip: PayslipData, password: string | nul
     color: rgb(0.3, 0.3, 0.3)
   });
 
-  page.drawText(`NT$ ${payslip.netPay.toLocaleString()}`, {
+  page.drawText(`NT$ ${formatPdfAmount(payslip.netPay)}`, {
     x: width - leftMargin - 110,
     y: y + 5,
     size: 14,
@@ -384,7 +423,7 @@ async function generateEncryptedPDF(payslip: PayslipData, password: string | nul
   y -= lineHeight * 2;
 
   // 頁尾
-  page.drawText(`Generated: ${new Date().toLocaleString()}`, {
+  page.drawText(`Generated: ${formatPdfTimestamp(new Date())}`, {
     x: leftMargin,
     y: 50,
     size: 8,

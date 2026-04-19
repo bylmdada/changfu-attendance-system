@@ -15,6 +15,10 @@ jest.mock('@/lib/database', () => ({
     dependentHistoryLog: {
       create: jest.fn(),
     },
+    dependentApplication: {
+      findFirst: jest.fn(),
+    },
+    $transaction: jest.fn(),
   },
 }));
 
@@ -53,6 +57,8 @@ describe('health insurance dependents route guards', () => {
       username: 'admin',
       employee: { name: '管理員' },
     } as never);
+    mockPrisma.dependentApplication.findFirst.mockResolvedValue(null as never);
+    mockPrisma.$transaction.mockResolvedValue([{ id: 2 }, { id: 10 }] as never);
   });
 
   it('accepts shared token cookie extraction on GET requests', async () => {
@@ -93,6 +99,22 @@ describe('health insurance dependents route guards', () => {
     expect(payload.success).toBe(true);
     expect(payload.dependentSummaries).toHaveLength(1);
     expect(payload.dependentSummaries[0].dependentCount).toBe(1);
+  });
+
+  it('allows HR users to access the management list', async () => {
+    mockGetUserFromRequest.mockResolvedValue({
+      role: 'HR',
+      username: 'hr-user',
+      employee: { name: '人資' },
+    } as never);
+    mockPrisma.employee.findMany.mockResolvedValue([] as never);
+    mockPrisma.healthInsuranceDependent.findMany.mockResolvedValue([] as never);
+
+    const response = await GET(new NextRequest('http://localhost/api/system-settings/health-insurance-dependents'));
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.success).toBe(true);
   });
 
   it('accepts shared token cookie extraction on POST requests', async () => {
@@ -234,6 +256,7 @@ describe('health insurance dependents route guards', () => {
     mockPrisma.healthInsuranceDependent.findUnique.mockResolvedValue({
       id: 10,
       dependentName: '王小華',
+      employee: { name: '王小明' },
     } as never);
     mockPrisma.dependentHistoryLog.create.mockResolvedValue({ id: 2 } as never);
     mockPrisma.healthInsuranceDependent.delete.mockResolvedValue({ id: 10 } as never);
@@ -252,6 +275,7 @@ describe('health insurance dependents route guards', () => {
     expect(response.status).toBe(200);
     expect(payload.success).toBe(true);
     expect(payload.message).toBe('眷屬資料已刪除');
+    expect(mockPrisma.$transaction).toHaveBeenCalled();
   });
 
   it('rejects invalid ids on DELETE before querying dependents', async () => {
@@ -269,5 +293,29 @@ describe('health insurance dependents route guards', () => {
     expect(response.status).toBe(400);
     expect(payload.error).toBe('眷屬 ID 格式無效');
     expect(mockPrisma.healthInsuranceDependent.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('blocks deletion when a pending dependent application still exists', async () => {
+    mockPrisma.healthInsuranceDependent.findUnique.mockResolvedValue({
+      id: 10,
+      dependentName: '王小華',
+      employee: { name: '王小明' },
+    } as never);
+    mockPrisma.dependentApplication.findFirst.mockResolvedValue({ id: 99 } as never);
+
+    const request = new NextRequest('http://localhost/api/system-settings/health-insurance-dependents?id=10', {
+      method: 'DELETE',
+      headers: {
+        cookie: 'token=shared-session-token',
+        'content-type': 'application/json',
+      },
+    });
+
+    const response = await DELETE(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(payload.error).toBe('此眷屬仍有待審核申請，請先處理申請後再刪除');
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
   });
 });

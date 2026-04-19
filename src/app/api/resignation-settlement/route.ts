@@ -5,6 +5,10 @@ import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { safeParseJSON } from '@/lib/validation';
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
 function parsePositiveIntegerInput(value: unknown): number | null {
   if (typeof value === 'number') {
     return Number.isSafeInteger(value) && value > 0 ? value : null;
@@ -32,6 +36,17 @@ function normalizeOptionalString(value: unknown): string | undefined {
   return trimmedValue ? trimmedValue : undefined;
 }
 
+function isDuplicateSettlementError(error: unknown): boolean {
+  if (!isPlainObject(error)) {
+    return false;
+  }
+
+  const code = typeof error.code === 'string' ? error.code : '';
+  const message = typeof error.message === 'string' ? error.message : '';
+
+  return code === 'P2002' || message.includes('UNIQUE constraint failed');
+}
+
 // GET - 取得離職結算列表
 export async function GET(request: NextRequest) {
   try {
@@ -47,6 +62,10 @@ export async function GET(request: NextRequest) {
 
     if (!['ADMIN', 'HR'].includes(decoded.role)) {
       return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
+    }
+
+    if (!decoded.employeeId) {
+      return NextResponse.json({ error: '當前帳號缺少員工資料，無法執行離職結算' }, { status: 400 });
     }
 
     const settlements = await prisma.resignationSettlement.findMany({
@@ -102,6 +121,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
     }
 
+    if (!decoded.employeeId) {
+      return NextResponse.json({ error: '當前帳號缺少員工資料，無法執行離職結算' }, { status: 400 });
+    }
+
     const parsedBody = await safeParseJSON(request);
     if (!parsedBody.success) {
       return NextResponse.json({ error: '請求內容格式無效' }, { status: 400 });
@@ -130,6 +153,20 @@ export async function POST(request: NextRequest) {
 
     if (!employee) {
       return NextResponse.json({ error: '找不到員工' }, { status: 404 });
+    }
+
+    const completedResignation = await prisma.resignationRecord.findFirst({
+      where: {
+        employeeId,
+        status: 'COMPLETED'
+      },
+      orderBy: {
+        actualDate: 'desc'
+      }
+    });
+
+    if (!completedResignation) {
+      return NextResponse.json({ error: '該員工尚未完成離職流程，無法進行結算' }, { status: 400 });
     }
 
     // 檢查是否已結算過
@@ -170,8 +207,14 @@ export async function POST(request: NextRequest) {
 
     let monthlyBasicHours = 240;
     if (overtimeSettings) {
-      const parsed = JSON.parse(overtimeSettings.value);
-      monthlyBasicHours = parsed.monthlyBasicHours || 240;
+      try {
+        const parsed = JSON.parse(overtimeSettings.value) as { monthlyBasicHours?: unknown };
+        if (typeof parsed.monthlyBasicHours === 'number' && parsed.monthlyBasicHours > 0) {
+          monthlyBasicHours = parsed.monthlyBasicHours;
+        }
+      } catch (error) {
+        console.warn('Failed to parse overtime calculation settings for resignation settlement:', error);
+      }
     }
 
     // 計算時薪 = 月薪 / 每月基本工時
@@ -264,16 +307,19 @@ export async function POST(request: NextRequest) {
       }
 
       if (totalAnnualLeaveDays > 0) {
-        await tx.annualLeave.updateMany({
-          where: {
-            employeeId,
-            year: currentYear
-          },
-          data: {
-            usedDays: { increment: totalAnnualLeaveDays },
-            remainingDays: 0
+        for (const leave of annualLeaves) {
+          if (!leave.remainingDays || leave.remainingDays <= 0) {
+            continue;
           }
-        });
+
+          await tx.annualLeave.update({
+            where: { id: leave.id },
+            data: {
+              usedDays: { increment: leave.remainingDays },
+              remainingDays: 0
+            }
+          });
+        }
       }
 
       return createdSettlement;
@@ -294,6 +340,10 @@ export async function POST(request: NextRequest) {
       }
     });
   } catch (error) {
+    if (isDuplicateSettlementError(error)) {
+      return NextResponse.json({ error: '該員工已進行過離職結算' }, { status: 400 });
+    }
+
     console.error('執行離職結算失敗:', error);
     return NextResponse.json({ error: '系統錯誤' }, { status: 500 });
   }

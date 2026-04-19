@@ -18,16 +18,16 @@ interface NotificationSettings {
   enabled: boolean;
   notifyLeaveApproval: boolean;
   notifyOvertimeApproval: boolean;
-  notifyScheduleChange: boolean;
-  notifyPasswordReset: boolean;
+  notifyShiftApproval: boolean;
+  notifyAnnualLeaveExpiry: boolean;
 }
 
 const DEFAULT_SETTINGS: NotificationSettings = {
   enabled: false,
   notifyLeaveApproval: true,
   notifyOvertimeApproval: true,
-  notifyScheduleChange: true,
-  notifyPasswordReset: true
+  notifyShiftApproval: true,
+  notifyAnnualLeaveExpiry: true
 };
 
 export default function EmailNotificationPage() {
@@ -69,18 +69,18 @@ export default function EmailNotificationPage() {
       // 載入通知設定
       const response = await fetch(emailNotificationRequest.url, emailNotificationRequest.options);
 
-      if (response.ok) {
-        const data = await response.json();
-        if (data.settings) {
-          setSettings({
-            enabled: data.settings.enabled || false,
-            notifyLeaveApproval: data.settings.notifyLeaveApproval ?? true,
-            notifyOvertimeApproval: data.settings.notifyOvertimeApproval ?? true,
-            notifyScheduleChange: data.settings.notifyScheduleChange ?? true,
-            notifyPasswordReset: data.settings.notifyPasswordReset ?? true
-          });
-        }
-      } else if (response.status === 401 || response.status === 403) {
+        if (response.ok) {
+          const data = await response.json();
+          if (data.settings) {
+            setSettings({
+              enabled: data.settings.enabled || false,
+              notifyLeaveApproval: data.settings.notifyLeaveApproval ?? true,
+              notifyOvertimeApproval: data.settings.notifyOvertimeApproval ?? true,
+              notifyShiftApproval: data.settings.notifyShiftApproval ?? true,
+              notifyAnnualLeaveExpiry: data.settings.notifyAnnualLeaveExpiry ?? true
+            });
+          }
+        } else if (response.status === 401 || response.status === 403) {
         router.push('/login');
       }
 
@@ -89,9 +89,16 @@ export default function EmailNotificationPage() {
 
       if (smtpResponse.ok) {
         const smtpData = await smtpResponse.json();
-        if (smtpData.settings?.smtpHost) {
-          setSmtpConfigured(true);
-        }
+        const smtpSettings = smtpData.settings;
+        const isSmtpConfigured = Boolean(
+          typeof smtpSettings?.smtpHost === 'string' &&
+          smtpSettings.smtpHost.trim() &&
+          typeof smtpSettings?.smtpUser === 'string' &&
+          smtpSettings.smtpUser.trim() &&
+          typeof smtpSettings?.smtpPassword === 'string' &&
+          smtpSettings.smtpPassword
+        );
+        setSmtpConfigured(isSmtpConfigured);
       }
     } catch (error) {
       console.error('載入設定失敗:', error);
@@ -113,11 +120,21 @@ export default function EmailNotificationPage() {
         method: 'POST',
         body: settings
       });
+      const data = await response.json();
 
       if (response.ok) {
-        setMessage({ type: 'success', text: '設定已儲存' });
+        if (data.settings) {
+          setSettings({
+            enabled: data.settings.enabled || false,
+            notifyLeaveApproval: data.settings.notifyLeaveApproval ?? true,
+            notifyOvertimeApproval: data.settings.notifyOvertimeApproval ?? true,
+            notifyShiftApproval: data.settings.notifyShiftApproval ?? true,
+            notifyAnnualLeaveExpiry: data.settings.notifyAnnualLeaveExpiry ?? true
+          });
+        }
+        setMessage({ type: 'success', text: data.message || '設定已儲存' });
       } else {
-        setMessage({ type: 'error', text: '儲存失敗' });
+        setMessage({ type: 'error', text: data.error || '儲存失敗' });
       }
     } catch (error) {
       console.error('儲存失敗:', error);
@@ -200,7 +217,7 @@ export default function EmailNotificationPage() {
                   Email 通知功能
                 </h2>
                 <p className="text-sm text-gray-500">
-                  {settings.enabled ? '已啟用 - 系統會發送 Email 通知給員工' : '已停用 - 不會發送任何 Email'}
+                  {settings.enabled ? '已啟用 - 系統會發送實際已接線的 Email 通知給員工' : '已停用 - 不會發送任何 Email'}
                 </p>
               </div>
             </div>
@@ -266,36 +283,36 @@ export default function EmailNotificationPage() {
 
             <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
               <div>
-                <p className="font-medium text-gray-900">班表異動通知</p>
-                <p className="text-sm text-gray-500">班表調整時通知相關員工</p>
+                <p className="font-medium text-gray-900">換班審核結果</p>
+                <p className="text-sm text-gray-500">換班申請核准/駁回時通知員工</p>
               </div>
               <button
-                onClick={() => setSettings({ ...settings, notifyScheduleChange: !settings.notifyScheduleChange })}
+                onClick={() => setSettings({ ...settings, notifyShiftApproval: !settings.notifyShiftApproval })}
                 disabled={!settings.enabled}
                 className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                  settings.notifyScheduleChange ? 'bg-blue-600' : 'bg-gray-300'
+                  settings.notifyShiftApproval ? 'bg-blue-600' : 'bg-gray-300'
                 } ${!settings.enabled ? 'opacity-50' : ''}`}
               >
                 <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                  settings.notifyScheduleChange ? 'translate-x-6' : 'translate-x-1'
+                  settings.notifyShiftApproval ? 'translate-x-6' : 'translate-x-1'
                 }`} />
               </button>
             </div>
 
             <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
               <div>
-                <p className="font-medium text-gray-900">密碼重設通知</p>
-                <p className="text-sm text-gray-500">密碼重設時發送連結給員工</p>
+                <p className="font-medium text-gray-900">年假到期提醒</p>
+                <p className="text-sm text-gray-500">年假即將到期時發送 Email 提醒</p>
               </div>
               <button
-                onClick={() => setSettings({ ...settings, notifyPasswordReset: !settings.notifyPasswordReset })}
+                onClick={() => setSettings({ ...settings, notifyAnnualLeaveExpiry: !settings.notifyAnnualLeaveExpiry })}
                 disabled={!settings.enabled}
                 className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                  settings.notifyPasswordReset ? 'bg-blue-600' : 'bg-gray-300'
+                  settings.notifyAnnualLeaveExpiry ? 'bg-blue-600' : 'bg-gray-300'
                 } ${!settings.enabled ? 'opacity-50' : ''}`}
               >
                 <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                  settings.notifyPasswordReset ? 'translate-x-6' : 'translate-x-1'
+                  settings.notifyAnnualLeaveExpiry ? 'translate-x-6' : 'translate-x-1'
                 }`} />
               </button>
             </div>

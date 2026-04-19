@@ -158,6 +158,23 @@ describe('bonuses route guards', () => {
     expect(mockPrisma.bonusRecord.findMany).not.toHaveBeenCalled();
   });
 
+  it('passes bonusType filters through to the bonus query', async () => {
+    const request = new NextRequest('http://localhost/api/bonuses?bonusType=YEAR_END');
+
+    const response = await GET(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.success).toBe(true);
+    expect(mockPrisma.bonusRecord.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          bonusType: 'YEAR_END',
+        }),
+      })
+    );
+  });
+
   it('requires csrf validation on POST requests', async () => {
     mockValidateCSRF.mockResolvedValue({ valid: false } as never);
 
@@ -329,6 +346,33 @@ describe('bonuses route guards', () => {
     expect(response.status).toBe(400);
     expect(payload.error).toBe('adjustmentReason格式無效');
     expect(mockPrisma.bonusRecord.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('recomputes cumulativeBonusBefore when updating an existing bonus record', async () => {
+    const request = new NextRequest('http://localhost/api/bonuses', {
+      method: 'PUT',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        id: 15,
+        amount: 15000,
+      }),
+    });
+
+    const response = await PUT(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.success).toBe(true);
+    expect(mockPrisma.bonusRecord.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          cumulativeBonusBefore: 0,
+          cumulativeBonusAfter: 15000,
+        }),
+      })
+    );
   });
 
   it('rejects DELETE when csrf validation fails before deleting the bonus record', async () => {

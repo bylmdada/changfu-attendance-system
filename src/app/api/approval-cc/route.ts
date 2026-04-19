@@ -160,14 +160,15 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: '缺少必要參數' }, { status: 400 });
       }
 
-      const instance = await prisma.approvalInstance.findUnique({
-        where: { id: instanceId },
-        select: {
-          id: true,
-          currentLevel: true,
-          department: true,
-          status: true
-        }
+        const instance = await prisma.approvalInstance.findUnique({
+          where: { id: instanceId },
+          select: {
+            id: true,
+            currentLevel: true,
+            requestType: true,
+            department: true,
+            status: true
+          }
       });
 
       if (!instance) {
@@ -184,7 +185,7 @@ export async function POST(request: NextRequest) {
             return NextResponse.json({ error: '此審核缺少部門資訊，無法建立 CC' }, { status: 400 });
           }
 
-          const reviewerPermission = await isReviewerFor(user.employeeId, instance.department);
+          const reviewerPermission = await isReviewerFor(user.employeeId, instance.department, instance.requestType);
           if (!reviewerPermission.isReviewer) {
             return NextResponse.json({ error: '無權為此審核建立 CC' }, { status: 403 });
           }

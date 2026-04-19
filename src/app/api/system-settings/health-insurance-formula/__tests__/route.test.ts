@@ -301,4 +301,62 @@ describe('health insurance formula route guards', () => {
     expect(data).toEqual({ error: '薪資級距資料格式無效' });
     expect(mockedPrisma.$transaction).not.toHaveBeenCalled();
   });
+
+  it('rejects invalid effective dates before opening a transaction', async () => {
+    const request = new NextRequest('http://localhost:3000/api/system-settings/health-insurance-formula', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: 'token=shared-session-token',
+      },
+      body: JSON.stringify({
+        config: {
+          id: 10,
+          premiumRate: 0.052,
+          employeeContributionRatio: 0.31,
+          maxDependents: 4,
+          supplementaryRate: 0.022,
+          supplementaryThreshold: 5,
+          effectiveDate: '2026-02-30',
+          isActive: true,
+        },
+      }),
+    });
+
+    const response = await POST(request);
+    const data = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(data).toEqual({ error: '生效日期格式無效' });
+    expect(mockedPrisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects negative supplementary thresholds before opening a transaction', async () => {
+    const request = new NextRequest('http://localhost:3000/api/system-settings/health-insurance-formula', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: 'token=shared-session-token',
+      },
+      body: JSON.stringify({
+        config: {
+          id: 10,
+          premiumRate: 0.052,
+          employeeContributionRatio: 0.31,
+          maxDependents: 4,
+          supplementaryRate: 0.022,
+          supplementaryThreshold: 0,
+          effectiveDate: '2026-02-01',
+          isActive: true,
+        },
+      }),
+    });
+
+    const response = await POST(request);
+    const data = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(data).toEqual({ error: '補充保費免扣門檻倍數必須大於 0' });
+    expect(mockedPrisma.$transaction).not.toHaveBeenCalled();
+  });
 });

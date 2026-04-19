@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { POST } from '@/app/api/overtime-requests/batch/route';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
+import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { calculateOvertimePayForRequest } from '@/lib/salary-utils';
 import { getTaiwanYearMonth } from '@/lib/timezone';
@@ -26,6 +27,10 @@ jest.mock('@/lib/auth', () => ({
   getUserFromRequest: jest.fn(),
 }));
 
+jest.mock('@/lib/rate-limit', () => ({
+  checkRateLimit: jest.fn(),
+}));
+
 jest.mock('@/lib/csrf', () => ({
   validateCSRF: jest.fn(),
 }));
@@ -40,6 +45,7 @@ jest.mock('@/lib/timezone', () => ({
 
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockedGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
+const mockedCheckRateLimit = checkRateLimit as jest.MockedFunction<typeof checkRateLimit>;
 const mockedValidateCSRF = validateCSRF as jest.MockedFunction<typeof validateCSRF>;
 const mockedCalculateOvertimePayForRequest = calculateOvertimePayForRequest as jest.MockedFunction<typeof calculateOvertimePayForRequest>;
 const mockedGetTaiwanYearMonth = getTaiwanYearMonth as jest.MockedFunction<typeof getTaiwanYearMonth>;
@@ -59,6 +65,7 @@ const transactionClient = {
 describe('overtime batch approval consistency', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockedCheckRateLimit.mockResolvedValue({ allowed: true } as never);
     mockedValidateCSRF.mockResolvedValue({ valid: true } as never);
     mockedGetUserFromRequest.mockResolvedValue({
       role: 'ADMIN',

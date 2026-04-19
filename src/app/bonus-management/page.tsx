@@ -52,6 +52,7 @@ interface BonusFormData {
   amount: string;
   payrollYear: string;
   payrollMonth: string;
+  adjustmentReason: string;
 }
 
 const BONUS_TYPES = [
@@ -114,7 +115,8 @@ export default function BonusManagementPage() {
     bonusTypeName: '',
     amount: '',
     payrollYear: new Date().getFullYear().toString(),
-    payrollMonth: new Date().getMonth() + 1 + ''
+    payrollMonth: new Date().getMonth() + 1 + '',
+    adjustmentReason: ''
   });
 
   // 載入員工列表
@@ -150,6 +152,7 @@ export default function BonusManagementPage() {
       if (filters.employeeId) params.append('employeeId', filters.employeeId);
       if (filters.year) params.append('year', filters.year);
       if (filters.month) params.append('month', filters.month);
+      if (filters.bonusType) params.append('bonusType', filters.bonusType);
 
       const response = await fetch(`/api/bonuses?${params}`, {
         credentials: 'include'
@@ -184,6 +187,7 @@ export default function BonusManagementPage() {
         payrollYear: parseInt(formData.payrollYear),
         payrollMonth: parseInt(formData.payrollMonth),
         bonusTypeName: formData.bonusTypeName || BONUS_TYPES.find(t => t.value === formData.bonusType)?.label || formData.bonusType,
+        adjustmentReason: formData.adjustmentReason.trim() || undefined,
         createdBy: currentUser?.id || 1
       };
 
@@ -228,7 +232,8 @@ export default function BonusManagementPage() {
       bonusTypeName: record.bonusTypeName,
       amount: record.amount.toString(),
       payrollYear: record.payrollYear.toString(),
-      payrollMonth: record.payrollMonth.toString()
+      payrollMonth: record.payrollMonth.toString(),
+      adjustmentReason: record.adjustmentReason || ''
     });
     setShowForm(true);
   };
@@ -260,7 +265,8 @@ export default function BonusManagementPage() {
       bonusTypeName: '',
       amount: '',
       payrollYear: new Date().getFullYear().toString(),
-      payrollMonth: (new Date().getMonth() + 1).toString()
+      payrollMonth: (new Date().getMonth() + 1).toString(),
+      adjustmentReason: ''
     });
     setEditingRecord(null);
     setShowForm(false);
@@ -474,6 +480,11 @@ export default function BonusManagementPage() {
           </CardHeader>
           <CardContent>
             <form onSubmit={handleSubmit} className="space-y-4">
+              {editingRecord && (
+                <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                  編輯既有獎金時，僅支援調整金額與調整原因；員工、類型與發放年月需刪除後重新建立。
+                </div>
+              )}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">員工</label>
@@ -481,7 +492,7 @@ export default function BonusManagementPage() {
                     value={formData.employeeId} 
                     onValueChange={(value) => setFormData({...formData, employeeId: value})}
                   >
-                    <SelectTrigger>
+                    <SelectTrigger disabled={Boolean(editingRecord)}>
                       <SelectValue placeholder="選擇員工" />
                     </SelectTrigger>
                     <SelectContent>
@@ -500,7 +511,7 @@ export default function BonusManagementPage() {
                     value={formData.bonusType} 
                     onValueChange={(value) => setFormData({...formData, bonusType: value})}
                   >
-                    <SelectTrigger>
+                    <SelectTrigger disabled={Boolean(editingRecord)}>
                       <SelectValue placeholder="選擇獎金類型" />
                     </SelectTrigger>
                     <SelectContent>
@@ -530,6 +541,7 @@ export default function BonusManagementPage() {
                     type="number"
                     value={formData.payrollYear}
                     onChange={(e) => setFormData({...formData, payrollYear: e.target.value})}
+                    disabled={Boolean(editingRecord)}
                   />
                 </div>
 
@@ -539,7 +551,7 @@ export default function BonusManagementPage() {
                     value={formData.payrollMonth} 
                     onValueChange={(value) => setFormData({...formData, payrollMonth: value})}
                   >
-                    <SelectTrigger>
+                    <SelectTrigger disabled={Boolean(editingRecord)}>
                       <SelectValue placeholder="選擇月份" />
                     </SelectTrigger>
                     <SelectContent>
@@ -558,8 +570,20 @@ export default function BonusManagementPage() {
                     value={formData.bonusTypeName}
                     onChange={(e) => setFormData({...formData, bonusTypeName: e.target.value})}
                     placeholder="自訂獎金名稱"
+                    disabled={Boolean(editingRecord)}
                   />
                 </div>
+
+                {editingRecord && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">調整原因</label>
+                    <Input
+                      value={formData.adjustmentReason}
+                      onChange={(e) => setFormData({...formData, adjustmentReason: e.target.value})}
+                      placeholder="請輸入本次調整原因"
+                    />
+                  </div>
+                )}
               </div>
 
               <div className="flex gap-2">

@@ -7,6 +7,7 @@ import { validateCSRF } from '@/lib/csrf';
 import { createApprovalForRequest } from '@/lib/approval-helper';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
+import { getAttendancePermissionDepartments } from '@/lib/attendance-permission-scopes';
 
 interface DBItem {
   id: number;
@@ -90,12 +91,7 @@ function normalizeItem(it: DBItem) {
     item.leaveType = parsed.leaveType ?? '';
     item.reason = parsed.note ?? parsed.reason ?? '';
   } else {
-    // for swap or generic, expose dates
-    item.shiftDate = item.originalWorkDate || item.shiftDate || '';
-    item.originalShiftType = item.originalShiftType || '';
-    item.newShiftType = item.newShiftType || '';
-    item.leaveType = '';
-    item.reason = typeof item.requestReason === 'string' ? item.requestReason : (item.reason || '');
+    return null;
   }
 
   return item;
@@ -123,12 +119,27 @@ export async function GET(request: NextRequest) {
     const where: Record<string, any> = {};
     if (status) where.status = status;
 
-    // 非 ADMIN/HR 只看與本人有關的
     if (user.role !== 'ADMIN' && user.role !== 'HR') {
-      where.OR = [
-        { requesterId: user.employeeId },
-        { targetEmployeeId: user.employeeId }
-      ];
+      const manageableDepartments = await getAttendancePermissionDepartments({
+        role: user.role,
+        employeeId: user.employeeId,
+      }, 'shiftExchanges');
+
+      if (manageableDepartments.length > 0) {
+        where.requester = {
+          department: { in: manageableDepartments }
+        };
+
+        if (requesterIdParam) {
+          const requesterIdResult = parseIntegerQueryParam(requesterIdParam, { min: 1, max: 99999999 });
+          if (!requesterIdResult.isValid || requesterIdResult.value === null) {
+            return NextResponse.json({ error: 'requesterId 格式錯誤' }, { status: 400 });
+          }
+          where.requesterId = requesterIdResult.value;
+        }
+      } else {
+        where.requesterId = user.employeeId;
+      }
     } else if (requesterIdParam) {
       const requesterIdResult = parseIntegerQueryParam(requesterIdParam, { min: 1, max: 99999999 });
       if (!requesterIdResult.isValid || requesterIdResult.value === null) {
@@ -170,7 +181,9 @@ export async function GET(request: NextRequest) {
       }
     });
 
-    const normalized = items.map(normalizeItem);
+    const normalized = items
+      .map(normalizeItem)
+      .filter((item): item is NonNullable<ReturnType<typeof normalizeItem>> => item !== null);
     
     return NextResponse.json(normalized);
   } catch (error) {
@@ -218,95 +231,49 @@ export async function POST(request: NextRequest) {
     // 獲取申請者 ID
     const requesterId = user.employeeId;
 
-    // 檢測是否為自調班 (前端會送 shiftDate/originalShiftType/newShiftType)
-    const isSelfChange = !!(body.shiftDate || (body.originalShiftType && body.newShiftType));
+    // 僅支援員工自主申請調班
+    const shiftDate = typeof body.shiftDate === 'string' ? body.shiftDate : '';
+    const original = typeof body.originalShiftType === 'string' ? body.originalShiftType : '';
+    const next = typeof body.newShiftType === 'string' ? body.newShiftType : '';
+    const note = typeof body.reason === 'string' ? body.reason : '';
+    const leaveType = typeof body.leaveType === 'string' ? body.leaveType : '';
 
-    let data: {
+    if (!shiftDate || !original || !next || !note) {
+      return NextResponse.json({ error: '調班日期、原班別、新班別與申請原因為必填' }, { status: 400 });
+    }
+
+    const data: {
       requesterId: number;
       targetEmployeeId: number;
       originalWorkDate: string;
       targetWorkDate: string;
       requestReason: string;
       status: string;
+    } = {
+      requesterId,
+      targetEmployeeId: requesterId,
+      originalWorkDate: shiftDate,
+      targetWorkDate: shiftDate,
+      requestReason: JSON.stringify({
+        type: 'SELF_CHANGE',
+        shiftDate,
+        original,
+        new: next,
+        note,
+        leaveType: next === 'FDL' ? leaveType : undefined
+      }),
+      status: 'PENDING'
     };
-
-    if (isSelfChange) {
-      // 自調班邏輯
-      const shiftDate = String(body.shiftDate || body.originalWorkDate || body.shiftDateFrom || '');
-      const original = String(body.originalShiftType || body.original || 'A');
-      const next = String(body.newShiftType || body.new || original);
-      const note = body.reason || body.requestReason || '';
-      const leaveType = body.leaveType || ''; // 當選擇FDL時的請假類型
-
-      data = {
-        requesterId,
-        targetEmployeeId: requesterId, // 自調班時目標員工就是自己
-        originalWorkDate: shiftDate,
-        targetWorkDate: shiftDate,
-        requestReason: JSON.stringify({ 
-          type: 'SELF_CHANGE', 
-          shiftDate, 
-          original, 
-          new: next, 
-          note,
-          leaveType: next === 'FDL' ? leaveType : undefined // 只有FDL時才儲存leaveType
-        }),
-        status: 'PENDING'
-      };
-    } else {
-      // 互調班邏輯
-      const targetEmployeeIdResult = parseIntegerQueryParam(
-        body.targetEmployeeId === undefined || body.targetEmployeeId === null || body.targetEmployeeId === ''
-          ? null
-          : String(body.targetEmployeeId),
-        { defaultValue: requesterId, min: 1, max: 99999999 }
-      );
-
-      if (!targetEmployeeIdResult.isValid || targetEmployeeIdResult.value === null) {
-        return NextResponse.json({ error: 'targetEmployeeId 格式錯誤' }, { status: 400 });
-      }
-
-      const targetEmployeeId = targetEmployeeIdResult.value;
-      const originalWorkDate = String(body.originalWorkDate || body.shiftDate || body.shiftDateFrom || '');
-      const targetWorkDate = String(body.targetWorkDate || body.shiftDate || body.shiftDateTo || originalWorkDate);
-      const rawRequestReason = typeof body.requestReason === 'string'
-        ? body.requestReason
-        : typeof body.reason === 'string'
-          ? body.reason
-          : '';
-      const requestReason = rawRequestReason || JSON.stringify(body) || '';
-
-      data = {
-        requesterId,
-        targetEmployeeId,
-        originalWorkDate,
-        targetWorkDate,
-        requestReason,
-        status: 'PENDING'
-      };
-    }
 
     // 檢查凍結狀態
     const originalDateObj = new Date(data.originalWorkDate);
-    const targetDateObj = new Date(data.targetWorkDate);
     const freezeCheck = await checkAttendanceFreeze(originalDateObj);
 
     if (freezeCheck.isFrozen) {
-      const freezeDateStr = freezeCheck.freezeInfo?.freezeDate.toLocaleString('zh-TW');
+      const freezeDateStr = freezeCheck.freezeInfo?.freezeDate.toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', hour12: false });
       return NextResponse.json({
         error: `該月份已被凍結，無法提交調班申請。凍結時間：${freezeDateStr}，操作者：${freezeCheck.freezeInfo?.creator.name}`
       }, { status: 403 });
-    }
-
-    // 如果目標日期不同，也檢查目標日期
-    if (data.originalWorkDate !== data.targetWorkDate) {
-      const targetFreezeCheck = await checkAttendanceFreeze(targetDateObj);
-      if (targetFreezeCheck.isFrozen) {
-        const freezeDateStr = targetFreezeCheck.freezeInfo?.freezeDate.toLocaleString('zh-TW');
-        return NextResponse.json({
-          error: `目標月份已被凍結，無法提交調班申請。凍結時間：${freezeDateStr}，操作者：${targetFreezeCheck.freezeInfo?.creator.name}`
-        }, { status: 403 });
-      }
     }
 
     // 創建調班記錄

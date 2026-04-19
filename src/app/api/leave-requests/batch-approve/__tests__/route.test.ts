@@ -116,7 +116,7 @@ describe('leave batch-approve route guards', () => {
       id: 41,
       employeeId: 9,
       status: 'PENDING',
-      leaveType: 'ANNUAL_LEAVE',
+      leaveType: 'ANNUAL',
       startDate: new Date('2026-04-01T00:00:00.000Z'),
       endDate: new Date('2026-04-02T00:00:00.000Z'),
       employee: { id: 9 },

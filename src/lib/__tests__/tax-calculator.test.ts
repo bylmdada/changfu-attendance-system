@@ -76,6 +76,27 @@ describe('勞健保及稅金計算測試', () => {
       expect(result.shouldDeduct).toBe(true);
       expect(result.premiumAmount).toBeGreaterThan(0);
     });
+
+    test('停用補充保費設定時不扣補充保費', () => {
+      const result = calculateBonusSupplementaryPremium(36000, 100000, 50000, {
+        isEnabled: false,
+        premiumRate: 2.11,
+        exemptThresholdMultiplier: 4,
+        calculationMethod: 'cumulative',
+        resetPeriod: 'yearly',
+        salaryThreshold: 183200,
+        dividendThreshold: 20000,
+        applyToAllEmployees: true,
+        salaryIncludeItems: {
+          allowance: true,
+          commission: true,
+          overtime: true,
+        },
+      });
+
+      expect(result.shouldDeduct).toBe(false);
+      expect(result.premiumAmount).toBe(0);
+    });
   });
 
   describe('綜合扣除計算', () => {

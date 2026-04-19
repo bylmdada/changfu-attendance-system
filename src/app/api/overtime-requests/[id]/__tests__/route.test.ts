@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { DELETE, PATCH } from '@/app/api/overtime-requests/[id]/route';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
+import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { notifyOvertimeApproval } from '@/lib/email';
 import { calculateOvertimePayForRequest } from '@/lib/salary-utils';
@@ -33,6 +34,10 @@ jest.mock('@/lib/auth', () => ({
   getUserFromRequest: jest.fn(),
 }));
 
+jest.mock('@/lib/rate-limit', () => ({
+  checkRateLimit: jest.fn(),
+}));
+
 jest.mock('@/lib/csrf', () => ({
   validateCSRF: jest.fn(),
 }));
@@ -59,6 +64,7 @@ jest.mock('@/lib/approval-workflow', () => ({
 }));
 
 const mockedGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
+const mockedCheckRateLimit = checkRateLimit as jest.MockedFunction<typeof checkRateLimit>;
 const mockedValidateCSRF = validateCSRF as jest.MockedFunction<typeof validateCSRF>;
 const mockedNotifyOvertimeApproval = notifyOvertimeApproval as jest.MockedFunction<typeof notifyOvertimeApproval>;
 const mockedCalculateOvertimePayForRequest = calculateOvertimePayForRequest as jest.MockedFunction<typeof calculateOvertimePayForRequest>;
@@ -81,6 +87,7 @@ const transactionClient = {
 describe('overtime request item csrf guards', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockedCheckRateLimit.mockResolvedValue({ allowed: true } as never);
     mockedValidateCSRF.mockResolvedValue({ valid: false, error: '缺少CSRF令牌' });
   });
 
@@ -192,6 +199,7 @@ describe('overtime request item csrf guards', () => {
 describe('overtime request item approval consistency', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockedCheckRateLimit.mockResolvedValue({ allowed: true } as never);
     mockedValidateCSRF.mockResolvedValue({ valid: true } as never);
     mockedGetUserFromRequest.mockResolvedValue({
       role: 'ADMIN',
@@ -303,5 +311,37 @@ describe('overtime request item approval consistency', () => {
     expect(consoleErrorSpy).toHaveBeenCalledWith('計算加班費失敗:', 'rate unavailable');
 
     consoleErrorSpy.mockRestore();
+  });
+
+  it('allows HR to finalize overtime requests', async () => {
+    mockedGetUserFromRequest.mockResolvedValue({
+      role: 'HR',
+      employeeId: 66,
+      userId: 666,
+    } as never);
+
+    const request = new NextRequest('http://localhost:3000/api/overtime-requests/5', {
+      method: 'PATCH',
+      headers: {
+        cookie: 'auth-token=legacy-auth-token',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ status: 'APPROVED' }),
+    });
+
+    const response = await PATCH(request, { params: Promise.resolve({ id: '5' }) });
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.success).toBe(true);
+    expect(transactionClient.overtimeRequest.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 5 },
+        data: expect.objectContaining({
+          status: 'APPROVED',
+          approvedBy: 66,
+        }),
+      })
+    );
   });
 });

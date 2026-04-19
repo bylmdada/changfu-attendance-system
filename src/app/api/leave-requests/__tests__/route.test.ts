@@ -7,6 +7,7 @@ import { validateCSRF } from '@/lib/csrf';
 import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
 import { validateLeaveRequest } from '@/lib/leave-rules-validator';
 import { createApprovalForRequest } from '@/lib/approval-helper';
+import { getAttendancePermissionDepartments } from '@/lib/attendance-permission-scopes';
 
 jest.mock('@/lib/database', () => ({
   prisma: {
@@ -14,9 +15,6 @@ jest.mock('@/lib/database', () => ({
       findMany: jest.fn(),
       findFirst: jest.fn(),
       create: jest.fn(),
-    },
-    departmentManager: {
-      findMany: jest.fn(),
     },
   },
 }));
@@ -45,6 +43,10 @@ jest.mock('@/lib/approval-helper', () => ({
   createApprovalForRequest: jest.fn(),
 }));
 
+jest.mock('@/lib/attendance-permission-scopes', () => ({
+  getAttendancePermissionDepartments: jest.fn(),
+}));
+
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
 const mockCheckRateLimit = checkRateLimit as jest.MockedFunction<typeof checkRateLimit>;
@@ -52,6 +54,7 @@ const mockValidateCSRF = validateCSRF as jest.MockedFunction<typeof validateCSRF
 const mockCheckAttendanceFreeze = checkAttendanceFreeze as jest.MockedFunction<typeof checkAttendanceFreeze>;
 const mockValidateLeaveRequest = validateLeaveRequest as jest.MockedFunction<typeof validateLeaveRequest>;
 const mockCreateApprovalForRequest = createApprovalForRequest as jest.MockedFunction<typeof createApprovalForRequest>;
+const mockGetAttendancePermissionDepartments = getAttendancePermissionDepartments as jest.MockedFunction<typeof getAttendancePermissionDepartments>;
 
 describe('leave request list guards', () => {
   beforeEach(() => {
@@ -66,6 +69,8 @@ describe('leave request list guards', () => {
     mockCheckAttendanceFreeze.mockResolvedValue({ isFrozen: false } as never);
     mockValidateLeaveRequest.mockResolvedValue({ valid: true } as never);
     mockCreateApprovalForRequest.mockResolvedValue(undefined as never);
+    mockGetAttendancePermissionDepartments.mockResolvedValue(['製造部'] as never);
+    mockPrisma.leaveRequest.findMany.mockResolvedValue([] as never);
   });
 
   it('rejects malformed employeeId filters before querying Prisma', async () => {
@@ -95,6 +100,31 @@ describe('leave request list guards', () => {
     expect(payload.error).toBe('請提供有效的請假申請資料');
     expect(mockPrisma.leaveRequest.create).not.toHaveBeenCalled();
     expect(mockCreateApprovalForRequest).not.toHaveBeenCalled();
+  });
+
+  it('limits non-admin leave list queries to permission departments', async () => {
+    mockGetUserFromRequest.mockResolvedValue({
+      role: 'USER',
+      employeeId: 8,
+      userId: 108,
+    } as never);
+
+    const request = new NextRequest('http://localhost:3000/api/leave-requests');
+
+    const response = await GET(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload).toEqual({ leaveRequests: [] });
+    expect(mockPrisma.leaveRequest.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          employee: {
+            department: { in: ['製造部'] },
+          },
+        }),
+      })
+    );
   });
 
   it('rejects malformed JSON bodies before evaluating leave request payload fields', async () => {

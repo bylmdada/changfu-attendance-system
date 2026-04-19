@@ -1,4 +1,11 @@
 // 台灣稅金計算相關函數
+import {
+  getDefaultSupplementaryPremiumSettings,
+  getSupplementaryPremiumExemptThreshold,
+  getSupplementaryPremiumMinimumEligibleAmount,
+  getSupplementaryPremiumRateDecimal,
+  type SupplementaryPremiumSettings,
+} from '@/lib/supplementary-premium-config';
 
 // 個人所得稅免稅額和標準扣除額 (2024年版)
 export const TAX_CONFIG = {
@@ -13,10 +20,6 @@ export const TAX_CONFIG = {
   // 健保費率 (2024年)
   HEALTH_INSURANCE_RATE: 0.0517, // 5.17%
   HEALTH_INSURANCE_MAX: 182000, // 健保投保薪資上限
-  
-  // 二代健保補充保費
-  SUPPLEMENTARY_HEALTH_INSURANCE_RATE: 0.0211, // 2.11%
-  SUPPLEMENTARY_HEALTH_INSURANCE_THRESHOLD: 21000, // 單次給付超過此金額需繳納
   
   // 所得稅率級距 (2024年)
   INCOME_TAX_BRACKETS: [
@@ -230,7 +233,8 @@ export function calculateAllDeductions(
   grossSalary: number, 
   annualSalary: number = grossSalary * 12,
   dependentsCount: number = 0,
-  bonusSupplementaryPremium: number = 0
+  bonusSupplementaryPremium: number = 0,
+  supplementarySettings: SupplementaryPremiumSettings = getDefaultSupplementaryPremiumSettings()
 ): TaxCalculationResult {
   const laborInsurance = calculateLaborInsurance(grossSalary);
   const healthInsuranceResult = calculateHealthInsurance(grossSalary, dependentsCount);
@@ -239,7 +243,11 @@ export function calculateAllDeductions(
   // 使用傳入的獎金補充保費，如果沒有則使用薪資補充保費計算
   const supplementaryHealthInsurance = bonusSupplementaryPremium > 0 
     ? bonusSupplementaryPremium 
-    : calculateSupplementaryHealthInsurance(grossSalary);
+    : calculateSupplementaryHealthInsurance(
+        grossSalary,
+        healthInsuranceResult.insuredAmount,
+        supplementarySettings
+      );
     
   const incomeTax = calculateIncomeTax(annualSalary);
   
@@ -293,15 +301,23 @@ export interface BonusSupplementaryCalculation {
  * 計算補充保費 (二代健保) - 薪資所得
  * 適用於一般月薪資，超過4倍投保金額上限時需繳納
  */
-export function calculateSupplementaryHealthInsurance(monthlySalary: number): number {
-  const threshold = 186000 * 4; // 4倍投保金額上限 (744,000元)
-  const supplementaryRate = 0.0211; // 2.11% (2024年費率)
-  
-  if (monthlySalary > threshold) {
-    return Math.round((monthlySalary - threshold) * supplementaryRate);
+export function calculateSupplementaryHealthInsurance(
+  monthlySalary: number,
+  insuredAmount: number = monthlySalary,
+  settings: SupplementaryPremiumSettings = getDefaultSupplementaryPremiumSettings()
+): number {
+  if (!settings.isEnabled) {
+    return 0;
   }
-  
-  return 0;
+
+  const threshold = getSupplementaryPremiumExemptThreshold(insuredAmount, settings);
+  if (monthlySalary <= threshold) {
+    return 0;
+  }
+
+  const supplementaryRate = getSupplementaryPremiumRateDecimal(settings);
+  const calculatedPremium = Math.round((monthlySalary - threshold) * supplementaryRate);
+  return Math.min(calculatedPremium, settings.maxMonthlyPremium);
 }
 
 /**
@@ -309,46 +325,56 @@ export function calculateSupplementaryHealthInsurance(monthlySalary: number): nu
  * 適用於年終獎金、三節獎金、績效獎金等非經常性薪資
  * 
  * @param employeeInsuredAmount 員工健保投保金額
- * @param currentYearBonusTotal 本年度已發放獎金總額
+ * @param currentPeriodBonusTotal 目前計算週期內已發放獎金總額
  * @param newBonusAmount 本次發放獎金金額
  * @returns 獎金補充保費計算結果
  */
 export function calculateBonusSupplementaryPremium(
   employeeInsuredAmount: number,
-  currentYearBonusTotal: number,
-  newBonusAmount: number
+  currentPeriodBonusTotal: number,
+  newBonusAmount: number,
+  settings: SupplementaryPremiumSettings = getDefaultSupplementaryPremiumSettings(),
+  currentYearPremiumTotal: number = 0
 ): BonusSupplementaryCalculation {
-  const premiumRate = 0.0211; // 2.11% (2024年費率)
-  const exemptThreshold = employeeInsuredAmount * 4; // 4倍投保金額為免扣門檻
+  const premiumRate = getSupplementaryPremiumRateDecimal(settings);
+  const exemptThreshold = getSupplementaryPremiumExemptThreshold(employeeInsuredAmount, settings);
+  const minimumEligibleAmount = getSupplementaryPremiumMinimumEligibleAmount(settings);
   const maxCalculationBase = 10000000; // 單次計費基礎上限1000萬元
   
   // 計算本次發放後的累計獎金總額
-  const newCumulativeTotal = currentYearBonusTotal + newBonusAmount;
+  const newCumulativeTotal = currentPeriodBonusTotal + newBonusAmount;
   
   let calculationBase = 0;
   let shouldDeduct = false;
-  
-  if (newCumulativeTotal > exemptThreshold) {
+
+  if (
+    settings.isEnabled &&
+    settings.salaryIncludeItems.bonus &&
+    newBonusAmount >= minimumEligibleAmount &&
+    newCumulativeTotal > exemptThreshold
+  ) {
     shouldDeduct = true;
-    
-    if (currentYearBonusTotal <= exemptThreshold) {
-      // 之前未超過門檻，現在超過 → 計算超出門檻的部分
+
+    if (settings.calculationMethod === 'MONTHLY') {
+      calculationBase = newBonusAmount;
+    } else if (currentPeriodBonusTotal <= exemptThreshold) {
       calculationBase = newCumulativeTotal - exemptThreshold;
     } else {
-      // 之前已超過門檻 → 本次獎金全額計算
       calculationBase = newBonusAmount;
     }
-    
-    // 套用計費上限
-    calculationBase = Math.min(calculationBase, maxCalculationBase);
   }
-  
-  const premiumAmount = shouldDeduct ? Math.round(calculationBase * premiumRate) : 0;
+
+  calculationBase = Math.min(calculationBase, maxCalculationBase);
+
+  const uncappedPremiumAmount = shouldDeduct ? Math.round(calculationBase * premiumRate) : 0;
+  const monthlyCappedPremium = Math.min(uncappedPremiumAmount, settings.maxMonthlyPremium);
+  const remainingAnnualDeduction = Math.max(0, settings.annualMaxDeduction - currentYearPremiumTotal);
+  const premiumAmount = shouldDeduct ? Math.min(monthlyCappedPremium, remainingAnnualDeduction) : 0;
   
   return {
     employeeId: 0, // 將由呼叫方填入
     insuredAmount: employeeInsuredAmount,
-    currentYearBonusTotal,
+    currentYearBonusTotal: currentPeriodBonusTotal,
     newBonusAmount,
     exemptThreshold,
     calculationBase,

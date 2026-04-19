@@ -61,6 +61,7 @@ interface User {
 export default function EmployeesPage() {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [loading, setLoading] = useState(true);
+  const [updatingStatusId, setUpdatingStatusId] = useState<number | null>(null);
   const [pagination, setPagination] = useState({
     page: 1,
     limit: 10,
@@ -369,8 +370,10 @@ export default function EmployeesPage() {
                           <td className="px-6 py-4 whitespace-nowrap">
                             <select
                               value={employee.isActive ? 'active' : 'inactive'}
+                              disabled={updatingStatusId === employee.id}
                               onChange={async (e) => {
                                 const newStatus = e.target.value === 'active';
+                                setUpdatingStatusId(employee.id);
                                 try {
                                   const response = await fetchJSONWithCSRF(`/api/employees/${employee.id}`, {
                                     method: 'PUT',
@@ -383,6 +386,8 @@ export default function EmployeesPage() {
                                   }
                                 } catch {
                                   alert('系統錯誤');
+                                } finally {
+                                  setUpdatingStatusId(null);
                                 }
                               }}
                               className={`text-xs font-medium rounded-full px-3 py-1 cursor-pointer ${
@@ -597,6 +602,10 @@ function EmployeeDetailModal({ employee, onClose }: { employee: Employee; onClos
               <h3 className="text-lg font-medium text-gray-900 mb-4">帳號狀態</h3>
               <div className="space-y-3">
                 <div>
+                  <label className="block text-sm font-medium text-gray-700">Email</label>
+                  <p className="text-sm text-gray-900">{employee.email || '-'}</p>
+                </div>
+                <div>
                   <label className="block text-sm font-medium text-gray-700">員工狀態</label>
                   <span className={`inline-flex px-2 py-1 text-xs font-medium rounded-full ${
                     employee.isActive ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
@@ -643,11 +652,6 @@ function EmployeeModal({ employee, onClose, onSave }: {
     return `${year}${month}${sequence}`;
   };
 
-  // 生成默認密碼（員工編號 + 123）
-  const generateDefaultPassword = (empId: string) => {
-    return `${empId}123`;
-  };
-
   const initialEmployeeId = employee?.employeeId || generateEmployeeId();
   
   const [formData, setFormData] = useState({
@@ -667,7 +671,7 @@ function EmployeeModal({ employee, onClose, onSave }: {
     employeeType: employee?.employeeType || 'MONTHLY', // 月薪/計時
     laborInsuranceActive: employee?.laborInsuranceActive ?? true, // 勞保參加
     username: employee?.user?.username || initialEmployeeId,
-    password: employee ? '' : generateDefaultPassword(initialEmployeeId),
+    password: employee ? '' : '',
     createAccount: !employee, // 新增員工時默認創建帳號
     role: employee?.user?.role || 'EMPLOYEE' // 角色欄位
   });
@@ -726,7 +730,7 @@ function EmployeeModal({ employee, onClose, onSave }: {
       ...prev,
       employeeId: value,
       username: !employee && (prev.username === prev.employeeId || !prev.username) ? value : prev.username,
-      password: !employee ? generateDefaultPassword(value) : prev.password
+      password: prev.password
     }));
   };
 
@@ -803,7 +807,7 @@ function EmployeeModal({ employee, onClose, onSave }: {
               <ul className="text-xs text-green-700 space-y-1">
                 <li>• <strong>員工編號</strong>：年月 + 4位隨機序號（如：202501{Math.floor(Math.random() * 1000 + 1000)}）</li>
                 <li>• <strong>登入帳號</strong>：預設使用員工編號</li>
-                <li>• <strong>預設密碼</strong>：員工編號 + &ldquo;123&rdquo;</li>
+                <li>• <strong>初始密碼</strong>：請輸入符合目前密碼政策的密碼</li>
                 <li>• <strong>到職日期</strong>：預設為今日</li>
               </ul>
             </div>
@@ -1103,11 +1107,11 @@ function EmployeeModal({ employee, onClose, onSave }: {
                       value={formData.password}
                       onChange={(e) => setFormData({...formData, password: e.target.value})}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
-                      placeholder="預設密碼"
+                      placeholder="請輸入符合密碼政策的初始密碼"
                       required={!employee && formData.createAccount}
                     />
                     <p className="mt-1 text-xs text-gray-500">
-                      預設密碼格式：員工編號 + &ldquo;123&rdquo;（例：202501001123）
+                      建議設定臨時密碼並通知員工首次登入後立即修改
                     </p>
                   </div>
                 </>
@@ -1135,6 +1139,7 @@ function EmployeeModal({ employee, onClose, onSave }: {
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 text-black bg-white"
                 >
                   <option value="EMPLOYEE">員工 (EMPLOYEE)</option>
+                  <option value="MANAGER">主管 (MANAGER)</option>
                   <option value="HR">人資 (HR)</option>
                   <option value="ADMIN">管理員 (ADMIN)</option>
                 </select>
@@ -1172,6 +1177,7 @@ interface ImportResult {
   success: boolean;
   employeeId: string;
   name: string;
+  temporaryPassword?: string;
   error?: string;
 }
 
@@ -1367,7 +1373,8 @@ function BatchImportModal({ onClose, onSuccess }: { onClose: () => void; onSucce
                   <li>• <strong>員工類型</strong>：MONTHLY（月薪人員）或 HOURLY（計時人員），留空預設為月薪</li>
                   <li>• <strong>參加勞保</strong>：填「是」或「否」，計時人員可填「否」表示不參加勞保</li>
                   <li>• 計時人員底薪可填 0，系統將以「時薪 × 實際工時」計算薪資</li>
-                  <li>• 系統將自動為每位員工創建登入帳號（帳號：員工編號，密碼：員工編號+123）</li>
+                  <li>• 系統將自動為每位員工創建登入帳號（帳號：員工編號），並產生符合政策的臨時密碼</li>
+                  <li>• 請在匯入完成後立即記錄成功名單中的臨時密碼，提供給員工首次登入使用</li>
                 </ul>
               </div>
 
@@ -1498,7 +1505,14 @@ function BatchImportModal({ onClose, onSuccess }: { onClose: () => void; onSucce
                       )}
                       <span className="font-medium">{result.employeeId}</span>
                       <span className="mx-2 text-gray-500">-</span>
-                      <span>{result.name}</span>
+                      <div>
+                        <div>{result.name}</div>
+                        {result.success && result.temporaryPassword && (
+                          <div className="text-xs text-green-700">
+                            臨時密碼：<span className="font-mono">{result.temporaryPassword}</span>
+                          </div>
+                        )}
+                      </div>
                     </div>
                     {result.error && (
                       <span className="text-sm text-red-600">{result.error}</span>

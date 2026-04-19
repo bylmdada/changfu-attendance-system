@@ -4,6 +4,7 @@
  */
 
 import { prisma } from '@/lib/database';
+import { getApprovalWorkflow } from '@/lib/approval-workflow';
 
 export type WorkflowType = 
   | 'SHIFT_CHANGE' 
@@ -34,9 +35,7 @@ export async function createApprovalForRequest(params: CreateApprovalParams) {
 
   try {
     // 取得審核流程設定
-    const workflow = await prisma.approvalWorkflow.findUnique({
-      where: { workflowType: requestType }
-    });
+    const workflow = await getApprovalWorkflow(requestType);
 
     // 預設設定
     const approvalLevel = workflow?.approvalLevel ?? 2;
@@ -75,8 +74,8 @@ export async function createApprovalForRequest(params: CreateApprovalParams) {
     }
 
     // 決定初始狀態和層級
-    const currentLevel = requireManager ? 1 : 2;
-    const status = requireManager ? 'LEVEL1_REVIEWING' : 'LEVEL2_REVIEWING';
+    const currentLevel = 1;
+    const status = 'LEVEL1_REVIEWING';
 
     // 建立審核實例
     const instance = await prisma.approvalInstance.create({

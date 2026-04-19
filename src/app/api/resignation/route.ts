@@ -32,6 +32,8 @@ const DEFAULT_HANDOVER_ITEMS = [
   { category: 'DOCUMENT', description: '辦理勞健保轉出' },
 ];
 
+const ALLOWED_REASON_TYPES = new Set(['VOLUNTARY', 'LAYOFF', 'RETIREMENT', 'OTHER']);
+
 function parseDateInput(value: unknown): Date | null {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
     return null;
@@ -66,6 +68,21 @@ function normalizeOptionalString(value: unknown): string | undefined {
 
   const normalized = value.trim();
   return normalized ? normalized : undefined;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isDuplicateInProgressResignationError(error: unknown): boolean {
+  if (!isPlainObject(error)) {
+    return false;
+  }
+
+  const code = typeof error.code === 'string' ? error.code : '';
+  const message = typeof error.message === 'string' ? error.message : '';
+
+  return code === 'P2002' || message.includes('UNIQUE constraint failed');
 }
 
 export async function GET(request: NextRequest) {
@@ -175,6 +192,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '預計離職日格式無效' }, { status: 400 });
     }
 
+    if (reasonType && !ALLOWED_REASON_TYPES.has(reasonType)) {
+      return NextResponse.json({ error: '離職原因類型無效' }, { status: 400 });
+    }
+
     // 檢查是否已有進行中的離職申請
     const existing = await prisma.resignationRecord.findFirst({
       where: {
@@ -222,6 +243,10 @@ export async function POST(request: NextRequest) {
     });
 
   } catch (error) {
+    if (isDuplicateInProgressResignationError(error)) {
+      return NextResponse.json({ error: '您已有進行中的離職申請' }, { status: 400 });
+    }
+
     console.error('提交離職申請失敗:', error);
     return NextResponse.json({ error: '系統錯誤' }, { status: 500 });
   }
