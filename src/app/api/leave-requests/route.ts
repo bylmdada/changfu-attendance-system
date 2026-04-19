@@ -9,9 +9,18 @@ import { createApprovalForRequest } from '@/lib/approval-helper';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
 import { getAttendancePermissionDepartments } from '@/lib/attendance-permission-scopes';
+import { isBereavementLeaveType, splitLeaveReason } from '@/lib/leave-types';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function hasRequiredBereavementReason(leaveType?: string | null, reason?: string | null): boolean {
+  if (!isBereavementLeaveType(leaveType)) {
+    return true;
+  }
+
+  return splitLeaveReason(reason, leaveType).leaveReason.length > 0;
 }
 
 export async function GET(request: NextRequest) {
@@ -163,6 +172,10 @@ export async function POST(request: NextRequest) {
     // 驗證必填欄位
     if (!leaveType || !startDate || !endDate) {
       return NextResponse.json({ error: '請假類型、開始日期和結束日期為必填' }, { status: 400 });
+    }
+
+    if (!hasRequiredBereavementReason(leaveType, reason)) {
+      return NextResponse.json({ error: '喪假申請原因需選擇法定亡故親屬關係' }, { status: 400 });
     }
 
     // 檢查凍結狀態

@@ -19,6 +19,12 @@ jest.mock('@/lib/database', () => ({
     schedule: {
       findFirst: jest.fn(),
     },
+    holiday: {
+      findFirst: jest.fn(),
+    },
+    overtimeRequest: {
+      findFirst: jest.fn(),
+    },
   },
 }));
 
@@ -101,6 +107,8 @@ describe('attendance clock route GPS validation', () => {
     } as never);
     mockedPrisma.systemSettings.findUnique.mockResolvedValue(null as never);
     mockedPrisma.schedule.findFirst.mockResolvedValue(null as never);
+    mockedPrisma.holiday.findFirst.mockResolvedValue(null as never);
+    mockedPrisma.overtimeRequest.findFirst.mockResolvedValue(null as never);
   });
 
   it('rejects invalid GPS payload before writing attendance data', async () => {
@@ -247,6 +255,57 @@ describe('attendance clock route GPS validation', () => {
     });
     expect(payload.message).toBe('上班打卡成功');
     expect(mockedPrisma.attendanceRecord.upsert).toHaveBeenCalled();
+  });
+
+  it('returns reason prompt data for early clock-in using schedule start time strings', async () => {
+    jest.useFakeTimers();
+    try {
+      jest.setSystemTime(new Date('2026-04-11T00:40:00.000Z'));
+
+      mockedPrisma.systemSettings.findUnique.mockResolvedValue({
+        key: 'clock_reason_prompt',
+        value: JSON.stringify({ enabled: true, earlyClockInThreshold: 10 })
+      } as never);
+      mockedPrisma.schedule.findFirst.mockResolvedValue({
+        employeeId: 9,
+        workDate: '2026-04-11',
+        startTime: '09:00',
+        shiftType: 'DAY'
+      } as never);
+      mockedPrisma.attendanceRecord.upsert.mockResolvedValue({
+        id: 101,
+        clockInTime: '2026-04-11T00:40:00.000Z'
+      } as never);
+
+      const request = new NextRequest('http://localhost/api/attendance/clock', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit',
+        },
+        body: JSON.stringify({
+          type: 'in',
+          location: { latitude: 25.0, longitude: 121.0, accuracy: 10 },
+        }),
+      });
+
+      const response = await POST(request);
+      if (!response) {
+        throw new Error('Expected response');
+      }
+      const payload = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(payload.requiresReason).toBe(true);
+      expect(payload.reasonPrompt).toEqual({
+        type: 'EARLY_IN',
+        minutesDiff: 20,
+        scheduledTime: '09:00',
+        recordId: 101
+      });
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('returns current clock status on GET for authenticated employees', async () => {

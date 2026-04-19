@@ -9,8 +9,9 @@ import { validateCSRF } from '@/lib/csrf';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
 import { getAnnualLeaveYearBreakdown } from '@/lib/annual-leave';
-import { isAnnualLeaveType } from '@/lib/leave-types';
+import { isAnnualLeaveType, isBereavementLeaveType, splitLeaveReason } from '@/lib/leave-types';
 import { canAccessAttendanceDepartment } from '@/lib/attendance-permission-scopes';
+import { validateLeaveRequest } from '@/lib/leave-rules-validator';
 
 interface PrismaWithSchedule {
   schedule?: {
@@ -20,6 +21,22 @@ interface PrismaWithSchedule {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function hasRequiredBereavementReason(leaveType?: string | null, reason?: string | null): boolean {
+  if (!isBereavementLeaveType(leaveType)) {
+    return true;
+  }
+
+  return splitLeaveReason(reason, leaveType).leaveReason.length > 0;
+}
+
+function hasLegacyBereavementReason(leaveType?: string | null, reason?: string | null): boolean {
+  if (!isBereavementLeaveType(leaveType) || !reason?.trim()) {
+    return false;
+  }
+
+  return splitLeaveReason(reason, leaveType).leaveReason.length === 0;
 }
 
 function toYmd(d: Date) {
@@ -295,14 +312,53 @@ export async function PATCH(
       }
     }
 
+    const finalLeaveType = leaveType ?? existing.leaveType;
+    const finalReason = reason ?? existing.reason;
+    const finalStart = nextStart ?? existing.startDate;
+    const finalEnd = nextEnd ?? existing.endDate;
+    const finalTotalDays = nextTotalDays ?? existing.totalDays;
+    const canPreserveLegacyBereavementReason =
+      hasLegacyBereavementReason(existing.leaveType, existing.reason)
+      && isBereavementLeaveType(finalLeaveType)
+      && (finalReason?.trim() ?? '') === (existing.reason?.trim() ?? '');
+
+    if (!hasRequiredBereavementReason(finalLeaveType, finalReason) && !canPreserveLegacyBereavementReason) {
+      return NextResponse.json({ error: '喪假申請原因需選擇法定亡故親屬關係' }, { status: 400 });
+    }
+
+    const overlappingLeaveRequest = await prisma.leaveRequest.findFirst({
+      where: {
+        id: { not: leaveRequestId },
+        employeeId: existing.employeeId,
+        status: { in: ['PENDING', 'APPROVED'] },
+        startDate: { lte: finalEnd },
+        endDate: { gte: finalStart }
+      }
+    });
+
+    if (overlappingLeaveRequest) {
+      return NextResponse.json({ error: '該時間段已有請假申請' }, { status: 400 });
+    }
+
+    const leaveValidation = await validateLeaveRequest(
+      existing.employeeId,
+      finalLeaveType,
+      finalTotalDays,
+      finalStart.getFullYear()
+    );
+
+    if (!leaveValidation.valid) {
+      return NextResponse.json({ error: leaveValidation.error }, { status: 400 });
+    }
+
     const updated = await prisma.leaveRequest.update({
       where: { id: leaveRequestId },
       data: {
-        leaveType: leaveType ?? undefined,
+        leaveType: finalLeaveType ?? undefined,
         startDate: nextStart ?? undefined,
         endDate: nextEnd ?? undefined,
         totalDays: nextTotalDays ?? undefined,
-        reason: reason ?? undefined
+        reason: finalReason ?? undefined
       },
       include: {
         employee: {

@@ -8,25 +8,19 @@ import {
   buildAuthMeRequest,
   buildClockTimeRestrictionRequest,
 } from '@/lib/clock-time-restriction-client';
+import {
+  DEFAULT_CLOCK_TIME_RESTRICTION_SETTINGS,
+  type ClockTimeRestrictionSettings,
+} from '@/lib/clock-time-restriction-settings';
 import SystemNavbar from '@/components/SystemNavbar';
-
-interface ClockTimeRestrictionSettings {
-  enabled: boolean;
-  restrictedStartHour: number;
-  restrictedEndHour: number;
-  message: string;
-}
 
 export default function ClockTimeRestrictionPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [settings, setSettings] = useState<ClockTimeRestrictionSettings>({
-    enabled: true,
-    restrictedStartHour: 23,
-    restrictedEndHour: 5,
-    message: '夜間時段暫停打卡服務'
-  });
+  const [settings, setSettings] = useState<ClockTimeRestrictionSettings>(
+    DEFAULT_CLOCK_TIME_RESTRICTION_SETTINGS
+  );
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [user, setUser] = useState<{
     id: number;
@@ -263,19 +257,18 @@ export default function ClockTimeRestrictionPage() {
                 預覽：{settings.message}（{formatTime(settings.restrictedStartHour)}-{formatTime(settings.restrictedEndHour)}）
               </p>
             </div>
-
-            {/* 儲存按鈕 */}
-            <div className="mt-6 flex justify-end">
-              <button
-                onClick={handleSave}
-                disabled={saving}
-                className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                {saving ? '儲存中...' : '儲存設定'}
-              </button>
-            </div>
           </div>
         )}
+
+        <div className="mt-6 flex justify-end">
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            {saving ? '儲存中...' : '儲存設定'}
+          </button>
+        </div>
       </main>
     </div>
   );

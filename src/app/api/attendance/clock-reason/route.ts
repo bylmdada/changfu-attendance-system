@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
-import { getUserFromRequest } from '@/lib/auth';
+import { getUserFromRequest, verifyPassword } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { safeParseJSON } from '@/lib/validation';
+import { checkClockRateLimit, clearFailedAttempts, recordFailedClockAttempt } from '@/lib/rate-limit';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -40,19 +41,6 @@ function calculateLinkedOvertimeHours(startTime: unknown, endTime: unknown): num
 // POST - 提交打卡原因
 export async function POST(request: NextRequest) {
   try {
-    const user = await getUserFromRequest(request);
-    if (!user) {
-      return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
-    }
-
-    const csrfValidation = await validateCSRF(request);
-    if (!csrfValidation.valid) {
-      return NextResponse.json(
-        { error: csrfValidation.error || 'CSRF token validation failed' },
-        { status: 403 }
-      );
-    }
-
     const parseResult = await safeParseJSON(request);
     if (!parseResult.success) {
       return NextResponse.json(
@@ -67,6 +55,8 @@ export async function POST(request: NextRequest) {
     const reason = isPlainObject(body) && typeof body.reason === 'string' ? body.reason : undefined;
     const overtimeId = isPlainObject(body) && typeof body.overtimeId === 'number' ? body.overtimeId : undefined;
     const newOvertimeRequest = isPlainObject(body) ? body.newOvertimeRequest : undefined;
+    const username = isPlainObject(body) && typeof body.username === 'string' ? body.username : '';
+    const password = isPlainObject(body) && typeof body.password === 'string' ? body.password : '';
 
     if (!recordId || !clockType || !reason) {
       return NextResponse.json({ error: '缺少必要參數' }, { status: 400 });
@@ -80,6 +70,17 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '無效的原因類型' }, { status: 400 });
     }
 
+    const sessionUser = await getUserFromRequest(request);
+    if (sessionUser) {
+      const csrfValidation = await validateCSRF(request);
+      if (!csrfValidation.valid) {
+        return NextResponse.json(
+          { error: csrfValidation.error || 'CSRF token validation failed' },
+          { status: 403 }
+        );
+      }
+    }
+
     // 查詢考勤記錄
     const record = await prisma.attendanceRecord.findUnique({
       where: { id: recordId },
@@ -90,12 +91,59 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '考勤記錄不存在' }, { status: 404 });
     }
 
-    // 確保只能更新自己的記錄（除非是管理員）
-    const employeeUserId = await prisma.user.findFirst({
-      where: { employeeId: record.employeeId },
-      select: { id: true }
-    });
-    if (employeeUserId?.id !== user.userId && user.role !== 'ADMIN' && user.role !== 'HR') {
+    let isAuthorized = false;
+
+    if (sessionUser) {
+      const employeeUserId = await prisma.user.findFirst({
+        where: { employeeId: record.employeeId },
+        select: { id: true }
+      });
+
+      if (
+        employeeUserId?.id === sessionUser.userId ||
+        sessionUser.role === 'ADMIN' ||
+        sessionUser.role === 'HR'
+      ) {
+        isAuthorized = true;
+      }
+    }
+
+    if (!isAuthorized && username && password) {
+      const rateLimitResult = await checkClockRateLimit(request, username);
+      if (!rateLimitResult.allowed) {
+        return NextResponse.json(
+          { error: rateLimitResult.reason || '請求過於頻繁' },
+          {
+            status: 429,
+            headers: { 'Retry-After': String(rateLimitResult.retryAfter || 60) }
+          }
+        );
+      }
+
+      const quickAuthUser = await prisma.user.findUnique({
+        where: { username },
+        include: { employee: true }
+      });
+
+      if (!quickAuthUser) {
+        await recordFailedClockAttempt(username);
+      } else if (!quickAuthUser.isActive) {
+        await recordFailedClockAttempt(username);
+        return NextResponse.json({ error: '帳號已停用，請聯繫管理員' }, { status: 401 });
+      } else if (!quickAuthUser.employee) {
+        await recordFailedClockAttempt(username);
+      } else {
+        const isPasswordValid = await verifyPassword(password, quickAuthUser.passwordHash);
+        if (isPasswordValid && quickAuthUser.employee.id === record.employeeId) {
+          isAuthorized = true;
+          await clearFailedAttempts(username);
+        } else {
+          await recordFailedClockAttempt(username);
+        }
+      }
+    }
+
+    if (!isAuthorized) {
       return NextResponse.json({ error: '無權限修改此記錄' }, { status: 403 });
     }
 

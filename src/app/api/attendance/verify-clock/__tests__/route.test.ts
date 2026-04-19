@@ -14,6 +14,12 @@ jest.mock('@/lib/database', () => ({
     },
     schedule: {
       findFirst: jest.fn()
+    },
+    holiday: {
+      findFirst: jest.fn()
+    },
+    overtimeRequest: {
+      findFirst: jest.fn()
     }
   }
 }));
@@ -49,6 +55,7 @@ import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/database';
 import { verifyPassword } from '@/lib/auth';
 import { checkClockRateLimit, recordFailedClockAttempt, getClientIP } from '@/lib/rate-limit';
+import { canEmployeeClockIn } from '@/lib/schedule-confirm-service';
 import { getGPSSettingsFromDB, getActiveAllowedLocations, validateGpsClockLocation } from '@/lib/gps-attendance';
 import { isMobileClockingDevice } from '@/lib/device-detection';
 import { POST } from '../route';
@@ -58,6 +65,7 @@ const mockVerifyPassword = verifyPassword as jest.MockedFunction<typeof verifyPa
 const mockCheckClockRateLimit = checkClockRateLimit as jest.MockedFunction<typeof checkClockRateLimit>;
 const mockRecordFailedClockAttempt = recordFailedClockAttempt as jest.MockedFunction<typeof recordFailedClockAttempt>;
 const mockGetClientIP = getClientIP as jest.MockedFunction<typeof getClientIP>;
+const mockCanEmployeeClockIn = canEmployeeClockIn as jest.MockedFunction<typeof canEmployeeClockIn>;
 const mockGetGPSSettingsFromDB = getGPSSettingsFromDB as jest.MockedFunction<typeof getGPSSettingsFromDB>;
 const mockGetActiveAllowedLocations = getActiveAllowedLocations as jest.MockedFunction<typeof getActiveAllowedLocations>;
 const mockValidateGpsClockLocation = validateGpsClockLocation as jest.MockedFunction<typeof validateGpsClockLocation>;
@@ -70,10 +78,13 @@ describe('verify-clock quick auth account status', () => {
     mockIsMobileClockingDevice.mockReturnValue(true);
     mockCheckClockRateLimit.mockResolvedValue({ allowed: true });
     mockGetClientIP.mockReturnValue('127.0.0.1');
+    mockCanEmployeeClockIn.mockResolvedValue({ allowed: true } as never);
     mockPrisma.systemSettings.findUnique.mockResolvedValue(null as never);
     mockGetGPSSettingsFromDB.mockResolvedValue({ enabled: false } as never);
     mockGetActiveAllowedLocations.mockResolvedValue([] as never);
     mockValidateGpsClockLocation.mockReturnValue({ ok: true } as never);
+    mockPrisma.holiday.findFirst.mockResolvedValue(null as never);
+    mockPrisma.overtimeRequest.findFirst.mockResolvedValue(null as never);
   });
 
   afterEach(() => {
@@ -197,6 +208,65 @@ describe('verify-clock quick auth account status', () => {
     expect(mockVerifyPassword).not.toHaveBeenCalled();
   });
 
+  it('blocks clocking when partial stored restriction settings still resolve to the default overnight window', async () => {
+    jest.setSystemTime(new Date('2026-04-13T18:00:00.000Z'));
+    mockPrisma.systemSettings.findUnique.mockResolvedValue({
+      key: 'clock_time_restriction',
+      value: JSON.stringify({ enabled: true, restrictedStartHour: 23 })
+    } as never);
+
+    const request = new NextRequest('http://localhost/api/attendance/verify-clock', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit'
+      },
+      body: JSON.stringify({ username: 'worker', password: 'secret', type: 'in' })
+    });
+
+    const response = await POST(request);
+    if (!response) {
+      throw new Error('Expected response');
+    }
+    const payload = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(payload.error).toBe('夜間時段暫停打卡服務（23:00-05:00）');
+    expect(payload.restrictedUntil).toBe('05:00');
+    expect(mockPrisma.user.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('falls back to default clock restriction settings when stored JSON is malformed', async () => {
+    jest.setSystemTime(new Date('2026-04-13T04:00:00.000Z'));
+    mockPrisma.systemSettings.findUnique.mockResolvedValue({
+      key: 'clock_time_restriction',
+      value: '{bad-json'
+    } as never);
+    mockPrisma.user.findUnique.mockResolvedValue(null as never);
+
+    const request = new NextRequest('http://localhost/api/attendance/verify-clock', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit'
+      },
+      body: JSON.stringify({ username: 'worker', password: 'secret', type: 'in' })
+    });
+
+    const response = await POST(request);
+    if (!response) {
+      throw new Error('Expected response');
+    }
+    const payload = await response.json();
+
+    expect(response.status).toBe(401);
+    expect(payload.error).toBe('帳號或密碼錯誤');
+    expect(mockPrisma.user.findUnique).toHaveBeenCalledWith({
+      where: { username: 'worker' },
+      include: { employee: true }
+    });
+  });
+
   it('uses Taiwan date when looking up the schedule for clock-out', async () => {
     jest.setSystemTime(new Date('2026-04-07T22:30:00.000Z'));
 
@@ -308,5 +378,117 @@ describe('verify-clock quick auth account status', () => {
       scheduledTime: '17:00',
       recordId: 88
     });
+  });
+
+  it('returns reason prompt data for early clock-in in quick auth flow', async () => {
+    jest.setSystemTime(new Date('2026-04-08T00:40:00.000Z'));
+
+    mockPrisma.systemSettings.findUnique.mockResolvedValue({
+      key: 'clock_reason_prompt',
+      value: JSON.stringify({ enabled: true, earlyClockInThreshold: 10 })
+    } as never);
+    mockPrisma.user.findUnique.mockResolvedValue({
+      id: 1,
+      username: 'worker',
+      isActive: true,
+      passwordHash: 'hash',
+      employee: { id: 9, name: '測試員工' }
+    } as never);
+    mockVerifyPassword.mockResolvedValue(true);
+    mockPrisma.schedule.findFirst.mockResolvedValue({
+      employeeId: 9,
+      workDate: '2026-04-08',
+      startTime: '09:00',
+      shiftType: 'DAY'
+    } as never);
+    mockPrisma.attendanceRecord.findFirst.mockResolvedValue(null as never);
+    mockPrisma.attendanceRecord.upsert.mockResolvedValue({
+      id: 66,
+      clockInTime: '2026-04-08T00:40:00.000Z'
+    } as never);
+
+    const request = new NextRequest('http://localhost/api/attendance/verify-clock', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit'
+      },
+      body: JSON.stringify({ username: 'worker', password: 'secret', type: 'in' })
+    });
+
+    const response = await POST(request);
+    if (!response) {
+      throw new Error('Expected response');
+    }
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.requiresReason).toBe(true);
+    expect(payload.reasonPrompt).toEqual({
+      type: 'EARLY_IN',
+      minutesDiff: 20,
+      scheduledTime: '09:00',
+      recordId: 66
+    });
+  });
+
+  it('skips reason prompts on approved overtime dates when exclusion is enabled', async () => {
+    jest.setSystemTime(new Date('2026-04-08T09:30:00.000Z'));
+
+    mockPrisma.systemSettings.findUnique.mockResolvedValue({
+      key: 'clock_reason_prompt',
+      value: JSON.stringify({ enabled: true, lateClockOutThreshold: 15, excludeApprovedOvertime: true })
+    } as never);
+    mockPrisma.user.findUnique.mockResolvedValue({
+      id: 1,
+      username: 'worker',
+      isActive: true,
+      passwordHash: 'hash',
+      employee: { id: 9, name: '測試員工' }
+    } as never);
+    mockVerifyPassword.mockResolvedValue(true);
+    mockPrisma.attendanceRecord.findFirst.mockResolvedValue({
+      id: 88,
+      employeeId: 9,
+      clockInTime: '2026-04-08T00:00:00.000Z',
+      clockOutTime: null,
+      regularHours: 0,
+      overtimeHours: 0
+    } as never);
+    mockPrisma.schedule.findFirst.mockResolvedValue({
+      employeeId: 9,
+      workDate: '2026-04-08',
+      endTime: '17:00',
+      shiftType: 'DAY'
+    } as never);
+    mockPrisma.overtimeRequest.findFirst.mockResolvedValue({
+      id: 200,
+      employeeId: 9,
+      status: 'APPROVED'
+    } as never);
+    mockPrisma.attendanceRecord.update.mockResolvedValue({
+      id: 88,
+      regularHours: 9.5,
+      overtimeHours: 0
+    } as never);
+
+    const request = new NextRequest('http://localhost/api/attendance/verify-clock', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit'
+      },
+      body: JSON.stringify({ username: 'worker', password: 'secret', clockType: 'out' })
+    });
+
+    const response = await POST(request);
+    if (!response) {
+      throw new Error('Expected response');
+    }
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.requiresReason).toBe(false);
+    expect(payload.reasonPrompt).toBeNull();
   });
 });
