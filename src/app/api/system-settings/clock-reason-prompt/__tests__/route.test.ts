@@ -106,6 +106,27 @@ describe('clock reason prompt route csrf guard', () => {
     expect(payload.settings.earlyClockInThreshold).toBe(5);
   });
 
+  it('merges default values when stored settings are partial on GET', async () => {
+    mockPrisma.systemSettings.findUnique.mockResolvedValue({
+      key: 'clock_reason_prompt',
+      value: JSON.stringify({ enabled: true, earlyClockInThreshold: 12 })
+    } as never);
+
+    const request = new NextRequest('http://localhost/api/system-settings/clock-reason-prompt');
+
+    const response = await GET(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.settings).toEqual({
+      enabled: true,
+      earlyClockInThreshold: 12,
+      lateClockOutThreshold: 5,
+      excludeHolidays: true,
+      excludeApprovedOvertime: true
+    });
+  });
+
   it('rejects null bodies before merging clock reason prompt settings', async () => {
     const request = new NextRequest('http://localhost/api/system-settings/clock-reason-prompt', {
       method: 'PUT',

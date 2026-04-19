@@ -6,7 +6,22 @@ import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import BatchApproveBar from '@/components/BatchApproveBar';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import ApprovalProgress, { ApprovalReviewRecord } from '@/components/ApprovalProgress';
-import { getLeaveTypeLabel, normalizeLeaveTypeCode } from '@/lib/leave-types';
+import {
+  LEAVE_TYPE_OPTIONS,
+  combineLeaveReason,
+  getLeaveReasonOptions,
+  getLeaveTypeLabel,
+  isBereavementLeaveType,
+  isLeaveReasonOptionValid,
+  normalizeLeaveTypeCode,
+  splitLeaveReason,
+} from '@/lib/leave-types';
+import {
+  buildLeaveReviewRequestBody,
+  extractLeaveDatePart,
+  formatLeaveDisplayDate,
+  getLeaveStatusSortOrder,
+} from '@/lib/leave-management-helpers';
 
 interface Employee {
   id: number;
@@ -59,31 +74,13 @@ interface LeaveRequest {
   } | null;
 }
 
-const LEAVE_TYPES = {
-  BEREAVEMENT: '喪假',
-  PRENATAL_CHECKUP: '產檢假',
-  ANNUAL: '特休假',
-  COMPENSATORY: '補休',
-  SICK: '病假',
-  PERSONAL: '事假',
-  MARRIAGE: '婚假',
-  UNPAID_LEAVE: '留職停薪',
-  OCCUPATIONAL_INJURY: '公傷假',
-  MATERNITY: '產假',
-  BREASTFEEDING: '哺乳假',
-  PATERNITY_CHECKUP: '陪產檢及陪產假',
-  MISCARRIAGE: '流產假',
-  OFFICIAL: '公假',
-  MILITARY_SERVICE: '公假(教召)'
-};
-
-// 勞基法規範說明
-const LABOR_LAW_REGULATIONS = {
+// 假別法規與制度說明
+const LEAVE_RULE_SUMMARIES = {
   BEREAVEMENT: {
-    description: '勞工之祖父母、父母、配偶死亡者',
-    days: '8日',
+    description: '依亡故親屬關係分為 8 日、6 日或 3 日',
+    days: '8日／6日／3日',
     salary: '有薪',
-    requirements: '需檢附相關證明文件'
+    requirements: '需檢附相關證明；死亡日起 100 日內請畢，繼父母相關需符合扶養或共居條件'
   },
   PRENATAL_CHECKUP: {
     description: '懷孕期間產檢假',
@@ -110,10 +107,10 @@ const LABOR_LAW_REGULATIONS = {
     requirements: '需檢附醫生證明'
   },
   PERSONAL: {
-    description: '事假',
-    days: '無限制',
+    description: '有事故必須親自處理，或親自照顧家庭成員',
+    days: '1年內14日',
     salary: '無薪',
-    requirements: '依公司規定'
+    requirements: '需有事故必須親自處理；若屬家庭照顧情形，可優先改用家庭照顧假'
   },
   MARRIAGE: {
     description: '結婚假',
@@ -122,16 +119,16 @@ const LABOR_LAW_REGULATIONS = {
     requirements: '需檢附結婚證書'
   },
   UNPAID_LEAVE: {
-    description: '留職停薪',
-    days: '依申請而定',
+    description: '常見依特別法、公司制度或勞雇協議辦理之留職停薪',
+    days: '依核准期間',
     salary: '無薪',
-    requirements: '需主管核准'
+    requirements: '常見事由含育嬰、重大傷病、長期家庭照顧或進修；需事前申請並經核准'
   },
   OCCUPATIONAL_INJURY: {
-    description: '職業災害醫療期間',
-    days: '依醫師診斷而定',
-    salary: '有薪',
-    requirements: '需檢附職災證明'
+    description: '職業災害致治療、休養或復健期間無法出勤',
+    days: '依實際醫療需要',
+    salary: '原領工資補償（依勞基法第59條）',
+    requirements: '需檢附職災認定、診斷或醫囑證明'
   },
   MATERNITY: {
     description: '分娩前後',
@@ -168,6 +165,18 @@ const LABOR_LAW_REGULATIONS = {
     days: '依召集令而定',
     salary: '有薪',
     requirements: '需檢附召集令'
+  },
+  FAMILY_CARE: {
+    description: '照顧受僱者家庭成員之需要',
+    days: '全年 7 日內',
+    salary: '依事假規則辦理',
+    requirements: '需符合家庭照顧事由'
+  },
+  MENSTRUAL: {
+    description: '因生理日致工作有困難',
+    days: '每月 1 日',
+    salary: '依勞基法規定辦理',
+    requirements: '必要時依公司規定提供證明'
   }
 };
 
@@ -281,8 +290,8 @@ export default function LeaveManagementPage() {
         r.employee.name,
         r.employee.department,
         getLeaveTypeLabel(r.leaveType),
-        r.startDate.substring(0, 10),
-        r.endDate.substring(0, 10),
+        extractLeaveDatePart(r.startDate),
+        extractLeaveDatePart(r.endDate),
         r.totalDays,
         getStatusLabel(r.status),
         r.reason || ''
@@ -309,8 +318,8 @@ export default function LeaveManagementPage() {
         r.employee.name,
         r.employee.department,
         getLeaveTypeLabel(r.leaveType),
-        r.startDate.substring(0, 10),
-        r.endDate.substring(0, 10),
+        extractLeaveDatePart(r.startDate),
+        extractLeaveDatePart(r.endDate),
         r.totalDays,
         getStatusLabel(r.status),
         r.reason || ''
@@ -327,20 +336,6 @@ export default function LeaveManagementPage() {
     showToast('success', 'Excel 匯出成功');
   };
 
-  // 申請原因選項
-  const leaveReasonOptions = [
-    { value: '休假', label: '休假' },
-    { value: '公假/公出', label: '公假/公出' },
-    { value: '家有急事', label: '家有急事' },
-    { value: '身體不適', label: '身體不適' },
-    { value: '有事待辦', label: '有事待辦' },
-    { value: '小孩生病', label: '小孩生病' },
-    { value: '配合人力運作', label: '配合人力運作' },
-    { value: '交通工具拋錨', label: '交通工具拋錨' },
-    { value: '生病', label: '生病' },
-    { value: '出國', label: '出國' }
-  ];
-
   // 新申請表單狀態
   const [newRequest, setNewRequest] = useState({
     leaveType: '',
@@ -351,8 +346,7 @@ export default function LeaveManagementPage() {
     endHour: '',
     endMinute: '',
     leaveReason: '', // 申請原因選單
-    reason: '', // 請假說明
-    attachments: [] as File[] // 附件檔案
+    reason: '' // 請假說明
   });  // 編輯請假申請表單
   const [showEditModal, setShowEditModal] = useState(false);
   const [editingRequest, setEditingRequest] = useState<LeaveRequest | null>(null);
@@ -370,6 +364,21 @@ export default function LeaveManagementPage() {
 
   // 添加状态來存储排班信息
   const [scheduleInfo, setScheduleInfo] = useState<{[key: string]: string}>({});
+  const newLeaveReasonOptions = getLeaveReasonOptions(newRequest.leaveType);
+  const editLeaveReasonOptions = getLeaveReasonOptions(editForm.leaveType);
+  const newRequestNeedsStructuredBereavementReason = isBereavementLeaveType(newRequest.leaveType);
+  const editRequestNeedsStructuredBereavementReason = isBereavementLeaveType(editForm.leaveType);
+  const editingRequestHasLegacyBereavementReason = Boolean(
+    editingRequest
+    && editRequestNeedsStructuredBereavementReason
+    && editingRequest.reason
+    && splitLeaveReason(editingRequest.reason, editForm.leaveType).leaveReason.length === 0
+  );
+  const canKeepLegacyBereavementReason = Boolean(
+    editingRequestHasLegacyBereavementReason
+    && editingRequest?.reason?.trim()
+    && editForm.reason.trim() === editingRequest.reason.trim()
+  );
 
   // 獲取指定日期的班次資訊
   const fetchScheduleForDate = async (date: string) => {
@@ -412,6 +421,22 @@ export default function LeaveManagementPage() {
     }
   };
 
+  const handleNewLeaveTypeChange = (leaveType: string) => {
+    setNewRequest((current) => ({
+      ...current,
+      leaveType,
+      leaveReason: isLeaveReasonOptionValid(leaveType, current.leaveReason) ? current.leaveReason : '',
+    }));
+  };
+
+  const handleEditLeaveTypeChange = (leaveType: string) => {
+    setEditForm((current) => ({
+      ...current,
+      leaveType,
+      leaveReason: isLeaveReasonOptionValid(leaveType, current.leaveReason) ? current.leaveReason : '',
+    }));
+  };
+
   // 計算請假時數
   const calculateLeaveHours = () => {
     if (!newRequest.startDate || !newRequest.endDate || !newRequest.startHour || !newRequest.startMinute || !newRequest.endHour || !newRequest.endMinute) {
@@ -452,11 +477,11 @@ export default function LeaveManagementPage() {
     }
 
     if (filters.startDate) {
-      filtered = filtered.filter(req => req.startDate >= filters.startDate);
+      filtered = filtered.filter(req => extractLeaveDatePart(req.startDate) >= filters.startDate);
     }
 
     if (filters.endDate) {
-      filtered = filtered.filter(req => req.endDate <= filters.endDate);
+      filtered = filtered.filter(req => extractLeaveDatePart(req.endDate) <= filters.endDate);
     }
 
     if (filters.search) {
@@ -481,8 +506,7 @@ export default function LeaveManagementPage() {
       case 'date':
         return (new Date(a.startDate).getTime() - new Date(b.startDate).getTime()) * direction;
       case 'status': {
-        const statusOrder = { PENDING: 0, APPROVED: 1, REJECTED: 2 };
-        return ((statusOrder[a.status as keyof typeof statusOrder] || 0) - (statusOrder[b.status as keyof typeof statusOrder] || 0)) * direction;
+        return (getLeaveStatusSortOrder(a.status) - getLeaveStatusSortOrder(b.status)) * direction;
       }
       case 'type':
         return getLeaveTypeLabel(a.leaveType).localeCompare(getLeaveTypeLabel(b.leaveType)) * direction;
@@ -593,10 +617,12 @@ export default function LeaveManagementPage() {
     }
 
     try {
-      // 合併申請原因和請假說明
-      const combinedReason = newRequest.leaveReason && newRequest.reason 
-        ? `${newRequest.leaveReason}：${newRequest.reason}`
-        : newRequest.leaveReason || newRequest.reason || '';
+      const combinedReason = combineLeaveReason(newRequest.leaveReason, newRequest.reason);
+
+      if (newRequestNeedsStructuredBereavementReason && !newRequest.leaveReason) {
+        showToast('error', '喪假請先選擇亡故親屬關係');
+        return;
+      }
 
       const response = await fetchJSONWithCSRF('/api/leave-requests', {
         method: 'POST',
@@ -635,9 +661,10 @@ export default function LeaveManagementPage() {
 
       const response = await fetchJSONWithCSRF(`/api/leave-requests/${id}`, {
         method: 'PATCH',
-        body: canSubmitManagerOpinion
-          ? { opinion: status === 'APPROVED' ? 'AGREE' : 'DISAGREE' }
-          : { status }
+        body: buildLeaveReviewRequestBody(status, {
+          canFinalApprove,
+          canSubmitManagerOpinion,
+        })
       });
 
       if (response.ok) {
@@ -683,34 +710,19 @@ export default function LeaveManagementPage() {
     setEditingRequest(r);
     const s = new Date(r.startDate);
     const e = new Date(r.endDate);
-    
-    // 解析原因和說明
-    let leaveReason = '';
-    let reason = r.reason || '';
-    
-    // 如果原因包含在選項中，則分離申請原因和說明
-    for (const option of leaveReasonOptions) {
-      if (reason.startsWith(option.value + '：')) {
-        leaveReason = option.value;
-        reason = reason.substring(option.value.length + 1);
-        break;
-      } else if (reason === option.value) {
-        leaveReason = option.value;
-        reason = '';
-        break;
-      }
-    }
+    const normalizedLeaveType = normalizeLeaveTypeCode(r.leaveType);
+    const { leaveReason, detail } = splitLeaveReason(r.reason, normalizedLeaveType);
     
     setEditForm({
-      leaveType: normalizeLeaveTypeCode(r.leaveType),
-      startDate: r.startDate.substring(0, 10),
-      endDate: r.endDate.substring(0, 10),
+      leaveType: normalizedLeaveType,
+      startDate: extractLeaveDatePart(r.startDate),
+      endDate: extractLeaveDatePart(r.endDate),
       startHour: String(s.getHours()).padStart(2, '0'),
       startMinute: String(s.getMinutes()).padStart(2, '0'),
       endHour: String(e.getHours()).padStart(2, '0'),
       endMinute: String(e.getMinutes()).padStart(2, '0'),
-      leaveReason: leaveReason,
-      reason: reason
+      leaveReason,
+      reason: detail
     });
     setShowEditModal(true);
   };
@@ -746,10 +758,12 @@ export default function LeaveManagementPage() {
     }
 
     try {
-      // 合併申請原因和請假說明
-      const combinedReason = editForm.leaveReason && editForm.reason 
-        ? `${editForm.leaveReason}：${editForm.reason}`
-        : editForm.leaveReason || editForm.reason || '';
+      const combinedReason = combineLeaveReason(editForm.leaveReason, editForm.reason);
+
+      if (editRequestNeedsStructuredBereavementReason && !editForm.leaveReason && !canKeepLegacyBereavementReason) {
+        showToast('error', '喪假請先選擇亡故親屬關係');
+        return;
+      }
 
       const res = await fetchJSONWithCSRF(`/api/leave-requests/${editingRequest.id}`, {
         method: 'PATCH',
@@ -817,7 +831,7 @@ export default function LeaveManagementPage() {
   };
 
   const resetForm = () => {
-    setNewRequest({ leaveType: '', startDate: '', endDate: '', startHour: '', startMinute: '', endHour: '', endMinute: '', leaveReason: '', reason: '', attachments: [] });
+    setNewRequest({ leaveType: '', startDate: '', endDate: '', startHour: '', startMinute: '', endHour: '', endMinute: '', leaveReason: '', reason: '' });
   };
 
   // 展開/收合審核進度並取得真實資料
@@ -864,7 +878,7 @@ export default function LeaveManagementPage() {
   };
 
   const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleDateString('zh-TW');
+    return formatLeaveDisplayDate(dateString);
   };
 
   if (loading) {
@@ -958,8 +972,8 @@ export default function LeaveManagementPage() {
                 className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900"
               >
                 <option value="">全部類型</option>
-                {Object.entries(LEAVE_TYPES).map(([key, value]) => (
-                  <option key={key} value={key}>{value}</option>
+                {LEAVE_TYPE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
                 ))}
               </select>
             </div>
@@ -1318,28 +1332,28 @@ export default function LeaveManagementPage() {
                 </label>
                 <select
                   value={newRequest.leaveType}
-                  onChange={(e) => setNewRequest({ ...newRequest, leaveType: e.target.value })}
+                  onChange={(e) => handleNewLeaveTypeChange(e.target.value)}
                   className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
                   required
                 >
                   <option value="">請選擇請假類型</option>
-                  {Object.entries(LEAVE_TYPES).map(([key, value]) => (
-                    <option key={key} value={key} className="text-black">{value}</option>
+                  {LEAVE_TYPE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value} className="text-black">{option.label}</option>
                   ))}
                 </select>
                 
-                {/* 勞基法規範說明 */}
-                {newRequest.leaveType && LABOR_LAW_REGULATIONS[newRequest.leaveType as keyof typeof LABOR_LAW_REGULATIONS] && (
+                {/* 假別法規與制度說明 */}
+                {newRequest.leaveType && LEAVE_RULE_SUMMARIES[newRequest.leaveType as keyof typeof LEAVE_RULE_SUMMARIES] && (
                   <div className="mt-2 p-3 bg-blue-50 border border-blue-200 rounded-lg">
                     <div className="flex items-start">
                       <AlertCircle className="h-4 w-4 text-blue-600 mt-0.5 mr-2" />
                       <div className="text-sm text-blue-800">
-                        <p className="font-medium">勞基法規範：</p>
+                        <p className="font-medium">法規／制度重點：</p>
                         <div className="mt-1 space-y-1 text-xs">
-                          <p><strong>說明：</strong>{LABOR_LAW_REGULATIONS[newRequest.leaveType as keyof typeof LABOR_LAW_REGULATIONS].description}</p>
-                          <p><strong>天數：</strong>{LABOR_LAW_REGULATIONS[newRequest.leaveType as keyof typeof LABOR_LAW_REGULATIONS].days}</p>
-                          <p><strong>薪資：</strong>{LABOR_LAW_REGULATIONS[newRequest.leaveType as keyof typeof LABOR_LAW_REGULATIONS].salary}</p>
-                          <p><strong>要求：</strong>{LABOR_LAW_REGULATIONS[newRequest.leaveType as keyof typeof LABOR_LAW_REGULATIONS].requirements}</p>
+                          <p><strong>說明：</strong>{LEAVE_RULE_SUMMARIES[newRequest.leaveType as keyof typeof LEAVE_RULE_SUMMARIES].description}</p>
+                          <p><strong>天數：</strong>{LEAVE_RULE_SUMMARIES[newRequest.leaveType as keyof typeof LEAVE_RULE_SUMMARIES].days}</p>
+                          <p><strong>薪資：</strong>{LEAVE_RULE_SUMMARIES[newRequest.leaveType as keyof typeof LEAVE_RULE_SUMMARIES].salary}</p>
+                          <p><strong>要求：</strong>{LEAVE_RULE_SUMMARIES[newRequest.leaveType as keyof typeof LEAVE_RULE_SUMMARIES].requirements}</p>
                         </div>
                       </div>
                     </div>
@@ -1476,25 +1490,38 @@ export default function LeaveManagementPage() {
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  申請原因
+                  {newRequestNeedsStructuredBereavementReason ? '亡故親屬關係 *' : '申請原因'}
                 </label>
                 <select
                   value={newRequest.leaveReason}
                   onChange={(e) => setNewRequest({ ...newRequest, leaveReason: e.target.value })}
                   className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
+                  disabled={!newRequest.leaveType}
+                  required={newRequestNeedsStructuredBereavementReason}
                 >
-                  <option value="">請選擇申請原因</option>
-                  {leaveReasonOptions.map((option) => (
+                  <option value="">
+                    {newRequest.leaveType
+                      ? (newRequestNeedsStructuredBereavementReason ? '請選擇亡故親屬關係' : '請選擇申請原因')
+                      : '請先選擇請假類型'}
+                  </option>
+                  {newLeaveReasonOptions.map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
                     </option>
                   ))}
                 </select>
+                {newRequest.leaveType && (
+                  <p className="mt-1 text-xs text-gray-500">
+                    {newRequestNeedsStructuredBereavementReason
+                      ? '喪假需以 2026 勞工請假規則的法定親屬關係為申請依據，死亡日起 100 日內可分次請畢；繼父母相關需符合扶養或共居條件。'
+                      : `已依「${getLeaveTypeLabel(newRequest.leaveType)}」篩出對應原因，可再於下方補充說明。`}
+                  </p>
+                )}
               </div>
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  請假說明
+                  {newRequestNeedsStructuredBereavementReason ? '補充說明' : '請假說明'}
                 </label>
                 <textarea
                   value={newRequest.reason}
@@ -1504,48 +1531,6 @@ export default function LeaveManagementPage() {
                   placeholder="請填寫詳細說明（選填）"
                 />
               </div>
-
-              {/* 檔案上傳 */}
-              {newRequest.leaveType && ['SICK', 'BEREAVEMENT', 'PRENATAL_CHECKUP', 'MARRIAGE', 'OCCUPATIONAL_INJURY', 'MATERNITY', 'BREASTFEEDING', 'PATERNITY_CHECKUP', 'MISCARRIAGE', 'OFFICIAL', 'MILITARY_SERVICE'].includes(newRequest.leaveType) && (
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    佐證文件 {['SICK', 'BEREAVEMENT', 'OCCUPATIONAL_INJURY', 'MATERNITY', 'MISCARRIAGE'].includes(newRequest.leaveType) ? '*' : ''}
-                  </label>
-                  <input
-                    type="file"
-                    multiple
-                    accept=".pdf,.jpg,.jpeg,.png,.doc,.docx"
-                    onChange={(e) => {
-                      const files = Array.from(e.target.files || []);
-                      setNewRequest({ ...newRequest, attachments: files });
-                    }}
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
-                    required={['SICK', 'BEREAVEMENT', 'OCCUPATIONAL_INJURY', 'MATERNITY', 'MISCARRIAGE'].includes(newRequest.leaveType)}
-                  />
-                  <p className="text-xs text-gray-500 mt-1">
-                    支援格式：PDF, JPG, PNG, DOC, DOCX（最多5個檔案）
-                  </p>
-                  {newRequest.attachments.length > 0 && (
-                    <div className="mt-2 space-y-1">
-                      {newRequest.attachments.map((file, index) => (
-                        <div key={index} className="flex items-center justify-between bg-gray-50 px-2 py-1 rounded text-xs">
-                          <span className="text-gray-700">{file.name}</span>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const newFiles = newRequest.attachments.filter((_, i) => i !== index);
-                              setNewRequest({ ...newRequest, attachments: newFiles });
-                            }}
-                            className="text-red-500 hover:text-red-700"
-                          >
-                            ×
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
 
               <div className="flex gap-3 pt-4">
                 <button
@@ -1588,12 +1573,12 @@ export default function LeaveManagementPage() {
                 <label className="block text-sm font-medium text-gray-700 mb-2">請假類型 *</label>
                 <select
                   value={editForm.leaveType}
-                  onChange={(e) => setEditForm({ ...editForm, leaveType: e.target.value })}
+                  onChange={(e) => handleEditLeaveTypeChange(e.target.value)}
                   className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
                   required
                 >
-                  {Object.entries(LEAVE_TYPES).map(([key, value]) => (
-                    <option key={key} value={key} className="text-black">{value}</option>
+                  {LEAVE_TYPE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value} className="text-black">{option.label}</option>
                   ))}
                 </select>
                 {editForm.leaveType === 'FAMILY_CARE' && (
@@ -1700,23 +1685,42 @@ export default function LeaveManagementPage() {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">申請原因</label>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  {editRequestNeedsStructuredBereavementReason ? '亡故親屬關係 *' : '申請原因'}
+                </label>
                 <select
                   value={editForm.leaveReason}
                   onChange={(e) => setEditForm({ ...editForm, leaveReason: e.target.value })}
                   className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
+                  disabled={!editForm.leaveType}
+                  required={editRequestNeedsStructuredBereavementReason}
                 >
-                  <option value="">請選擇申請原因</option>
-                  {leaveReasonOptions.map((option) => (
+                  <option value="">
+                    {editForm.leaveType
+                      ? (editRequestNeedsStructuredBereavementReason ? '請選擇亡故親屬關係' : '請選擇申請原因')
+                      : '請先選擇請假類型'}
+                  </option>
+                  {editLeaveReasonOptions.map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
                     </option>
                   ))}
                 </select>
+                {editForm.leaveType && (
+                  <p className="mt-1 text-xs text-gray-500">
+                    {editingRequestHasLegacyBereavementReason
+                      ? '此筆舊資料仍使用歷史自由輸入原因；若未重新分類亡故親屬關係，可先保留原文字後儲存其他欄位。'
+                      : editRequestNeedsStructuredBereavementReason
+                      ? '喪假需以 2026 勞工請假規則的法定親屬關係為申請依據，死亡日起 100 日內可分次請畢；繼父母相關需符合扶養或共居條件。'
+                      : `已依「${getLeaveTypeLabel(editForm.leaveType)}」篩出對應原因，可再於下方補充說明。`}
+                  </p>
+                )}
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">請假說明</label>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  {editRequestNeedsStructuredBereavementReason ? '補充說明' : '請假說明'}
+                </label>
                 <textarea
                   value={editForm.reason}
                   onChange={(e) => setEditForm({ ...editForm, reason: e.target.value })}

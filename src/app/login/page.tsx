@@ -82,6 +82,13 @@ interface EmployeeAttendanceStatus {
   }[];
 }
 
+interface ClockReasonPromptData {
+  type: 'EARLY_IN' | 'LATE_OUT';
+  minutesDiff: number;
+  scheduledTime: string;
+  recordId: number;
+}
+
 // 快速打卡狀態回調類型
 interface QuickClockStatus {
   attendanceStatus: EmployeeAttendanceStatus | null;
@@ -130,10 +137,9 @@ function QuickClockForm({
   
   // 超時下班原因選擇狀態
   const [showReasonModal, setShowReasonModal] = useState(false);
-  const [pendingAttendanceId, setPendingAttendanceId] = useState<number | null>(null);
-  const [scheduleEndTime, setScheduleEndTime] = useState<string | null>(null);
+  const [reasonPromptData, setReasonPromptData] = useState<ClockReasonPromptData | null>(null);
   const [pendingCredentials, setPendingCredentials] = useState<{ username: string; password: string } | null>(null);
-  const [actualClockOutTime, setActualClockOutTime] = useState<string | null>(null);
+  const [actualClockTime, setActualClockTime] = useState<string | null>(null);
   
   // 加班申請表單狀態（選擇公務後可選填）
   const [showOvertimeForm, setShowOvertimeForm] = useState(false);
@@ -673,11 +679,10 @@ function QuickClockForm({
         // 重新檢查員工狀態以更新打卡記錄顯示
         await checkEmployeeStatus(clockData.username, clockData.password);
         
-        // 如果是下班打卡且超過班表時間，顯示原因選擇對話框
-        if (type === 'out' && result.isLateClockOut && result.attendance?.id) {
-          setPendingAttendanceId(result.attendance.id);
-          setScheduleEndTime(result.scheduleEndTime);
-          setActualClockOutTime(result.clockOutTime); // 保存實際打卡時間
+        // 需要提早/延後打卡原因時，顯示原因選擇對話框
+        if (result.requiresReason && result.reasonPrompt) {
+          setReasonPromptData(result.reasonPrompt);
+          setActualClockTime(clockTime || null);
           // 保存帳密用於原因更新 (密碼會在下一行被清除，所以先保存)
           setPendingCredentials({ username: clockData.username, password: clockData.password });
           setShowReasonModal(true);
@@ -702,24 +707,54 @@ function QuickClockForm({
     }
   };
 
-  // 處理超時原因選擇
-  const handleReasonSelect = async (reason: 'PERSONAL' | 'WORK') => {
-    if (!pendingAttendanceId) return;
+  // 處理提早/延後打卡原因選擇
+  const handleReasonSelect = async (reason: 'PERSONAL' | 'BUSINESS', createOvertime = false) => {
+    if (!reasonPromptData || !pendingCredentials) return;
     
     try {
-      const response = await fetchJSONWithCSRF('/api/attendance/update-reason', {
+      const requestData: {
+        recordId: number;
+        clockType: 'in' | 'out';
+        reason: 'PERSONAL' | 'BUSINESS';
+        username: string;
+        password: string;
+        newOvertimeRequest?: {
+          startTime: string;
+          endTime: string;
+          overtimeReason: string;
+        };
+      } = {
+        recordId: reasonPromptData.recordId,
+        clockType: reasonPromptData.type === 'EARLY_IN' ? 'in' : 'out',
+        reason,
+        username: pendingCredentials.username,
+        password: pendingCredentials.password,
+      };
+
+      if (reason === 'BUSINESS' && createOvertime && overtimeReason.trim() && actualClockTime) {
+        requestData.newOvertimeRequest = {
+          startTime: reasonPromptData.type === 'EARLY_IN'
+            ? new Date(actualClockTime).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false })
+            : reasonPromptData.scheduledTime,
+          endTime: reasonPromptData.type === 'EARLY_IN'
+            ? reasonPromptData.scheduledTime
+            : new Date(actualClockTime).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false }),
+          overtimeReason: overtimeReason.trim(),
+        };
+      }
+
+      const response = await fetchJSONWithCSRF('/api/attendance/clock-reason', {
         method: 'POST',
-        body: {
-          attendanceId: pendingAttendanceId,
-          lateClockOutReason: reason,
-          // 快速打卡模式需要帳密認證
-          username: pendingCredentials?.username,
-          password: pendingCredentials?.password
-        }
+        body: requestData
       });
       
       if (response.ok) {
-        setSuccessMessage(prev => prev + `\n超時原因已記錄：${reason === 'PERSONAL' ? '非公務因素' : '公務'}`);
+        const responseData = await response.json();
+        let message = `\n打卡原因已記錄：${reason === 'PERSONAL' ? '非公務因素' : '公務'}`;
+        if (responseData.overtimeId) {
+          message += '\n加班申請已提交，待主管審核';
+        }
+        setSuccessMessage(prev => prev + message);
       } else {
         const errorData = await response.json();
         console.error('記錄超時原因失敗:', errorData.error);
@@ -730,68 +765,35 @@ function QuickClockForm({
       setShowReasonModal(false);
       setShowOvertimeForm(false); // 重置加班表單狀態
       setOvertimeReason(''); // 清除加班事由
-      setPendingAttendanceId(null);
-      setScheduleEndTime(null);
-      setActualClockOutTime(null);
+      setReasonPromptData(null);
+      setActualClockTime(null);
       setPendingCredentials(null); // 清除帳密
-    }
-  };
-
-  // 提交加班申請
-  const submitOvertimeRequest = async () => {
-    if (!scheduleEndTime || !actualClockOutTime || !pendingCredentials) return;
-    
-    try {
-      const today = new Date().toISOString().slice(0, 10);
-      
-      const response = await fetch('/api/overtime-requests', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          workDate: today,
-          overtimeType: 'WEEKDAY', // 平日加班
-          startTime: scheduleEndTime,
-          endTime: new Date(actualClockOutTime).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false }),
-          reason: overtimeReason,
-          // 快速打卡模式需要帳密認證
-          username: pendingCredentials.username,
-          password: pendingCredentials.password
-        })
-      });
-      
-      if (response.ok) {
-        setSuccessMessage(prev => prev + '\n加班申請已提交，待主管審核');
-      } else {
-        const errorData = await response.json();
-        console.error('提交加班申請失敗:', errorData.error);
-        setSuccessMessage(prev => prev + '\n加班申請提交失敗：' + (errorData.error || '請稍後再試'));
-      }
-    } catch (error) {
-      console.error('提交加班申請失敗:', error);
     }
   };
 
   return (
     <>
-      {/* 超時下班原因選擇對話框 */}
-      {showReasonModal && (
+      {/* 提早/延後打卡原因選擇對話框 */}
+      {showReasonModal && reasonPromptData && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4 shadow-xl">
             {!showOvertimeForm ? (
               // 步驟1: 選擇原因
               <>
                 <h3 className="text-lg font-semibold text-gray-900 mb-2">
-                  超時下班原因
+                  {reasonPromptData.type === 'EARLY_IN' ? '提早上班' : '延後下班'}提示
                 </h3>
                 <p className="text-sm text-gray-600 mb-4">
-                  您的下班打卡時間已超過班表時間
-                  {scheduleEndTime && ` (${scheduleEndTime})`}，
-                  請選擇延遲下班的原因：
+                  您的打卡時間比班表時間
+                  {reasonPromptData.type === 'EARLY_IN' ? '提早' : '延後'}了
+                  <span className="font-semibold text-blue-600 mx-1">{reasonPromptData.minutesDiff}</span>
+                  分鐘
+                  {reasonPromptData.scheduledTime && `（班表時間：${reasonPromptData.scheduledTime}）`}
+                  ，請選擇原因：
                 </p>
                 <div className="space-y-3">
                   <button
                     onClick={() => {
-                      // 選公務時，顯示加班申請表單
                       setShowOvertimeForm(true);
                     }}
                     className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors flex items-center justify-center gap-2"
@@ -821,15 +823,27 @@ function QuickClockForm({
                 <div className="space-y-4 mb-4">
                   <div className="grid grid-cols-2 gap-3 text-sm">
                     <div className="bg-gray-50 p-3 rounded">
-                      <div className="text-gray-500">加班開始</div>
-                      <div className="font-medium">{scheduleEndTime || '--:--'}</div>
+                      <div className="text-gray-500">
+                        {reasonPromptData.type === 'EARLY_IN' ? '提早開始' : '加班開始'}
+                      </div>
+                      <div className="font-medium">
+                        {reasonPromptData.type === 'EARLY_IN'
+                          ? (actualClockTime
+                              ? new Date(actualClockTime).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })
+                              : '--:--')
+                          : reasonPromptData.scheduledTime}
+                      </div>
                     </div>
                     <div className="bg-gray-50 p-3 rounded">
-                      <div className="text-gray-500">加班結束</div>
+                      <div className="text-gray-500">
+                        {reasonPromptData.type === 'EARLY_IN' ? '班表上班' : '實際下班'}
+                      </div>
                       <div className="font-medium">
-                        {actualClockOutTime 
-                          ? new Date(actualClockOutTime).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })
-                          : '--:--'}
+                        {reasonPromptData.type === 'EARLY_IN'
+                          ? reasonPromptData.scheduledTime
+                          : (actualClockTime
+                              ? new Date(actualClockTime).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })
+                              : '--:--')}
                       </div>
                     </div>
                   </div>
@@ -851,11 +865,7 @@ function QuickClockForm({
                 <div className="space-y-2">
                   <button
                     onClick={async () => {
-                      // 記錄原因 + 提交加班申請
-                      await handleReasonSelect('WORK');
-                      if (overtimeReason.trim()) {
-                        await submitOvertimeRequest();
-                      }
+                      await handleReasonSelect('BUSINESS', true);
                     }}
                     disabled={!overtimeReason.trim()}
                     className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
@@ -863,7 +873,7 @@ function QuickClockForm({
                     提交加班申請
                   </button>
                   <button
-                    onClick={() => handleReasonSelect('WORK')}
+                    onClick={() => handleReasonSelect('BUSINESS')}
                     className="w-full py-2 px-4 text-gray-600 hover:text-gray-800 text-sm transition-colors"
                   >
                     跳過，稍後申請

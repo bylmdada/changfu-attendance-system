@@ -2,24 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
-import { safeParseSystemSettingsValue } from '@/lib/system-settings-json';
 import { safeParseJSON } from '@/lib/validation';
-
-interface ClockReasonPromptSettings {
-  enabled: boolean;
-  earlyClockInThreshold: number;  // 分鐘
-  lateClockOutThreshold: number;  // 分鐘
-  excludeHolidays: boolean;
-  excludeApprovedOvertime: boolean;
-}
-
-const DEFAULT_SETTINGS: ClockReasonPromptSettings = {
-  enabled: false,
-  earlyClockInThreshold: 5,
-  lateClockOutThreshold: 5,
-  excludeHolidays: true,
-  excludeApprovedOvertime: true
-};
+import {
+  ClockReasonPromptSettings,
+  DEFAULT_CLOCK_REASON_PROMPT_SETTINGS,
+  normalizeClockReasonPromptSettings,
+  parseClockReasonPromptSettings,
+} from '@/lib/clock-reason-prompt-settings';
 
 function parseThresholdValue(
   value: unknown,
@@ -77,13 +66,12 @@ export async function GET(request: NextRequest) {
       where: { key: 'clock_reason_prompt' }
     });
 
-    const settings = safeParseSystemSettingsValue(
-      setting?.value,
-      DEFAULT_SETTINGS,
-      'clock_reason_prompt'
-    );
-
-    return NextResponse.json({ success: true, settings });
+    return NextResponse.json({
+      success: true,
+      settings: normalizeClockReasonPromptSettings(
+        setting ? parseClockReasonPromptSettings(setting.value) : DEFAULT_CLOCK_REASON_PROMPT_SETTINGS
+      ),
+    });
   } catch (error) {
     console.error('取得打卡原因提示設定失敗:', error);
     return NextResponse.json({ error: '系統錯誤' }, { status: 500 });
@@ -154,11 +142,7 @@ export async function PUT(request: NextRequest) {
     const existingSetting = await prisma.systemSettings.findUnique({
       where: { key: 'clock_reason_prompt' }
     });
-    const baseSettings = safeParseSystemSettingsValue(
-      existingSetting?.value,
-      DEFAULT_SETTINGS,
-      'clock_reason_prompt'
-    );
+    const baseSettings = parseClockReasonPromptSettings(existingSetting?.value);
 
     const settings: ClockReasonPromptSettings = {
       enabled: enabledResult.value ?? baseSettings.enabled,

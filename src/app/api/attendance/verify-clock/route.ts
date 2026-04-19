@@ -8,6 +8,16 @@ import { isMobileClockingDevice, MOBILE_CLOCKING_REQUIRED_MESSAGE } from '@/lib/
 import { getTaiwanTodayEnd, getTaiwanTodayStart, toTaiwanDateStr } from '@/lib/timezone';
 import { safeParseJSON } from '@/lib/validation';
 import { calculateAttendanceHours } from '@/lib/work-hours';
+import {
+  isClockTimeRestricted,
+  parseClockTimeRestrictionSettings,
+} from '@/lib/clock-time-restriction-settings';
+import {
+  buildClockReasonPromptData,
+  formatMinutesAsTime,
+  parseClockReasonPromptSettings,
+  shouldSkipClockReasonPrompt,
+} from '@/lib/clock-reason-prompt-settings';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -64,11 +74,9 @@ export async function POST(request: NextRequest) {
     const clockRestriction = await prisma.systemSettings.findUnique({
       where: { key: 'clock_time_restriction' }
     });
-    
-    const restrictionSettings = clockRestriction 
-      ? JSON.parse(clockRestriction.value)
-      : { enabled: true, restrictedStartHour: 23, restrictedEndHour: 5, message: '夜間時段暫停打卡服務' };
-    
+
+    const restrictionSettings = parseClockTimeRestrictionSettings(clockRestriction?.value);
+
     if (restrictionSettings.enabled) {
       const checkTime = new Date();
       const taiwanNow = new Date(checkTime.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
@@ -77,16 +85,7 @@ export async function POST(request: NextRequest) {
       const currentHour = taiwanHour;
       const startHour = restrictionSettings.restrictedStartHour;
       const endHour = restrictionSettings.restrictedEndHour;
-      
-      // 判斷是否在限制時段內（處理跨日情況）
-      let isRestrictedTime = false;
-      if (startHour > endHour) {
-        // 跨日情況：如 23:00 - 05:00
-        isRestrictedTime = currentHour >= startHour || currentHour < endHour;
-      } else {
-        // 同日情況：如 02:00 - 06:00
-        isRestrictedTime = currentHour >= startHour && currentHour < endHour;
-      }
+      const isRestrictedTime = isClockTimeRestricted(currentHour, restrictionSettings);
       
       if (isRestrictedTime) {
         console.log('⛔ 時段限制拒絕打卡:', username, '台灣時間:', taiwanHour, '時 UTC時間:', checkTime.toISOString());
@@ -175,6 +174,55 @@ export async function POST(request: NextRequest) {
     const todayStart = getTaiwanTodayStart(now);
     const todayEnd = getTaiwanTodayEnd(now);
     const currentTime = now.toISOString();
+    const currentTaiwanTime = formatMinutesAsTime(taiwanNow.getHours() * 60 + taiwanNow.getMinutes());
+    const todayStr = toTaiwanDateStr(now);
+    const todaySchedule = await prisma.schedule.findFirst({
+      where: {
+        employeeId: user.employee.id,
+        workDate: todayStr
+      }
+    });
+    const reasonPromptSetting = await prisma.systemSettings.findUnique({
+      where: { key: 'clock_reason_prompt' }
+    });
+    const reasonPromptSettings = parseClockReasonPromptSettings(reasonPromptSetting?.value);
+
+    let isHoliday = false;
+    let hasApprovedOvertime = false;
+
+    if (reasonPromptSettings.enabled && reasonPromptSettings.excludeHolidays) {
+      const holiday = await prisma.holiday.findFirst({
+        where: {
+          date: {
+            gte: todayStart,
+            lt: todayEnd
+          },
+          isActive: true
+        }
+      });
+      isHoliday = Boolean(holiday);
+    }
+
+    if (reasonPromptSettings.enabled && reasonPromptSettings.excludeApprovedOvertime) {
+      const approvedOvertime = await prisma.overtimeRequest.findFirst({
+        where: {
+          employeeId: user.employee.id,
+          overtimeDate: {
+            gte: todayStart,
+            lt: todayEnd
+          },
+          status: 'APPROVED'
+        }
+      });
+      hasApprovedOvertime = Boolean(approvedOvertime);
+    }
+
+    const skipReasonPrompt = shouldSkipClockReasonPrompt({
+      settings: reasonPromptSettings,
+      isHoliday,
+      isRestDay: todaySchedule?.shiftType === 'OFF',
+      hasApprovedOvertime,
+    });
 
     // 📝 班表確認檢查（只對上班打卡檢查）
     if (clockType === 'in') {
@@ -236,13 +284,25 @@ export async function POST(request: NextRequest) {
         }
       });
 
+      const reasonPromptData = skipReasonPrompt || !todaySchedule?.startTime
+        ? null
+        : buildClockReasonPromptData({
+            settings: reasonPromptSettings,
+            type: 'EARLY_IN',
+            scheduledTime: todaySchedule.startTime,
+            actualTime: currentTaiwanTime,
+            recordId: attendance.id,
+          });
+
       console.log('✅ 上班打卡成功:', attendance);
 
       return NextResponse.json({ 
         message: `${user.employee.name} 上班打卡成功`,
         clockInTime: currentTime,
         employee: user.employee.name,
-        attendance: attendance
+        attendance: attendance,
+        requiresReason: !!reasonPromptData,
+        reasonPrompt: reasonPromptData
       });
 
     } else if (clockType === 'out') {
@@ -255,15 +315,6 @@ export async function POST(request: NextRequest) {
             gte: todayStart,
             lt: todayEnd
           }
-        }
-      });
-
-      // 查詢今日班表以判斷是否超時下班
-      const todayStr = toTaiwanDateStr(now);
-      const todaySchedule = await prisma.schedule.findFirst({
-        where: {
-          employeeId: user.employee.id,
-          workDate: todayStr
         }
       });
 
@@ -338,24 +389,15 @@ export async function POST(request: NextRequest) {
           }
         });
 
-        let reasonPromptData = null;
-        try {
-          const reasonPromptSetting = await prisma.systemSettings.findUnique({
-            where: { key: 'clock_reason_prompt' }
-          });
-          const settings = reasonPromptSetting ? JSON.parse(reasonPromptSetting.value) : { enabled: false };
-
-          if (settings.enabled && todaySchedule?.endTime && lateClockOutMinutes >= Number(settings.lateClockOutThreshold ?? 0)) {
-            reasonPromptData = {
+        const reasonPromptData = skipReasonPrompt || !todaySchedule?.endTime
+          ? null
+          : buildClockReasonPromptData({
+              settings: reasonPromptSettings,
               type: 'LATE_OUT',
-              minutesDiff: Math.floor(lateClockOutMinutes),
               scheduledTime: todaySchedule.endTime,
-              recordId: attendance.id
-            };
-          }
-        } catch {
-          console.warn('檢查延後打卡設定失敗');
-        }
+              actualTime: currentTaiwanTime,
+              recordId: attendance.id,
+            });
 
         console.log('✅ 下班打卡成功（更新記錄）:', attendance, '超時下班:', isLateClockOut);
 
@@ -396,24 +438,15 @@ export async function POST(request: NextRequest) {
           }
         });
 
-        let reasonPromptData = null;
-        try {
-          const reasonPromptSetting = await prisma.systemSettings.findUnique({
-            where: { key: 'clock_reason_prompt' }
-          });
-          const settings = reasonPromptSetting ? JSON.parse(reasonPromptSetting.value) : { enabled: false };
-
-          if (settings.enabled && todaySchedule?.endTime && lateClockOutMinutes >= Number(settings.lateClockOutThreshold ?? 0)) {
-            reasonPromptData = {
+        const reasonPromptData = skipReasonPrompt || !todaySchedule?.endTime
+          ? null
+          : buildClockReasonPromptData({
+              settings: reasonPromptSettings,
               type: 'LATE_OUT',
-              minutesDiff: Math.floor(lateClockOutMinutes),
               scheduledTime: todaySchedule.endTime,
-              recordId: attendance.id
-            };
-          }
-        } catch {
-          console.warn('檢查延後打卡設定失敗');
-        }
+              actualTime: currentTaiwanTime,
+              recordId: attendance.id,
+            });
 
         console.log('✅ 下班打卡成功（新建記錄）:', attendance, '超時下班:', isLateClockOut);
 

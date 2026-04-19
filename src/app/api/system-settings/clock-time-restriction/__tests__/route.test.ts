@@ -133,6 +133,31 @@ describe('clock time restriction route guards', () => {
     expect(payload.settings.restrictedEndHour).toBe(5);
   });
 
+  it('merges defaults when stored JSON is missing clock restriction fields on GET', async () => {
+    mockPrisma.systemSettings.findUnique.mockResolvedValue({
+      key: 'clock_time_restriction',
+      value: JSON.stringify({ enabled: false })
+    } as never);
+
+    const request = new NextRequest('http://localhost/api/system-settings/clock-time-restriction', {
+      headers: {
+        cookie: 'token=shared-session-token',
+      },
+    });
+
+    const response = await GET(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.success).toBe(true);
+    expect(payload.settings).toEqual({
+      enabled: false,
+      restrictedStartHour: 23,
+      restrictedEndHour: 5,
+      message: '夜間時段暫停打卡服務',
+    });
+  });
+
   it('rejects null bodies before validating clock time restriction settings', async () => {
     const request = new NextRequest('http://localhost/api/system-settings/clock-time-restriction', {
       method: 'POST',
@@ -166,6 +191,48 @@ describe('clock time restriction route guards', () => {
 
     expect(response.status).toBe(400);
     expect(payload).toEqual({ error: '請提供有效的設定資料' });
+    expect(mockPrisma.systemSettings.findUnique).not.toHaveBeenCalled();
+    expect(mockPrisma.systemSettings.upsert).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-boolean enabled values before touching stored settings', async () => {
+    const request = new NextRequest('http://localhost/api/system-settings/clock-time-restriction', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: 'token=shared-session-token',
+      },
+      body: JSON.stringify({
+        enabled: 'true',
+      }),
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload).toEqual({ error: '啟用狀態必須為布林值' });
+    expect(mockPrisma.systemSettings.findUnique).not.toHaveBeenCalled();
+    expect(mockPrisma.systemSettings.upsert).not.toHaveBeenCalled();
+  });
+
+  it('rejects blank message values before touching stored settings', async () => {
+    const request = new NextRequest('http://localhost/api/system-settings/clock-time-restriction', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: 'token=shared-session-token',
+      },
+      body: JSON.stringify({
+        message: '   ',
+      }),
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload).toEqual({ error: '提示訊息必須為非空字串' });
     expect(mockPrisma.systemSettings.findUnique).not.toHaveBeenCalled();
     expect(mockPrisma.systemSettings.upsert).not.toHaveBeenCalled();
   });
@@ -210,5 +277,59 @@ describe('clock time restriction route guards', () => {
     expect(payload).toEqual({ error: '結束時間需在 0-23 之間' });
     expect(mockPrisma.systemSettings.findUnique).not.toHaveBeenCalled();
     expect(mockPrisma.systemSettings.upsert).not.toHaveBeenCalled();
+  });
+
+  it('uses default hours when updating over partial stored settings', async () => {
+    mockPrisma.systemSettings.findUnique.mockResolvedValue({
+      key: 'clock_time_restriction',
+      value: JSON.stringify({ enabled: true })
+    } as never);
+    mockPrisma.systemSettings.upsert.mockResolvedValue({
+      key: 'clock_time_restriction',
+      value: JSON.stringify({ enabled: true }),
+    } as never);
+
+    const request = new NextRequest('http://localhost/api/system-settings/clock-time-restriction', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: 'token=shared-session-token',
+      },
+      body: JSON.stringify({
+        message: '新的提示訊息',
+      }),
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.settings).toEqual({
+      enabled: true,
+      restrictedStartHour: 23,
+      restrictedEndHour: 5,
+      message: '新的提示訊息',
+    });
+    expect(mockPrisma.systemSettings.upsert).toHaveBeenCalledWith({
+      where: { key: 'clock_time_restriction' },
+      update: {
+        value: JSON.stringify({
+          enabled: true,
+          restrictedStartHour: 23,
+          restrictedEndHour: 5,
+          message: '新的提示訊息',
+        })
+      },
+      create: {
+        key: 'clock_time_restriction',
+        value: JSON.stringify({
+          enabled: true,
+          restrictedStartHour: 23,
+          restrictedEndHour: 5,
+          message: '新的提示訊息',
+        }),
+        description: '打卡時間限制設定'
+      }
+    });
   });
 });

@@ -144,4 +144,32 @@ describe('leave request list guards', () => {
     expect(mockPrisma.leaveRequest.create).not.toHaveBeenCalled();
     expect(mockCreateApprovalForRequest).not.toHaveBeenCalled();
   });
+
+  it('rejects bereavement requests that do not use a legal relationship reason', async () => {
+    const request = new NextRequest('http://localhost:3000/api/leave-requests', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        leaveType: 'BEREAVEMENT',
+        startDate: '2026-04-20',
+        endDate: '2026-04-20',
+        startHour: '09',
+        startMinute: '00',
+        endHour: '18',
+        endMinute: '00',
+        reason: '治喪安排',
+      }),
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload.error).toBe('喪假申請原因需選擇法定亡故親屬關係');
+    expect(mockCheckAttendanceFreeze).not.toHaveBeenCalled();
+    expect(mockValidateLeaveRequest).not.toHaveBeenCalled();
+    expect(mockPrisma.leaveRequest.create).not.toHaveBeenCalled();
+  });
 });

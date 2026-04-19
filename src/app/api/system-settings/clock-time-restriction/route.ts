@@ -3,15 +3,14 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
-import { safeParseSystemSettingsValue } from '@/lib/system-settings-json';
 import { safeParseJSON } from '@/lib/validation';
+import {
+  DEFAULT_CLOCK_TIME_RESTRICTION_SETTINGS,
+  parseClockTimeRestrictionSettings,
+  type ClockTimeRestrictionSettings,
+} from '@/lib/clock-time-restriction-settings';
 
-const DEFAULT_SETTINGS = {
-  enabled: true,
-  restrictedStartHour: 23,    // 限制開始時間（23:00）
-  restrictedEndHour: 5,       // 限制結束時間（05:00）
-  message: '夜間時段暫停打卡服務'
-};
+const DEFAULT_SETTINGS = DEFAULT_CLOCK_TIME_RESTRICTION_SETTINGS;
 
 function parseHourValue(
   value: unknown,
@@ -40,11 +39,43 @@ function parseHourValue(
 
 async function verifyAdmin(request: NextRequest) {
   const user = await getUserFromRequest(request);
-  if (!user || user.role !== 'ADMIN') {
-    return null;
+  if (!user) {
+    return {
+      error: NextResponse.json({ error: '未授權訪問' }, { status: 401 }),
+    };
   }
 
-  return user;
+  if (user.role !== 'ADMIN') {
+    return {
+      error: NextResponse.json({ error: '需要管理員權限' }, { status: 403 }),
+    };
+  }
+
+  return { user };
+}
+
+function parseEnabledValue(value: unknown): { value?: boolean; error?: string } {
+  if (value === undefined) {
+    return {};
+  }
+
+  if (typeof value !== 'boolean') {
+    return { error: '啟用狀態必須為布林值' };
+  }
+
+  return { value };
+}
+
+function parseMessageValue(value: unknown): { value?: string; error?: string } {
+  if (value === undefined) {
+    return {};
+  }
+
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    return { error: '提示訊息必須為非空字串' };
+  }
+
+  return { value: value.trim() };
 }
 
 // GET - 取得打卡時間限制設定
@@ -55,13 +86,9 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
     }
 
-    const user = await getUserFromRequest(request);
-    if (!user) {
-      return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
-    }
-
-    if (user.role !== 'ADMIN') {
-      return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
+    const authResult = await verifyAdmin(request);
+    if (authResult.error) {
+      return authResult.error;
     }
 
     const settings = await prisma.systemSettings.findUnique({
@@ -71,7 +98,7 @@ export async function GET(request: NextRequest) {
     if (settings) {
       return NextResponse.json({
         success: true,
-        settings: safeParseSystemSettingsValue(settings.value, DEFAULT_SETTINGS, 'clock_time_restriction')
+        settings: parseClockTimeRestrictionSettings(settings.value)
       });
     }
 
@@ -98,9 +125,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'CSRF驗證失敗' }, { status: 403 });
     }
 
-    const user = await verifyAdmin(request);
-    if (!user) {
-      return NextResponse.json({ error: '需要管理員權限' }, { status: 403 });
+    const authResult = await verifyAdmin(request);
+    if (authResult.error) {
+      return authResult.error;
     }
 
     const parsedBody = await safeParseJSON(request);
@@ -115,32 +142,38 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '請提供有效的設定資料' }, { status: 400 });
     }
 
-    const { enabled, restrictedStartHour, restrictedEndHour, message } = body;
+    const bodyRecord = body as Record<string, unknown>;
 
-    const startHourResult = parseHourValue(restrictedStartHour, '開始時間');
+    const enabledResult = parseEnabledValue(bodyRecord.enabled);
+    if (enabledResult.error) {
+      return NextResponse.json({ error: enabledResult.error }, { status: 400 });
+    }
+
+    const startHourResult = parseHourValue(bodyRecord.restrictedStartHour, '開始時間');
     if (startHourResult.error) {
       return NextResponse.json({ error: startHourResult.error }, { status: 400 });
     }
 
-    const endHourResult = parseHourValue(restrictedEndHour, '結束時間');
+    const endHourResult = parseHourValue(bodyRecord.restrictedEndHour, '結束時間');
     if (endHourResult.error) {
       return NextResponse.json({ error: endHourResult.error }, { status: 400 });
+    }
+
+    const messageResult = parseMessageValue(bodyRecord.message);
+    if (messageResult.error) {
+      return NextResponse.json({ error: messageResult.error }, { status: 400 });
     }
 
     const existingSettings = await prisma.systemSettings.findUnique({
       where: { key: 'clock_time_restriction' }
     });
-    const baseSettings = safeParseSystemSettingsValue(
-      existingSettings?.value,
-      DEFAULT_SETTINGS,
-      'clock_time_restriction'
-    );
+    const baseSettings = parseClockTimeRestrictionSettings(existingSettings?.value);
 
-    const newSettings = {
-      enabled: enabled ?? baseSettings.enabled,
+    const newSettings: ClockTimeRestrictionSettings = {
+      enabled: enabledResult.value ?? baseSettings.enabled,
       restrictedStartHour: startHourResult.value ?? baseSettings.restrictedStartHour,
       restrictedEndHour: endHourResult.value ?? baseSettings.restrictedEndHour,
-      message: message ?? baseSettings.message
+      message: messageResult.value ?? baseSettings.message
     };
 
     await prisma.systemSettings.upsert({
