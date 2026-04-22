@@ -19,6 +19,8 @@ interface AttendanceRecord {
   status: string;
   createdAt: string;
   updatedAt?: string;
+  clockInReason?: string | null;
+  clockOutReason?: string | null;
   employee?: {
     id: number;
     employeeId: string;
@@ -94,6 +96,7 @@ export default function AttendanceRecordsPage() {
 
   // 排序狀態
   const [sortConfig, setSortConfig] = useState<{ field: 'date' | 'clockIn' | 'clockOut' | 'regular' | 'overtime' | 'status'; direction: 'asc' | 'desc' }>({ field: 'date', direction: 'desc' });
+  const canViewClockReasons = user?.role === 'ADMIN' || user?.role === 'HR';
 
   // 排序函數
   const handleSort = (field: 'date' | 'clockIn' | 'clockOut' | 'regular' | 'overtime' | 'status') => {
@@ -286,6 +289,8 @@ export default function AttendanceRecordsPage() {
       
       // 管理員/HR 可匯出 GPS 資訊
       if (isAdmin) {
+        baseData['提早上班打卡原因'] = record.clockInReason || '-';
+        baseData['延後下班打卡原因'] = record.clockOutReason || '-';
         baseData['上班打卡緯度'] = record.clockInLatitude || '-';
         baseData['上班打卡經度'] = record.clockInLongitude || '-';
         baseData['上班打卡精確度(m)'] = record.clockInAccuracy || '-';
@@ -503,6 +508,11 @@ export default function AttendanceRecordsPage() {
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('status')}>
                           狀態 {sortConfig.field === 'status' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
                         </th>
+                        {canViewClockReasons && (
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            打卡原因
+                          </th>
+                        )}
                         {/* GPS 欄位（管理員/HR 可見）*/}
                         {user && (user.role === 'ADMIN' || user.role === 'HR') && (
                           <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -557,6 +567,20 @@ export default function AttendanceRecordsPage() {
                               {record.status}
                             </span>
                           </td>
+                          {canViewClockReasons && (
+                            <td className="px-6 py-4 text-xs text-gray-700">
+                              <div className="space-y-1 min-w-44">
+                                <div>
+                                  <span className="font-medium text-green-700">提早上班：</span>
+                                  <span>{record.clockInReason || '-'}</span>
+                                </div>
+                                <div>
+                                  <span className="font-medium text-orange-700">延後下班：</span>
+                                  <span>{record.clockOutReason || '-'}</span>
+                                </div>
+                              </div>
+                            </td>
+                          )}
                           {/* GPS 資訊（管理員/HR 可見）*/}
                           {user && (user.role === 'ADMIN' || user.role === 'HR') && (
                             <td className="px-6 py-4 text-xs">

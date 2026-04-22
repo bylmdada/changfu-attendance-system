@@ -212,6 +212,143 @@ test.describe('mobile attendance clock-out regression', () => {
     await expect(page.getByPlaceholder('請輸入您的帳號')).not.toHaveValue('stale-worker');
   });
 
+  test('allows biometric clocking to proceed when another location has WiFi rules but this clock attempt does not', async ({ page, context }) => {
+    let authOptionsRequested = false;
+
+    await page.addInitScript(() => {
+      const MockPublicKeyCredential = function MockPublicKeyCredential() {};
+
+      Object.defineProperty(MockPublicKeyCredential, 'isUserVerifyingPlatformAuthenticatorAvailable', {
+        value: async () => true,
+      });
+
+      Object.defineProperty(window, 'PublicKeyCredential', {
+        configurable: true,
+        writable: true,
+        value: MockPublicKeyCredential,
+      });
+
+      Object.defineProperty(navigator, 'credentials', {
+        configurable: true,
+        value: {
+          get: async () => {
+            const error = new Error('cancelled');
+            error.name = 'NotAllowedError';
+            throw error;
+          },
+        },
+      });
+    });
+
+    await context.route('**/api/auth/me', async (route) => {
+      await route.fulfill(
+        jsonResponse({
+          user: {
+            id: 1,
+            username: 'worker1',
+            role: 'employee',
+            employee: {
+              id: 10,
+              employeeId: 'EMP001',
+              name: '測試員工',
+              department: '營運部',
+              position: '專員',
+            },
+          },
+        })
+      );
+    });
+
+    await context.route('**/api/attendance/clock', async (route) => {
+      await route.fulfill(
+        jsonResponse({
+          hasClockIn: true,
+          hasClockOut: false,
+          today: {
+            id: 101,
+            workDate: '2026-04-17',
+            clockInTime: '2026-04-17T00:02:00.000Z',
+            clockOutTime: null,
+            regularHours: null,
+            overtimeHours: null,
+            status: 'NORMAL',
+          },
+        })
+      );
+    });
+
+    await context.route('**/api/attendance/allowed-locations', async (route) => {
+      await route.fulfill(
+        jsonResponse({
+          locations: [
+            {
+              id: 1,
+              name: '總部',
+              latitude: 25.033964,
+              longitude: 121.564468,
+              radius: 100,
+              isActive: true,
+              wifiEnabled: true,
+              wifiOnly: false,
+              wifiSsidList: 'Changfu-Office',
+            },
+          ],
+          isRequired: false,
+        })
+      );
+    });
+
+    await context.route('**/api/system-settings/gps-attendance', async (route) => {
+      await route.fulfill(
+        jsonResponse({
+          settings: {
+            enabled: false,
+            requiredAccuracy: 50,
+            allowOfflineMode: true,
+            requireAddressInfo: false,
+          },
+        })
+      );
+    });
+
+    await context.route('**/api/webauthn/check**', async (route) => {
+      await route.fulfill(jsonResponse({ hasCredentials: true }));
+    });
+
+    await context.route('**/api/webauthn/auth-options', async (route) => {
+      authOptionsRequested = true;
+      await route.fulfill(
+        jsonResponse({
+          options: {
+            challenge: Buffer.from('challenge').toString('base64url'),
+            allowCredentials: [
+              {
+                id: Buffer.from('credential').toString('base64url'),
+                type: 'public-key',
+                transports: ['internal'],
+              },
+            ],
+            timeout: 60000,
+            userVerification: 'preferred',
+            rpId: '127.0.0.1',
+          },
+        })
+      );
+    });
+
+    await page.goto('/attendance');
+    await page.waitForLoadState('networkidle');
+
+    await page.getByRole('button', { name: '下班打卡' }).click();
+    await expect(page.getByRole('heading', { name: '下班打卡確認' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Face ID / 指紋打卡' })).toBeVisible();
+
+    await page.getByRole('button', { name: 'Face ID / 指紋打卡' }).click();
+
+    await expect.poll(() => authOptionsRequested).toBe(true);
+    await expect(page.getByText('生物識別驗證被取消，請使用密碼打卡')).toBeVisible();
+  });
+
   test('still sends GPS location when GPS is enabled and allowed-locations omits isRequired', async ({ page, context }) => {
     let verifyClockPayload: Record<string, unknown> | null = null;
 

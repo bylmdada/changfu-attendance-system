@@ -380,6 +380,65 @@ describe('verify-clock quick auth account status', () => {
     });
   });
 
+  it('stores the fixed late clock-out reason text when business reason is submitted directly', async () => {
+    jest.setSystemTime(new Date('2026-04-08T09:30:00.000Z'));
+
+    mockPrisma.user.findUnique.mockResolvedValue({
+      id: 1,
+      username: 'worker',
+      isActive: true,
+      passwordHash: 'hash',
+      employee: { id: 9, name: '測試員工' }
+    } as never);
+    mockVerifyPassword.mockResolvedValue(true);
+    mockPrisma.attendanceRecord.findFirst.mockResolvedValue({
+      id: 88,
+      employeeId: 9,
+      clockInTime: '2026-04-08T00:00:00.000Z',
+      clockOutTime: null,
+      regularHours: 0,
+      overtimeHours: 0
+    } as never);
+    mockPrisma.schedule.findFirst.mockResolvedValue({
+      employeeId: 9,
+      workDate: '2026-04-08',
+      endTime: '17:00'
+    } as never);
+    mockPrisma.attendanceRecord.update.mockResolvedValue({
+      id: 88,
+      regularHours: 9.5,
+      overtimeHours: 0,
+      clockOutReason: 'code review、修正、收尾'
+    } as never);
+
+    const request = new NextRequest('http://localhost/api/attendance/verify-clock', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit'
+      },
+      body: JSON.stringify({
+        username: 'worker',
+        password: 'secret',
+        clockType: 'out',
+        clockOutReason: 'BUSINESS'
+      })
+    });
+
+    const response = await POST(request);
+    if (!response) {
+      throw new Error('Expected response');
+    }
+
+    expect(response.status).toBe(200);
+    expect(mockPrisma.attendanceRecord.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 88 },
+      data: expect.objectContaining({
+        clockOutReason: 'code review、修正、收尾'
+      })
+    }));
+  });
+
   it('returns reason prompt data for early clock-in in quick auth flow', async () => {
     jest.setSystemTime(new Date('2026-04-08T00:40:00.000Z'));
 

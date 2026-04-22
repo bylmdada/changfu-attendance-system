@@ -5,6 +5,7 @@ import { prisma } from '@/lib/database';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { toTaiwanDateStr } from '@/lib/timezone';
 import { getStoredOrCalculatedAttendanceHours } from '@/lib/work-hours';
+import { formatAttendanceClockReason } from '@/lib/attendance-clock-reasons';
 
 function toWorkDateKey(value: Date | string) {
   if (value instanceof Date) {
@@ -343,6 +344,8 @@ export async function GET(request: NextRequest) {
         scheduledEnd: schedule?.endTime || null,
         // 新增：GPS 資訊（僅管理員/HR 可查看）
         ...(isAdmin ? {
+          clockInReason: formatAttendanceClockReason(record.clockInReason),
+          clockOutReason: formatAttendanceClockReason(record.clockOutReason),
           clockInLatitude: record.clockInLatitude,
           clockInLongitude: record.clockInLongitude,
           clockInAccuracy: record.clockInAccuracy,

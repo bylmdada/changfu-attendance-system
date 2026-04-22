@@ -256,4 +256,124 @@ describe('attendance records route guards', () => {
     expect(payload.summary.totalRegularHours).toBe(6.51);
     expect(payload.summary.totalOvertimeHours).toBe(0);
   });
+
+  it('includes early clock-in and late clock-out reasons for admin viewers', async () => {
+    mockPrisma.attendanceRecord.count.mockResolvedValue(1 as never);
+    mockPrisma.attendanceRecord.findMany
+      .mockResolvedValueOnce([
+        {
+          id: 5,
+          employeeId: 104,
+          workDate: new Date('2026-04-18T00:00:00.000Z'),
+          clockInTime: new Date('2026-04-18T08:30:00.000Z'),
+          clockOutTime: new Date('2026-04-18T10:30:00.000Z'),
+          clockInReason: 'BUSINESS',
+          clockOutReason: 'code review、修正、收尾',
+          regularHours: 8,
+          overtimeHours: 0.5,
+          status: 'PRESENT',
+          createdAt: new Date('2026-04-18T10:35:00.000Z'),
+          clockInLatitude: null,
+          clockInLongitude: null,
+          clockInAccuracy: null,
+          clockInAddress: null,
+          clockOutLatitude: null,
+          clockOutLongitude: null,
+          clockOutAccuracy: null,
+          clockOutAddress: null,
+          employee: {
+            id: 104,
+            employeeId: 'E104',
+            name: '可看原因員工',
+            department: '製造部',
+            position: 'Staff'
+          }
+        }
+      ] as never)
+      .mockResolvedValueOnce([
+        {
+          employeeId: 104,
+          workDate: new Date('2026-04-18T00:00:00.000Z'),
+          clockInTime: new Date('2026-04-18T08:30:00.000Z'),
+          clockOutTime: new Date('2026-04-18T10:30:00.000Z'),
+          regularHours: 8,
+          overtimeHours: 0.5,
+        }
+      ] as never);
+
+    mockPrisma.schedule.findMany.mockResolvedValue([
+      {
+        employeeId: 104,
+        workDate: '2026-04-18',
+        startTime: '09:00',
+        endTime: '18:00',
+        breakTime: 60,
+      }
+    ] as never);
+
+    const response = await GET(new NextRequest('http://localhost/api/attendance/records?page=1&pageSize=10'));
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.records[0].clockInReason).toBe('公務');
+    expect(payload.records[0].clockOutReason).toBe('code review、修正、收尾');
+  });
+
+  it('does not expose clock reasons to non-admin viewers', async () => {
+    mockGetUserFromRequest.mockResolvedValue({
+      userId: 2,
+      employeeId: 105,
+      role: 'EMPLOYEE',
+      username: 'employee',
+    } as never);
+    mockPrisma.attendanceRecord.count.mockResolvedValue(1 as never);
+    mockPrisma.attendanceRecord.findMany
+      .mockResolvedValueOnce([
+        {
+          id: 6,
+          employeeId: 105,
+          workDate: new Date('2026-04-18T00:00:00.000Z'),
+          clockInTime: new Date('2026-04-18T08:30:00.000Z'),
+          clockOutTime: new Date('2026-04-18T10:30:00.000Z'),
+          clockInReason: 'PERSONAL',
+          clockOutReason: 'code review、修正、收尾',
+          regularHours: 8,
+          overtimeHours: 0.5,
+          status: 'PRESENT',
+          createdAt: new Date('2026-04-18T10:35:00.000Z'),
+          clockInLatitude: null,
+          clockInLongitude: null,
+          clockInAccuracy: null,
+          clockInAddress: null,
+          clockOutLatitude: null,
+          clockOutLongitude: null,
+          clockOutAccuracy: null,
+          clockOutAddress: null,
+          employee: {
+            id: 105,
+            employeeId: 'E105',
+            name: '不可看原因員工',
+            department: '製造部',
+            position: 'Staff'
+          }
+        }
+      ] as never)
+      .mockResolvedValueOnce([
+        {
+          employeeId: 105,
+          workDate: new Date('2026-04-18T00:00:00.000Z'),
+          clockInTime: new Date('2026-04-18T08:30:00.000Z'),
+          clockOutTime: new Date('2026-04-18T10:30:00.000Z'),
+          regularHours: 8,
+          overtimeHours: 0.5,
+        }
+      ] as never);
+
+    const response = await GET(new NextRequest('http://localhost/api/attendance/records?page=1&pageSize=10'));
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.records[0]).not.toHaveProperty('clockInReason');
+    expect(payload.records[0]).not.toHaveProperty('clockOutReason');
+  });
 });

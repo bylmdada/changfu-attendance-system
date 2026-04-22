@@ -110,9 +110,9 @@ export default function AttendancePage() {
 
   // WiFi SSID 驗證狀態
   const [showWifiSelector, setShowWifiSelector] = useState(false);
-  const [availableWifiSsids, setAvailableWifiSsids] = useState<string[]>([]);
+  const [pendingWifiSsids, setPendingWifiSsids] = useState<string[]>([]);
   const [selectedWifiSsid, setSelectedWifiSsid] = useState<string>('');
-  const [wifiVerificationRequired, setWifiVerificationRequired] = useState(false);
+  const [pendingWifiVerificationRequired, setPendingWifiVerificationRequired] = useState(false);
   const [, setWifiOnlyMode] = useState(false);
 
   // Toast 通知狀態
@@ -149,6 +149,12 @@ export default function AttendancePage() {
   };
 
   const resolvedVerificationUsername = verificationData.username || loggedInUsername || savedUsername;
+
+  const resetPendingWifiVerification = () => {
+    setPendingWifiVerificationRequired(false);
+    setPendingWifiSsids([]);
+    setSelectedWifiSsid('');
+  };
 
   const getTrustedCurrentLocation = () => (
     locationStatus === 'valid' ? (currentLocation ?? undefined) : undefined
@@ -246,8 +252,8 @@ export default function AttendancePage() {
         verifiedLocation = locationCheck.location ?? verifiedLocation;
       }
 
-      // 0.1 檢查 WiFi 驗證（如需要）
-      if (wifiVerificationRequired && availableWifiSsids.length > 0 && !selectedWifiSsid) {
+      // 0.1 檢查本次打卡是否需要 WiFi 驗證
+      if (pendingWifiVerificationRequired && !selectedWifiSsid) {
         // 需要先選擇 WiFi
         showToast('warning', '請先確認您已連接到公司 WiFi');
         setWebauthnLoading(false);
@@ -319,6 +325,8 @@ export default function AttendancePage() {
         showToast('success', result.message || `${clockType === 'in' ? '上班' : '下班'}打卡成功！`);
         setShowVerificationModal(false);
         setPendingClockType(null);
+        setPendingClockLocation(null);
+        resetPendingWifiVerification();
         loadTodayStatus();
       } else {
         throw new Error(result.error || '打卡失敗');
@@ -584,34 +592,7 @@ export default function AttendancePage() {
       
       if (response.ok) {
         const data = await response.json();
-        const locations = data.locations || [];
-        setAllowedLocations(locations);
-
-        // 解析 WiFi 設定
-        const allSsids: string[] = [];
-        let hasWifiEnabled = false;
-        let hasWifiOnly = false;
-
-        for (const location of locations) {
-          if (location.wifiEnabled && location.wifiSsidList) {
-            hasWifiEnabled = true;
-            if (location.wifiOnly) {
-              hasWifiOnly = true;
-            }
-            // 解析 SSID 列表（每行一個）
-            const ssids = location.wifiSsidList
-              .split('\n')
-              .map((s: string) => s.trim())
-              .filter((s: string) => s.length > 0);
-            allSsids.push(...ssids);
-          }
-        }
-
-        // 去除重複的 SSID
-        const uniqueSsids = [...new Set(allSsids)];
-        setAvailableWifiSsids(uniqueSsids);
-        setWifiVerificationRequired(hasWifiEnabled);
-        setWifiOnlyMode(hasWifiOnly);
+        setAllowedLocations(data.locations || []);
       }
     } catch (error) {
       console.error('載入允許位置失敗:', error);
@@ -721,7 +702,7 @@ export default function AttendancePage() {
     const locationRequired = isGpsLocationRequired(gpsSettings);
     let verifiedLocation = getTrustedCurrentLocation();
     setPendingClockLocation(null);
-    setSelectedWifiSsid('');
+    resetPendingWifiVerification();
 
     // 先進行 GPS 驗證（如果需要）
     if (locationRequired) {
@@ -763,7 +744,8 @@ export default function AttendancePage() {
     // 如果該位置需要 WiFi 驗證
     if (requireWifiForThisLocation && locationWifiSsids.length > 0) {
       // 更新可用的 WiFi SSID（只顯示該位置的 SSID）
-      setAvailableWifiSsids(locationWifiSsids);
+      setPendingWifiSsids(locationWifiSsids);
+      setPendingWifiVerificationRequired(true);
       setWifiOnlyMode(locationWifiOnly);
       
       // 顯示 WiFi 選擇器
@@ -785,7 +767,7 @@ export default function AttendancePage() {
     }
 
     // 驗證選擇的 WiFi 是否在允許列表中
-    if (!availableWifiSsids.includes(selectedWifiSsid)) {
+    if (!pendingWifiSsids.includes(selectedWifiSsid)) {
       showToast('error', '您選擇的 WiFi 不在允許的範圍內，請確認您已連接到公司 WiFi');
       return;
     }
@@ -799,7 +781,7 @@ export default function AttendancePage() {
     setShowWifiSelector(false);
     setPendingClockType(null);
     setPendingClockLocation(null);
-    setSelectedWifiSsid('');
+    resetPendingWifiVerification();
   };
 
   const handleVerificationSubmit = async () => {
@@ -878,6 +860,8 @@ export default function AttendancePage() {
     } finally {
       setClockLoading(false);
       setPendingClockType(null);
+      setPendingClockLocation(null);
+      resetPendingWifiVerification();
       setVerificationData({ username: '', password: '' });
     }
   };
@@ -886,6 +870,7 @@ export default function AttendancePage() {
     setShowVerificationModal(false);
     setPendingClockType(null);
     setPendingClockLocation(null);
+    resetPendingWifiVerification();
     setVerificationData({ username: '', password: '' });
   };
 
@@ -1300,7 +1285,7 @@ export default function AttendancePage() {
             </p>
 
             <div className="space-y-3 mb-6">
-              {availableWifiSsids.map((ssid, index) => (
+              {pendingWifiSsids.map((ssid, index) => (
                 <label
                   key={index}
                   className={`flex items-center p-3 rounded-lg border-2 cursor-pointer transition-all ${

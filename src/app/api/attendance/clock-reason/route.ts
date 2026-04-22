@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest, verifyPassword } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
+import {
+  DEFAULT_LATE_CLOCK_OUT_BUSINESS_REASON,
+  normalizeClockReasonForStorage,
+} from '@/lib/attendance-clock-reasons';
 import { safeParseJSON } from '@/lib/validation';
 import { checkClockRateLimit, clearFailedAttempts, recordFailedClockAttempt } from '@/lib/rate-limit';
 
@@ -65,6 +69,8 @@ export async function POST(request: NextRequest) {
     if (!['in', 'out'].includes(clockType)) {
       return NextResponse.json({ error: '無效的打卡類型' }, { status: 400 });
     }
+
+    const normalizedClockType: 'in' | 'out' = clockType === 'in' ? 'in' : 'out';
 
     if (!['PERSONAL', 'BUSINESS'].includes(reason)) {
       return NextResponse.json({ error: '無效的原因類型' }, { status: 400 });
@@ -186,7 +192,11 @@ export async function POST(request: NextRequest) {
           startTime: startTime, // String format "HH:mm"
           endTime: endTime,     // String format "HH:mm"
           totalHours: calculatedHours,
-          reason: overtimeReason || (clockType === 'in' ? '提早上班工作' : '延後下班工作'),
+          reason: overtimeReason || (
+            normalizedClockType === 'in'
+              ? '提早上班工作'
+              : DEFAULT_LATE_CLOCK_OUT_BUSINESS_REASON
+          ),
           status: 'PENDING'
         }
       });
@@ -196,11 +206,11 @@ export async function POST(request: NextRequest) {
 
     // 更新考勤記錄
     const updateData: Record<string, unknown> = {};
-    if (clockType === 'in') {
-      updateData.clockInReason = reason;
+    if (normalizedClockType === 'in') {
+      updateData.clockInReason = normalizeClockReasonForStorage(normalizedClockType, reason);
       if (linkedOvertimeId) updateData.clockInOvertimeId = linkedOvertimeId;
     } else {
-      updateData.clockOutReason = reason;
+      updateData.clockOutReason = normalizeClockReasonForStorage(normalizedClockType, reason);
       if (linkedOvertimeId) updateData.clockOutOvertimeId = linkedOvertimeId;
     }
 

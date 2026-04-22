@@ -8,6 +8,7 @@ import { isMobileClockingDevice, MOBILE_CLOCKING_REQUIRED_MESSAGE } from '@/lib/
 import { getTaiwanTodayEnd, getTaiwanTodayStart, toTaiwanDateStr } from '@/lib/timezone';
 import { safeParseJSON } from '@/lib/validation';
 import { calculateAttendanceHours } from '@/lib/work-hours';
+import { normalizeLateClockOutReason } from '@/lib/attendance-clock-reasons';
 import {
   isClockTimeRestricted,
   parseClockTimeRestrictionSettings,
@@ -339,7 +340,7 @@ export async function POST(request: NextRequest) {
         : typeof body.clockOutReason === 'string'
           ? body.clockOutReason
           : '';
-      const clockOutReason = rawClockOutReason || null;
+      const clockOutReason = normalizeLateClockOutReason(rawClockOutReason);
 
       let attendance;
 

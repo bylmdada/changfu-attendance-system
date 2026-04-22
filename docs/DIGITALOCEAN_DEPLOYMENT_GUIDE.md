@@ -6,7 +6,7 @@
 - **可用時間**: ~33 個月（$6/月方案）
 - **申請方式**: [education.github.com](https://education.github.com/pack)
 
-> 注意：本文件主路徑適用於 `DigitalOcean VPS + PM2 + Nginx`，並以目前正式環境的 `3000` port 為基準。若您改走容器化部署，請改參考根目錄 `deploy-vps.sh` 與 `docker-compose.production.yml`；容器路徑仍有獨立的 port 設定，請勿直接套用本頁 PM2/Nginx 範例。
+> 注意：本文件主路徑適用於 `DigitalOcean VPS + PM2 + Nginx`，並以目前正式環境的 `3000` port 為基準。根目錄 `deploy-vps.sh` 與 `setup-production.sh` 已改為 **手動 VPS / PM2 部署腳本**；若您改走容器化部署，請另行維護 Docker 設定，不要直接套用本頁 PM2/Nginx 範例。
 
 ---
 
