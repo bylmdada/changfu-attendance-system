@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest, verifyPassword } from '@/lib/auth';
+import { normalizeLateClockOutReason } from '@/lib/attendance-clock-reasons';
 import { validateCSRF } from '@/lib/csrf';
 import { checkClockRateLimit, clearFailedAttempts, recordFailedClockAttempt } from '@/lib/rate-limit';
 import { safeParseJSON } from '@/lib/validation';
@@ -117,7 +118,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 更新超時原因 - 使用新欄位名稱
-    const finalReason = reason === 'WORK' ? 'BUSINESS' : reason; // 將舊的 WORK 轉換為 BUSINESS
+    const finalReason = normalizeLateClockOutReason(reason) ?? reason;
     const updatedAttendance = await prisma.attendanceRecord.update({
       where: { id: attendanceId },
       data: { clockOutReason: finalReason }

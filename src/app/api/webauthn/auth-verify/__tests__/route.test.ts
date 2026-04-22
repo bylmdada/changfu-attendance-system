@@ -19,6 +19,7 @@ jest.mock('@/lib/device-detection', () => ({
 import { prisma } from '@/lib/database';
 import { cookies } from 'next/headers';
 import { isMobileClockingDevice } from '@/lib/device-detection';
+import { convertSpkiPublicKeyToCose } from '@/lib/webauthn';
 import * as crypto from 'crypto';
 import { POST } from '../route';
 
@@ -43,6 +44,7 @@ function createSignedCredential(options?: {
   credentialId?: string;
   type?: string;
   rawId?: string;
+  storedPublicKeyFormat?: 'spki' | 'cose';
 }) {
   const {
     rpId = 'localhost',
@@ -53,6 +55,7 @@ function createSignedCredential(options?: {
     credentialId = 'cred-1',
     type = 'public-key',
     rawId,
+    storedPublicKeyFormat = 'spki',
   } = options || {};
 
   const { publicKey, privateKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
@@ -70,9 +73,12 @@ function createSignedCredential(options?: {
   }));
   const clientDataHash = crypto.createHash('sha256').update(clientDataJSONBuffer).digest();
   const signature = crypto.sign('sha256', Buffer.concat([authData, clientDataHash]), privateKey);
+  const storedPublicKey = storedPublicKeyFormat === 'cose'
+    ? Buffer.from(convertSpkiPublicKeyToCose(exportedPublicKey.toString('base64url'))).toString('base64url')
+    : exportedPublicKey.toString('base64url');
 
   return {
-    storedPublicKey: exportedPublicKey.toString('base64url'),
+    storedPublicKey,
     requestBody: {
       credential: {
         id: credentialId,
@@ -188,6 +194,49 @@ describe('webauthn auth-verify account status guard', () => {
     expect(payload.success).toBe(true);
     expect(payload.verified).toBe(true);
     expect(payload.user.username).toBe('inactive.user');
+    expect(mockPrisma.webAuthnCredential.update).toHaveBeenCalledWith({
+      where: { id: 1 },
+      data: expect.objectContaining({
+        counter: 1,
+        lastUsedAt: expect.any(Date),
+      }),
+    });
+  });
+
+  it('verifies a valid assertion when the stored public key uses the legacy COSE format', async () => {
+    const signedCredential = createSignedCredential({ storedPublicKeyFormat: 'cose' });
+
+    mockPrisma.webAuthnCredential.findUnique.mockResolvedValue({
+      id: 1,
+      credentialId: 'cred-1',
+      publicKey: signedCredential.storedPublicKey,
+      counter: 0,
+      user: {
+        id: 3,
+        username: 'inactive.user',
+        isActive: true,
+        employee: { id: 20, name: 'Alice' },
+        employeeId: 20,
+      }
+    } as never);
+
+    mockPrisma.webAuthnCredential.update.mockResolvedValue({} as never);
+
+    const request = new Request('http://localhost/api/webauthn/auth-verify', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit'
+      },
+      body: JSON.stringify(signedCredential.requestBody)
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.success).toBe(true);
+    expect(payload.verified).toBe(true);
     expect(mockPrisma.webAuthnCredential.update).toHaveBeenCalledWith({
       where: { id: 1 },
       data: expect.objectContaining({

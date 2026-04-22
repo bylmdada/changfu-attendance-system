@@ -19,6 +19,20 @@ npm run dev
 
 開啟 [http://localhost:3001](http://localhost:3001) 查看結果。
 
+## VPS 手動部署（PM2 / 非 Docker）
+
+正式環境使用 **PM2 + Nginx**，不走 Docker、也不走 CI deploy。專案根目錄已提供：
+
+```bash
+# 先在 VPS 準備好 nvm / Node / PM2 / .env.production
+./setup-production.sh
+
+# 在本機執行手動部署
+VPS_HOST=your-vps-ip ./deploy-vps.sh
+```
+
+`deploy-vps.sh` 會先讀取 **VPS 目前的 Node 版本**，再切換本機到相同版本後建置，接著同步程式碼、`.next` 產物，最後在 VPS 上執行 Prisma 與 PM2 reload。
+
 ## 技術棧
 
 - **Frontend**: Next.js, React, Tailwind CSS

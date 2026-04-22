@@ -221,6 +221,13 @@ describe('attendance clock-reason route guards', () => {
         status: 'PENDING'
       })
     });
+    expect(mockPrisma.attendanceRecord.update).toHaveBeenCalledWith({
+      where: { id: 123 },
+      data: {
+        clockOutReason: 'code review、修正、收尾',
+        clockOutOvertimeId: 777,
+      },
+    });
   });
 
   it('allows quick-auth submissions to update early clock-in reasons without a session user', async () => {

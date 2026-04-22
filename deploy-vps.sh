@@ -1,126 +1,142 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
-# === 長福會考勤系統 - VPS 部署腳本 ===
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$PROJECT_ROOT"
 
-DEPLOY_PATH="/opt/changfu-attendance"
-IMAGE_NAME="changfu-attendance"
-COMPOSE_FILE="docker-compose.production.yml"
+VPS_HOST="${VPS_HOST:-}"
+VPS_USER="${VPS_USER:-deploy}"
+VPS_PORT="${VPS_PORT:-22}"
+DEPLOY_PATH="${DEPLOY_PATH:-/home/${VPS_USER}/apps/changfu-attendance}"
+PM2_APP_NAME="${PM2_APP_NAME:-attendance}"
+APP_PORT="${APP_PORT:-3000}"
+APP_HOST="${APP_HOST:-0.0.0.0}"
+LOCAL_ENV_FILE="${LOCAL_ENV_FILE:-.env.production}"
+REMOTE_ENV_FILE="${REMOTE_ENV_FILE:-.env.production}"
+SSH_COMMON_OPTS=(-p "$VPS_PORT" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=6)
+RSYNC_RSH="ssh -p ${VPS_PORT} -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=6"
 
-cd "$DEPLOY_PATH"
-
-echo "=== 開始部署長福會考勤系統 ==="
-
-# 1. 建立必要目錄
-echo "[1/6] 建立必要目錄..."
-mkdir -p data/production uploads/production backups secrets certs nginx/conf.d
-
-# 2. 初始化 secrets（首次部署時）
-if [ ! -f secrets/jwt_secret.txt ]; then
-  echo "[INFO] 初次部署，生成 JWT Secret..."
-  openssl rand -base64 48 > secrets/jwt_secret.txt
-  chmod 600 secrets/jwt_secret.txt
+if [[ -z "$VPS_HOST" ]]; then
+  echo "❌ 請先設定 VPS_HOST，例如：VPS_HOST=203.0.113.10 ./deploy-vps.sh"
+  exit 1
 fi
 
-# 3. 初始化 nginx 設定（首次部署時）
-if [ ! -f nginx/conf.d/default.conf ]; then
-  echo "[INFO] 初次部署，建立 Nginx 設定..."
-  cat > nginx/conf.d/default.conf << 'NGINX_EOF'
-upstream attendance_app {
-    server attendance-app:3001;
-}
-
-server {
-    listen 80;
-    server_name _;
-
-    client_max_body_size 10M;
-
-    location / {
-        proxy_pass http://attendance_app;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_cache_bypass $http_upgrade;
-    }
-}
-NGINX_EOF
+if [[ ! -f package.json ]]; then
+  echo "❌ 請在專案根目錄執行此腳本"
+  exit 1
 fi
 
-if [ ! -f nginx/nginx.conf ]; then
-  cat > nginx/nginx.conf << 'NGINX_MAIN_EOF'
-user nginx;
-worker_processes auto;
-error_log /var/log/nginx/error.log warn;
-pid /var/run/nginx.pid;
-
-events {
-    worker_connections 1024;
+ssh_remote() {
+  ssh "${SSH_COMMON_OPTS[@]}" "${VPS_USER}@${VPS_HOST}" "$@"
 }
 
-http {
-    include /etc/nginx/mime.types;
-    default_type application/octet-stream;
+echo "=== 取得 VPS Node 版本 ==="
+REMOTE_NODE_VERSION="$(
+  ssh_remote '
+    set -e
+    export NVM_DIR="$HOME/.nvm"
+    if [ ! -s "$NVM_DIR/nvm.sh" ]; then
+      echo "missing-nvm"
+      exit 11
+    fi
+    . "$NVM_DIR/nvm.sh"
+    node -v
+  '
+)"
 
-    log_format main '$remote_addr - $remote_user [$time_local] "$request" '
-                    '$status $body_bytes_sent "$http_referer" '
-                    '"$http_user_agent" "$http_x_forwarded_for"';
-
-    access_log /var/log/nginx/access.log main;
-    sendfile on;
-    keepalive_timeout 65;
-    gzip on;
-    gzip_types text/plain text/css application/json application/javascript text/xml;
-
-    include /etc/nginx/conf.d/*.conf;
-}
-NGINX_MAIN_EOF
+if [[ "$REMOTE_NODE_VERSION" == "missing-nvm" ]]; then
+  echo "❌ VPS 尚未安裝 nvm，請先在 VPS 完成 nvm / Node 安裝"
+  exit 1
 fi
 
-# 4. 載入 Docker image
-echo "[2/6] 載入 Docker image..."
-docker load < image.tar.gz
-rm -f image.tar.gz
+REMOTE_NODE_VERSION="${REMOTE_NODE_VERSION#v}"
 
-# 5. 備份現有資料庫
-if [ -f data/production/database.db ]; then
-  echo "[3/6] 備份資料庫..."
-  BACKUP_NAME="database_pre_deploy_$(date +%Y%m%d_%H%M%S).db"
-  cp data/production/database.db "backups/$BACKUP_NAME"
-  echo "[INFO] 備份完成: backups/$BACKUP_NAME"
+echo "=== 切換本機 Node 版本到 ${REMOTE_NODE_VERSION} ==="
+if [[ -s "${NVM_DIR:-$HOME/.nvm}/nvm.sh" ]]; then
+  # shellcheck source=/dev/null
+  . "${NVM_DIR:-$HOME/.nvm}/nvm.sh"
+  nvm install "$REMOTE_NODE_VERSION" >/dev/null
+  nvm use "$REMOTE_NODE_VERSION" >/dev/null
+
+  echo "=== 本機安裝依賴與建置 ==="
+  npm ci
+  npm run build
+elif [[ "$(node -v 2>/dev/null || true)" == "v${REMOTE_NODE_VERSION}" ]]; then
+  echo "=== 本機已是相同 Node 版本，直接建置 ==="
+  npm ci
+  npm run build
 else
-  echo "[3/6] 無現有資料庫，跳過備份"
+  echo "=== 本機沒有 nvm，改用暫時的 Node ${REMOTE_NODE_VERSION} 建置 ==="
+  npx -y -p "node@${REMOTE_NODE_VERSION}" -p "npm@10" -c 'npm ci && npm run build'
 fi
 
-# 6. 停止舊容器
-echo "[4/6] 停止舊容器..."
-docker compose -f "$COMPOSE_FILE" down --remove-orphans 2>/dev/null || true
-
-# 7. 啟動新容器
-echo "[5/6] 啟動新容器..."
-docker compose -f "$COMPOSE_FILE" up -d
-
-# 8. 執行資料庫遷移
-echo "[6/6] 執行資料庫遷移..."
-docker exec changfu-attendance npx prisma migrate deploy 2>/dev/null || \
-  docker exec changfu-attendance npx prisma db push 2>/dev/null || \
-  echo "[WARN] 資料庫遷移跳過（可能尚未設定 migrations）"
-
-# 9. 健康檢查
-echo "=== 等待健康檢查..."
-for i in $(seq 1 30); do
-  if curl -sf http://localhost:3001/api/health > /dev/null 2>&1; then
-    echo "=== 部署成功！應用已在 port 3001 運行 ==="
-    docker compose -f "$COMPOSE_FILE" ps
-    exit 0
+echo "=== 建立 VPS 目錄 ==="
+ssh_remote "
+  set -e
+  mkdir -p '$DEPLOY_PATH' '$DEPLOY_PATH/backups'
+  if [ -d '$DEPLOY_PATH/prisma/prisma' ]; then
+    mv '$DEPLOY_PATH/prisma/prisma' '$DEPLOY_PATH/backups/prisma-nested-'\"\$(date +%Y%m%d_%H%M%S)\"
   fi
-  sleep 2
-done
+"
 
-echo "=== [ERROR] 健康檢查失敗，查看日誌 ==="
-docker compose -f "$COMPOSE_FILE" logs --tail=50
-exit 1
+echo "=== 同步專案檔案到 VPS ==="
+rsync -az --delete \
+  --partial \
+  -e "$RSYNC_RSH" \
+  --exclude '.git/' \
+  --exclude '.github/' \
+  --exclude '.next/' \
+  --exclude 'node_modules/' \
+  --exclude 'uploads/' \
+  --exclude 'data/' \
+  --exclude 'backups/' \
+  --exclude 'certs/' \
+  --exclude '.env' \
+  --exclude '.env.*' \
+  --exclude 'prisma/*.db*' \
+  --exclude 'Dockerfile' \
+  --exclude 'Dockerfile.optimized' \
+  --exclude 'docker-compose*.yml' \
+  --exclude 'tsconfig.tsbuildinfo' \
+  ./ "${VPS_USER}@${VPS_HOST}:${DEPLOY_PATH}/"
+
+echo "=== 同步 Next build 產物 ==="
+rsync -az --delete \
+  --partial \
+  -e "$RSYNC_RSH" \
+  .next/ "${VPS_USER}@${VPS_HOST}:${DEPLOY_PATH}/.next/"
+
+if [[ -f "$LOCAL_ENV_FILE" ]]; then
+  echo "=== 同步 ${LOCAL_ENV_FILE} 到 VPS ==="
+  rsync -az \
+    -e "$RSYNC_RSH" \
+    "$LOCAL_ENV_FILE" "${VPS_USER}@${VPS_HOST}:${DEPLOY_PATH}/${REMOTE_ENV_FILE}"
+else
+  echo "=== 略過環境檔同步（本機未找到 ${LOCAL_ENV_FILE}） ==="
+fi
+
+echo "=== 在 VPS 安裝依賴、更新 Prisma、重啟 PM2 ==="
+ssh_remote "
+  set -euo pipefail
+  export NVM_DIR=\"\$HOME/.nvm\"
+  . \"\$NVM_DIR/nvm.sh\"
+  nvm use ${REMOTE_NODE_VERSION} >/dev/null
+  cd '$DEPLOY_PATH'
+  chmod +x setup-production.sh
+  PM2_APP_NAME='${PM2_APP_NAME}' APP_PORT='${APP_PORT}' APP_HOST='${APP_HOST}' ENV_FILE='${REMOTE_ENV_FILE}' ./setup-production.sh
+  npm ci --omit=dev
+  npx prisma generate
+  npx prisma migrate deploy || npx prisma db push
+  if pm2 describe '${PM2_APP_NAME}' >/dev/null 2>&1; then
+    PM2_APP_NAME='${PM2_APP_NAME}' PORT='${APP_PORT}' HOSTNAME='${APP_HOST}' TZ='Asia/Taipei' NEXT_TELEMETRY_DISABLED='1' pm2 startOrReload ecosystem.config.cjs --update-env
+  else
+    PM2_APP_NAME='${PM2_APP_NAME}' PORT='${APP_PORT}' HOSTNAME='${APP_HOST}' TZ='Asia/Taipei' NEXT_TELEMETRY_DISABLED='1' pm2 start ecosystem.config.cjs --update-env
+  fi
+  pm2 save
+  sleep 5
+  pm2 status '${PM2_APP_NAME}'
+  echo '=== 健康檢查 ==='
+  curl -fsS 'http://127.0.0.1:${APP_PORT}/api/health'
+"
+
+echo "=== 部署完成 ==="

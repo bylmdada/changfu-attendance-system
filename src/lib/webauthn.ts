@@ -131,9 +131,20 @@ function encodeEc2PublicKey(point: Uint8Array): Uint8Array {
 
 export function convertSpkiPublicKeyToCose(publicKeyBase64url: string): Uint8Array {
   const publicKeyBuffer = base64urlToBuffer(publicKeyBase64url);
+  const publicKeyBytes = Uint8Array.from(publicKeyBuffer);
+
+  try {
+    const decoded = isoCBOR.decodeFirst(publicKeyBytes);
+
+    if (decoded instanceof Map && decoded.has(cose.COSEKEYS.kty)) {
+      return publicKeyBytes;
+    }
+  } catch {
+    // Legacy or SPKI keys are handled by the conversions below.
+  }
 
   if (publicKeyBuffer[0] === 0x04) {
-    return encodeEc2PublicKey(Uint8Array.from(publicKeyBuffer));
+    return encodeEc2PublicKey(publicKeyBytes);
   }
 
   const jwk = crypto.createPublicKey({

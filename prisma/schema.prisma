@@ -390,7 +390,7 @@ model AttendanceRecord {
 
   // 提早上班/延後下班原因記錄
   clockInReason      String? @map("clock_in_reason") // 'PERSONAL' | 'BUSINESS' - 提早上班原因
-  clockOutReason     String? @map("clock_out_reason") // 'PERSONAL' | 'BUSINESS' - 延後下班原因
+  clockOutReason     String? @map("clock_out_reason") // 'PERSONAL' 或延後下班原因文字（例如 code review、修正、收尾）
   clockInOvertimeId  Int?    @map("clock_in_overtime_id") // 關聯的加班申請 ID (提早上班)
   clockOutOvertimeId Int?    @map("clock_out_overtime_id") // 關聯的加班申請 ID (延後下班)
 

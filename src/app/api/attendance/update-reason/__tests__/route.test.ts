@@ -208,7 +208,7 @@ describe('attendance update-reason route guards', () => {
     mockPrisma.attendanceRecord.update.mockResolvedValue({
       id: 99,
       employeeId: 34,
-      clockOutReason: 'BUSINESS',
+      clockOutReason: 'code review、修正、收尾',
     } as never);
 
     const request = new NextRequest('http://localhost/api/attendance/update-reason', {
@@ -231,7 +231,7 @@ describe('attendance update-reason route guards', () => {
     expect(mockRecordFailedClockAttempt).not.toHaveBeenCalled();
     expect(mockPrisma.attendanceRecord.update).toHaveBeenCalledWith({
       where: { id: 99 },
-      data: { clockOutReason: 'BUSINESS' },
+      data: { clockOutReason: 'code review、修正、收尾' },
     });
   });
 });
