@@ -150,12 +150,11 @@ describe('shift exchange void authorization guards', () => {
       status: 'APPROVED',
       originalWorkDate: '2026-04-01',
       targetWorkDate: '2026-04-02',
-      requestReason: '互調',
+      requestReason: JSON.stringify({ type: 'SELF_CHANGE', original: 'A', new: 'B' }),
     } as never);
 
     mockPrisma.schedule.findFirst
-      .mockResolvedValueOnce({ id: 101, shiftType: 'B', startTime: '16:00', endTime: '00:00' } as never)
-      .mockResolvedValueOnce({ id: 202, shiftType: 'A', startTime: '08:00', endTime: '16:00' } as never);
+      .mockResolvedValueOnce({ id: 101, shiftType: 'B', startTime: '08:00', endTime: '17:00' } as never);
     mockPrisma.shiftExchangeRequest.update.mockResolvedValue({ id: 5 } as never);
 
     const request = new NextRequest('http://localhost:3000/api/shift-exchange-requests/5/void', {
@@ -175,11 +174,7 @@ describe('shift exchange void authorization guards', () => {
     expect(mockPrisma.$transaction).toHaveBeenCalled();
     expect(mockPrisma.schedule.update).toHaveBeenNthCalledWith(1, {
       where: { id: 101 },
-      data: { shiftType: 'A', startTime: '08:00', endTime: '16:00' },
-    });
-    expect(mockPrisma.schedule.update).toHaveBeenNthCalledWith(2, {
-      where: { id: 202 },
-      data: { shiftType: 'B', startTime: '16:00', endTime: '00:00' },
+      data: { shiftType: 'A', startTime: '07:30', endTime: '16:30' },
     });
   });
 });

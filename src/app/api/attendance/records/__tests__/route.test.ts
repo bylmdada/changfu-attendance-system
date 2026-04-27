@@ -305,6 +305,7 @@ describe('attendance records route guards', () => {
       {
         employeeId: 104,
         workDate: '2026-04-18',
+        shiftType: '早班',
         startTime: '09:00',
         endTime: '18:00',
         breakTime: 60,
@@ -317,6 +318,8 @@ describe('attendance records route guards', () => {
     expect(response.status).toBe(200);
     expect(payload.records[0].clockInReason).toBe('公務');
     expect(payload.records[0].clockOutReason).toBe('code review、修正、收尾');
+    expect(payload.records[0].shiftType).toBe('早班');
+    expect(payload.records[0].scheduledStart).toBe('09:00');
   });
 
   it('does not expose clock reasons to non-admin viewers', async () => {

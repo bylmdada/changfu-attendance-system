@@ -77,15 +77,85 @@ export function normalizeStoredCredentialTransports(transports: string | null): 
   return ['internal'];
 }
 
-export function getExpectedWebAuthnOrigins(extraOrigin?: string): string[] {
+function isLocalhostHostname(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '127.0.0.1';
+}
+
+function isWebAuthnRpHostname(hostname: string): boolean {
+  const normalizedHostname = hostname.toLowerCase().replace(/\.$/, '');
+  const normalizedRpId = WEBAUTHN_RP_ID.toLowerCase().replace(/\.$/, '');
+
+  if (isLocalhostHostname(normalizedRpId)) {
+    return isLocalhostHostname(normalizedHostname);
+  }
+
+  return normalizedHostname === normalizedRpId || normalizedHostname.endsWith(`.${normalizedRpId}`);
+}
+
+function addOriginCandidate(origins: Set<string>, origin: string | null | undefined) {
+  if (!origin) {
+    return;
+  }
+
+  try {
+    const parsedOrigin = new URL(origin);
+    const normalizedOrigin = parsedOrigin.origin;
+
+    if (parsedOrigin.protocol === 'https:' && isWebAuthnRpHostname(parsedOrigin.hostname)) {
+      origins.add(normalizedOrigin);
+      return;
+    }
+
+    if (parsedOrigin.protocol === 'http:' && isLocalhostHostname(parsedOrigin.hostname)) {
+      origins.add(normalizedOrigin);
+    }
+  } catch {
+    // Ignore malformed origin candidates.
+  }
+}
+
+export function getWebAuthnRequestOrigins(request: Pick<Request, 'url' | 'headers'>): string[] {
+  const origins = new Set<string>();
+
+  addOriginCandidate(origins, request.headers.get('origin'));
+
+  const forwardedProto = request.headers.get('x-forwarded-proto')?.split(',')[0]?.trim();
+  const forwardedHost = request.headers.get('x-forwarded-host')?.split(',')[0]?.trim();
+  const host = request.headers.get('host')?.split(',')[0]?.trim();
+
+  if (forwardedProto && forwardedHost) {
+    addOriginCandidate(origins, `${forwardedProto}://${forwardedHost}`);
+  }
+
+  if (forwardedProto && host) {
+    addOriginCandidate(origins, `${forwardedProto}://${host}`);
+  }
+
+  try {
+    addOriginCandidate(origins, new URL(request.url).origin);
+  } catch {
+    // Ignore malformed request URLs and rely on the remaining candidates.
+  }
+
+  return [...origins];
+}
+
+export function getExpectedWebAuthnOrigins(extraOrigins: string[] = []): string[] {
   const origins = new Set<string>([
     'https://localhost:3001',
     'https://127.0.0.1:3001',
+    'http://localhost:3001',
+    'http://127.0.0.1:3001',
+    'https://localhost',
+    'https://127.0.0.1',
+    'http://localhost',
+    'http://127.0.0.1',
+    `https://${WEBAUTHN_RP_ID}`,
     `https://${WEBAUTHN_RP_ID}:3001`,
   ]);
 
-  if (extraOrigin?.startsWith('https://')) {
-    origins.add(extraOrigin);
+  for (const extraOrigin of extraOrigins) {
+    addOriginCandidate(origins, extraOrigin);
   }
 
   return [...origins];

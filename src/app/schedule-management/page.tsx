@@ -21,13 +21,36 @@ interface Schedule {
   id: number;
   employeeId: number;
   workDate: string;
-  shiftType: 'A' | 'B' | 'C' | 'NH' | 'RD' | 'rd' | 'FDL' | 'OFF';
+  shiftType: 'A' | 'B' | 'C' | 'NH' | 'RD' | 'rd' | 'FDL' | 'OFF' | 'TD';
   startTime: string;
   endTime: string;
   breakTime?: number;
   createdAt: string;
   updatedAt: string;
   employee: {
+    id: number;
+    employeeId: string;
+    name: string;
+    department: string;
+    position: string;
+  };
+}
+
+interface ScheduleResponse {
+  id: number;
+  employeeId: number | string;
+  employeeCode?: string;
+  employeeName?: string;
+  department?: string;
+  workDate?: string;
+  date?: string;
+  shiftType: 'A' | 'B' | 'C' | 'NH' | 'RD' | 'rd' | 'FDL' | 'OFF' | 'TD';
+  startTime: string;
+  endTime: string;
+  breakTime?: number;
+  createdAt?: string;
+  updatedAt?: string;
+  employee?: {
     id: number;
     employeeId: string;
     name: string;
@@ -159,7 +182,7 @@ export default function ScheduleManagementPage() {
   const [newSchedule, setNewSchedule] = useState({
     employeeId: '',
     workDate: '',
-    shiftType: 'A' as 'A' | 'B' | 'C' | 'NH' | 'RD' | 'rd' | 'FDL' | 'OFF',
+    shiftType: 'A' as 'A' | 'B' | 'C' | 'NH' | 'RD' | 'rd' | 'FDL' | 'OFF' | 'TD',
     startTime: '07:30',
     endTime: '16:30',
     breakTime: 60
@@ -206,6 +229,35 @@ export default function ScheduleManagementPage() {
   // 國定假日狀態
   const [holidays, setHolidays] = useState<{id: number; name: string; date: string}[]>([]);
 
+  const normalizeSchedule = useCallback((schedule: ScheduleResponse): Schedule | null => {
+    const workDate = typeof schedule.workDate === 'string'
+      ? schedule.workDate
+      : typeof schedule.date === 'string'
+        ? schedule.date
+        : '';
+    const employee = schedule.employee;
+    const employeeId = typeof schedule.employeeId === 'number'
+      ? schedule.employeeId
+      : employee?.id;
+
+    if (!workDate || !employee || typeof employeeId !== 'number') {
+      return null;
+    }
+
+    return {
+      id: schedule.id,
+      employeeId,
+      workDate,
+      shiftType: schedule.shiftType,
+      startTime: schedule.startTime,
+      endTime: schedule.endTime,
+      breakTime: schedule.breakTime ?? 0,
+      createdAt: schedule.createdAt ?? '',
+      updatedAt: schedule.updatedAt ?? '',
+      employee,
+    };
+  }, []);
+
   
   const [newTemplate, setNewTemplate] = useState<WeeklyTemplate>({
     name: '',
@@ -228,8 +280,11 @@ export default function ScheduleManagementPage() {
       });
       if (response.ok) {
         const data = await response.json();
+        const normalizedSchedules: Schedule[] = (data.schedules || [])
+          .map((schedule: ScheduleResponse) => normalizeSchedule(schedule))
+          .filter((schedule: Schedule | null): schedule is Schedule => schedule !== null);
         const schedulesByDate: {[key: string]: Schedule[]} = {};
-        (data.schedules || []).forEach((schedule: Schedule) => {
+        normalizedSchedules.forEach((schedule: Schedule) => {
           const date = schedule.workDate;
           if (!schedulesByDate[date]) {
             schedulesByDate[date] = [];
@@ -241,7 +296,7 @@ export default function ScheduleManagementPage() {
     } catch {
       console.error('獲取月份班表失敗');
     }
-  }, [currentDate]);
+  }, [currentDate, normalizeSchedule]);
 
   useEffect(() => {
     fetchUser();
@@ -382,11 +437,14 @@ export default function ScheduleManagementPage() {
       if (response.ok) {
         const data = await response.json();
         console.log('搜尋結果:', data); // 調試用
-        setSearchResults(data.schedules || []);
+        const normalizedSchedules: Schedule[] = (data.schedules || [])
+          .map((schedule: ScheduleResponse) => normalizeSchedule(schedule))
+          .filter((schedule: Schedule | null): schedule is Schedule => schedule !== null);
+        setSearchResults(normalizedSchedules);
         
         // 更新日曆顯示
         const schedulesByDate: {[key: string]: Schedule[]} = {};
-        (data.schedules || []).forEach((schedule: Schedule) => {
+        normalizedSchedules.forEach((schedule: Schedule) => {
           const date = schedule.workDate;
           if (!schedulesByDate[date]) {
             schedulesByDate[date] = [];
@@ -395,10 +453,10 @@ export default function ScheduleManagementPage() {
         });
         setCalendarSchedules(schedulesByDate);
         
-        if ((data.schedules || []).length === 0) {
+        if (normalizedSchedules.length === 0) {
           console.log('搜尋結果：沒有找到符合條件的班表資料');
         } else {
-          console.log(`搜尋結果：找到 ${data.schedules.length} 筆班表記錄`);
+          console.log(`搜尋結果：找到 ${normalizedSchedules.length} 筆班表記錄`);
         }
       } else {
         let errorMessage = '未知錯誤';
@@ -1185,7 +1243,7 @@ export default function ScheduleManagementPage() {
                   <select
                     value={newSchedule.shiftType}
                     onChange={(e) => {
-                      const shiftType = e.target.value as 'A' | 'B' | 'C' | 'NH' | 'RD' | 'rd' | 'FDL' | 'OFF';
+                      const shiftType = e.target.value as 'A' | 'B' | 'C' | 'NH' | 'RD' | 'rd' | 'FDL' | 'OFF' | 'TD';
                       const template = SHIFT_TEMPLATES[shiftType];
                       setNewSchedule({
                         ...newSchedule,

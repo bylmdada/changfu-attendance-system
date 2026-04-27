@@ -1102,7 +1102,7 @@ describe('batch approve supervisor scope guards', () => {
     });
   });
 
-  it('swaps schedules transactionally when batch-approving shift exchange requests', async () => {
+  it('updates schedules transactionally when batch-approving self-change requests', async () => {
     mockGetUserFromRequest.mockResolvedValue({
       userId: 1,
       employeeId: 10,
@@ -1116,14 +1116,14 @@ describe('batch approve supervisor scope guards', () => {
       targetEmployeeId: 22,
       originalWorkDate: '2026-03-20',
       targetWorkDate: '2026-03-21',
+      requestReason: JSON.stringify({ type: 'SELF_CHANGE', original: 'A', new: 'B' }),
       requester: {
         department: '製造部',
       },
     } as never);
     transactionClient.shiftExchangeRequest.update.mockResolvedValue({ id: 404 } as never);
     transactionClient.schedule.findFirst
-      .mockResolvedValueOnce({ id: 9001, shiftType: 'A', startTime: '08:00', endTime: '16:00' } as never)
-      .mockResolvedValueOnce({ id: 9002, shiftType: 'B', startTime: '16:00', endTime: '00:00' } as never);
+      .mockResolvedValueOnce({ id: 9001, shiftType: 'A', startTime: '07:30', endTime: '16:30' } as never);
     transactionClient.schedule.update.mockResolvedValue({ id: 1 } as never);
 
     const request = new NextRequest('http://localhost:3000/api/batch-approve', {
@@ -1164,16 +1164,9 @@ describe('batch approve supervisor scope guards', () => {
     expect(transactionClient.schedule.findFirst).toHaveBeenNthCalledWith(1, {
       where: { employeeId: 21, workDate: '2026-03-20' },
     });
-    expect(transactionClient.schedule.findFirst).toHaveBeenNthCalledWith(2, {
-      where: { employeeId: 22, workDate: '2026-03-21' },
-    });
     expect(transactionClient.schedule.update).toHaveBeenNthCalledWith(1, {
       where: { id: 9001 },
-      data: { shiftType: 'B', startTime: '16:00', endTime: '00:00' },
-    });
-    expect(transactionClient.schedule.update).toHaveBeenNthCalledWith(2, {
-      where: { id: 9002 },
-      data: { shiftType: 'A', startTime: '08:00', endTime: '16:00' },
+      data: { shiftType: 'B', startTime: '08:00', endTime: '17:00' },
     });
   });
 
@@ -1293,12 +1286,12 @@ describe('batch approve supervisor scope guards', () => {
       targetEmployeeId: 22,
       originalWorkDate: '2026-03-20',
       targetWorkDate: '2026-03-21',
+      requestReason: JSON.stringify({ type: 'SELF_CHANGE', original: 'A', new: 'B' }),
       requester: {
         department: '製造部',
       },
     } as never);
     transactionClient.schedule.findFirst
-      .mockResolvedValueOnce({ id: 9001, shiftType: 'A', startTime: '08:00', endTime: '16:00' } as never)
       .mockResolvedValueOnce(null as never);
 
     const request = new NextRequest('http://localhost:3000/api/batch-approve', {
@@ -1318,7 +1311,7 @@ describe('batch approve supervisor scope guards', () => {
     const payload = await response.json();
 
     expect(response.status).toBe(400);
-    expect(payload.error).toBe('找不到對應班表，無法核准調班申請');
+    expect(payload.error).toBe('找不到申請人的班表，無法核准調班申請');
     expect(payload.failedIds).toEqual([406]);
     expect(payload.summary).toEqual({
       total: 1,
@@ -1326,7 +1319,7 @@ describe('batch approve supervisor scope guards', () => {
       failed: 1,
     });
     expect(payload.results).toEqual([
-      { id: 406, success: false, error: '找不到對應班表，無法核准調班申請' },
+      { id: 406, success: false, error: '找不到申請人的班表，無法核准調班申請' },
     ]);
     expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
     expect(transactionClient.shiftExchangeRequest.update).not.toHaveBeenCalled();
@@ -1481,6 +1474,7 @@ describe('batch approve supervisor scope guards', () => {
       targetEmployeeId: 22,
       originalWorkDate: '2026-03-20',
       targetWorkDate: '2026-03-21',
+      requestReason: JSON.stringify({ type: 'SELF_CHANGE', original: 'A', new: 'B' }),
       requester: {
         department: '製造部',
       },
@@ -1529,7 +1523,7 @@ describe('batch approve supervisor scope guards', () => {
     expect(transactionClient.schedule.findFirst).not.toHaveBeenCalled();
   });
 
-  it('blocks batch shift exchange approvals when the target month is frozen', async () => {
+  it('does not check target month freeze when approving self-change requests', async () => {
     mockGetUserFromRequest.mockResolvedValue({
       userId: 1,
       employeeId: 10,
@@ -1543,19 +1537,17 @@ describe('batch approve supervisor scope guards', () => {
       targetEmployeeId: 22,
       originalWorkDate: '2026-03-20',
       targetWorkDate: '2026-04-01',
+      requestReason: JSON.stringify({ type: 'SELF_CHANGE', original: 'A', new: 'B' }),
       requester: {
         department: '製造部',
       },
     } as never);
     mockCheckAttendanceFreeze
-      .mockResolvedValueOnce({ isFrozen: false } as never)
-      .mockResolvedValueOnce({
-        isFrozen: true,
-        freezeInfo: {
-          freezeDate: new Date('2026-04-30T09:00:00.000Z'),
-          creator: { name: '排班主管' },
-        },
-      } as never);
+      .mockResolvedValueOnce({ isFrozen: false } as never);
+    transactionClient.shiftExchangeRequest.update.mockResolvedValue({ id: 408 } as never);
+    transactionClient.schedule.findFirst
+      .mockResolvedValueOnce({ id: 9001, shiftType: 'A', startTime: '07:30', endTime: '16:30' } as never);
+    transactionClient.schedule.update.mockResolvedValue({ id: 9001 } as never);
 
     const request = new NextRequest('http://localhost:3000/api/batch-approve', {
       method: 'POST',
@@ -1573,23 +1565,18 @@ describe('batch approve supervisor scope guards', () => {
     const response = await POST(request);
     const payload = await response.json();
 
-    expect(response.status).toBe(400);
-    expect(payload.failedIds).toEqual([408]);
-    expect(payload.error).toEqual(expect.stringContaining('目標月份已被凍結，無法核准調班申請'));
+    expect(response.status).toBe(200);
     expect(payload.summary).toEqual({
       total: 1,
-      success: 0,
-      failed: 1,
+      success: 1,
+      failed: 0,
     });
-    expect(payload.results).toEqual([
-      {
-        id: 408,
-        success: false,
-        error: expect.stringContaining('目標月份已被凍結，無法核准調班申請'),
-      },
-    ]);
-    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
-    expect(transactionClient.shiftExchangeRequest.update).not.toHaveBeenCalled();
-    expect(transactionClient.schedule.findFirst).not.toHaveBeenCalled();
+    expect(mockCheckAttendanceFreeze).toHaveBeenCalledTimes(1);
+    expect(mockCheckAttendanceFreeze).toHaveBeenCalledWith(new Date('2026-03-20'));
+    expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(transactionClient.schedule.update).toHaveBeenCalledWith({
+      where: { id: 9001 },
+      data: { shiftType: 'B', startTime: '08:00', endTime: '17:00' },
+    });
   });
 });

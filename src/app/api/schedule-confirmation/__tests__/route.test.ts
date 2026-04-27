@@ -35,6 +35,7 @@ jest.mock('@/lib/rate-limit', () => ({
 }));
 
 jest.mock('@/lib/schedule-confirm-service', () => ({
+  getScheduleConfirmSettings: jest.fn(),
   sendSchedulePublishNotification: jest.fn(),
   sendReminderToUnconfirmed: jest.fn(),
 }));
@@ -44,12 +45,14 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { checkRateLimit } from '@/lib/rate-limit';
+import { getScheduleConfirmSettings } from '@/lib/schedule-confirm-service';
 import { GET, POST } from '../route';
 
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
 const mockValidateCSRF = validateCSRF as jest.MockedFunction<typeof validateCSRF>;
 const mockCheckRateLimit = checkRateLimit as jest.MockedFunction<typeof checkRateLimit>;
+const mockGetScheduleConfirmSettings = getScheduleConfirmSettings as jest.MockedFunction<typeof getScheduleConfirmSettings>;
 
 describe('schedule confirmation csrf guard', () => {
   beforeEach(() => {
@@ -62,6 +65,11 @@ describe('schedule confirmation csrf guard', () => {
       role: 'ADMIN',
     } as never);
     mockValidateCSRF.mockResolvedValue({ valid: true } as never);
+    mockGetScheduleConfirmSettings.mockResolvedValue({
+      enabled: true,
+      blockClock: false,
+      enableReminder: true,
+    });
     mockPrisma.employee.findUnique.mockResolvedValue({
       id: 31,
       department: '行政部',
@@ -89,6 +97,34 @@ describe('schedule confirmation csrf guard', () => {
     expect(payload.error).toBe('yearMonth 格式錯誤');
     expect(mockPrisma.scheduleMonthlyRelease.findFirst).not.toHaveBeenCalled();
     expect(mockPrisma.schedule.findMany).not.toHaveBeenCalled();
+  });
+
+  it('returns reminder and clock blocking flags with my-status payload', async () => {
+    mockPrisma.scheduleMonthlyRelease.findFirst.mockResolvedValue({
+      id: 9,
+      yearMonth: '2026-04',
+      publishedAt: new Date('2026-04-01T00:00:00.000Z'),
+      deadline: new Date('2026-04-30T23:59:59.000Z'),
+      version: 2,
+      lastModified: new Date('2026-04-01T00:00:00.000Z'),
+      publishedBy: { name: '排班主管' },
+      confirmations: [],
+    } as never);
+    mockPrisma.schedule.findMany.mockResolvedValue([] as never);
+
+    const request = new NextRequest('http://localhost/api/schedule-confirmation?type=my-status&yearMonth=2026-04', {
+      headers: {
+        cookie: 'token=shared-session-token',
+      },
+    });
+
+    const response = await GET(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.status).toBe('PENDING');
+    expect(payload.reminderEnabled).toBe(true);
+    expect(payload.clockBlockingEnabled).toBe(false);
   });
 
   it('rejects publish POST when csrf validation fails before mutating release state', async () => {

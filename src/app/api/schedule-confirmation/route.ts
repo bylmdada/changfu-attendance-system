@@ -3,7 +3,11 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { checkRateLimit } from '@/lib/rate-limit';
-import { sendSchedulePublishNotification, sendReminderToUnconfirmed } from '@/lib/schedule-confirm-service';
+import {
+  getScheduleConfirmSettings,
+  sendSchedulePublishNotification,
+  sendReminderToUnconfirmed,
+} from '@/lib/schedule-confirm-service';
 import { parseYearMonthQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
 
@@ -131,6 +135,7 @@ export async function GET(request: NextRequest) {
 
       const confirmation = release?.confirmations[0] || null;
       const status = getConfirmStatus(release, confirmation);
+      const scheduleConfirmSettings = await getScheduleConfirmSettings();
 
       // 查詢班表摘要
       let scheduleSummary = null;
@@ -178,7 +183,9 @@ export async function GET(request: NextRequest) {
           version: confirmation.version,
           comment: confirmation.comment
         } : null,
-        scheduleSummary
+        scheduleSummary,
+        reminderEnabled: scheduleConfirmSettings.enabled && scheduleConfirmSettings.enableReminder,
+        clockBlockingEnabled: scheduleConfirmSettings.enabled && scheduleConfirmSettings.blockClock,
       });
     }
 

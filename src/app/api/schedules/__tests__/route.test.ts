@@ -119,6 +119,39 @@ describe('schedules route regressions', () => {
     );
   });
 
+  it('returns schedules with workDate and numeric employeeId so the calendar page can group data correctly', async () => {
+    mockPrisma.schedule.findMany.mockResolvedValue([
+      {
+        id: 201,
+        employeeId: 1,
+        workDate: '2026-04-05',
+        startTime: '07:30',
+        endTime: '16:30',
+        breakTime: 60,
+        shiftType: 'A',
+        employee: {
+          id: 1,
+          employeeId: 'E001',
+          name: '王小明',
+          department: '護理部',
+          position: 'Staff',
+        }
+      }
+    ] as never);
+
+    const response = await GET(new NextRequest('http://localhost/api/schedules?year=2026&month=4'));
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.schedules[0]).toEqual(expect.objectContaining({
+      employeeId: 1,
+      employeeCode: 'E001',
+      workDate: '2026-04-05',
+      date: '2026-04-05',
+      shiftType: 'A',
+    }));
+  });
+
   it('accepts workDate alias when creating schedules and invalidates the correct month', async () => {
     mockGetUserFromRequest.mockResolvedValue({ userId: 1, role: 'ADMIN', employeeId: 1 } as never);
     mockHasFullScheduleManagementAccess.mockReturnValue(true);

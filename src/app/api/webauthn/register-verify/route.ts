@@ -8,6 +8,7 @@ import { cookies } from 'next/headers';
 import {
   convertCredentialPublicKeyToSpki,
   getExpectedWebAuthnOrigins,
+  getWebAuthnRequestOrigins,
   normalizeRegistrationCredential,
   WEBAUTHN_RP_ID,
 } from '@/lib/webauthn';
@@ -155,7 +156,7 @@ export async function POST(request: NextRequest) {
       verification = await verifyRegistrationResponse({
         response: normalizedCredential,
         expectedChallenge,
-        expectedOrigin: getExpectedWebAuthnOrigins(),
+        expectedOrigin: getExpectedWebAuthnOrigins(getWebAuthnRequestOrigins(request)),
         expectedRPID: WEBAUTHN_RP_ID,
         requireUserVerification: true,
       });

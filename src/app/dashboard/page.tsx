@@ -86,6 +86,7 @@ export default function DashboardPage() {
     needsConfirmation: boolean;
     yearMonth: string;
     status: string;
+    clockBlockingEnabled: boolean;
   } | null>(null);
 
   useEffect(() => {
@@ -305,11 +306,12 @@ export default function DashboardPage() {
       if (response.ok) {
         const data = await response.json();
         // 如果狀態是 PENDING、NEED_RECONFIRM 或 EXPIRED，則需要提醒
-        const needsConfirm = ['PENDING', 'NEED_RECONFIRM', 'EXPIRED'].includes(data.status);
+        const needsConfirm = Boolean(data.reminderEnabled) && ['PENDING', 'NEED_RECONFIRM', 'EXPIRED'].includes(data.status);
         setScheduleConfirmStatus({
           needsConfirmation: needsConfirm,
           yearMonth,
-          status: data.status
+          status: data.status,
+          clockBlockingEnabled: Boolean(data.clockBlockingEnabled),
         });
       }
     } catch (error) {
@@ -584,7 +586,9 @@ export default function DashboardPage() {
                         </span>
                       </div>
                       <p className="text-orange-700 leading-relaxed mb-3">
-                        您尚未確認 {scheduleConfirmStatus.yearMonth.replace('-', '年')}月 的班表安排，請前往「我的班表」頁面完成確認，否則將無法打卡。
+                        {scheduleConfirmStatus.clockBlockingEnabled
+                          ? `您尚未確認 ${scheduleConfirmStatus.yearMonth.replace('-', '年')}月 的班表安排，請前往「我的班表」頁面完成確認，否則將無法打卡。`
+                          : `您尚未確認 ${scheduleConfirmStatus.yearMonth.replace('-', '年')}月 的班表安排，請前往「我的班表」頁面完成確認。`}
                       </p>
                       <a
                         href="/my-schedule"

@@ -327,7 +327,12 @@ export default function AttendancePage() {
         setPendingClockType(null);
         setPendingClockLocation(null);
         resetPendingWifiVerification();
-        loadTodayStatus();
+        await loadTodayStatus();
+
+        if (result.requiresReason && result.reasonPrompt) {
+          setReasonPromptData(result.reasonPrompt);
+          setShowReasonModal(true);
+        }
       } else {
         throw new Error(result.error || '打卡失敗');
       }
