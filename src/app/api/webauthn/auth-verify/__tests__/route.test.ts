@@ -1,5 +1,22 @@
 jest.mock('@/lib/database', () => ({
   prisma: {
+    attendanceRecord: {
+      findFirst: jest.fn(),
+      update: jest.fn(),
+      create: jest.fn(),
+    },
+    holiday: {
+      findFirst: jest.fn(),
+    },
+    overtimeRequest: {
+      findFirst: jest.fn(),
+    },
+    schedule: {
+      findFirst: jest.fn(),
+    },
+    systemSettings: {
+      findUnique: jest.fn(),
+    },
     webAuthnCredential: {
       findUnique: jest.fn(),
       update: jest.fn()
@@ -16,9 +33,20 @@ jest.mock('@/lib/device-detection', () => ({
   MOBILE_CLOCKING_REQUIRED_MESSAGE: 'mobile only'
 }));
 
+jest.mock('@/lib/gps-attendance', () => {
+  const actual = jest.requireActual('@/lib/gps-attendance');
+  return {
+    ...actual,
+    getGPSSettingsFromDB: jest.fn(),
+    getActiveAllowedLocations: jest.fn(),
+    validateGpsClockLocation: jest.fn(),
+  };
+});
+
 import { prisma } from '@/lib/database';
 import { cookies } from 'next/headers';
 import { isMobileClockingDevice } from '@/lib/device-detection';
+import { getActiveAllowedLocations, getGPSSettingsFromDB, validateGpsClockLocation } from '@/lib/gps-attendance';
 import { convertSpkiPublicKeyToCose } from '@/lib/webauthn';
 import * as crypto from 'crypto';
 import { POST } from '../route';
@@ -26,6 +54,9 @@ import { POST } from '../route';
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockCookies = cookies as jest.MockedFunction<typeof cookies>;
 const mockIsMobileClockingDevice = isMobileClockingDevice as jest.MockedFunction<typeof isMobileClockingDevice>;
+const mockGetGPSSettingsFromDB = getGPSSettingsFromDB as jest.MockedFunction<typeof getGPSSettingsFromDB>;
+const mockGetActiveAllowedLocations = getActiveAllowedLocations as jest.MockedFunction<typeof getActiveAllowedLocations>;
+const mockValidateGpsClockLocation = validateGpsClockLocation as jest.MockedFunction<typeof validateGpsClockLocation>;
 
 function createAuthenticatorData(flags: number, counter: number) {
   const authData = Buffer.alloc(37);
@@ -98,6 +129,16 @@ describe('webauthn auth-verify account status guard', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockIsMobileClockingDevice.mockReturnValue(true);
+    mockGetGPSSettingsFromDB.mockResolvedValue({
+      enabled: false,
+      requiredAccuracy: 50,
+      allowOfflineMode: false,
+      maxDistanceVariance: 20,
+      verificationTimeout: 30,
+      requireAddressInfo: true,
+    } as never);
+    mockGetActiveAllowedLocations.mockResolvedValue([] as never);
+    mockValidateGpsClockLocation.mockReturnValue({ ok: true } as never);
     mockCookies.mockResolvedValue({
       get: jest.fn((name: string) => {
         if (name === 'webauthn_auth_challenge') return { value: 'challenge-1' };
@@ -194,6 +235,127 @@ describe('webauthn auth-verify account status guard', () => {
     expect(payload.success).toBe(true);
     expect(payload.verified).toBe(true);
     expect(payload.user.username).toBe('inactive.user');
+    expect(mockPrisma.webAuthnCredential.update).toHaveBeenCalledWith({
+      where: { id: 1 },
+      data: expect.objectContaining({
+        counter: 1,
+        lastUsedAt: expect.any(Date),
+      }),
+    });
+  });
+
+  it('returns late clock-out reason prompt data for biometric clocking', async () => {
+    jest.useFakeTimers();
+    try {
+      jest.setSystemTime(new Date('2026-04-08T09:30:00.000Z'));
+      const signedCredential = createSignedCredential();
+
+      mockPrisma.webAuthnCredential.findUnique.mockResolvedValue({
+        id: 1,
+        credentialId: 'cred-1',
+        publicKey: signedCredential.storedPublicKey,
+        counter: 0,
+        user: {
+          id: 3,
+          username: 'inactive.user',
+          isActive: true,
+          employee: { id: 20, name: 'Alice' },
+          employeeId: 20,
+        }
+      } as never);
+      mockPrisma.webAuthnCredential.update.mockResolvedValue({} as never);
+      mockPrisma.systemSettings.findUnique.mockResolvedValue({
+        key: 'clock_reason_prompt',
+        value: JSON.stringify({
+          enabled: true,
+          lateClockOutThreshold: 15,
+          excludeHolidays: false,
+          excludeApprovedOvertime: false,
+        }),
+      } as never);
+      mockPrisma.schedule.findFirst.mockResolvedValue({
+        employeeId: 20,
+        workDate: '2026-04-08',
+        endTime: '17:00',
+        shiftType: 'DAY',
+      } as never);
+      mockPrisma.attendanceRecord.findFirst.mockResolvedValue({
+        id: 88,
+        employeeId: 20,
+        workDate: new Date('2026-04-08T00:00:00.000Z'),
+        clockInTime: new Date('2026-04-08T00:00:00.000Z'),
+        clockOutTime: null,
+        status: 'INCOMPLETE',
+      } as never);
+      mockPrisma.attendanceRecord.update.mockResolvedValue({
+        id: 88,
+        clockInTime: new Date('2026-04-08T00:00:00.000Z'),
+        clockOutTime: new Date('2026-04-08T09:30:00.000Z'),
+        status: 'COMPLETE',
+      } as never);
+
+      const request = new Request('http://localhost/api/webauthn/auth-verify', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit'
+        },
+        body: JSON.stringify({
+          ...signedCredential.requestBody,
+          clockType: 'out',
+        })
+      });
+
+      const response = await POST(request);
+      const payload = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(payload.requiresReason).toBe(true);
+      expect(payload.reasonPrompt).toEqual({
+        type: 'LATE_OUT',
+        minutesDiff: 30,
+        scheduledTime: '17:00',
+        recordId: 88,
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('verifies a valid assertion when the browser origin does not include the dev port', async () => {
+    const signedCredential = createSignedCredential({ origin: 'https://localhost' });
+
+    mockPrisma.webAuthnCredential.findUnique.mockResolvedValue({
+      id: 1,
+      credentialId: 'cred-1',
+      publicKey: signedCredential.storedPublicKey,
+      counter: 0,
+      user: {
+        id: 3,
+        username: 'inactive.user',
+        isActive: true,
+        employee: { id: 20, name: 'Alice' },
+        employeeId: 20,
+      }
+    } as never);
+
+    mockPrisma.webAuthnCredential.update.mockResolvedValue({} as never);
+
+    const request = new Request('http://localhost/api/webauthn/auth-verify', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit'
+      },
+      body: JSON.stringify(signedCredential.requestBody)
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.success).toBe(true);
+    expect(payload.verified).toBe(true);
     expect(mockPrisma.webAuthnCredential.update).toHaveBeenCalledWith({
       where: { id: 1 },
       data: expect.objectContaining({

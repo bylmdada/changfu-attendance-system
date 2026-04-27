@@ -225,10 +225,15 @@ export async function GET(request: NextRequest) {
     });
 
     // 建立班表查詢 Map
-    const scheduleMap = new Map<string, { startTime: string; endTime: string; breakTime: number }>();
+    const scheduleMap = new Map<string, { shiftType: string; startTime: string; endTime: string; breakTime: number }>();
     schedules.forEach(s => {
       const key = `${s.employeeId}-${toWorkDateKey(s.workDate)}`;
-      scheduleMap.set(key, { startTime: s.startTime, endTime: s.endTime, breakTime: s.breakTime });
+      scheduleMap.set(key, {
+        shiftType: s.shiftType,
+        startTime: s.startTime,
+        endTime: s.endTime,
+        breakTime: s.breakTime,
+      });
     });
 
     // 最低工時門檻（小時）
@@ -340,6 +345,7 @@ export async function GET(request: NextRequest) {
         createdAt: record.createdAt.toISOString(),
         employee: record.employee,
         // 新增：班表資訊
+        shiftType: schedule?.shiftType || null,
         scheduledStart: schedule?.startTime || null,
         scheduledEnd: schedule?.endTime || null,
         // 新增：GPS 資訊（僅管理員/HR 可查看）

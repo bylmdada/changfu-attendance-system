@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { Calendar, ChevronLeft, ChevronRight, Download, Clock, User, RefreshCw, Gift, Printer } from 'lucide-react';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
+import { formatShiftDisplay, getShiftLabel } from '@/lib/shift-display';
 
 interface Schedule {
   id: number;
@@ -87,17 +88,6 @@ interface ScheduleConfirmData {
   } | null;
 }
 
-const SHIFT_LABELS: Record<string, string> = {
-  'A': 'A班 (07:30-16:30)',
-  'B': 'B班 (08:00-17:00)', 
-  'C': 'C班 (08:30-17:30)',
-  'NH': 'NH (國定假日)',
-  'RD': 'RD (例假)',
-  'rd': 'rd (休息日)',
-  'FDL': 'FDL (全日請假)',
-  'OFF': 'OFF (休假)'
-};
-
 const SHIFT_COLORS: Record<string, string> = {
   'A': 'bg-blue-100 text-blue-800',
   'B': 'bg-green-100 text-green-800',
@@ -106,7 +96,8 @@ const SHIFT_COLORS: Record<string, string> = {
   'RD': 'bg-gray-100 text-gray-800',
   'rd': 'bg-gray-100 text-gray-800',
   'FDL': 'bg-yellow-100 text-yellow-800',
-  'OFF': 'bg-orange-100 text-orange-800'
+  'OFF': 'bg-orange-100 text-orange-800',
+  'TD': 'bg-cyan-100 text-cyan-800'
 };
 
 export default function MySchedulePage() {
@@ -370,7 +361,9 @@ export default function MySchedulePage() {
       const dateStr = `${selectedYear}-${selectedMonth.toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}`;
       const schedule = schedules.find(s => s.workDate === dateStr);
       const shiftType = schedule?.shiftType || '';
-      const shiftLabel = SHIFT_LABELS[shiftType] || shiftType;
+      const shiftLabel = schedule
+        ? formatShiftDisplay({ shiftType, startTime: schedule.startTime, endTime: schedule.endTime })
+        : getShiftLabel(shiftType);
       const isRest = ['RD', 'rd', 'OFF', 'NH'].includes(shiftType);
       calendarCells += `
         <div class="cell ${isRest ? 'rest' : 'work'}">
@@ -824,7 +817,13 @@ export default function MySchedulePage() {
                   {schedule && (
                     <div className="mt-1">
                       <div className={`text-xs px-2 py-1 rounded border ${SHIFT_COLORS[schedule.shiftType] || 'bg-gray-100 text-gray-800'}`}>
-                        <div className="font-medium">{SHIFT_LABELS[schedule.shiftType] || schedule.shiftType}</div>
+                        <div className="font-medium">
+                          {formatShiftDisplay({
+                            shiftType: schedule.shiftType,
+                            startTime: schedule.startTime,
+                            endTime: schedule.endTime,
+                          })}
+                        </div>
                       </div>
                     </div>
                   )}
@@ -884,7 +883,11 @@ export default function MySchedulePage() {
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
                           <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${SHIFT_COLORS[schedule.shiftType] || 'bg-gray-100 text-gray-800'}`}>
-                            {SHIFT_LABELS[schedule.shiftType] || `${schedule.shiftType}班`}
+                            {formatShiftDisplay({
+                              shiftType: schedule.shiftType,
+                              startTime: schedule.startTime,
+                              endTime: schedule.endTime,
+                            })}
                           </span>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">

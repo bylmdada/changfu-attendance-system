@@ -4,7 +4,20 @@ import { cookies } from 'next/headers';
 import { verifyAuthenticationResponse, type AuthenticationResponseJSON } from '@simplewebauthn/server';
 import { getActiveAllowedLocations, getGPSSettingsFromDB, isClockLocationPayload, validateGpsClockLocation } from '@/lib/gps-attendance';
 import { isMobileClockingDevice, MOBILE_CLOCKING_REQUIRED_MESSAGE } from '@/lib/device-detection';
-import { convertSpkiPublicKeyToCose, getExpectedWebAuthnOrigins, normalizeBase64url, WEBAUTHN_RP_ID } from '@/lib/webauthn';
+import {
+  buildClockReasonPromptData,
+  formatMinutesAsTime,
+  parseClockReasonPromptSettings,
+  shouldSkipClockReasonPrompt,
+} from '@/lib/clock-reason-prompt-settings';
+import { getTaiwanTodayEnd, getTaiwanTodayStart, toTaiwanDateStr } from '@/lib/timezone';
+import {
+  convertSpkiPublicKeyToCose,
+  getExpectedWebAuthnOrigins,
+  getWebAuthnRequestOrigins,
+  normalizeBase64url,
+  WEBAUTHN_RP_ID,
+} from '@/lib/webauthn';
 import { safeParseJSON } from '@/lib/validation';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -68,8 +81,7 @@ export async function POST(request: Request) {
 
     const expectedChallenge = challengeCookie.value;
     const username = usernameCookie.value;
-    const requestOrigin = new URL(request.url).origin;
-    const expectedOrigins = getExpectedWebAuthnOrigins(requestOrigin);
+    const expectedOrigins = getExpectedWebAuthnOrigins(getWebAuthnRequestOrigins(request));
 
     const parseResult = await safeParseJSON(request);
     if (!parseResult.success) {
@@ -233,8 +245,57 @@ export async function POST(request: Request) {
       }
 
       const today = new Date();
-      const workDate = new Date(today.getFullYear(), today.getMonth(), today.getDate());
       const employeeId = storedCredential.user.employeeId;
+      const todayStart = getTaiwanTodayStart(today);
+      const todayEnd = getTaiwanTodayEnd(today);
+      const todaySchedule = await prisma.schedule.findFirst({
+        where: {
+          employeeId,
+          workDate: toTaiwanDateStr(today),
+        },
+      });
+      const reasonPromptSetting = await prisma.systemSettings.findUnique({
+        where: { key: 'clock_reason_prompt' },
+      });
+      const reasonPromptSettings = parseClockReasonPromptSettings(reasonPromptSetting?.value);
+      const taiwanNow = new Date(today.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
+      const currentTaiwanTime = formatMinutesAsTime(taiwanNow.getHours() * 60 + taiwanNow.getMinutes());
+      let isHoliday = false;
+      let hasApprovedOvertime = false;
+
+      if (reasonPromptSettings.enabled && reasonPromptSettings.excludeHolidays) {
+        const holiday = await prisma.holiday.findFirst({
+          where: {
+            date: {
+              gte: todayStart,
+              lt: todayEnd,
+            },
+            isActive: true,
+          },
+        });
+        isHoliday = Boolean(holiday);
+      }
+
+      if (reasonPromptSettings.enabled && reasonPromptSettings.excludeApprovedOvertime) {
+        const approvedOvertime = await prisma.overtimeRequest.findFirst({
+          where: {
+            employeeId,
+            overtimeDate: {
+              gte: todayStart,
+              lt: todayEnd,
+            },
+            status: 'APPROVED',
+          },
+        });
+        hasApprovedOvertime = Boolean(approvedOvertime);
+      }
+
+      const skipReasonPrompt = shouldSkipClockReasonPrompt({
+        settings: reasonPromptSettings,
+        isHoliday,
+        isRestDay: todaySchedule?.shiftType === 'OFF',
+        hasApprovedOvertime,
+      });
       const clockInLocationData = location ? {
         clockInLatitude: location.latitude,
         clockInLongitude: location.longitude,
@@ -252,9 +313,13 @@ export async function POST(request: Request) {
       let attendance = await prisma.attendanceRecord.findFirst({
         where: {
           employeeId,
-          workDate
+          workDate: {
+            gte: todayStart,
+            lt: todayEnd,
+          },
         }
       });
+      let reasonPromptData = null;
 
       if (clockType === 'in') {
         if (attendance?.clockInTime) {
@@ -276,13 +341,23 @@ export async function POST(request: Request) {
           attendance = await prisma.attendanceRecord.create({
             data: {
               employeeId,
-              workDate,
+              workDate: todayStart,
               clockInTime: today,
               status: 'INCOMPLETE',
               ...clockInLocationData
             }
           });
         }
+
+        reasonPromptData = skipReasonPrompt || !todaySchedule?.startTime
+          ? null
+          : buildClockReasonPromptData({
+              settings: reasonPromptSettings,
+              type: 'EARLY_IN',
+              scheduledTime: todaySchedule.startTime,
+              actualTime: currentTaiwanTime,
+              recordId: attendance.id,
+            });
       } else {
         if (!attendance) {
           return NextResponse.json({ error: '請先上班打卡' }, { status: 400 });
@@ -303,6 +378,16 @@ export async function POST(request: Request) {
             ...clockOutLocationData
           }
         });
+
+        reasonPromptData = skipReasonPrompt || !todaySchedule?.endTime
+          ? null
+          : buildClockReasonPromptData({
+              settings: reasonPromptSettings,
+              type: 'LATE_OUT',
+              scheduledTime: todaySchedule.endTime,
+              actualTime: currentTaiwanTime,
+              recordId: attendance.id,
+            });
       }
 
       // 清除 cookies
@@ -311,7 +396,9 @@ export async function POST(request: Request) {
         message: `${clockType === 'in' ? '上班' : '下班'}打卡成功！`,
         employee: storedCredential.user.employee?.name,
         clockInTime: attendance.clockInTime,
-        clockOutTime: attendance.clockOutTime
+        clockOutTime: attendance.clockOutTime,
+        requiresReason: Boolean(reasonPromptData),
+        reasonPrompt: reasonPromptData,
       });
       response.cookies.delete('webauthn_auth_challenge');
       response.cookies.delete('webauthn_auth_username');

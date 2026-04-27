@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import { escapeCsvValue } from '@/lib/csv';
+import { formatShiftDisplay } from '@/lib/shift-display';
 
 interface AttendanceRecord {
   id: number;
@@ -21,6 +22,9 @@ interface AttendanceRecord {
   updatedAt?: string;
   clockInReason?: string | null;
   clockOutReason?: string | null;
+  shiftType?: string | null;
+  scheduledStart?: string | null;
+  scheduledEnd?: string | null;
   employee?: {
     id: number;
     employeeId: string;
@@ -258,6 +262,14 @@ export default function AttendanceRecordsPage() {
     return `(${weekdays[date.getDay()]})`;
   };
 
+  const getRecordShiftDisplay = (record: AttendanceRecord) => (
+    formatShiftDisplay({
+      shiftType: record.shiftType,
+      startTime: record.scheduledStart,
+      endTime: record.scheduledEnd,
+    })
+  );
+
   const handlePageChange = (newPage: number) => {
     console.log('📄 分頁變更:', { from: pagination.current, to: newPage });
     setPagination(prev => ({ ...prev, current: newPage }));
@@ -280,6 +292,7 @@ export default function AttendanceRecordsPage() {
         '職位': record.employee?.position || '-',
         '日期': formatDate(record.workDate),
         '星期': formatWeekday(record.workDate).replace(/[()]/g, ''),
+        '班次': getRecordShiftDisplay(record),
         '上班時間': formatTime(record.clockInTime),
         '下班時間': formatTime(record.clockOutTime),
         '正常工時': record.regularHours,
@@ -493,6 +506,9 @@ export default function AttendanceRecordsPage() {
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('date')}>
                           日期 {sortConfig.field === 'date' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
                         </th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          班次
+                        </th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('clockIn')}>
                           上班時間 {sortConfig.field === 'clockIn' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
                         </th>
@@ -538,6 +554,11 @@ export default function AttendanceRecordsPage() {
                             </div>
                             <div className="text-sm text-gray-500">
                               {formatWeekday(record.workDate)}
+                            </div>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <div className="text-sm font-medium text-gray-900">
+                              {getRecordShiftDisplay(record)}
                             </div>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-sm text-black">

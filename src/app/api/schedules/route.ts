@@ -124,9 +124,11 @@ export async function GET(request: NextRequest) {
     // 格式化輸出
     const formattedSchedules = schedules.map(s => ({
       id: s.id,
-      employeeId: s.employee.employeeId,
+      employeeId: s.employeeId,
+      employeeCode: s.employee.employeeId,
       employeeName: s.employee.name,
       department: s.employee.department,
+      workDate: s.workDate,
       date: s.workDate,
       startTime: s.startTime,
       endTime: s.endTime,
