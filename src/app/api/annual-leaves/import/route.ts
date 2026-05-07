@@ -7,9 +7,13 @@ import { checkRateLimit } from '@/lib/rate-limit';
 import * as XLSX from 'xlsx';
 import { validateCSRF } from '@/lib/csrf';
 
-function parseFiniteNonNegativeNumber(value: unknown, defaultValue = 0) {
+const MAX_IMPORT_FILE_SIZE_BYTES = 10 * 1024 * 1024;
+
+function parseFiniteNonNegativeNumber(value: unknown, defaultValue?: number) {
   if (value === undefined || value === null || value === '') {
-    return { value: defaultValue, isValid: true };
+    return defaultValue === undefined
+      ? { value: null, isValid: true }
+      : { value: defaultValue, isValid: true };
   }
 
   const parsed = typeof value === 'number' ? value : Number(String(value));
@@ -18,6 +22,19 @@ function parseFiniteNonNegativeNumber(value: unknown, defaultValue = 0) {
   }
 
   return { value: parsed, isValid: true };
+}
+
+function normalizeHeaderName(value: unknown) {
+  return String(value ?? '')
+    .trim()
+    .replace(/\s+/g, '')
+    .replace(/[()（）]/g, '')
+    .toLowerCase();
+}
+
+function getRowValue(row: unknown[], headerIndexes: Record<string, number>, key: string) {
+  const index = headerIndexes[key];
+  return index === undefined ? undefined : row[index];
 }
 
 function parseImportYearValue(value: unknown) {
@@ -108,11 +125,22 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '僅支援 Excel (.xlsx) 或 CSV 格式' }, { status: 400 });
     }
 
+    if (file.size > MAX_IMPORT_FILE_SIZE_BYTES) {
+      return NextResponse.json({ error: '檔案大小超過限制（最大 10MB）' }, { status: 400 });
+    }
+
     // 讀取檔案內容
     const arrayBuffer = await file.arrayBuffer();
     const workbook = XLSX.read(arrayBuffer, { type: 'array' });
+    if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
+      return NextResponse.json({ error: '檔案不包含任何工作表' }, { status: 400 });
+    }
+
     const sheetName = workbook.SheetNames[0];
     const worksheet = workbook.Sheets[sheetName];
+    if (!worksheet) {
+      return NextResponse.json({ error: '檔案工作表格式不正確' }, { status: 400 });
+    }
     
     // 轉換為 JSON，使用第一行作為標題
     const rawData = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as unknown[][];
@@ -125,29 +153,42 @@ export async function POST(request: NextRequest) {
     const headers = (rawData[0] as string[]).map(h => String(h).trim());
     const dataRows = rawData.slice(1).filter(row => (row as unknown[]).some(cell => cell !== undefined && cell !== ''));
 
-    // 欄位映射
-    const columnMap: Record<string, string> = {
-      '員工編號': 'employeeId',
-      '年度': 'year',
-      '已使用天數': 'usedDays',
-      '剩餘天數': 'remainingDays',
-      '到期日': 'expiryDate',
+    // 欄位映射：支援範本與舊系統常見欄位名稱。
+    const columnAliases: Record<string, string[]> = {
+      employeeId: ['員工編號', '員編', '工號', '員工代號', 'employeeId', 'employeeCode'],
+      year: ['年度', '年份', '年', 'year'],
+      totalDays: ['特休假總天數', '特休總天數', '總天數', '特休天數', '可休天數', 'totalDays'],
+      usedDays: ['已使用天數', '已休天數', '已用天數', '使用天數', 'usedDays'],
+      remainingDays: ['剩餘天數', '未休天數', '可用天數', '特休餘額', '剩餘特休', 'remainingDays'],
+      expiryDate: ['到期日', '效期日', '截止日', '到期日期', 'expiryDate'],
     };
+    const normalizedColumnMap = Object.entries(columnAliases).reduce<Record<string, string>>((acc, [field, aliases]) => {
+      for (const alias of aliases) {
+        acc[normalizeHeaderName(alias)] = field;
+      }
+      return acc;
+    }, {});
 
     const headerIndexes: Record<string, number> = {};
     headers.forEach((header, index) => {
-      const mappedName = columnMap[header];
+      const mappedName = normalizedColumnMap[normalizeHeaderName(header)];
       if (mappedName) {
         headerIndexes[mappedName] = index;
       }
     });
 
     // 驗證必要欄位
-    const requiredFields = ['employeeId', 'year', 'remainingDays'];
+    const requiredFields = ['employeeId', 'year'];
     const missingFields = requiredFields.filter(f => headerIndexes[f] === undefined);
     if (missingFields.length > 0) {
-      return NextResponse.json({ 
-        error: `缺少必要欄位：${missingFields.map(f => Object.entries(columnMap).find(([, v]) => v === f)?.[0]).join(', ')}` 
+      return NextResponse.json({
+        error: `缺少必要欄位：${missingFields.map(f => columnAliases[f][0]).join(', ')}`
+      }, { status: 400 });
+    }
+
+    if (headerIndexes.remainingDays === undefined && headerIndexes.totalDays === undefined) {
+      return NextResponse.json({
+        error: '缺少必要欄位：剩餘天數 或 特休假總天數'
       }, { status: 400 });
     }
 
@@ -169,8 +210,8 @@ export async function POST(request: NextRequest) {
       const rowNum = i + 2; // Excel 從 1 開始，加上標題行
 
       try {
-        const employeeIdStr = String(row[headerIndexes.employeeId] || '').trim();
-        const yearResult = parseImportYearValue(row[headerIndexes.year]);
+        const employeeIdStr = String(getRowValue(row, headerIndexes, 'employeeId') || '').trim();
+        const yearResult = parseImportYearValue(getRowValue(row, headerIndexes, 'year'));
 
         if (!employeeIdStr) {
           results.errors.push(`第 ${rowNum} 行：員工編號為空`);
@@ -193,21 +234,30 @@ export async function POST(request: NextRequest) {
 
         const year = yearResult.value;
 
-        const usedDaysResult = parseFiniteNonNegativeNumber(row[headerIndexes.usedDays], 0);
+        const usedDaysResult = parseFiniteNonNegativeNumber(getRowValue(row, headerIndexes, 'usedDays'), 0);
         if (!usedDaysResult.isValid || usedDaysResult.value === null) {
           results.errors.push(`第 ${rowNum} 行：已使用天數格式不正確`);
           results.failed++;
           continue;
         }
 
-        const remainingDaysResult = parseFiniteNonNegativeNumber(row[headerIndexes.remainingDays]);
-        if (!remainingDaysResult.isValid || remainingDaysResult.value === null) {
+        const remainingDaysResult = parseFiniteNonNegativeNumber(getRowValue(row, headerIndexes, 'remainingDays'));
+        const totalDaysResult = parseFiniteNonNegativeNumber(getRowValue(row, headerIndexes, 'totalDays'));
+        if (!remainingDaysResult.isValid) {
           results.errors.push(`第 ${rowNum} 行：剩餘天數格式不正確`);
           results.failed++;
           continue;
         }
 
-        const expiryDateResult = parseExpiryDateValue(row[headerIndexes.expiryDate], year);
+        if (remainingDaysResult.value === null) {
+          if (!totalDaysResult.isValid || totalDaysResult.value === null) {
+            results.errors.push(`第 ${rowNum} 行：特休假總天數格式不正確`);
+            results.failed++;
+            continue;
+          }
+        }
+
+        const expiryDateResult = parseExpiryDateValue(getRowValue(row, headerIndexes, 'expiryDate'), year);
         if (!expiryDateResult.isValid || expiryDateResult.value === null) {
           results.errors.push(`第 ${rowNum} 行：到期日格式不正確`);
           results.failed++;
@@ -215,13 +265,19 @@ export async function POST(request: NextRequest) {
         }
 
         const usedDays = usedDaysResult.value;
-        const remainingDays = remainingDaysResult.value;
+        const totalDaysFromFile = totalDaysResult.isValid ? totalDaysResult.value : null;
+        const remainingDays = remainingDaysResult.value ?? Math.max((totalDaysFromFile ?? 0) - usedDays, 0);
         const expiryDate = expiryDateResult.value;
+        if (totalDaysFromFile !== null && Math.abs(totalDaysFromFile - usedDays - remainingDays) > 0.001) {
+          results.errors.push(`第 ${rowNum} 行：特休假總天數與已使用天數、剩餘天數不一致`);
+          results.failed++;
+          continue;
+        }
 
         // 計算年資
         const hireDate = new Date(employee.hireDate);
         const yearsOfService = year - hireDate.getFullYear();
-        const totalDays = usedDays + remainingDays;
+        const totalDays = totalDaysFromFile ?? usedDays + remainingDays;
 
         // 建立或更新特休假記錄
         await prisma.annualLeave.upsert({

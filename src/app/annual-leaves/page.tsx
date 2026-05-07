@@ -1,9 +1,9 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Calendar, Plus, Search, Users, Clock, X, RefreshCw, CheckCircle, AlertTriangle } from 'lucide-react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { Calendar, Plus, Search, Users, Clock, X, RefreshCw, CheckCircle, AlertTriangle, Upload } from 'lucide-react';
 import { buildAuthMeRequest, buildCookieSessionRequest } from '@/lib/admin-session-client';
-import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
+import { fetchJSONWithCSRF, fetchWithCSRF } from '@/lib/fetchWithCSRF';
 import {
   calculateAnnualLeaveDaysFromYearsOfService,
   calculateServiceDuration,
@@ -87,6 +87,9 @@ export default function AnnualLeaveManagementPage() {
   const [batchLoading, setBatchLoading] = useState(false);
   const [excludeExisting, setExcludeExisting] = useState(true);
   const [departments, setDepartments] = useState<string[]>([]);
+  const [importLoading, setImportLoading] = useState(false);
+  const [importMessage, setImportMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const buildSessionRequest = (path: string) => buildCookieSessionRequest(window.location.origin, path);
 
@@ -154,6 +157,69 @@ export default function AnnualLeaveManagementPage() {
       console.error('獲取特休假記錄失敗:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleDownloadTemplate = async () => {
+    try {
+      const request = buildSessionRequest('/api/annual-leaves/import');
+      const response = await fetch(request.url, request.options);
+      if (!response.ok) {
+        throw new Error('下載範本失敗');
+      }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'annual_leave_import_template.xlsx';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('下載範本失敗:', error);
+      alert('下載範本失敗');
+    }
+  };
+
+  const handleImportFile = async (file: File) => {
+    if (!file.name.toLowerCase().endsWith('.xlsx') && !file.name.toLowerCase().endsWith('.csv')) {
+      setImportMessage({ type: 'error', text: '僅支援 .xlsx 或 .csv 檔案' });
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    setImportLoading(true);
+    setImportMessage(null);
+    try {
+      const response = await fetchWithCSRF('/api/annual-leaves/import', {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        setImportMessage({ type: 'error', text: data.error || '匯入失敗' });
+        return;
+      }
+
+      const errorPreview = Array.isArray(data.results?.errors) && data.results.errors.length > 0
+        ? `；錯誤：${data.results.errors.slice(0, 3).join('、')}${data.results.errors.length > 3 ? '...' : ''}`
+        : '';
+
+      setImportMessage({ type: 'success', text: `${data.message || '匯入完成'}${errorPreview}` });
+      await fetchAnnualLeaves();
+    } catch (error) {
+      console.error('匯入特休假失敗:', error);
+      setImportMessage({ type: 'error', text: '匯入失敗，請稍後再試' });
+    } finally {
+      setImportLoading(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
     }
   };
 
@@ -390,21 +456,7 @@ export default function AnnualLeaveManagementPage() {
               </div>
               <div className="flex items-center gap-3">
                 <button
-                  onClick={() => {
-                    const request = buildSessionRequest('/api/annual-leaves/import');
-                    fetch(request.url, request.options)
-                    .then(res => res.blob())
-                    .then(blob => {
-                      const url = window.URL.createObjectURL(blob);
-                      const a = document.createElement('a');
-                      a.href = url;
-                      a.download = 'annual_leave_import_template.xlsx';
-                      document.body.appendChild(a);
-                      a.click();
-                      a.remove();
-                      window.URL.revokeObjectURL(url);
-                    });
-                  }}
+                  onClick={handleDownloadTemplate}
                   className="flex items-center gap-2 bg-gray-100 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-200 transition-colors"
                   title="下載匯入範本"
                 >
@@ -412,6 +464,31 @@ export default function AnnualLeaveManagementPage() {
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
                   </svg>
                   下載範本
+                </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
+                  className="hidden"
+                  disabled={importLoading}
+                  onChange={(event) => {
+                    if (importLoading) {
+                      return;
+                    }
+                    const file = event.target.files?.[0];
+                    if (file) {
+                      void handleImportFile(file);
+                    }
+                  }}
+                />
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={importLoading}
+                  className="flex items-center gap-2 bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  title="匯入舊系統 Excel 計算的特休假"
+                >
+                  <Upload className="h-5 w-5" />
+                  {importLoading ? '匯入中...' : '匯入 Excel'}
                 </button>
                 <button
                   onClick={openBatchModal}
@@ -430,6 +507,16 @@ export default function AnnualLeaveManagementPage() {
               </div>
             </div>
           </div>
+
+          {importMessage && (
+            <div className={`mb-6 rounded-lg border p-4 text-sm ${
+              importMessage.type === 'success'
+                ? 'bg-green-50 border-green-200 text-green-700'
+                : 'bg-red-50 border-red-200 text-red-700'
+            }`}>
+              {importMessage.text}
+            </div>
+          )}
 
           {/* 篩選區域 */}
           <div className="bg-white rounded-lg shadow-sm p-6 mb-6">
