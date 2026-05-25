@@ -221,6 +221,59 @@ describe('schedule apply-template csrf guard', () => {
     expect(mockPrisma.schedule.createMany).toHaveBeenCalled();
   });
 
+  it('persists OFF template days so comp leave hours remain in schedule totals', async () => {
+    mockFs.readFileSync.mockReturnValueOnce(JSON.stringify([
+      {
+        id: 1,
+        name: '補休模版',
+        description: '',
+        monday: { shiftType: 'OFF', startTime: '', endTime: '', breakTime: 0 },
+        tuesday: { shiftType: 'OFF', startTime: '', endTime: '', breakTime: 0 },
+        wednesday: { shiftType: 'OFF', startTime: '', endTime: '', breakTime: 0 },
+        thursday: { shiftType: 'OFF', startTime: '', endTime: '', breakTime: 0 },
+        friday: { shiftType: 'OFF', startTime: '', endTime: '', breakTime: 0 },
+        saturday: { shiftType: 'OFF', startTime: '', endTime: '', breakTime: 0 },
+        sunday: { shiftType: 'OFF', startTime: '', endTime: '', breakTime: 0 },
+        createdAt: '2026-01-01T00:00:00.000Z',
+      },
+    ]) as never);
+    mockPrisma.schedule.createMany.mockResolvedValueOnce({ count: 31 } as never);
+
+    const request = new NextRequest('http://localhost/api/schedules/apply-template', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        templateId: 1,
+        year: 2026,
+        month: 5,
+        employeeIds: [31],
+        overwriteExisting: true,
+      }),
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.applied).toBe(31);
+    expect(mockPrisma.schedule.createMany).toHaveBeenCalledWith({
+      data: expect.arrayContaining([
+        expect.objectContaining({
+          shiftType: 'OFF',
+          startTime: '',
+          endTime: '',
+          breakTime: 0,
+          workHours: 0,
+          specialLeaveHours: 0,
+          compLeaveHours: 8,
+          overtimeHours: 0,
+        }),
+      ]),
+    });
+  });
+
   it('rejects malformed JSON bodies before evaluating apply-template payload', async () => {
     const request = new NextRequest('http://localhost/api/schedules/apply-template', {
       method: 'POST',

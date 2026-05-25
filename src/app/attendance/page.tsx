@@ -5,6 +5,11 @@ import { Clock, Calendar, BarChart3, History, Timer, CheckCircle, XCircle, User,
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import { isMobileClockingDevice, MOBILE_CLOCKING_REQUIRED_MESSAGE } from '@/lib/device-detection';
+import InfectionControlForm, {
+  defaultInfectionControlValue,
+  toInfectionControlPayload,
+  validateInfectionControlValue,
+} from '@/components/InfectionControlForm';
 
 interface AttendanceRecord {
   id: number;
@@ -142,6 +147,7 @@ export default function AttendancePage() {
   const [webauthnLoading, setWebauthnLoading] = useState(false);
   const [loggedInUsername, setLoggedInUsername] = useState('');
   const [isMobileClocking, setIsMobileClocking] = useState<boolean | null>(null);
+  const [infectionControl, setInfectionControl] = useState(defaultInfectionControlValue);
 
   const showToast = (type: 'success' | 'error' | 'warning', message: string) => {
     setToast({ type, message });
@@ -149,6 +155,7 @@ export default function AttendancePage() {
   };
 
   const resolvedVerificationUsername = verificationData.username || loggedInUsername || savedUsername;
+  const infectionControlError = validateInfectionControlValue(infectionControl);
 
   const resetPendingWifiVerification = () => {
     setPendingWifiVerificationRequired(false);
@@ -228,6 +235,12 @@ export default function AttendancePage() {
   const handleBiometricClock = async (clockType: 'in' | 'out') => {
     if (isMobileClocking !== true) {
       showToast('warning', MOBILE_CLOCKING_REQUIRED_MESSAGE);
+      return;
+    }
+
+    const infectionError = validateInfectionControlValue(infectionControl);
+    if (infectionError) {
+      showToast('error', infectionError);
       return;
     }
 
@@ -314,6 +327,7 @@ export default function AttendancePage() {
             }
           },
           clockType: clockType,
+          infectionControl: toInfectionControlPayload(infectionControl),
           location: verifiedLocation
         }),
         credentials: 'include'
@@ -326,6 +340,7 @@ export default function AttendancePage() {
         setShowVerificationModal(false);
         setPendingClockType(null);
         setPendingClockLocation(null);
+        setInfectionControl(defaultInfectionControlValue);
         resetPendingWifiVerification();
         await loadTodayStatus();
 
@@ -704,6 +719,12 @@ export default function AttendancePage() {
       return;
     }
 
+    const infectionError = validateInfectionControlValue(infectionControl);
+    if (infectionError) {
+      showToast('error', infectionError);
+      return;
+    }
+
     const locationRequired = isGpsLocationRequired(gpsSettings);
     let verifiedLocation = getTrustedCurrentLocation();
     setPendingClockLocation(null);
@@ -821,11 +842,13 @@ export default function AttendancePage() {
         username: string;
         password: string;
         clockType: 'in' | 'out';
+        infectionControl: ReturnType<typeof toInfectionControlPayload>;
         location?: LocationData;
       } = {
         username: effectiveUsername,
         password: verificationData.password,
-        clockType: pendingClockType
+        clockType: pendingClockType,
+        infectionControl: toInfectionControlPayload(infectionControl)
       };
 
       // 如果有GPS位置數據，加入到請求中
@@ -850,6 +873,7 @@ export default function AttendancePage() {
         showToast('success', data.message);
         loadTodayStatus();
         setPendingClockLocation(null);
+        setInfectionControl(defaultInfectionControlValue);
         
         // 檢查是否需要填寫提早/延後打卡原因
         if (data.requiresReason && data.reasonPrompt) {
@@ -1112,12 +1136,19 @@ export default function AttendancePage() {
                   </div>
                 )}
 
+                <div className="mb-4 md:mb-6">
+                  <InfectionControlForm
+                    value={infectionControl}
+                    onChange={setInfectionControl}
+                  />
+                </div>
+
                 {/* 打卡按鈕 - 純 CSS 響應式 */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4 mb-4 md:mb-6">
                   <div className="space-y-2">
                     <button
                       onClick={() => handleClock('in')}
-                      disabled={clockLoading || isMobileClocking !== true}
+                      disabled={clockLoading || isMobileClocking !== true || Boolean(infectionControlError)}
                       className={`w-full py-5 md:py-4 px-6 rounded-xl text-base md:text-lg font-medium transition-all ${
                         todayStatus?.hasClockIn
                           ? 'bg-green-600 text-white shadow-lg border-2 border-green-200'
@@ -1148,7 +1179,7 @@ export default function AttendancePage() {
                   <div className="space-y-2">
                     <button
                       onClick={() => handleClock('out')}
-                      disabled={clockLoading || isMobileClocking !== true}
+                      disabled={clockLoading || isMobileClocking !== true || Boolean(infectionControlError)}
                       className={`w-full py-5 md:py-4 px-6 rounded-xl text-base md:text-lg font-medium transition-all ${
                         todayStatus?.hasClockOut
                           ? 'bg-orange-600 text-white shadow-lg border-2 border-orange-200'
@@ -1352,7 +1383,7 @@ export default function AttendancePage() {
               <div className="mb-4">
                 <button
                   onClick={() => pendingClockType && handleBiometricClock(pendingClockType)}
-                  disabled={webauthnLoading || clockLoading}
+                  disabled={webauthnLoading || clockLoading || Boolean(infectionControlError)}
                   className="w-full bg-linear-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-4 px-4 rounded-xl transition-all flex items-center justify-center gap-3 shadow-lg"
                 >
                   <Fingerprint className="w-6 h-6" />
@@ -1470,7 +1501,7 @@ export default function AttendancePage() {
                   }
                   handleVerificationSubmit();
                 }}
-                disabled={!resolvedVerificationUsername || !verificationData.password || clockLoading}
+                disabled={!resolvedVerificationUsername || !verificationData.password || clockLoading || Boolean(infectionControlError)}
                 className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-3 px-4 rounded-lg transition-colors"
               >
                 {clockLoading ? '打卡中...' : '確認打卡'}

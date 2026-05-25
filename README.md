@@ -21,7 +21,7 @@ npm run dev
 
 ## VPS 手動部署（PM2 / 非 Docker）
 
-正式環境使用 **PM2 + Nginx**，不走 Docker、也不走 CI deploy。專案根目錄已提供：
+正式環境使用 **DigitalOcean Droplet / VPS + PM2 + Nginx**，不走 Docker。專案根目錄已提供同一套 PM2 / NVM 部署腳本，可由**本機手動執行**或由 **GitHub Actions `workflow_dispatch`** 觸發：
 
 ```bash
 # 先在 VPS 準備好 nvm / Node / PM2 / .env.production
@@ -31,7 +31,26 @@ npm run dev
 VPS_HOST=your-vps-ip ./deploy-vps.sh
 ```
 
-`deploy-vps.sh` 會先讀取 **VPS 目前的 Node 版本**，再切換本機到相同版本後建置，接著同步程式碼、`.next` 產物，最後在 VPS 上執行 Prisma 與 PM2 reload。
+`deploy-vps.sh` 預設會先讀取 **VPS 目前 nvm 使用的 Node 版本**，再用同一個版本建置、安裝依賴、執行 Prisma migration 並 reload PM2。
+部署腳本也會把 PM2 綁到 **VPS 當前 nvm 的 Node binary**，避免 DigitalOcean VPS 重開或 PM2 reload 後誤用系統 Node。若需要固定版本，可在 GitHub Actions Variables 或本機環境變數設定 `EXPECTED_NODE_VERSION`。
+
+### 建議的 DigitalOcean / PM2 初始化流程
+
+1. 在 Droplet 上安裝 `nvm`，並用它安裝正式環境 Node 版本，例如 `nvm install 20.19.6 && nvm alias default 20.19.6`。
+2. 執行 `./setup-production.sh`，讓 VPS 依目前 nvm Node 版本確認 `.env.production`、PM2 都已就緒。
+3. 首次部署後，依腳本提示執行 `pm2 startup`，把目前 nvm Node 路徑寫進 systemd。
+4. 本機執行 `VPS_HOST=your-vps-ip ./deploy-vps.sh`，或在 GitHub Actions 手動觸發 `Deploy to DigitalOcean VPS`，完成同步、Prisma migration 與 PM2 reload。
+
+### 版本規則
+
+- 支援正式環境 Node 範圍為 **>=20.19.6 <23**。
+- `deploy-vps.sh` 預設以 VPS 目前 Node 版本為準；`.nvmrc` 只作為本機/CI 預設版本。
+- 若你在 VPS 升級 Node，請先在 VPS 切換/設定 default，再重新執行：
+
+```bash
+./setup-production.sh
+VPS_HOST=your-vps-ip ./deploy-vps.sh
+```
 
 ## 技術棧
 

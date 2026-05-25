@@ -19,6 +19,10 @@ import {
   WEBAUTHN_RP_ID,
 } from '@/lib/webauthn';
 import { safeParseJSON } from '@/lib/validation';
+import {
+  buildInfectionControlClockData,
+  parseInfectionControlInput,
+} from '@/lib/attendance-infection-control';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -109,6 +113,24 @@ export async function POST(request: Request) {
     const location = body.location === undefined || body.location === null
       ? undefined
       : body.location;
+    const infectionControlData = clockType
+      ? (() => {
+          const infectionControlResult = parseInfectionControlInput(body.infectionControl);
+          if (!infectionControlResult.ok) {
+            return infectionControlResult;
+          }
+
+          return {
+            ok: true as const,
+            data: buildInfectionControlClockData(clockType, infectionControlResult.data),
+          };
+        })()
+      : null;
+
+    if (infectionControlData && !infectionControlData.ok) {
+      return NextResponse.json({ error: infectionControlData.error }, { status: 400 });
+    }
+
     const credentialId = typeof credential?.id === 'string' ? credential.id : '';
     const credentialRawId = typeof credential?.rawId === 'string' ? credential.rawId : undefined;
     const credentialType = typeof credential?.type === 'string' ? credential.type : undefined;
@@ -226,6 +248,11 @@ export async function POST(request: Request) {
 
     // 如果需要打卡
     if (clockType === 'in' || clockType === 'out') {
+      if (!infectionControlData || !infectionControlData.ok) {
+        return NextResponse.json({ error: '請完成感染管控聲明' }, { status: 400 });
+      }
+      const infectionControlFields = infectionControlData.data;
+
       const gpsSettings = await getGPSSettingsFromDB();
       const allowedLocations = gpsSettings.enabled ? await getActiveAllowedLocations() : [];
       const gpsValidation = validateGpsClockLocation({
@@ -334,6 +361,7 @@ export async function POST(request: Request) {
             where: { id: attendance.id },
             data: {
               clockInTime: today,
+              ...infectionControlFields,
               ...clockInLocationData
             }
           });
@@ -344,6 +372,7 @@ export async function POST(request: Request) {
               workDate: todayStart,
               clockInTime: today,
               status: 'INCOMPLETE',
+              ...infectionControlFields,
               ...clockInLocationData
             }
           });
@@ -375,6 +404,7 @@ export async function POST(request: Request) {
           data: { 
             clockOutTime: today,
             status: 'COMPLETE',
+            ...infectionControlFields,
             ...clockOutLocationData
           }
         });

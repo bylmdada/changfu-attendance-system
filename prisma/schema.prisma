@@ -221,6 +221,9 @@ model User {
   // 密碼歷史關聯
   passwordHistories PasswordHistory[]
 
+  // 財產管理據點指派關聯
+  userSiteAssignments UserSiteAssignment[]
+
   @@map("users")
 }
 
@@ -394,6 +397,14 @@ model AttendanceRecord {
   clockInOvertimeId  Int?    @map("clock_in_overtime_id") // 關聯的加班申請 ID (提早上班)
   clockOutOvertimeId Int?    @map("clock_out_overtime_id") // 關聯的加班申請 ID (延後下班)
 
+  // 感染管控：每次上/下班打卡各自記錄，避免後續打卡覆蓋前次健康聲明
+  clockInHasFever       Boolean? @map("clock_in_has_fever")
+  clockInTemperature    Float?   @map("clock_in_temperature")
+  clockInHasAcuteCough  Boolean? @map("clock_in_has_acute_cough")
+  clockOutHasFever      Boolean? @map("clock_out_has_fever")
+  clockOutTemperature   Float?   @map("clock_out_temperature")
+  clockOutHasAcuteCough Boolean? @map("clock_out_has_acute_cough")
+
   status    String   @default("PRESENT")
   notes     String?
   createdAt DateTime @default(now()) @map("created_at")
@@ -537,6 +548,10 @@ model Schedule {
   startTime  String   @map("start_time")
   endTime    String   @map("end_time")
   breakTime  Int      @default(0) @map("break_time")
+  workHours  Float    @default(0) @map("work_hours")
+  specialLeaveHours Float @default(0) @map("special_leave_hours")
+  compLeaveHours Float @default(0) @map("comp_leave_hours")
+  overtimeHours Float @default(0) @map("overtime_hours")
   createdAt  DateTime @default(now()) @map("created_at")
   updatedAt  DateTime @updatedAt @map("updated_at")
 
@@ -544,6 +559,28 @@ model Schedule {
 
   @@unique([employeeId, workDate])
   @@map("schedules")
+}
+
+model ShiftDefinition {
+  id           Int      @id @default(autoincrement())
+  code         String   @unique
+  name         String
+  startTime    String   @map("start_time")
+  endTime      String   @map("end_time")
+  breakTime    Int      @default(0) @map("break_time")
+  workHours    Float    @default(0) @map("work_hours")
+  specialLeaveHours Float @default(0) @map("special_leave_hours")
+  compLeaveHours Float  @default(0) @map("comp_leave_hours")
+  overtimeHours Float   @default(0) @map("overtime_hours")
+  requiresTime Boolean  @default(true) @map("requires_time")
+  isActive     Boolean  @default(true) @map("is_active")
+  sortOrder    Int      @default(0) @map("sort_order")
+  description  String?
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@index([isActive, sortOrder])
+  @@map("shift_definitions")
 }
 
 // 月份班表發布記錄
@@ -1968,4 +2005,224 @@ model PensionContributionApplication {
   @@index([status])
   @@index([effectiveDate])
   @@map("pension_contribution_applications")
+}
+
+// ============================================================
+// 財產管理 / Property & Asset Maintenance Management
+// ============================================================
+
+/// 據點（多據點，各自管理財產）
+model PropertySite {
+  id               Int      @id @default(autoincrement())
+  name             String   @unique // 據點名稱，如「溪北輔具中心」
+  code             String   @unique // 短代碼，如 XIBEI（用於檔名）
+  institutionTitle String   @map("institution_title") // 月報抬頭
+  evidenceTitle    String   @default("輔具維護歷程佐證表") @map("evidence_title")
+  settings         String?  @map("settings") // JSON 覆寫：頻率預設/維護日時/審查日時/email開關/主管email/reminderDays
+  isActive         Boolean  @default(true) @map("is_active")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  assets          PropertyAsset[]
+  records         MaintenanceRecord[]
+  userAssignments UserSiteAssignment[]
+  personnel       PropertyPersonnel[]
+
+  @@map("property_sites")
+}
+
+/// 使用者 ↔ 據點指派（沿用考勤 User，per-site 維護角色）
+model UserSiteAssignment {
+  id              Int      @id @default(autoincrement())
+  userId          Int      @map("user_id")
+  siteId          Int      @map("site_id")
+  maintenanceRole String   @default("MAINTAINER") @map("maintenance_role") // MAINTAINER / SUPERVISOR / ADMIN
+  isActive        Boolean  @default(true) @map("is_active")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  site PropertySite @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, siteId])
+  @@index([siteId])
+  @@index([userId])
+  @@map("user_site_assignments")
+}
+
+/// 人員名冊（匯入自 xlsx，僅作通知收件人與歷史維護人員解析，不用於登入）
+model PropertyPersonnel {
+  id               Int      @id @default(autoincrement())
+  siteId           Int      @map("site_id")
+  email            String?
+  name             String
+  jobTitle         String?  @map("job_title") // 職稱（主管/社工/評估人員…）
+  isSupervisor     Boolean  @default(false) @map("is_supervisor")
+  linkedEmployeeId Int?     @map("linked_employee_id") // 盡力連結既有 Employee（scalar，不強制關聯）
+  aliases          String?  @map("aliases") // JSON 別名陣列，供維護人員解析
+  isActive         Boolean  @default(true) @map("is_active")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  site               PropertySite        @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  maintenanceRecords MaintenanceRecord[]
+
+  @@unique([siteId, name])
+  @@index([siteId])
+  @@index([email])
+  @@map("property_personnel")
+}
+
+/// 財產主檔
+model PropertyAsset {
+  id                   Int       @id @default(autoincrement())
+  siteId               Int       @map("site_id")
+  assetCode            String    @map("asset_code") // 財產編號
+  name                 String // 財產名稱
+  photoPath            String?   @map("photo_path") // 財產照片
+  location             String? // 放置地點
+  managerName          String?   @map("manager_name") // 財產管理人（自由文字）
+  maintenanceFrequency String?   @map("maintenance_frequency") // 應維護頻率原文
+  frequencyDays        Int?      @map("frequency_days") // 正規化天數
+  acquiredDate         DateTime? @map("acquired_date") // 取得日期
+  nextMaintenanceDate  DateTime? @map("next_maintenance_date") // 應維護日期
+  isActive             Boolean   @default(true) @map("is_active")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+
+  site                 PropertySite               @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  records              MaintenanceRecord[]
+  modificationRequests AssetModificationRequest[]
+
+  @@unique([siteId, assetCode])
+  @@index([siteId])
+  @@index([assetCode])
+  @@index([nextMaintenanceDate])
+  @@map("property_assets")
+}
+
+/// 維護執行紀錄（任務 + 執行合一）
+model MaintenanceRecord {
+  id                        Int       @id @default(autoincrement())
+  recordId                  String    @unique @map("record_id") // 紀錄ID：M-YYYY-MM-DD-{財產編號}
+  siteId                    Int       @map("site_id")
+  assetId                   Int       @map("asset_id")
+  assetCode                 String    @map("asset_code") // 反正規化供報表分組
+  maintenanceCycle          String?   @map("maintenance_cycle") // 維護週期
+  dueDate                   DateTime? @map("due_date") // 應維護日期
+  status                    String    @default("PENDING") // PENDING / DONE / ABNORMAL（OVERDUE 衍生不存）
+  rawStatus                 String?   @map("raw_status") // 維護狀態原文保真
+  maintainerRaw             String?   @map("maintainer_raw") // 維護人員原值（姓名/email/暱稱）
+  maintainerPersonnelId     Int?      @map("maintainer_personnel_id")
+  maintainerEmployeeId      Int?      @map("maintainer_employee_id") // scalar，不強制關聯
+  completedDate             DateTime? @map("completed_date") // 維護完成日期
+  inventoryResult           String?   @map("inventory_result") // 盤點結果
+  assetCondition            String?   @map("asset_condition") // 財產狀態
+  maintenanceItem           String?   @map("maintenance_item") // 維護項目
+  otherNote                 String?   @map("other_note") // 其他維護說明
+  conditionAssessmentStatus String?   @map("condition_assessment_status") // NO_ABNORMALITY / ABNORMAL
+  normalConditionItems      String?   @map("normal_condition_items") // JSON array
+  abnormalConditionItems    String?   @map("abnormal_condition_items") // JSON array
+  abnormalDescription       String?   @map("abnormal_description")
+  photoPath                 String?   @map("photo_path") // 維護照片
+  signaturePath             String?   @map("signature_path") // 維護人簽章
+  auditStatus               String?   @map("audit_status") // 稽核狀態（待主管稽核…）
+  rejectReason              String?   @map("reject_reason") // 不通過原因
+  supervisorName            String?   @map("supervisor_name") // 主管稽核人
+  supervisorAuditDate       DateTime? @map("supervisor_audit_date") // 主管稽核日期
+  supervisorSignaturePath   String?   @map("supervisor_signature_path") // 主管簽章
+  note                      String? // 備註
+  notified                  Boolean   @default(false) // 已通知
+  generatedByCron           Boolean   @default(false) @map("generated_by_cron")
+  createdAt                 DateTime  @default(now()) @map("created_at")
+  updatedAt                 DateTime  @updatedAt @map("updated_at")
+
+  site                PropertySite                  @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  asset               PropertyAsset                 @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  maintainerPersonnel PropertyPersonnel?            @relation(fields: [maintainerPersonnelId], references: [id])
+  attachments         MaintenanceRecordAttachment[]
+
+  @@index([siteId, status])
+  @@index([status, dueDate])
+  @@index([assetId])
+  @@index([auditStatus])
+  @@map("maintenance_records")
+}
+
+/// 維護評量附件（異常照片/佐證文件）
+model MaintenanceRecordAttachment {
+  id                  Int      @id @default(autoincrement())
+  maintenanceRecordId Int      @map("maintenance_record_id")
+  originalName        String   @map("original_name")
+  storedName          String   @map("stored_name")
+  filePath            String   @map("file_path")
+  fileSize            Int      @map("file_size")
+  mimeType            String   @map("mime_type")
+  uploadedByUserId    Int?     @map("uploaded_by_user_id")
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  maintenanceRecord MaintenanceRecord @relation(fields: [maintenanceRecordId], references: [id], onDelete: Cascade)
+
+  @@index([maintenanceRecordId])
+  @@map("maintenance_record_attachments")
+}
+
+/// 稽核審批
+model AuditApproval {
+  id                      Int       @id @default(autoincrement())
+  recordId                String    @map("record_id") // 紀錄ID
+  assetCode               String    @map("asset_code")
+  submittedAt             DateTime? @map("submitted_at") // 提交時間
+  auditStatus             String    @default("PENDING") @map("audit_status") // PENDING / APPROVED / REJECTED
+  supervisorName          String?   @map("supervisor_name")
+  supervisorUserId        Int?      @map("supervisor_user_id")
+  supervisorAuditDate     DateTime? @map("supervisor_audit_date")
+  supervisorSignaturePath String?   @map("supervisor_signature_path")
+  note                    String?
+  createdAt               DateTime  @default(now()) @map("created_at")
+  updatedAt               DateTime  @updatedAt @map("updated_at")
+
+  @@index([recordId])
+  @@index([auditStatus])
+  @@map("audit_approvals")
+}
+
+/// 通知去重紀錄
+model PropertyMaintenanceReminderLog {
+  id           Int      @id @default(autoincrement())
+  recordId     Int      @map("record_id") // MaintenanceRecord.id（scalar）
+  reminderType String   @map("reminder_type") // DAILY_REMINDER / THURSDAY_DIGEST / SUBMIT_AUDIT / SYSTEM_ERROR
+  sentDate     DateTime @default(now()) @map("sent_date")
+  dedupeKey    String   @unique @map("dedupe_key")
+  channel      String
+
+  @@index([recordId])
+  @@index([sentDate])
+  @@map("property_maintenance_reminder_logs")
+}
+
+/// 修改申請（模型 P1 建表、流程 P3）
+model AssetModificationRequest {
+  id              Int      @id @default(autoincrement())
+  requestCode     String   @unique @map("request_code") // 申請ID
+  assetId         Int      @map("asset_id")
+  assetCode       String   @map("asset_code")
+  field           String // 修改欄位
+  originalValue   String?  @map("original_value") // 原始值
+  proposedValue   String?  @map("proposed_value") // 建議修改為
+  reason          String? // 修改原因
+  requesterUserId Int?     @map("requester_user_id")
+  requesterName   String?  @map("requester_name") // 申請人
+  requestedAt     DateTime @default(now()) @map("requested_at")
+  reviewStatus    String   @default("PENDING") @map("review_status") // 審核狀態
+  reviewerUserId  Int?     @map("reviewer_user_id")
+  reviewNote      String?  @map("review_note")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  asset PropertyAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@index([assetId])
+  @@index([reviewStatus])
+  @@map("asset_modification_requests")
 }

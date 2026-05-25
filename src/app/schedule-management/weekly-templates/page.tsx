@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { 
   Calendar, 
   CalendarDays, 
@@ -17,12 +17,22 @@ import {
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import Link from 'next/link';
+import {
+  buildDefaultShiftDTOs,
+  getShiftColorClass,
+  getShiftTemplate,
+  type ShiftDefinitionDTO,
+} from '@/lib/shift-definition-utils';
 
 interface DaySchedule {
   shiftType: string;
   startTime: string;
   endTime: string;
   breakTime: number;
+  workHours: number;
+  specialLeaveHours: number;
+  compLeaveHours: number;
+  overtimeHours: number;
 }
 
 interface WeeklyTemplate {
@@ -68,18 +78,6 @@ const SHIFT_TYPE_LABELS = {
   TD: 'TD (天災假)'
 };
 
-const SHIFT_TYPE_COLORS = {
-  A: 'bg-blue-100 text-blue-800 border-blue-200',
-  B: 'bg-green-100 text-green-800 border-green-200',
-  C: 'bg-purple-100 text-purple-800 border-purple-200',
-  NH: 'bg-red-100 text-red-800 border-red-200',
-  RD: 'bg-gray-100 text-gray-800 border-gray-200',
-  rd: 'bg-gray-50 text-gray-600 border-gray-100',
-  FDL: 'bg-yellow-100 text-yellow-800 border-yellow-200',
-  OFF: 'bg-orange-100 text-orange-800 border-orange-200',
-  TD: 'bg-cyan-100 text-cyan-800 border-cyan-200'
-};
-
 // 顯示用的短標籤（在週模版列表中使用）
 const SHIFT_TYPE_SHORT_LABELS: Record<string, string> = {
   A: 'A',
@@ -111,22 +109,80 @@ export default function WeeklyTemplatesPage() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [editingTemplate, setEditingTemplate] = useState<WeeklyTemplate | null>(null);
+  const [shiftDefinitions, setShiftDefinitions] = useState<ShiftDefinitionDTO[]>([]);
+  const [shiftDefinitionsLoaded, setShiftDefinitionsLoaded] = useState(false);
+  const shiftDisplayDefinitions = useMemo(
+    () => shiftDefinitionsLoaded ? shiftDefinitions : buildDefaultShiftDTOs(),
+    [shiftDefinitions, shiftDefinitionsLoaded]
+  );
+  const shiftOptions = useMemo(
+    () => shiftDisplayDefinitions.filter((shift) => shift.isActive),
+    [shiftDisplayDefinitions]
+  );
+  const getShiftDefinitionByCode = (code: string) => shiftDisplayDefinitions.find((shift) => shift.code === code);
+  const isShiftRequiresTime = (code: string) => getShiftDefinitionByCode(code)?.requiresTime ?? !['RD', 'rd', 'FDL', 'OFF', 'NH', 'TD'].includes(code);
+  const getShiftShortLabel = (code: string) => getShiftDefinitionByCode(code)?.code ?? SHIFT_TYPE_SHORT_LABELS[code] ?? code;
+  const getShiftColor = (code: string) => getShiftColorClass(code, shiftDisplayDefinitions);
+  const getSelectableShiftOptions = (currentCode?: string) => {
+    if (!currentCode || shiftOptions.some((shift) => shift.code === currentCode)) {
+      return shiftOptions;
+    }
+
+    const currentShift = getShiftDefinitionByCode(currentCode);
+    if (currentShift) {
+      return [...shiftOptions, currentShift];
+    }
+
+    return [
+      ...shiftOptions,
+      {
+        id: -999999,
+        code: currentCode,
+        name: currentCode,
+        startTime: '',
+        endTime: '',
+        breakTime: 0,
+        workHours: 0,
+        specialLeaveHours: 0,
+        compLeaveHours: 0,
+        overtimeHours: 0,
+        requiresTime: isShiftRequiresTime(currentCode),
+        isActive: false,
+        sortOrder: 999999,
+        description: null,
+        label: currentCode,
+      },
+    ];
+  };
+  const getShiftTemplateForCode = (code: string) => {
+    const shift = getShiftDefinitionByCode(code);
+    if (shift) {
+      return getShiftTemplate(code, shiftOptions);
+    }
+
+    const legacyTemplate = SHIFT_TYPE_LABELS[code as keyof typeof SHIFT_TYPE_LABELS]
+      ? { startTime: code === 'A' ? '07:30' : code === 'B' ? '08:00' : code === 'C' ? '08:30' : '', endTime: code === 'A' ? '16:30' : code === 'B' ? '17:00' : code === 'C' ? '17:30' : '', breakTime: ['A', 'B', 'C'].includes(code) ? 60 : 0, workHours: ['A', 'B', 'C'].includes(code) ? 8 : 0, specialLeaveHours: code === 'FDL' ? 8 : 0, compLeaveHours: 0, overtimeHours: 0 }
+      : { startTime: '', endTime: '', breakTime: 0, workHours: 0, specialLeaveHours: 0, compLeaveHours: 0, overtimeHours: 0 };
+
+    return { ...legacyTemplate, requiresTime: isShiftRequiresTime(code) };
+  };
 
   // 新模版表單狀態
   const [newTemplate, setNewTemplate] = useState({
     name: '',
     description: '',
-    monday: { shiftType: 'A', startTime: '07:30', endTime: '16:30', breakTime: 60 },
-    tuesday: { shiftType: 'A', startTime: '07:30', endTime: '16:30', breakTime: 60 },
-    wednesday: { shiftType: 'A', startTime: '07:30', endTime: '16:30', breakTime: 60 },
-    thursday: { shiftType: 'A', startTime: '07:30', endTime: '16:30', breakTime: 60 },
-    friday: { shiftType: 'A', startTime: '07:30', endTime: '16:30', breakTime: 60 },
-    saturday: { shiftType: 'RD', startTime: '', endTime: '', breakTime: 0 },
-    sunday: { shiftType: 'RD', startTime: '', endTime: '', breakTime: 0 }
+    monday: { shiftType: 'A', startTime: '07:30', endTime: '16:30', breakTime: 60, workHours: 8, specialLeaveHours: 0, compLeaveHours: 0, overtimeHours: 0 },
+    tuesday: { shiftType: 'A', startTime: '07:30', endTime: '16:30', breakTime: 60, workHours: 8, specialLeaveHours: 0, compLeaveHours: 0, overtimeHours: 0 },
+    wednesday: { shiftType: 'A', startTime: '07:30', endTime: '16:30', breakTime: 60, workHours: 8, specialLeaveHours: 0, compLeaveHours: 0, overtimeHours: 0 },
+    thursday: { shiftType: 'A', startTime: '07:30', endTime: '16:30', breakTime: 60, workHours: 8, specialLeaveHours: 0, compLeaveHours: 0, overtimeHours: 0 },
+    friday: { shiftType: 'A', startTime: '07:30', endTime: '16:30', breakTime: 60, workHours: 8, specialLeaveHours: 0, compLeaveHours: 0, overtimeHours: 0 },
+    saturday: { shiftType: 'RD', startTime: '', endTime: '', breakTime: 0, workHours: 0, specialLeaveHours: 0, compLeaveHours: 0, overtimeHours: 0 },
+    sunday: { shiftType: 'RD', startTime: '', endTime: '', breakTime: 0, workHours: 0, specialLeaveHours: 0, compLeaveHours: 0, overtimeHours: 0 }
   });
 
   useEffect(() => {
     fetchUser();
+    fetchShiftDefinitions();
     fetchTemplates();
   }, []);
 
@@ -157,6 +213,22 @@ export default function WeeklyTemplatesPage() {
       console.error('獲取週班模版失敗:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchShiftDefinitions = async () => {
+    try {
+      const response = await fetch('/api/shift-definitions?includeInactive=true', {
+        credentials: 'include'
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setShiftDefinitions(data.shifts || []);
+      }
+    } catch (error) {
+      console.error('獲取班別設定失敗:', error);
+    } finally {
+      setShiftDefinitionsLoaded(true);
     }
   };
 
@@ -227,42 +299,80 @@ export default function WeeklyTemplatesPage() {
   };
 
   const handleDuplicateTemplate = (template: WeeklyTemplate) => {
+    if (shiftOptions.length === 0) {
+      alert('目前沒有啟用中的班別，請先至系統設定啟用或新增班別');
+      return;
+    }
+    const defaultShiftCode = shiftOptions[0].code;
+    const defaultShiftTemplate = getShiftTemplateForCode(defaultShiftCode);
+    const normalizeDayScheduleForCreate = (daySchedule: DaySchedule) => (
+      shiftOptions.some((shift) => shift.code === daySchedule.shiftType)
+        ? { ...daySchedule }
+        : {
+            shiftType: defaultShiftCode,
+            startTime: defaultShiftTemplate.startTime,
+            endTime: defaultShiftTemplate.endTime,
+            breakTime: defaultShiftTemplate.breakTime,
+            workHours: defaultShiftTemplate.workHours,
+            specialLeaveHours: defaultShiftTemplate.specialLeaveHours,
+            compLeaveHours: defaultShiftTemplate.compLeaveHours,
+            overtimeHours: defaultShiftTemplate.overtimeHours,
+          }
+    );
+
     setNewTemplate({
       name: `${template.name} (複製)`,
       description: template.description,
-      monday: { ...template.monday },
-      tuesday: { ...template.tuesday },
-      wednesday: { ...template.wednesday },
-      thursday: { ...template.thursday },
-      friday: { ...template.friday },
-      saturday: { ...template.saturday },
-      sunday: { ...template.sunday }
+      monday: normalizeDayScheduleForCreate(template.monday),
+      tuesday: normalizeDayScheduleForCreate(template.tuesday),
+      wednesday: normalizeDayScheduleForCreate(template.wednesday),
+      thursday: normalizeDayScheduleForCreate(template.thursday),
+      friday: normalizeDayScheduleForCreate(template.friday),
+      saturday: normalizeDayScheduleForCreate(template.saturday),
+      sunday: normalizeDayScheduleForCreate(template.sunday)
     });
     setShowCreateModal(true);
   };
 
   const resetForm = () => {
+    const defaultShiftCode = shiftOptions[0]?.code || 'A';
+    const defaultShiftTemplate = getShiftTemplateForCode(defaultShiftCode);
+    const restDayCode = shiftOptions.find((shift) => !shift.requiresTime)?.code || 'RD';
+    const restDayTemplate = getShiftTemplateForCode(restDayCode);
     setNewTemplate({
       name: '',
       description: '',
-      monday: { shiftType: 'A', startTime: '07:30', endTime: '16:30', breakTime: 60 },
-      tuesday: { shiftType: 'A', startTime: '07:30', endTime: '16:30', breakTime: 60 },
-      wednesday: { shiftType: 'A', startTime: '07:30', endTime: '16:30', breakTime: 60 },
-      thursday: { shiftType: 'A', startTime: '07:30', endTime: '16:30', breakTime: 60 },
-      friday: { shiftType: 'A', startTime: '07:30', endTime: '16:30', breakTime: 60 },
-      saturday: { shiftType: 'RD', startTime: '', endTime: '', breakTime: 0 },
-      sunday: { shiftType: 'RD', startTime: '', endTime: '', breakTime: 0 }
+      monday: { shiftType: defaultShiftCode, startTime: defaultShiftTemplate.startTime, endTime: defaultShiftTemplate.endTime, breakTime: defaultShiftTemplate.breakTime, workHours: defaultShiftTemplate.workHours, specialLeaveHours: defaultShiftTemplate.specialLeaveHours, compLeaveHours: defaultShiftTemplate.compLeaveHours, overtimeHours: defaultShiftTemplate.overtimeHours },
+      tuesday: { shiftType: defaultShiftCode, startTime: defaultShiftTemplate.startTime, endTime: defaultShiftTemplate.endTime, breakTime: defaultShiftTemplate.breakTime, workHours: defaultShiftTemplate.workHours, specialLeaveHours: defaultShiftTemplate.specialLeaveHours, compLeaveHours: defaultShiftTemplate.compLeaveHours, overtimeHours: defaultShiftTemplate.overtimeHours },
+      wednesday: { shiftType: defaultShiftCode, startTime: defaultShiftTemplate.startTime, endTime: defaultShiftTemplate.endTime, breakTime: defaultShiftTemplate.breakTime, workHours: defaultShiftTemplate.workHours, specialLeaveHours: defaultShiftTemplate.specialLeaveHours, compLeaveHours: defaultShiftTemplate.compLeaveHours, overtimeHours: defaultShiftTemplate.overtimeHours },
+      thursday: { shiftType: defaultShiftCode, startTime: defaultShiftTemplate.startTime, endTime: defaultShiftTemplate.endTime, breakTime: defaultShiftTemplate.breakTime, workHours: defaultShiftTemplate.workHours, specialLeaveHours: defaultShiftTemplate.specialLeaveHours, compLeaveHours: defaultShiftTemplate.compLeaveHours, overtimeHours: defaultShiftTemplate.overtimeHours },
+      friday: { shiftType: defaultShiftCode, startTime: defaultShiftTemplate.startTime, endTime: defaultShiftTemplate.endTime, breakTime: defaultShiftTemplate.breakTime, workHours: defaultShiftTemplate.workHours, specialLeaveHours: defaultShiftTemplate.specialLeaveHours, compLeaveHours: defaultShiftTemplate.compLeaveHours, overtimeHours: defaultShiftTemplate.overtimeHours },
+      saturday: { shiftType: restDayCode, startTime: restDayTemplate.startTime, endTime: restDayTemplate.endTime, breakTime: restDayTemplate.breakTime, workHours: restDayTemplate.workHours, specialLeaveHours: restDayTemplate.specialLeaveHours, compLeaveHours: restDayTemplate.compLeaveHours, overtimeHours: restDayTemplate.overtimeHours },
+      sunday: { shiftType: restDayCode, startTime: restDayTemplate.startTime, endTime: restDayTemplate.endTime, breakTime: restDayTemplate.breakTime, workHours: restDayTemplate.workHours, specialLeaveHours: restDayTemplate.specialLeaveHours, compLeaveHours: restDayTemplate.compLeaveHours, overtimeHours: restDayTemplate.overtimeHours }
     });
   };
 
   const updateDaySchedule = (day: string, field: string, value: string | number, isEditing: boolean = false) => {
+    const shiftTemplate = field === 'shiftType' && typeof value === 'string'
+      ? getShiftTemplateForCode(value)
+      : null;
+
     if (isEditing && editingTemplate) {
       const currentDay = editingTemplate[day as keyof WeeklyTemplate] as DaySchedule;
       setEditingTemplate({
         ...editingTemplate,
         [day]: {
           ...currentDay,
-          [field]: value
+          [field]: value,
+          ...(shiftTemplate && {
+            startTime: shiftTemplate.startTime,
+            endTime: shiftTemplate.endTime,
+            breakTime: shiftTemplate.breakTime,
+            workHours: shiftTemplate.workHours,
+            specialLeaveHours: shiftTemplate.specialLeaveHours,
+            compLeaveHours: shiftTemplate.compLeaveHours,
+            overtimeHours: shiftTemplate.overtimeHours,
+          })
         }
       });
     } else {
@@ -271,7 +381,16 @@ export default function WeeklyTemplatesPage() {
         ...newTemplate,
         [day]: {
           ...currentDay,
-          [field]: value
+          [field]: value,
+          ...(shiftTemplate && {
+            startTime: shiftTemplate.startTime,
+            endTime: shiftTemplate.endTime,
+            breakTime: shiftTemplate.breakTime,
+            workHours: shiftTemplate.workHours,
+            specialLeaveHours: shiftTemplate.specialLeaveHours,
+            compLeaveHours: shiftTemplate.compLeaveHours,
+            overtimeHours: shiftTemplate.overtimeHours,
+          })
         }
       });
     }
@@ -330,8 +449,16 @@ export default function WeeklyTemplatesPage() {
               </div>
             </div>
             <button
-              onClick={() => setShowCreateModal(true)}
-              className="bg-indigo-600 text-white px-6 py-3 rounded-lg hover:bg-indigo-700 transition-colors flex items-center"
+              onClick={() => {
+                if (shiftOptions.length === 0) {
+                  alert('目前沒有啟用中的班別，請先至系統設定啟用或新增班別');
+                  return;
+                }
+                resetForm();
+                setShowCreateModal(true);
+              }}
+              disabled={shiftDefinitionsLoaded && shiftOptions.length === 0}
+              className="bg-indigo-600 text-white px-6 py-3 rounded-lg hover:bg-indigo-700 transition-colors flex items-center disabled:bg-gray-400 disabled:cursor-not-allowed"
             >
               <Plus className="w-5 h-5 mr-2" />
               建立新模版
@@ -448,8 +575,8 @@ export default function WeeklyTemplatesPage() {
                           {WEEKDAY_LABELS[day as keyof typeof WEEKDAY_LABELS]}
                         </span>
                         <div className="flex-1 ml-4">
-                          <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${SHIFT_TYPE_COLORS[daySchedule.shiftType as keyof typeof SHIFT_TYPE_COLORS]}`}>
-                            {SHIFT_TYPE_SHORT_LABELS[daySchedule.shiftType] || daySchedule.shiftType}
+                          <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full border ${getShiftColor(daySchedule.shiftType)}`}>
+                            {getShiftShortLabel(daySchedule.shiftType)}
                           </span>
                           {daySchedule.startTime && daySchedule.endTime && (
                             <span className="ml-2 text-sm text-gray-600">
@@ -461,6 +588,12 @@ export default function WeeklyTemplatesPage() {
                               )}
                             </span>
                           )}
+                          <div className="mt-1 text-xs text-gray-500">
+                            工時 {daySchedule.workHours || 0}h
+                            {daySchedule.specialLeaveHours > 0 && ` / 特休 ${daySchedule.specialLeaveHours}h`}
+                            {daySchedule.compLeaveHours > 0 && ` / 補休 ${daySchedule.compLeaveHours}h`}
+                            {daySchedule.overtimeHours > 0 && ` / 加班 ${daySchedule.overtimeHours}h`}
+                          </div>
                         </div>
                       </div>
                     );
@@ -475,8 +608,16 @@ export default function WeeklyTemplatesPage() {
               <CalendarDays className="w-12 h-12 text-gray-400 mx-auto mb-4" />
               <p className="text-gray-500">尚無週班模版</p>
               <button
-                onClick={() => setShowCreateModal(true)}
-                className="mt-4 bg-indigo-600 text-white px-6 py-2 rounded-lg hover:bg-indigo-700 transition-colors"
+                onClick={() => {
+                  if (shiftOptions.length === 0) {
+                    alert('目前沒有啟用中的班別，請先至系統設定啟用或新增班別');
+                    return;
+                  }
+                  resetForm();
+                  setShowCreateModal(true);
+                }}
+                disabled={shiftDefinitionsLoaded && shiftOptions.length === 0}
+                className="mt-4 bg-indigo-600 text-white px-6 py-2 rounded-lg hover:bg-indigo-700 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
               >
                 建立第一個模版
               </button>
@@ -544,8 +685,8 @@ export default function WeeklyTemplatesPage() {
                             onChange={(e) => updateDaySchedule(day, 'shiftType', e.target.value)}
                             className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-900 bg-white"
                           >
-                            {Object.entries(SHIFT_TYPE_LABELS).map(([value, label]) => (
-                              <option key={value} value={value} className="text-gray-900 bg-white">{label}</option>
+                            {shiftOptions.map((shift) => (
+                              <option key={shift.code} value={shift.code} className="text-gray-900 bg-white">{shift.label}</option>
                             ))}
                           </select>
                         </div>
@@ -555,7 +696,7 @@ export default function WeeklyTemplatesPage() {
                             value={dayData.startTime}
                             onChange={(e) => updateDaySchedule(day, 'startTime', e.target.value)}
                             className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-900 bg-white disabled:text-gray-500 disabled:bg-gray-100"
-                            disabled={['RD', 'rd', 'FDL', 'OFF', 'NH', 'TD'].includes(dayData.shiftType)}
+                            disabled={!isShiftRequiresTime(dayData.shiftType)}
                           />
                         </div>
                         <div>
@@ -564,7 +705,7 @@ export default function WeeklyTemplatesPage() {
                             value={dayData.endTime}
                             onChange={(e) => updateDaySchedule(day, 'endTime', e.target.value)}
                             className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-900 bg-white disabled:text-gray-500 disabled:bg-gray-100"
-                            disabled={['RD', 'rd', 'FDL', 'OFF', 'NH', 'TD'].includes(dayData.shiftType)}
+                            disabled={!isShiftRequiresTime(dayData.shiftType)}
                           />
                         </div>
                         <div>
@@ -576,11 +717,61 @@ export default function WeeklyTemplatesPage() {
                             min="0"
                             max="480"
                             placeholder="分鐘"
-                            disabled={['RD', 'rd', 'FDL', 'OFF', 'NH', 'TD'].includes(dayData.shiftType)}
+                            disabled={!isShiftRequiresTime(dayData.shiftType)}
                           />
                         </div>
                         <div className="text-xs text-gray-500">
                           休息時間(分)
+                        </div>
+                        <div className="col-span-5 grid grid-cols-2 md:grid-cols-4 gap-3">
+                          <div>
+                            <label className="block text-xs font-medium text-gray-600 mb-1">工時</label>
+                            <input
+                              type="number"
+                              value={dayData.workHours}
+                              onChange={(e) => updateDaySchedule(day, 'workHours', Number(e.target.value) || 0)}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-900 bg-white"
+                              min="0"
+                              max="24"
+                              step="0.25"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-gray-600 mb-1">特休</label>
+                            <input
+                              type="number"
+                              value={dayData.specialLeaveHours}
+                              onChange={(e) => updateDaySchedule(day, 'specialLeaveHours', Number(e.target.value) || 0)}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-900 bg-white"
+                              min="0"
+                              max="24"
+                              step="0.25"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-gray-600 mb-1">補休</label>
+                            <input
+                              type="number"
+                              value={dayData.compLeaveHours}
+                              onChange={(e) => updateDaySchedule(day, 'compLeaveHours', Number(e.target.value) || 0)}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-900 bg-white"
+                              min="0"
+                              max="24"
+                              step="0.25"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-gray-600 mb-1">加班</label>
+                            <input
+                              type="number"
+                              value={dayData.overtimeHours}
+                              onChange={(e) => updateDaySchedule(day, 'overtimeHours', Number(e.target.value) || 0)}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-900 bg-white"
+                              min="0"
+                              max="24"
+                              step="0.25"
+                            />
+                          </div>
                         </div>
                       </div>
                     );
@@ -669,8 +860,10 @@ export default function WeeklyTemplatesPage() {
                             onChange={(e) => updateDaySchedule(day, 'shiftType', e.target.value, true)}
                             className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-900 bg-white"
                           >
-                            {Object.entries(SHIFT_TYPE_LABELS).map(([value, label]) => (
-                              <option key={value} value={value} className="text-gray-900 bg-white">{label}</option>
+                            {getSelectableShiftOptions(dayData.shiftType).map((shift) => (
+                              <option key={shift.code} value={shift.code} className="text-gray-900 bg-white">
+                                {shift.isActive ? shift.label : `${shift.label}（已停用）`}
+                              </option>
                             ))}
                           </select>
                         </div>
@@ -680,7 +873,7 @@ export default function WeeklyTemplatesPage() {
                             value={dayData.startTime}
                             onChange={(e) => updateDaySchedule(day, 'startTime', e.target.value, true)}
                             className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-900 bg-white disabled:text-gray-500 disabled:bg-gray-100"
-                            disabled={['RD', 'rd', 'FDL', 'OFF'].includes(dayData.shiftType)}
+                            disabled={!isShiftRequiresTime(dayData.shiftType)}
                           />
                         </div>
                         <div>
@@ -689,7 +882,7 @@ export default function WeeklyTemplatesPage() {
                             value={dayData.endTime}
                             onChange={(e) => updateDaySchedule(day, 'endTime', e.target.value, true)}
                             className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-900 bg-white disabled:text-gray-500 disabled:bg-gray-100"
-                            disabled={['RD', 'rd', 'FDL', 'OFF'].includes(dayData.shiftType)}
+                            disabled={!isShiftRequiresTime(dayData.shiftType)}
                           />
                         </div>
                         <div>
@@ -700,11 +893,61 @@ export default function WeeklyTemplatesPage() {
                             className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-900 bg-white disabled:text-gray-500 disabled:bg-gray-100"
                             min="0"
                             max="480"
-                            disabled={['RD', 'rd', 'FDL', 'OFF'].includes(dayData.shiftType)}
+                            disabled={!isShiftRequiresTime(dayData.shiftType)}
                           />
                         </div>
                         <div className="text-xs text-gray-500">
                           休息時間(分)
+                        </div>
+                        <div className="col-span-5 grid grid-cols-2 md:grid-cols-4 gap-3">
+                          <div>
+                            <label className="block text-xs font-medium text-gray-600 mb-1">工時</label>
+                            <input
+                              type="number"
+                              value={dayData.workHours}
+                              onChange={(e) => updateDaySchedule(day, 'workHours', Number(e.target.value) || 0, true)}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-900 bg-white"
+                              min="0"
+                              max="24"
+                              step="0.25"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-gray-600 mb-1">特休</label>
+                            <input
+                              type="number"
+                              value={dayData.specialLeaveHours}
+                              onChange={(e) => updateDaySchedule(day, 'specialLeaveHours', Number(e.target.value) || 0, true)}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-900 bg-white"
+                              min="0"
+                              max="24"
+                              step="0.25"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-gray-600 mb-1">補休</label>
+                            <input
+                              type="number"
+                              value={dayData.compLeaveHours}
+                              onChange={(e) => updateDaySchedule(day, 'compLeaveHours', Number(e.target.value) || 0, true)}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-900 bg-white"
+                              min="0"
+                              max="24"
+                              step="0.25"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-gray-600 mb-1">加班</label>
+                            <input
+                              type="number"
+                              value={dayData.overtimeHours}
+                              onChange={(e) => updateDaySchedule(day, 'overtimeHours', Number(e.target.value) || 0, true)}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-900 bg-white"
+                              min="0"
+                              max="24"
+                              step="0.25"
+                            />
+                          </div>
                         </div>
                       </div>
                     );

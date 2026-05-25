@@ -100,19 +100,22 @@ describe('schedule confirmation csrf guard', () => {
   });
 
   it('returns reminder and clock blocking flags with my-status payload', async () => {
+    const nextYear = new Date().getFullYear() + 1;
+    const yearMonth = `${nextYear}-04`;
+
     mockPrisma.scheduleMonthlyRelease.findFirst.mockResolvedValue({
       id: 9,
-      yearMonth: '2026-04',
-      publishedAt: new Date('2026-04-01T00:00:00.000Z'),
-      deadline: new Date('2026-04-30T23:59:59.000Z'),
+      yearMonth,
+      publishedAt: new Date(`${yearMonth}-01T00:00:00.000Z`),
+      deadline: new Date(`${yearMonth}-30T23:59:59.000Z`),
       version: 2,
-      lastModified: new Date('2026-04-01T00:00:00.000Z'),
+      lastModified: new Date(`${yearMonth}-01T00:00:00.000Z`),
       publishedBy: { name: '排班主管' },
       confirmations: [],
     } as never);
     mockPrisma.schedule.findMany.mockResolvedValue([] as never);
 
-    const request = new NextRequest('http://localhost/api/schedule-confirmation?type=my-status&yearMonth=2026-04', {
+    const request = new NextRequest(`http://localhost/api/schedule-confirmation?type=my-status&yearMonth=${yearMonth}`, {
       headers: {
         cookie: 'token=shared-session-token',
       },

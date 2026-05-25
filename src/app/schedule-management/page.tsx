@@ -1,7 +1,7 @@
 
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { 
   Calendar, 
   CalendarDays, 
@@ -16,15 +16,26 @@ import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import QuickCopySchedule from '@/components/QuickCopySchedule';
 import { useLocalToast, SimpleToast } from '@/components/Toast';
+import {
+  buildDefaultShiftDTOs,
+  formatHourLabel,
+  getShiftColorClass,
+  getShiftTemplate,
+  type ShiftDefinitionDTO,
+} from '@/lib/shift-definition-utils';
 
 interface Schedule {
   id: number;
   employeeId: number;
   workDate: string;
-  shiftType: 'A' | 'B' | 'C' | 'NH' | 'RD' | 'rd' | 'FDL' | 'OFF' | 'TD';
+  shiftType: string;
   startTime: string;
   endTime: string;
   breakTime?: number;
+  workHours?: number;
+  specialLeaveHours?: number;
+  compLeaveHours?: number;
+  overtimeHours?: number;
   createdAt: string;
   updatedAt: string;
   employee: {
@@ -44,10 +55,14 @@ interface ScheduleResponse {
   department?: string;
   workDate?: string;
   date?: string;
-  shiftType: 'A' | 'B' | 'C' | 'NH' | 'RD' | 'rd' | 'FDL' | 'OFF' | 'TD';
+  shiftType: string;
   startTime: string;
   endTime: string;
   breakTime?: number;
+  workHours?: number;
+  specialLeaveHours?: number;
+  compLeaveHours?: number;
+  overtimeHours?: number;
   createdAt?: string;
   updatedAt?: string;
   employee?: {
@@ -79,19 +94,23 @@ interface DaySchedule {
   startTime: string;
   endTime: string;
   breakTime: number;
+  workHours: number;
+  specialLeaveHours: number;
+  compLeaveHours: number;
+  overtimeHours: number;
 }
 
 interface WeeklyTemplate {
   id?: number;
   name: string;
   description: string;
-  monday: { shiftType: string; startTime: string; endTime: string; breakTime: number; };
-  tuesday: { shiftType: string; startTime: string; endTime: string; breakTime: number; };
-  wednesday: { shiftType: string; startTime: string; endTime: string; breakTime: number; };
-  thursday: { shiftType: string; startTime: string; endTime: string; breakTime: number; };
-  friday: { shiftType: string; startTime: string; endTime: string; breakTime: number; };
-  saturday: { shiftType: string; startTime: string; endTime: string; breakTime: number; };
-  sunday: { shiftType: string; startTime: string; endTime: string; breakTime: number; };
+  monday: DaySchedule;
+  tuesday: DaySchedule;
+  wednesday: DaySchedule;
+  thursday: DaySchedule;
+  friday: DaySchedule;
+  saturday: DaySchedule;
+  sunday: DaySchedule;
 }
 
 interface User {
@@ -128,28 +147,16 @@ const SHIFT_TYPE_LABELS = {
   TD: 'TD (天災假)'
 };
 
-const SHIFT_TYPE_COLORS = {
-  A: 'bg-blue-100 text-blue-800 border-blue-200',
-  B: 'bg-green-100 text-green-800 border-green-200',
-  C: 'bg-purple-100 text-purple-800 border-purple-200',
-  NH: 'bg-red-100 text-red-800 border-red-200',
-  RD: 'bg-gray-100 text-gray-800 border-gray-200',
-  rd: 'bg-gray-50 text-gray-600 border-gray-100',
-  FDL: 'bg-yellow-100 text-yellow-800 border-yellow-200',
-  OFF: 'bg-orange-100 text-orange-800 border-orange-200',
-  TD: 'bg-cyan-100 text-cyan-800 border-cyan-200'
-};
-
 const SHIFT_TEMPLATES = {
-  A: { startTime: '07:30', endTime: '16:30', breakTime: 60 },
-  B: { startTime: '08:00', endTime: '17:00', breakTime: 60 },
-  C: { startTime: '08:30', endTime: '17:30', breakTime: 60 },
-  NH: { startTime: '', endTime: '', breakTime: 0 },
-  RD: { startTime: '', endTime: '', breakTime: 0 },
-  rd: { startTime: '', endTime: '', breakTime: 0 },
-  FDL: { startTime: '', endTime: '', breakTime: 0 },
-  OFF: { startTime: '', endTime: '', breakTime: 0 },
-  TD: { startTime: '', endTime: '', breakTime: 0 }
+  A: { startTime: '07:30', endTime: '16:30', breakTime: 60, workHours: 8, specialLeaveHours: 0, compLeaveHours: 0, overtimeHours: 0 },
+  B: { startTime: '08:00', endTime: '17:00', breakTime: 60, workHours: 8, specialLeaveHours: 0, compLeaveHours: 0, overtimeHours: 0 },
+  C: { startTime: '08:30', endTime: '17:30', breakTime: 60, workHours: 8, specialLeaveHours: 0, compLeaveHours: 0, overtimeHours: 0 },
+  NH: { startTime: '', endTime: '', breakTime: 0, workHours: 0, specialLeaveHours: 0, compLeaveHours: 0, overtimeHours: 0 },
+  RD: { startTime: '', endTime: '', breakTime: 0, workHours: 0, specialLeaveHours: 0, compLeaveHours: 0, overtimeHours: 0 },
+  rd: { startTime: '', endTime: '', breakTime: 0, workHours: 0, specialLeaveHours: 0, compLeaveHours: 0, overtimeHours: 0 },
+  FDL: { startTime: '', endTime: '', breakTime: 0, workHours: 0, specialLeaveHours: 8, compLeaveHours: 0, overtimeHours: 0 },
+  OFF: { startTime: '', endTime: '', breakTime: 0, workHours: 0, specialLeaveHours: 0, compLeaveHours: 8, overtimeHours: 0 },
+  TD: { startTime: '', endTime: '', breakTime: 0, workHours: 0, specialLeaveHours: 0, compLeaveHours: 0, overtimeHours: 0 }
 };
 
 const WEEKDAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
@@ -182,10 +189,14 @@ export default function ScheduleManagementPage() {
   const [newSchedule, setNewSchedule] = useState({
     employeeId: '',
     workDate: '',
-    shiftType: 'A' as 'A' | 'B' | 'C' | 'NH' | 'RD' | 'rd' | 'FDL' | 'OFF' | 'TD',
+    shiftType: 'A',
     startTime: '07:30',
     endTime: '16:30',
-    breakTime: 60
+    breakTime: 60,
+    workHours: 8,
+    specialLeaveHours: 0,
+    compLeaveHours: 0,
+    overtimeHours: 0
   });
   
   // 週模版相關狀態
@@ -205,7 +216,12 @@ export default function ScheduleManagementPage() {
   const [editScheduleForm, setEditScheduleForm] = useState({
     shiftType: 'A' as string,
     startTime: '07:30',
-    endTime: '16:30'
+    endTime: '16:30',
+    breakTime: 60,
+    workHours: 8,
+    specialLeaveHours: 0,
+    compLeaveHours: 0,
+    overtimeHours: 0
   });
   
   // Toast 通知
@@ -228,6 +244,79 @@ export default function ScheduleManagementPage() {
   
   // 國定假日狀態
   const [holidays, setHolidays] = useState<{id: number; name: string; date: string}[]>([]);
+  const [shiftDefinitions, setShiftDefinitions] = useState<ShiftDefinitionDTO[]>([]);
+  const [shiftDefinitionsLoaded, setShiftDefinitionsLoaded] = useState(false);
+
+  const shiftDisplayDefinitions = useMemo(
+    () => shiftDefinitionsLoaded ? shiftDefinitions : buildDefaultShiftDTOs(),
+    [shiftDefinitions, shiftDefinitionsLoaded]
+  );
+  const shiftOptions = useMemo(
+    () => shiftDisplayDefinitions.filter((shift) => shift.isActive),
+    [shiftDisplayDefinitions]
+  );
+  const getShiftDefinitionByCode = useCallback(
+    (code: string) => shiftDisplayDefinitions.find((shift) => shift.code === code),
+    [shiftDisplayDefinitions]
+  );
+  const getShiftLabel = useCallback((code: string) => {
+    const shift = getShiftDefinitionByCode(code);
+    return shift?.label ?? SHIFT_TYPE_LABELS[code as keyof typeof SHIFT_TYPE_LABELS] ?? code;
+  }, [getShiftDefinitionByCode]);
+  const getShiftColor = useCallback(
+    (code: string) => getShiftColorClass(code, shiftDisplayDefinitions),
+    [shiftDisplayDefinitions]
+  );
+  const isShiftRequiresTime = useCallback((code: string) => {
+    const shift = getShiftDefinitionByCode(code);
+    if (shift) {
+      return shift.requiresTime;
+    }
+
+    return !['NH', 'RD', 'rd', 'OFF', 'FDL', 'TD'].includes(code);
+  }, [getShiftDefinitionByCode]);
+  const getShiftTemplateForCode = useCallback((code: string) => {
+    const shift = getShiftDefinitionByCode(code);
+    if (shift) {
+      return getShiftTemplate(code, shiftDisplayDefinitions);
+    }
+
+    const legacyTemplate = SHIFT_TEMPLATES[code as keyof typeof SHIFT_TEMPLATES];
+    return legacyTemplate
+      ? { ...legacyTemplate, requiresTime: isShiftRequiresTime(code) }
+      : { startTime: '', endTime: '', breakTime: 0, workHours: 0, specialLeaveHours: 0, compLeaveHours: 0, overtimeHours: 0, requiresTime: true };
+  }, [getShiftDefinitionByCode, isShiftRequiresTime, shiftDisplayDefinitions]);
+  const getSelectableShiftOptions = useCallback((currentCode?: string) => {
+    if (!currentCode || shiftOptions.some((shift) => shift.code === currentCode)) {
+      return shiftOptions;
+    }
+
+    const currentShift = getShiftDefinitionByCode(currentCode);
+    if (currentShift) {
+      return [...shiftOptions, currentShift];
+    }
+
+    return [
+      ...shiftOptions,
+      {
+        id: -999999,
+        code: currentCode,
+        name: currentCode,
+        startTime: '',
+        endTime: '',
+        breakTime: 0,
+        workHours: 0,
+        specialLeaveHours: 0,
+        compLeaveHours: 0,
+        overtimeHours: 0,
+        requiresTime: isShiftRequiresTime(currentCode),
+        isActive: false,
+        sortOrder: 999999,
+        description: null,
+        label: currentCode,
+      },
+    ];
+  }, [getShiftDefinitionByCode, isShiftRequiresTime, shiftOptions]);
 
   const normalizeSchedule = useCallback((schedule: ScheduleResponse): Schedule | null => {
     const workDate = typeof schedule.workDate === 'string'
@@ -252,6 +341,10 @@ export default function ScheduleManagementPage() {
       startTime: schedule.startTime,
       endTime: schedule.endTime,
       breakTime: schedule.breakTime ?? 0,
+      workHours: schedule.workHours ?? 0,
+      specialLeaveHours: schedule.specialLeaveHours ?? 0,
+      compLeaveHours: schedule.compLeaveHours ?? 0,
+      overtimeHours: schedule.overtimeHours ?? 0,
       createdAt: schedule.createdAt ?? '',
       updatedAt: schedule.updatedAt ?? '',
       employee,
@@ -262,13 +355,13 @@ export default function ScheduleManagementPage() {
   const [newTemplate, setNewTemplate] = useState<WeeklyTemplate>({
     name: '',
     description: '',
-    monday: { shiftType: 'A', startTime: '07:30', endTime: '16:30', breakTime: 60 },
-    tuesday: { shiftType: 'A', startTime: '07:30', endTime: '16:30', breakTime: 60 },
-    wednesday: { shiftType: 'A', startTime: '07:30', endTime: '16:30', breakTime: 60 },
-    thursday: { shiftType: 'A', startTime: '07:30', endTime: '16:30', breakTime: 60 },
-    friday: { shiftType: 'A', startTime: '07:30', endTime: '16:30', breakTime: 60 },
-    saturday: { shiftType: 'RD', startTime: '', endTime: '', breakTime: 0 },
-    sunday: { shiftType: 'RD', startTime: '', endTime: '', breakTime: 0 }
+    monday: { shiftType: 'A', startTime: '07:30', endTime: '16:30', breakTime: 60, workHours: 8, specialLeaveHours: 0, compLeaveHours: 0, overtimeHours: 0 },
+    tuesday: { shiftType: 'A', startTime: '07:30', endTime: '16:30', breakTime: 60, workHours: 8, specialLeaveHours: 0, compLeaveHours: 0, overtimeHours: 0 },
+    wednesday: { shiftType: 'A', startTime: '07:30', endTime: '16:30', breakTime: 60, workHours: 8, specialLeaveHours: 0, compLeaveHours: 0, overtimeHours: 0 },
+    thursday: { shiftType: 'A', startTime: '07:30', endTime: '16:30', breakTime: 60, workHours: 8, specialLeaveHours: 0, compLeaveHours: 0, overtimeHours: 0 },
+    friday: { shiftType: 'A', startTime: '07:30', endTime: '16:30', breakTime: 60, workHours: 8, specialLeaveHours: 0, compLeaveHours: 0, overtimeHours: 0 },
+    saturday: { shiftType: 'RD', startTime: '', endTime: '', breakTime: 0, workHours: 0, specialLeaveHours: 0, compLeaveHours: 0, overtimeHours: 0 },
+    sunday: { shiftType: 'RD', startTime: '', endTime: '', breakTime: 0, workHours: 0, specialLeaveHours: 0, compLeaveHours: 0, overtimeHours: 0 }
   });
 
   const fetchMonthlySchedules = useCallback(async () => {
@@ -302,6 +395,7 @@ export default function ScheduleManagementPage() {
     fetchUser();
     fetchEmployees();
     fetchDepartments();
+    fetchShiftDefinitions();
     fetchSchedules();
     fetchWeeklyTemplates();
   }, []);
@@ -372,6 +466,22 @@ export default function ScheduleManagementPage() {
       }
     } catch (error) {
       console.error('獲取部門列表失敗:', error);
+    }
+  };
+
+  const fetchShiftDefinitions = async () => {
+    try {
+      const response = await fetch('/api/shift-definitions?includeInactive=true', {
+        credentials: 'include'
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setShiftDefinitions(data.shifts || []);
+      }
+    } catch (error) {
+      console.error('獲取班別設定失敗:', error);
+    } finally {
+      setShiftDefinitionsLoaded(true);
     }
   };
 
@@ -512,7 +622,12 @@ export default function ScheduleManagementPage() {
     setEditScheduleForm({
       shiftType: schedule.shiftType,
       startTime: schedule.startTime || '07:30',
-      endTime: schedule.endTime || '16:30'
+      endTime: schedule.endTime || '16:30',
+      breakTime: schedule.breakTime ?? 0,
+      workHours: schedule.workHours ?? 0,
+      specialLeaveHours: schedule.specialLeaveHours ?? 0,
+      compLeaveHours: schedule.compLeaveHours ?? 0,
+      overtimeHours: schedule.overtimeHours ?? 0
     });
     setShowEditScheduleModal(true);
   };
@@ -523,15 +638,19 @@ export default function ScheduleManagementPage() {
     if (!editingSchedule) return;
 
     try {
-      const noTimeShiftTypes = ['NH', 'RD', 'rd', 'OFF', 'FDL', 'TD'];
-      const requiresTime = !noTimeShiftTypes.includes(editScheduleForm.shiftType);
+      const requiresTime = isShiftRequiresTime(editScheduleForm.shiftType);
       
       const response = await fetchJSONWithCSRF(`/api/schedules/${editingSchedule.id}`, {
         method: 'PUT',
         body: {
           shiftType: editScheduleForm.shiftType,
           startTime: requiresTime ? editScheduleForm.startTime : '',
-          endTime: requiresTime ? editScheduleForm.endTime : ''
+          endTime: requiresTime ? editScheduleForm.endTime : '',
+          breakTime: requiresTime ? editScheduleForm.breakTime : 0,
+          workHours: editScheduleForm.workHours,
+          specialLeaveHours: editScheduleForm.specialLeaveHours,
+          compLeaveHours: editScheduleForm.compLeaveHours,
+          overtimeHours: editScheduleForm.overtimeHours
         }
       });
 
@@ -702,27 +821,37 @@ export default function ScheduleManagementPage() {
   };
 
   const resetScheduleForm = () => {
+    const defaultShiftCode = shiftOptions[0]?.code || 'A';
+    const defaultShiftTemplate = getShiftTemplateForCode(defaultShiftCode);
     setNewSchedule({
       employeeId: '',
       workDate: '',
-      shiftType: 'A',
-      startTime: '07:30',
-      endTime: '16:30',
-      breakTime: 60
+      shiftType: defaultShiftCode,
+      startTime: defaultShiftTemplate.startTime,
+      endTime: defaultShiftTemplate.endTime,
+      breakTime: defaultShiftTemplate.breakTime,
+      workHours: defaultShiftTemplate.workHours,
+      specialLeaveHours: defaultShiftTemplate.specialLeaveHours,
+      compLeaveHours: defaultShiftTemplate.compLeaveHours,
+      overtimeHours: defaultShiftTemplate.overtimeHours
     });
   };
 
   const resetTemplateForm = () => {
+    const defaultShiftCode = shiftOptions[0]?.code || 'A';
+    const defaultShiftTemplate = getShiftTemplateForCode(defaultShiftCode);
+    const restDayCode = shiftOptions.find((shift) => !shift.requiresTime)?.code || 'RD';
+    const restDayTemplate = getShiftTemplateForCode(restDayCode);
     setNewTemplate({
       name: '',
       description: '',
-      monday: { shiftType: 'A', startTime: '07:30', endTime: '16:30', breakTime: 60 },
-      tuesday: { shiftType: 'A', startTime: '07:30', endTime: '16:30', breakTime: 60 },
-      wednesday: { shiftType: 'A', startTime: '07:30', endTime: '16:30', breakTime: 60 },
-      thursday: { shiftType: 'A', startTime: '07:30', endTime: '16:30', breakTime: 60 },
-      friday: { shiftType: 'A', startTime: '07:30', endTime: '16:30', breakTime: 60 },
-      saturday: { shiftType: 'RD', startTime: '', endTime: '', breakTime: 0 },
-      sunday: { shiftType: 'RD', startTime: '', endTime: '', breakTime: 0 }
+      monday: { shiftType: defaultShiftCode, startTime: defaultShiftTemplate.startTime, endTime: defaultShiftTemplate.endTime, breakTime: defaultShiftTemplate.breakTime, workHours: defaultShiftTemplate.workHours, specialLeaveHours: defaultShiftTemplate.specialLeaveHours, compLeaveHours: defaultShiftTemplate.compLeaveHours, overtimeHours: defaultShiftTemplate.overtimeHours },
+      tuesday: { shiftType: defaultShiftCode, startTime: defaultShiftTemplate.startTime, endTime: defaultShiftTemplate.endTime, breakTime: defaultShiftTemplate.breakTime, workHours: defaultShiftTemplate.workHours, specialLeaveHours: defaultShiftTemplate.specialLeaveHours, compLeaveHours: defaultShiftTemplate.compLeaveHours, overtimeHours: defaultShiftTemplate.overtimeHours },
+      wednesday: { shiftType: defaultShiftCode, startTime: defaultShiftTemplate.startTime, endTime: defaultShiftTemplate.endTime, breakTime: defaultShiftTemplate.breakTime, workHours: defaultShiftTemplate.workHours, specialLeaveHours: defaultShiftTemplate.specialLeaveHours, compLeaveHours: defaultShiftTemplate.compLeaveHours, overtimeHours: defaultShiftTemplate.overtimeHours },
+      thursday: { shiftType: defaultShiftCode, startTime: defaultShiftTemplate.startTime, endTime: defaultShiftTemplate.endTime, breakTime: defaultShiftTemplate.breakTime, workHours: defaultShiftTemplate.workHours, specialLeaveHours: defaultShiftTemplate.specialLeaveHours, compLeaveHours: defaultShiftTemplate.compLeaveHours, overtimeHours: defaultShiftTemplate.overtimeHours },
+      friday: { shiftType: defaultShiftCode, startTime: defaultShiftTemplate.startTime, endTime: defaultShiftTemplate.endTime, breakTime: defaultShiftTemplate.breakTime, workHours: defaultShiftTemplate.workHours, specialLeaveHours: defaultShiftTemplate.specialLeaveHours, compLeaveHours: defaultShiftTemplate.compLeaveHours, overtimeHours: defaultShiftTemplate.overtimeHours },
+      saturday: { shiftType: restDayCode, startTime: restDayTemplate.startTime, endTime: restDayTemplate.endTime, breakTime: restDayTemplate.breakTime, workHours: restDayTemplate.workHours, specialLeaveHours: restDayTemplate.specialLeaveHours, compLeaveHours: restDayTemplate.compLeaveHours, overtimeHours: restDayTemplate.overtimeHours },
+      sunday: { shiftType: restDayCode, startTime: restDayTemplate.startTime, endTime: restDayTemplate.endTime, breakTime: restDayTemplate.breakTime, workHours: restDayTemplate.workHours, specialLeaveHours: restDayTemplate.specialLeaveHours, compLeaveHours: restDayTemplate.compLeaveHours, overtimeHours: restDayTemplate.overtimeHours }
     });
     setEditingTemplate(null);
   };
@@ -850,22 +979,39 @@ export default function ScheduleManagementPage() {
                   週班模版
                 </button>
                 <button
-                  onClick={() => setShowApplyTemplateModal(true)}
-                  className="bg-purple-600 text-white px-6 py-3 rounded-lg hover:bg-purple-700 transition-colors flex items-center"
+                  onClick={() => shiftOptions.length > 0 ? setShowApplyTemplateModal(true) : alert('目前沒有啟用中的班別，請先至系統設定啟用或新增班別')}
+                  disabled={shiftDefinitionsLoaded && shiftOptions.length === 0}
+                  className="bg-purple-600 text-white px-6 py-3 rounded-lg hover:bg-purple-700 transition-colors flex items-center disabled:bg-gray-400 disabled:cursor-not-allowed"
                 >
                   <Calendar className="w-5 h-5 mr-2" />
                   套用模版
                 </button>
                 <button
-                  onClick={() => setShowTemplateModal(true)}
-                  className="bg-green-600 text-white px-6 py-3 rounded-lg hover:bg-green-700 transition-colors flex items-center"
+                  onClick={() => {
+                    if (shiftOptions.length === 0) {
+                      alert('目前沒有啟用中的班別，請先至系統設定啟用或新增班別');
+                      return;
+                    }
+                    resetTemplateForm();
+                    setShowTemplateModal(true);
+                  }}
+                  disabled={shiftDefinitionsLoaded && shiftOptions.length === 0}
+                  className="bg-green-600 text-white px-6 py-3 rounded-lg hover:bg-green-700 transition-colors flex items-center disabled:bg-gray-400 disabled:cursor-not-allowed"
                 >
                   <Copy className="w-5 h-5 mr-2" />
                   建立週模版
                 </button>
                 <button
-                  onClick={() => setShowScheduleModal(true)}
-                  className="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition-colors flex items-center"
+                  onClick={() => {
+                    if (shiftOptions.length === 0) {
+                      alert('目前沒有啟用中的班別，請先至系統設定啟用或新增班別');
+                      return;
+                    }
+                    resetScheduleForm();
+                    setShowScheduleModal(true);
+                  }}
+                  disabled={shiftDefinitionsLoaded && shiftOptions.length === 0}
+                  className="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition-colors flex items-center disabled:bg-gray-400 disabled:cursor-not-allowed"
                 >
                   <Plus className="w-5 h-5 mr-2" />
                   建立班表
@@ -1074,7 +1220,7 @@ export default function ScheduleManagementPage() {
                             {schedule.employee.department}
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap">
-                            <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full border ${SHIFT_TYPE_COLORS[schedule.shiftType]}`}>
+                            <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full border ${getShiftColor(schedule.shiftType)}`}>
                               {schedule.shiftType}
                             </span>
                           </td>
@@ -1082,6 +1228,12 @@ export default function ScheduleManagementPage() {
                             {schedule.startTime && schedule.endTime 
                               ? `${schedule.startTime}-${schedule.endTime}` 
                               : '休息'}
+                            <div className="text-xs text-gray-500 mt-1">
+                              工時 {formatHourLabel(schedule.workHours ?? 0) || '0小時'}
+                              {(schedule.specialLeaveHours ?? 0) > 0 && ` / 特休 ${formatHourLabel(schedule.specialLeaveHours ?? 0)}`}
+                              {(schedule.compLeaveHours ?? 0) > 0 && ` / 補休 ${formatHourLabel(schedule.compLeaveHours ?? 0)}`}
+                              {(schedule.overtimeHours ?? 0) > 0 && ` / 加班 ${formatHourLabel(schedule.overtimeHours ?? 0)}`}
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -1169,10 +1321,13 @@ export default function ScheduleManagementPage() {
                             <div
                               key={schedule.id}
                               onClick={() => handleScheduleClick(schedule)}
-                              className={`text-xs px-2 py-1 rounded border cursor-pointer hover:ring-2 hover:ring-blue-400 transition-all ${SHIFT_TYPE_COLORS[schedule.shiftType]}`}
+                              className={`text-xs px-2 py-1 rounded border cursor-pointer hover:ring-2 hover:ring-blue-400 transition-all ${getShiftColor(schedule.shiftType)}`}
                             >
                               <div className="font-medium">{schedule.employee.name}</div>
-                              <div>{SHIFT_TYPE_LABELS[schedule.shiftType]}</div>
+                              <div>{getShiftLabel(schedule.shiftType)}</div>
+                              <div className="mt-0.5 text-[11px]">
+                                工時 {formatHourLabel(schedule.workHours ?? 0) || '0小時'}
+                              </div>
                             </div>
                           ))}
                           {daySchedules.length > 2 && (
@@ -1243,25 +1398,29 @@ export default function ScheduleManagementPage() {
                   <select
                     value={newSchedule.shiftType}
                     onChange={(e) => {
-                      const shiftType = e.target.value as 'A' | 'B' | 'C' | 'NH' | 'RD' | 'rd' | 'FDL' | 'OFF' | 'TD';
-                      const template = SHIFT_TEMPLATES[shiftType];
+                      const shiftType = e.target.value;
+                      const template = getShiftTemplateForCode(shiftType);
                       setNewSchedule({
                         ...newSchedule,
                         shiftType,
                         startTime: template.startTime,
                         endTime: template.endTime,
-                        breakTime: template.breakTime
+                        breakTime: template.breakTime,
+                        workHours: template.workHours,
+                        specialLeaveHours: template.specialLeaveHours,
+                        compLeaveHours: template.compLeaveHours,
+                        overtimeHours: template.overtimeHours
                       });
                     }}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
                   >
-                    {Object.entries(SHIFT_TYPE_LABELS).map(([key, label]) => (
-                      <option key={key} value={key}>{label}</option>
+                    {shiftOptions.map((shift) => (
+                      <option key={shift.code} value={shift.code}>{shift.label}</option>
                     ))}
                   </select>
                 </div>
 
-                {(newSchedule.shiftType === 'A' || newSchedule.shiftType === 'B' || newSchedule.shiftType === 'C') && (
+                {isShiftRequiresTime(newSchedule.shiftType) && (
                   <>
                     <div className="grid grid-cols-2 gap-4">
                       <div>
@@ -1299,6 +1458,57 @@ export default function ScheduleManagementPage() {
                     </div>
                   </>
                 )}
+
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-black mb-1">工時（小時）</label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="24"
+                      step="0.25"
+                      value={newSchedule.workHours}
+                      onChange={(e) => setNewSchedule({ ...newSchedule, workHours: Number(e.target.value) || 0 })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-black mb-1">特休（小時）</label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="24"
+                      step="0.25"
+                      value={newSchedule.specialLeaveHours}
+                      onChange={(e) => setNewSchedule({ ...newSchedule, specialLeaveHours: Number(e.target.value) || 0 })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-black mb-1">off／補休（小時）</label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="24"
+                      step="0.25"
+                      value={newSchedule.compLeaveHours}
+                      onChange={(e) => setNewSchedule({ ...newSchedule, compLeaveHours: Number(e.target.value) || 0 })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-black mb-1">加班（小時）</label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="24"
+                      step="0.25"
+                      value={newSchedule.overtimeHours}
+                      onChange={(e) => setNewSchedule({ ...newSchedule, overtimeHours: Number(e.target.value) || 0 })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
+                    />
+                  </div>
+                </div>
 
                 {newSchedule.shiftType === 'FDL' && (
                   <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
@@ -1409,26 +1619,30 @@ export default function ScheduleManagementPage() {
                               value={daySchedule.shiftType}
                               onChange={(e) => {
                                 const shiftType = e.target.value;
-                                const template = SHIFT_TEMPLATES[shiftType as keyof typeof SHIFT_TEMPLATES];
+                                const template = getShiftTemplateForCode(shiftType);
                                 setNewTemplate({
                                   ...newTemplate,
                                   [day]: {
                                     shiftType,
                                     startTime: template.startTime,
                                     endTime: template.endTime,
-                                    breakTime: template.breakTime
+                                    breakTime: template.breakTime,
+                                    workHours: template.workHours,
+                                    specialLeaveHours: template.specialLeaveHours,
+                                    compLeaveHours: template.compLeaveHours,
+                                    overtimeHours: template.overtimeHours
                                   }
                                 });
                               }}
                               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
                             >
-                              {Object.entries(SHIFT_TYPE_LABELS).map(([key, label]) => (
-                                <option key={key} value={key} className="text-gray-900 bg-white">{label}</option>
+                              {shiftOptions.map((shift) => (
+                                <option key={shift.code} value={shift.code} className="text-gray-900 bg-white">{shift.label}</option>
                               ))}
                             </select>
                           </div>
 
-                          {(daySchedule.shiftType === 'A' || daySchedule.shiftType === 'B' || daySchedule.shiftType === 'C') && (
+                          {isShiftRequiresTime(daySchedule.shiftType) && (
                             <>
                               <div>
                                 <label className="block text-sm font-medium text-black mb-1">開始時間</label>
@@ -1471,6 +1685,68 @@ export default function ScheduleManagementPage() {
                               </div>
                             </>
                           )}
+                        </div>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4">
+                          <div>
+                            <label className="block text-sm font-medium text-black mb-1">工時（小時）</label>
+                            <input
+                              type="number"
+                              min="0"
+                              max="24"
+                              step="0.25"
+                              value={daySchedule.workHours}
+                              onChange={(e) => setNewTemplate({
+                                ...newTemplate,
+                                [day]: { ...daySchedule, workHours: Number(e.target.value) || 0 }
+                              })}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-black mb-1">特休（小時）</label>
+                            <input
+                              type="number"
+                              min="0"
+                              max="24"
+                              step="0.25"
+                              value={daySchedule.specialLeaveHours}
+                              onChange={(e) => setNewTemplate({
+                                ...newTemplate,
+                                [day]: { ...daySchedule, specialLeaveHours: Number(e.target.value) || 0 }
+                              })}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-black mb-1">off／補休（小時）</label>
+                            <input
+                              type="number"
+                              min="0"
+                              max="24"
+                              step="0.25"
+                              value={daySchedule.compLeaveHours}
+                              onChange={(e) => setNewTemplate({
+                                ...newTemplate,
+                                [day]: { ...daySchedule, compLeaveHours: Number(e.target.value) || 0 }
+                              })}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-black mb-1">加班（小時）</label>
+                            <input
+                              type="number"
+                              min="0"
+                              max="24"
+                              step="0.25"
+                              value={daySchedule.overtimeHours}
+                              onChange={(e) => setNewTemplate({
+                                ...newTemplate,
+                                [day]: { ...daySchedule, overtimeHours: Number(e.target.value) || 0 }
+                              })}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
+                            />
+                          </div>
                         </div>
                       </div>
                     );
@@ -1707,38 +1983,117 @@ export default function ScheduleManagementPage() {
                   <label className="block text-sm font-medium text-gray-700 mb-1">班別</label>
                   <select
                     value={editScheduleForm.shiftType}
-                    onChange={(e) => setEditScheduleForm({ ...editScheduleForm, shiftType: e.target.value })}
+                    onChange={(e) => {
+                      const shiftType = e.target.value;
+                      const template = getShiftTemplateForCode(shiftType);
+                      setEditScheduleForm({
+                        ...editScheduleForm,
+                        shiftType,
+                        startTime: template.startTime || editScheduleForm.startTime,
+                        endTime: template.endTime || editScheduleForm.endTime,
+                        breakTime: template.breakTime,
+                        workHours: template.workHours,
+                        specialLeaveHours: template.specialLeaveHours,
+                        compLeaveHours: template.compLeaveHours,
+                        overtimeHours: template.overtimeHours,
+                      });
+                    }}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
                   >
-                    {Object.entries(SHIFT_TYPE_LABELS).map(([value, label]) => (
-                      <option key={value} value={value} className="text-gray-900 bg-white">{label}</option>
+                    {getSelectableShiftOptions(editScheduleForm.shiftType).map((shift) => (
+                      <option key={shift.code} value={shift.code} className="text-gray-900 bg-white">
+                        {shift.isActive ? shift.label : `${shift.label}（已停用）`}
+                      </option>
                     ))}
                   </select>
                 </div>
 
                 {/* 時間欄位（只在需要時顯示） */}
-                {!['NH', 'RD', 'rd', 'OFF', 'FDL', 'TD'].includes(editScheduleForm.shiftType) && (
-                  <div className="grid grid-cols-2 gap-4">
+                {isShiftRequiresTime(editScheduleForm.shiftType) && (
+                  <>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">開始時間</label>
+                        <input
+                          type="time"
+                          value={editScheduleForm.startTime}
+                          onChange={(e) => setEditScheduleForm({ ...editScheduleForm, startTime: e.target.value })}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">結束時間</label>
+                        <input
+                          type="time"
+                          value={editScheduleForm.endTime}
+                          onChange={(e) => setEditScheduleForm({ ...editScheduleForm, endTime: e.target.value })}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
+                        />
+                      </div>
+                    </div>
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">開始時間</label>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">休息時間（分鐘）</label>
                       <input
-                        type="time"
-                        value={editScheduleForm.startTime}
-                        onChange={(e) => setEditScheduleForm({ ...editScheduleForm, startTime: e.target.value })}
+                        type="number"
+                        min="0"
+                        value={editScheduleForm.breakTime}
+                        onChange={(e) => setEditScheduleForm({ ...editScheduleForm, breakTime: parseInt(e.target.value) || 0 })}
                         className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
                       />
                     </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">結束時間</label>
-                      <input
-                        type="time"
-                        value={editScheduleForm.endTime}
-                        onChange={(e) => setEditScheduleForm({ ...editScheduleForm, endTime: e.target.value })}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
-                      />
-                    </div>
-                  </div>
+                  </>
                 )}
+
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">工時</label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="24"
+                      step="0.25"
+                      value={editScheduleForm.workHours}
+                      onChange={(e) => setEditScheduleForm({ ...editScheduleForm, workHours: Number(e.target.value) || 0 })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">特休</label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="24"
+                      step="0.25"
+                      value={editScheduleForm.specialLeaveHours}
+                      onChange={(e) => setEditScheduleForm({ ...editScheduleForm, specialLeaveHours: Number(e.target.value) || 0 })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">補休</label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="24"
+                      step="0.25"
+                      value={editScheduleForm.compLeaveHours}
+                      onChange={(e) => setEditScheduleForm({ ...editScheduleForm, compLeaveHours: Number(e.target.value) || 0 })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">加班</label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="24"
+                      step="0.25"
+                      value={editScheduleForm.overtimeHours}
+                      onChange={(e) => setEditScheduleForm({ ...editScheduleForm, overtimeHours: Number(e.target.value) || 0 })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
+                    />
+                  </div>
+                </div>
 
                 {/* 按鈕區 */}
                 <div className="flex space-x-3 pt-4">

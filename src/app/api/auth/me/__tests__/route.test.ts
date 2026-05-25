@@ -18,6 +18,9 @@ jest.mock('@/lib/database', () => ({
     },
     attendancePermission: {
       findUnique: jest.fn()
+    },
+    userSiteAssignment: {
+      findMany: jest.fn()
     }
   }
 }));
@@ -37,6 +40,7 @@ const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 describe('/api/auth/me', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockPrisma.userSiteAssignment.findMany.mockResolvedValue([] as never);
   });
 
   it('returns only the minimum employee profile fields plus permission booleans', async () => {
@@ -114,6 +118,10 @@ describe('/api/auth/me', () => {
         isDepartmentManager: true,
         isDeputyManager: false,
         hasSchedulePermission: true,
+        hasPropertyAccess: true,
+        canMaintainProperty: false,
+        isPropertySupervisor: false,
+        canManageProperty: false,
         attendancePermissions: {
           leaveRequests: ['資訊部'],
           overtimeRequests: ['資訊部', '人資部'],

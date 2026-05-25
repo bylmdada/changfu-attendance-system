@@ -10,6 +10,10 @@ interface Schedule {
   startTime: string;
   endTime: string;
   breakTime?: number;
+  workHours?: number;
+  specialLeaveHours?: number;
+  compLeaveHours?: number;
+  overtimeHours?: number;
 }
 
 interface User {
@@ -17,6 +21,9 @@ interface User {
   name?: string;
   department?: string;
 }
+
+const NON_WORK_SHIFT_TYPES = ['NH', 'RD', 'rd', 'OFF', 'FDL', 'TD'];
+const REST_SHIFT_TYPES = ['RD', 'rd', 'OFF'];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null;
@@ -28,7 +35,11 @@ function isValidSchedule(value: unknown): value is Schedule {
         && typeof value.shiftType === 'string'
         && typeof value.startTime === 'string'
         && typeof value.endTime === 'string'
-        && (value.breakTime === undefined || typeof value.breakTime === 'number');
+        && (value.breakTime === undefined || typeof value.breakTime === 'number')
+        && (value.workHours === undefined || typeof value.workHours === 'number')
+        && (value.specialLeaveHours === undefined || typeof value.specialLeaveHours === 'number')
+        && (value.compLeaveHours === undefined || typeof value.compLeaveHours === 'number')
+        && (value.overtimeHours === undefined || typeof value.overtimeHours === 'number');
 }
 
 function isValidExportUser(value: unknown): value is User {
@@ -136,6 +147,11 @@ export async function POST(request: NextRequest) {
 
 function generateScheduleHTML(year: number, month: number, schedules: Schedule[], user: User): string {
   const monthName = `${year}年${month.toString().padStart(2, '0')}月`;
+  const totalWorkHours = sumHours(schedules, 'workHours');
+  const totalSpecialLeaveHours = sumHours(schedules, 'specialLeaveHours');
+  const totalCompLeaveHours = sumHours(schedules, 'compLeaveHours');
+  const totalOvertimeHours = sumHours(schedules, 'overtimeHours');
+  const totalAccountedHours = totalWorkHours + totalSpecialLeaveHours + totalCompLeaveHours + totalOvertimeHours;
   
   return `
 <!DOCTYPE html>
@@ -375,11 +391,15 @@ function generateScheduleHTML(year: number, month: number, schedules: Schedule[]
                     <th>開始時間</th>
                     <th>結束時間</th>
                     <th>休息時間</th>
+                    <th>工時</th>
+                    <th>特休</th>
+                    <th>補休</th>
+                    <th>加班</th>
                 </tr>
             </thead>
             <tbody>
                 ${schedules.length === 0 ? 
-                    '<tr><td colspan="6" style="padding: 40px; color: #6b7280;">本月暫無班表記錄</td></tr>' :
+                    '<tr><td colspan="10" style="padding: 40px; color: #6b7280;">本月暫無班表記錄</td></tr>' :
                     schedules.map(schedule => {
                         const date = new Date(schedule.workDate);
                         const weekdays = ['日', '一', '二', '三', '四', '五', '六'];
@@ -397,6 +417,10 @@ function generateScheduleHTML(year: number, month: number, schedules: Schedule[]
                             <td>${schedule.startTime || '-'}</td>
                             <td>${schedule.endTime || '-'}</td>
                             <td>${schedule.breakTime ? schedule.breakTime + '分鐘' : '-'}</td>
+                            <td>${formatHours(schedule.workHours)}</td>
+                            <td>${formatHours(schedule.specialLeaveHours)}</td>
+                            <td>${formatHours(schedule.compLeaveHours)}</td>
+                            <td>${formatHours(schedule.overtimeHours)}</td>
                         </tr>
                         `;
                     }).join('')
@@ -409,8 +433,28 @@ function generateScheduleHTML(year: number, month: number, schedules: Schedule[]
             <h3>📊 本月統計</h3>
             <div class="summary-grid">
                 <div class="summary-item">
+                    <div class="summary-label">總工時</div>
+                    <div class="summary-value">${formatHours(totalWorkHours)}</div>
+                </div>
+                <div class="summary-item">
+                    <div class="summary-label">特休時數</div>
+                    <div class="summary-value">${formatHours(totalSpecialLeaveHours)}</div>
+                </div>
+                <div class="summary-item">
+                    <div class="summary-label">補休時數</div>
+                    <div class="summary-value">${formatHours(totalCompLeaveHours)}</div>
+                </div>
+                <div class="summary-item">
+                    <div class="summary-label">加班時數</div>
+                    <div class="summary-value">${formatHours(totalOvertimeHours)}</div>
+                </div>
+                <div class="summary-item">
+                    <div class="summary-label">合計時數</div>
+                    <div class="summary-value">${formatHours(totalAccountedHours)}</div>
+                </div>
+                <div class="summary-item">
                     <div class="summary-label">總工作天數</div>
-                    <div class="summary-value">${schedules.filter(s => !['RD', 'rd', 'OFF', 'FDL'].includes(s.shiftType)).length}</div>
+                    <div class="summary-value">${schedules.filter(s => !NON_WORK_SHIFT_TYPES.includes(s.shiftType)).length}</div>
                 </div>
                 <div class="summary-item">
                     <div class="summary-label">A班次數</div>
@@ -426,7 +470,7 @@ function generateScheduleHTML(year: number, month: number, schedules: Schedule[]
                 </div>
                 <div class="summary-item">
                     <div class="summary-label">休息天數</div>
-                    <div class="summary-value">${schedules.filter(s => ['RD', 'rd', 'OFF'].includes(s.shiftType)).length}</div>
+                    <div class="summary-value">${schedules.filter(s => REST_SHIFT_TYPES.includes(s.shiftType)).length}</div>
                 </div>
                 <div class="summary-item">
                     <div class="summary-label">請假天數</div>
@@ -444,4 +488,17 @@ function generateScheduleHTML(year: number, month: number, schedules: Schedule[]
 </body>
 </html>
   `;
+}
+
+function sumHours(schedules: Schedule[], key: 'workHours' | 'specialLeaveHours' | 'compLeaveHours' | 'overtimeHours') {
+  return Math.round(schedules.reduce((sum, schedule) => sum + (schedule[key] ?? 0), 0) * 100) / 100;
+}
+
+function formatHours(hours: number | undefined) {
+  const value = hours ?? 0;
+  if (!Number.isFinite(value) || value <= 0) {
+    return '-';
+  }
+
+  return `${Number.isInteger(value) ? value : value.toFixed(2).replace(/0+$/, '').replace(/\.$/, '')}小時`;
 }

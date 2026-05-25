@@ -7,6 +7,11 @@ import Image from 'next/image';
 import { isMobileClockingDevice, MOBILE_CLOCKING_REQUIRED_MESSAGE } from '@/lib/device-detection';
 import { clearCSRFToken, fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import { serializeRegistrationCredential } from '@/lib/webauthn-browser';
+import InfectionControlForm, {
+  defaultInfectionControlValue,
+  toInfectionControlPayload,
+  validateInfectionControlValue,
+} from '@/components/InfectionControlForm';
 
 // GPS位置狀態類型
 type LocationStatus = 'checking' | 'valid' | 'invalid' | 'error' | 'disabled';
@@ -161,6 +166,8 @@ function QuickClockForm({
   const [showFaceIdSetup, setShowFaceIdSetup] = useState(false);
   const [biometricSupported, setBiometricSupported] = useState(false);
   const [isMobileClocking, setIsMobileClocking] = useState<boolean | null>(null);
+  const [infectionControl, setInfectionControl] = useState(defaultInfectionControlValue);
+  const infectionControlError = validateInfectionControlValue(infectionControl);
 
   useEffect(() => {
     setIsMobileClocking(isMobileClockingDevice(navigator.userAgent));
@@ -418,6 +425,12 @@ function QuickClockForm({
       return;
     }
 
+    const infectionError = validateInfectionControlValue(infectionControl);
+    if (infectionError) {
+      onError(infectionError);
+      return;
+    }
+
     if (!biometricSupported) {
       onError('此裝置不支援 Face ID / 指紋');
       return;
@@ -488,6 +501,7 @@ function QuickClockForm({
             type: credential.type
           },
           clockType: type,
+          infectionControl: toInfectionControlPayload(infectionControl),
           location: locationPayload
         })
       });
@@ -503,6 +517,7 @@ function QuickClockForm({
           clockInTime: type === 'in' ? result.clockInTime : prev.clockInTime,
           clockOutTime: type === 'out' ? result.clockOutTime : prev.clockOutTime,
         } : prev);
+        setInfectionControl(defaultInfectionControlValue);
       } else {
         throw new Error(result.error || '打卡失敗');
       }
@@ -610,6 +625,12 @@ function QuickClockForm({
       return;
     }
 
+    const infectionError = validateInfectionControlValue(infectionControl);
+    if (infectionError) {
+      onError(infectionError);
+      return;
+    }
+
     setClockLoading(true);
     setSuccessMessage('');
     onError('');
@@ -636,11 +657,13 @@ function QuickClockForm({
         username: string;
         password: string;
         type: string;
+        infectionControl: ReturnType<typeof toInfectionControlPayload>;
         location?: ClockLocationPayload;
       } = {
         username: clockData.username,
         password: clockData.password,
-        type
+        type,
+        infectionControl: toInfectionControlPayload(infectionControl)
       };
 
       // 如果GPS啟用且有有效位置，添加位置資訊
@@ -695,6 +718,7 @@ function QuickClockForm({
         
         // 清除密碼但保留用戶名，方便再次打卡
         setClockData(prev => ({ ...prev, password: '' }));
+        setInfectionControl(defaultInfectionControlValue);
       } else {
         const errorData = await response.json();
         onError(errorData.error || '打卡失敗');
@@ -958,13 +982,18 @@ function QuickClockForm({
           />
           <span className="text-sm text-gray-600">記住員編（下次自動填入）</span>
         </label>
+
+        <InfectionControlForm
+          value={infectionControl}
+          onChange={setInfectionControl}
+        />
       </div>
 
       {/* 打卡按鈕 */}
       <div className="grid grid-cols-2 gap-3 mt-4">
         <button
           onClick={() => handleQuickClock('in')}
-          disabled={clockLoading || isMobileClocking !== true || (!clockData.username || !clockData.password) || (attendanceStatus?.hasClockIn)}
+          disabled={clockLoading || isMobileClocking !== true || (!clockData.username || !clockData.password) || (attendanceStatus?.hasClockIn) || Boolean(infectionControlError)}
           className={`py-2.5 px-3 text-sm font-medium rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 ${
             attendanceStatus?.hasClockIn 
               ? 'bg-green-100 text-green-700 border border-green-300' 
@@ -980,7 +1009,7 @@ function QuickClockForm({
         
         <button
           onClick={() => handleQuickClock('out')}
-          disabled={clockLoading || isMobileClocking !== true || (!clockData.username || !clockData.password) || (attendanceStatus?.hasClockOut)}
+          disabled={clockLoading || isMobileClocking !== true || (!clockData.username || !clockData.password) || (attendanceStatus?.hasClockOut) || Boolean(infectionControlError)}
           className={`py-2.5 px-3 text-sm font-medium rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 ${
             attendanceStatus?.hasClockOut 
               ? 'bg-orange-100 text-orange-700 border border-orange-300' 
@@ -1003,7 +1032,7 @@ function QuickClockForm({
             <div className="grid grid-cols-2 gap-2">
               <button
                 onClick={() => handleFaceIdClock('in')}
-                disabled={faceIdLoading || isMobileClocking !== true || attendanceStatus?.hasClockIn}
+                disabled={faceIdLoading || isMobileClocking !== true || attendanceStatus?.hasClockIn || Boolean(infectionControlError)}
                 className={`py-3 px-3 text-sm font-medium rounded-xl transition-colors flex items-center justify-center gap-2 ${
                   attendanceStatus?.hasClockIn
                     ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
@@ -1018,7 +1047,7 @@ function QuickClockForm({
               </button>
               <button
                 onClick={() => handleFaceIdClock('out')}
-                disabled={faceIdLoading || isMobileClocking !== true || attendanceStatus?.hasClockOut}
+                disabled={faceIdLoading || isMobileClocking !== true || attendanceStatus?.hasClockOut || Boolean(infectionControlError)}
                 className={`py-3 px-3 text-sm font-medium rounded-xl transition-colors flex items-center justify-center gap-2 ${
                   attendanceStatus?.hasClockOut
                     ? 'bg-gray-100 text-gray-400 cursor-not-allowed'

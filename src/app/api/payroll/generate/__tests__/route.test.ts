@@ -22,6 +22,9 @@ jest.mock('@/lib/database', () => ({
     attendanceRecord: {
       findMany: jest.fn(),
     },
+    schedule: {
+      findMany: jest.fn(),
+    },
     bonusConfiguration: {
       findMany: jest.fn(),
     },
@@ -87,6 +90,7 @@ describe('payroll generate route', () => {
 
     mockPrisma.holiday.findMany.mockResolvedValue([] as never);
     mockPrisma.attendanceRecord.findMany.mockResolvedValue([] as never);
+    mockPrisma.schedule.findMany.mockResolvedValue([] as never);
     mockPrisma.bonusConfiguration.findMany.mockResolvedValue([] as never);
     mockPrisma.pensionContributionApplication.findFirst.mockResolvedValue(null as never);
     mockPrisma.payrollDispute.findMany.mockResolvedValue([] as never);

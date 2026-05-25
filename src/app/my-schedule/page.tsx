@@ -1,10 +1,11 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { Calendar, ChevronLeft, ChevronRight, Download, Clock, User, RefreshCw, Gift, Printer } from 'lucide-react';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import { formatShiftDisplay, getShiftLabel } from '@/lib/shift-display';
+import { formatHourLabel } from '@/lib/shift-definition-utils';
 
 interface Schedule {
   id: number;
@@ -14,6 +15,10 @@ interface Schedule {
   startTime: string;
   endTime: string;
   breakTime?: number;
+  workHours?: number;
+  specialLeaveHours?: number;
+  compLeaveHours?: number;
+  overtimeHours?: number;
   createdAt: string;
   updatedAt: string;
   employee: {
@@ -100,6 +105,17 @@ const SHIFT_COLORS: Record<string, string> = {
   'TD': 'bg-cyan-100 text-cyan-800'
 };
 
+const NON_WORK_SHIFT_TYPES = ['NH', 'RD', 'rd', 'OFF', 'FDL', 'TD'];
+const REST_SHIFT_TYPES = ['RD', 'rd', 'OFF'];
+
+function roundHours(hours: number) {
+  return Math.round(hours * 100) / 100;
+}
+
+function formatHours(hours: number) {
+  return formatHourLabel(hours) || '0小時';
+}
+
 export default function MySchedulePage() {
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [loading, setLoading] = useState(true);
@@ -122,6 +138,29 @@ export default function MySchedulePage() {
 
   // 加班工時狀態
   const [overtimeHours, setOvertimeHours] = useState(0);
+
+  const scheduleHourTotals = useMemo(() => {
+    const totals = schedules.reduce((acc, schedule) => {
+      acc.workHours += schedule.workHours ?? 0;
+      acc.specialLeaveHours += schedule.specialLeaveHours ?? 0;
+      acc.compLeaveHours += schedule.compLeaveHours ?? 0;
+      acc.overtimeHours += schedule.overtimeHours ?? 0;
+      return acc;
+    }, {
+      workHours: 0,
+      specialLeaveHours: 0,
+      compLeaveHours: 0,
+      overtimeHours: 0,
+    });
+
+    return {
+      workHours: roundHours(totals.workHours),
+      specialLeaveHours: roundHours(totals.specialLeaveHours),
+      compLeaveHours: roundHours(totals.compLeaveHours),
+      overtimeHours: roundHours(totals.overtimeHours),
+      accountedHours: roundHours(totals.workHours + totals.specialLeaveHours + totals.compLeaveHours + totals.overtimeHours),
+    };
+  }, [schedules]);
 
   // Toast 顯示函數
   const showToast = (type: 'success' | 'error', message: string) => {
@@ -346,11 +385,17 @@ export default function MySchedulePage() {
     const weekdayNames = ['日', '一', '二', '三', '四', '五', '六'];
     
     // 統計資料
-    const workDays = schedules.filter(s => !['NH', 'RD', 'rd', 'OFF', 'FDL', 'TD'].includes(s.shiftType)).length;
-    const restDays = schedules.filter(s => ['RD', 'rd', 'OFF'].includes(s.shiftType)).length;
+    const workDays = schedules.filter(s => !NON_WORK_SHIFT_TYPES.includes(s.shiftType)).length;
+    const restDays = schedules.filter(s => REST_SHIFT_TYPES.includes(s.shiftType)).length;
     const shiftA = schedules.filter(s => s.shiftType === 'A').length;
     const shiftB = schedules.filter(s => s.shiftType === 'B').length;
     const shiftC = schedules.filter(s => s.shiftType === 'C').length;
+    const printTotals = {
+      workHours: schedules.reduce((sum, schedule) => sum + (schedule.workHours ?? 0), 0),
+      specialLeaveHours: schedules.reduce((sum, schedule) => sum + (schedule.specialLeaveHours ?? 0), 0),
+      compLeaveHours: schedules.reduce((sum, schedule) => sum + (schedule.compLeaveHours ?? 0), 0),
+      overtimeHours: schedules.reduce((sum, schedule) => sum + (schedule.overtimeHours ?? 0), 0),
+    };
 
     // 生成日曆 HTML
     let calendarCells = '';
@@ -364,11 +409,20 @@ export default function MySchedulePage() {
       const shiftLabel = schedule
         ? formatShiftDisplay({ shiftType, startTime: schedule.startTime, endTime: schedule.endTime })
         : getShiftLabel(shiftType);
+      const hourSummary = schedule
+        ? [
+            `工${formatHours(schedule.workHours ?? 0)}`,
+            (schedule.specialLeaveHours ?? 0) > 0 ? `特${formatHours(schedule.specialLeaveHours ?? 0)}` : '',
+            (schedule.compLeaveHours ?? 0) > 0 ? `補${formatHours(schedule.compLeaveHours ?? 0)}` : '',
+            (schedule.overtimeHours ?? 0) > 0 ? `加${formatHours(schedule.overtimeHours ?? 0)}` : '',
+          ].filter(Boolean).join(' / ')
+        : '';
       const isRest = ['RD', 'rd', 'OFF', 'NH'].includes(shiftType);
       calendarCells += `
         <div class="cell ${isRest ? 'rest' : 'work'}">
           <div class="day">${day}</div>
           ${shiftType ? `<div class="shift ${shiftType.toLowerCase()}">${shiftLabel.split(' ')[0]}</div>` : ''}
+          ${schedule ? `<div class="hours">${hourSummary}</div>` : ''}
         </div>
       `;
     }
@@ -401,6 +455,7 @@ export default function MySchedulePage() {
     .cell.work { background: #f0fdf4; }
     .day { font-weight: bold; font-size: 12px; margin-bottom: 3px; }
     .shift { font-size: 10px; padding: 2px 5px; border-radius: 3px; text-align: center; font-weight: 500; }
+    .hours { margin-top: 3px; font-size: 9px; color: #475569; text-align: center; }
     .shift.a { background: #dbeafe; color: #1e40af; }
     .shift.b { background: #dcfce7; color: #166534; }
     .shift.c { background: #f3e8ff; color: #7c3aed; }
@@ -438,6 +493,10 @@ export default function MySchedulePage() {
       <div class="stat"><div class="stat-value">${shiftA}</div><div class="stat-label">A班</div></div>
       <div class="stat"><div class="stat-value">${shiftB}</div><div class="stat-label">B班</div></div>
       <div class="stat"><div class="stat-value">${shiftC}</div><div class="stat-label">C班</div></div>
+      <div class="stat"><div class="stat-value">${formatHours(printTotals.workHours)}</div><div class="stat-label">工時</div></div>
+      <div class="stat"><div class="stat-value">${formatHours(printTotals.specialLeaveHours)}</div><div class="stat-label">特休</div></div>
+      <div class="stat"><div class="stat-value">${formatHours(printTotals.compLeaveHours)}</div><div class="stat-label">補休</div></div>
+      <div class="stat"><div class="stat-value">${formatHours(printTotals.overtimeHours)}</div><div class="stat-label">加班</div></div>
     </div>
   </div>
   <div class="calendar">
@@ -742,11 +801,11 @@ export default function MySchedulePage() {
           )}
 
           {/* 統計資訊 */}
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+          <div className="grid grid-cols-1 md:grid-cols-4 lg:grid-cols-5 gap-4 mb-6">
             <div className="bg-blue-50 p-4 rounded-lg">
               <div className="text-blue-600 text-sm font-medium">總工作天數</div>
               <div className="text-2xl font-bold text-blue-900">
-                {schedules.filter(s => !['NH', 'RD', 'rd', 'OFF', 'FDL', 'TD'].includes(s.shiftType)).length}
+                {schedules.filter(s => !NON_WORK_SHIFT_TYPES.includes(s.shiftType)).length}
               </div>
             </div>
             <div className="bg-green-50 p-4 rounded-lg">
@@ -764,7 +823,37 @@ export default function MySchedulePage() {
             <div className="bg-gray-50 p-4 rounded-lg">
               <div className="text-gray-600 text-sm font-medium">休息天數</div>
               <div className="text-2xl font-bold text-gray-900">
-                {schedules.filter(s => ['RD', 'rd', 'OFF'].includes(s.shiftType)).length}
+                {schedules.filter(s => REST_SHIFT_TYPES.includes(s.shiftType)).length}
+              </div>
+            </div>
+            <div className="bg-indigo-50 p-4 rounded-lg">
+              <div className="text-indigo-600 text-sm font-medium">實際工時</div>
+              <div className="text-2xl font-bold text-indigo-900">
+                {formatHours(scheduleHourTotals.workHours)}
+              </div>
+            </div>
+            <div className="bg-yellow-50 p-4 rounded-lg">
+              <div className="text-yellow-700 text-sm font-medium">特休時數</div>
+              <div className="text-2xl font-bold text-yellow-900">
+                {formatHours(scheduleHourTotals.specialLeaveHours)}
+              </div>
+            </div>
+            <div className="bg-orange-50 p-4 rounded-lg">
+              <div className="text-orange-600 text-sm font-medium">補休時數</div>
+              <div className="text-2xl font-bold text-orange-900">
+                {formatHours(scheduleHourTotals.compLeaveHours)}
+              </div>
+            </div>
+            <div className="bg-red-50 p-4 rounded-lg">
+              <div className="text-red-600 text-sm font-medium">排班加班</div>
+              <div className="text-2xl font-bold text-red-900">
+                {formatHours(scheduleHourTotals.overtimeHours)}
+              </div>
+            </div>
+            <div className="bg-slate-50 p-4 rounded-lg">
+              <div className="text-slate-600 text-sm font-medium">時數合計</div>
+              <div className="text-2xl font-bold text-slate-900">
+                {formatHours(scheduleHourTotals.accountedHours)}
               </div>
             </div>
           </div>
@@ -824,6 +913,12 @@ export default function MySchedulePage() {
                             endTime: schedule.endTime,
                           })}
                         </div>
+                        <div className="mt-1 text-[11px] leading-4">
+                          工 {formatHours(schedule.workHours ?? 0)}
+                          {(schedule.specialLeaveHours ?? 0) > 0 && <span> / 特 {formatHours(schedule.specialLeaveHours ?? 0)}</span>}
+                          {(schedule.compLeaveHours ?? 0) > 0 && <span> / 補 {formatHours(schedule.compLeaveHours ?? 0)}</span>}
+                          {(schedule.overtimeHours ?? 0) > 0 && <span> / 加 {formatHours(schedule.overtimeHours ?? 0)}</span>}
+                        </div>
                       </div>
                     </div>
                   )}
@@ -858,12 +953,15 @@ export default function MySchedulePage() {
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     時間
                   </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    時數
+                  </th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
                 {schedules.length === 0 ? (
                   <tr>
-                    <td colSpan={4} className="px-6 py-12 text-center text-gray-500">
+                    <td colSpan={5} className="px-6 py-12 text-center text-gray-500">
                       本月暫無班表記錄
                     </td>
                   </tr>
@@ -871,7 +969,7 @@ export default function MySchedulePage() {
                   schedules.map((schedule) => {
                     const date = new Date(schedule.workDate);
                     const weekday = weekdays[date.getDay()];
-                    const isRestShift = ['NH', 'RD', 'rd', 'OFF', 'FDL', 'TD'].includes(schedule.shiftType);
+                    const isRestShift = NON_WORK_SHIFT_TYPES.includes(schedule.shiftType);
                     
                     return (
                       <tr key={schedule.id} className="hover:bg-gray-50">
@@ -897,6 +995,12 @@ export default function MySchedulePage() {
                                 ? `${schedule.startTime}-${schedule.endTime}` 
                                 : '-')}
                         </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                          <div>工時 {formatHours(schedule.workHours ?? 0)}</div>
+                          {(schedule.specialLeaveHours ?? 0) > 0 && <div className="text-yellow-700">特休 {formatHours(schedule.specialLeaveHours ?? 0)}</div>}
+                          {(schedule.compLeaveHours ?? 0) > 0 && <div className="text-orange-600">補休 {formatHours(schedule.compLeaveHours ?? 0)}</div>}
+                          {(schedule.overtimeHours ?? 0) > 0 && <div className="text-red-600">加班 {formatHours(schedule.overtimeHours ?? 0)}</div>}
+                        </td>
                       </tr>
                     );
                   })
@@ -914,148 +1018,88 @@ export default function MySchedulePage() {
             </h3>
           </div>
           <div className="p-6 space-y-6">
-            {/* 應班工時計算 */}
+            {/* 排班時數計算 */}
             <div className="bg-blue-50 rounded-lg p-4">
-              <h4 className="font-medium text-blue-900 mb-3">應班工時</h4>
+              <h4 className="font-medium text-blue-900 mb-3">排班時數</h4>
               <div className="text-sm text-blue-800 space-y-1">
                 <div className="flex justify-between">
-                  <span>本月總時數：</span>
-                  <span className="font-medium">{(() => {
-                    const daysInMonth = getDaysInMonth(selectedYear, selectedMonth);
-                    const standardDailyHours = 8;
-                    return daysInMonth * standardDailyHours;
-                  })()} 小時</span>
+                  <span>實際工時：</span>
+                  <span className="font-medium">{formatHours(scheduleHourTotals.workHours)}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span>國定假日(NH)：</span>
-                  <span className="font-medium text-red-600">-{(() => {
-                    const nhDays = schedules.filter(s => s.shiftType === 'NH').length;
-                    return nhDays * 8;
-                  })()} 小時</span>
+                  <span>特休時數：</span>
+                  <span className="font-medium text-yellow-700">{formatHours(scheduleHourTotals.specialLeaveHours)}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span>例假日(RD) + 休息日(rd)：</span>
-                  <span className="font-medium text-red-600">-{(() => {
-                    const rdDays = schedules.filter(s => ['RD', 'rd'].includes(s.shiftType)).length;
-                    return rdDays * 8;
-                  })()} 小時</span>
+                  <span>補休時數：</span>
+                  <span className="font-medium text-orange-600">{formatHours(scheduleHourTotals.compLeaveHours)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>排班加班：</span>
+                  <span className="font-medium text-red-600">{formatHours(scheduleHourTotals.overtimeHours)}</span>
                 </div>
                 <div className="border-t border-blue-200 pt-2 mt-2">
                   <div className="flex justify-between font-bold">
-                    <span>應班工時：</span>
-                    <span>{(() => {
-                      const daysInMonth = getDaysInMonth(selectedYear, selectedMonth);
-                      const nhDays = schedules.filter(s => s.shiftType === 'NH').length;
-                      const rdDays = schedules.filter(s => ['RD', 'rd'].includes(s.shiftType)).length;
-                      const shouldWorkHours = (daysInMonth - nhDays - rdDays) * 8;
-                      return shouldWorkHours;
-                    })()} 小時</span>
+                    <span>排班時數合計：</span>
+                    <span>{formatHours(scheduleHourTotals.accountedHours)}</span>
                   </div>
                 </div>
               </div>
             </div>
 
-            {/* 實班工時計算 */}
+            {/* 班別時數明細 */}
             <div className="bg-green-50 rounded-lg p-4">
-              <h4 className="font-medium text-green-900 mb-3">實班工時</h4>
+              <h4 className="font-medium text-green-900 mb-3">班別時數明細</h4>
               <div className="text-sm text-green-800 space-y-1">
-                <div className="flex justify-between">
-                  <span>A班工時：</span>
-                  <span className="font-medium">{(() => {
-                    const aDays = schedules.filter(s => s.shiftType === 'A').length;
-                    return aDays * 8; // A班8小時
-                  })()} 小時 ({schedules.filter(s => s.shiftType === 'A').length}天)</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>B班工時：</span>
-                  <span className="font-medium">{(() => {
-                    const bDays = schedules.filter(s => s.shiftType === 'B').length;
-                    return bDays * 8; // B班8小時
-                  })()} 小時 ({schedules.filter(s => s.shiftType === 'B').length}天)</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>C班工時：</span>
-                  <span className="font-medium">{(() => {
-                    const cDays = schedules.filter(s => s.shiftType === 'C').length;
-                    return cDays * 8; // C班8小時
-                  })()} 小時 ({schedules.filter(s => s.shiftType === 'C').length}天)</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>國定假日出勤：</span>
-                  <span className="font-medium">{(() => {
-                    // NH 有出勤：必須有實際工作時間（非空字串）
-                    const nhWorkDays = schedules.filter(s => 
-                      s.shiftType === 'NH' && 
-                      s.startTime && s.startTime.trim() !== '' && 
-                      s.endTime && s.endTime.trim() !== ''
-                    ).length;
-                    return nhWorkDays * 8;
-                  })()} 小時 ({schedules.filter(s => 
-                    s.shiftType === 'NH' && 
-                    s.startTime && s.startTime.trim() !== '' && 
-                    s.endTime && s.endTime.trim() !== ''
-                  ).length}天)</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>加班工時：</span>
-                  <span className="font-medium text-blue-600">+{overtimeHours} 小時</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>請假扣時：</span>
-                  <span className="font-medium text-red-600">-{(() => {
-                    const leaveDays = schedules.filter(s => s.shiftType === 'FDL').length;
-                    return leaveDays * 8;
-                  })()} 小時 ({schedules.filter(s => s.shiftType === 'FDL').length}天)</span>
-                </div>
+                {Array.from(new Set(schedules.map((schedule) => schedule.shiftType))).sort().map((shiftType) => {
+                  const shiftSchedules = schedules.filter((schedule) => schedule.shiftType === shiftType);
+                  const workHours = roundHours(shiftSchedules.reduce((sum, schedule) => sum + (schedule.workHours ?? 0), 0));
+                  const specialLeaveHours = roundHours(shiftSchedules.reduce((sum, schedule) => sum + (schedule.specialLeaveHours ?? 0), 0));
+                  const compLeaveHours = roundHours(shiftSchedules.reduce((sum, schedule) => sum + (schedule.compLeaveHours ?? 0), 0));
+                  const shiftOvertimeHours = roundHours(shiftSchedules.reduce((sum, schedule) => sum + (schedule.overtimeHours ?? 0), 0));
+
+                  return (
+                    <div key={shiftType} className="flex justify-between gap-4">
+                      <span>{getShiftLabel(shiftType)}：</span>
+                      <span className="font-medium text-right">
+                        工 {formatHours(workHours)}
+                        {specialLeaveHours > 0 && ` / 特 ${formatHours(specialLeaveHours)}`}
+                        {compLeaveHours > 0 && ` / 補 ${formatHours(compLeaveHours)}`}
+                        {shiftOvertimeHours > 0 && ` / 加 ${formatHours(shiftOvertimeHours)}`}
+                        <span className="text-green-700">（{shiftSchedules.length}天）</span>
+                      </span>
+                    </div>
+                  );
+                })}
                 <div className="border-t border-green-200 pt-2 mt-2">
                   <div className="flex justify-between font-bold">
-                    <span>實班工時：</span>
-                    <span>{(() => {
-                      const aDays = schedules.filter(s => s.shiftType === 'A').length;
-                      const bDays = schedules.filter(s => s.shiftType === 'B').length;
-                      const cDays = schedules.filter(s => s.shiftType === 'C').length;
-                      const nhWorkDays = schedules.filter(s => 
-                        s.shiftType === 'NH' && 
-                        s.startTime && s.startTime.trim() !== '' && 
-                        s.endTime && s.endTime.trim() !== ''
-                      ).length;
-                      const leaveDays = schedules.filter(s => s.shiftType === 'FDL').length;
-                      const actualWorkHours = (aDays + bDays + cDays + nhWorkDays) * 8 + overtimeHours - (leaveDays * 8);
-                      return actualWorkHours;
-                    })()} 小時</span>
+                    <span>實際工時：</span>
+                    <span>{formatHours(scheduleHourTotals.workHours)}</span>
                   </div>
                 </div>
               </div>
             </div>
 
-            {/* 補休餘額 */}
+            {/* 補休與加班 */}
             <div className="bg-yellow-50 rounded-lg p-4">
-              <h4 className="font-medium text-yellow-900 mb-3">補休餘額</h4>
+              <h4 className="font-medium text-yellow-900 mb-3">補休與加班</h4>
               <div className="text-sm text-yellow-800 space-y-1">
                 <div className="flex justify-between">
-                  <span>上月餘額：</span>
-                  <span className="font-medium">0 小時</span>
+                  <span>排班補休使用：</span>
+                  <span className="font-medium text-orange-600">-{formatHours(scheduleHourTotals.compLeaveHours)}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span>本月加班轉入：</span>
-                  <span className="font-medium text-green-600">+{overtimeHours} 小時</span>
+                  <span>排班加班：</span>
+                  <span className="font-medium text-red-600">+{formatHours(scheduleHourTotals.overtimeHours)}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span>本月使用(OFF)：</span>
-                  <span className="font-medium text-red-600">-{(() => {
-                    const offDays = schedules.filter(s => s.shiftType === 'OFF').length;
-                    return offDays * 8;
-                  })()} 小時 ({schedules.filter(s => s.shiftType === 'OFF').length}天)</span>
+                  <span>已核准加班申請：</span>
+                  <span className="font-medium text-blue-600">+{formatHours(overtimeHours)}</span>
                 </div>
                 <div className="border-t border-yellow-200 pt-2 mt-2">
                   <div className="flex justify-between font-bold">
-                    <span>本月餘額：</span>
-                    <span>{(() => {
-                      const offDays = schedules.filter(s => s.shiftType === 'OFF').length;
-                      const usedHours = offDays * 8;
-                      const balance = overtimeHours - usedHours;
-                      return balance >= 0 ? balance : balance;
-                    })()} 小時</span>
+                    <span>本月補休差額：</span>
+                    <span>{formatHours(roundHours(scheduleHourTotals.overtimeHours + overtimeHours - scheduleHourTotals.compLeaveHours))}</span>
                   </div>
                 </div>
               </div>
@@ -1075,9 +1119,9 @@ export default function MySchedulePage() {
                 </div>
                 <div className="border-t border-gray-200 pt-2">
                   <p className="font-medium text-gray-800 mb-1">【計算公式】</p>
-                  <p>• 應班工時 = (月曆天數 - RD - rd - NH) × 8</p>
-                  <p>• 加班工時 = 已核准加班申請時數</p>
-                  <p>• 實際工時 = 排班工時 + 加班 - 請假</p>
+                  <p>• 實際工時、特休、補休、排班加班皆依班別設定與班表資料加總</p>
+                  <p>• 已核准加班申請另列，避免與班別中的排班加班混淆</p>
+                  <p>• 排班時數合計 = 實際工時 + 特休 + 補休 + 排班加班</p>
                 </div>
                 <div className="border-t border-gray-200 pt-2">
                   <p className="text-yellow-700 flex items-center gap-1">
@@ -1124,6 +1168,18 @@ export default function MySchedulePage() {
                       B班{confirmData.scheduleSummary.shiftB}天
                       {confirmData.scheduleSummary.shiftC > 0 && `、C班${confirmData.scheduleSummary.shiftC}天`}
                     </span>
+                  </div>
+                  <div className="border-t border-gray-200 pt-2 space-y-1">
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">實際工時：</span>
+                      <span className="font-medium">{formatHours(scheduleHourTotals.workHours)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">特休 / 補休 / 加班：</span>
+                      <span className="font-medium">
+                        {formatHours(scheduleHourTotals.specialLeaveHours)} / {formatHours(scheduleHourTotals.compLeaveHours)} / {formatHours(scheduleHourTotals.overtimeHours)}
+                      </span>
+                    </div>
                   </div>
                 </div>
               )}

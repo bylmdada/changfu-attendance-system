@@ -57,6 +57,7 @@ const mockIsMobileClockingDevice = isMobileClockingDevice as jest.MockedFunction
 const mockGetGPSSettingsFromDB = getGPSSettingsFromDB as jest.MockedFunction<typeof getGPSSettingsFromDB>;
 const mockGetActiveAllowedLocations = getActiveAllowedLocations as jest.MockedFunction<typeof getActiveAllowedLocations>;
 const mockValidateGpsClockLocation = validateGpsClockLocation as jest.MockedFunction<typeof validateGpsClockLocation>;
+const validInfectionControl = { hasFever: false, temperature: null, hasAcuteCough: false };
 
 function createAuthenticatorData(flags: number, counter: number) {
   const authData = Buffer.alloc(37);
@@ -303,6 +304,7 @@ describe('webauthn auth-verify account status guard', () => {
         body: JSON.stringify({
           ...signedCredential.requestBody,
           clockType: 'out',
+          infectionControl: validInfectionControl,
         })
       });
 

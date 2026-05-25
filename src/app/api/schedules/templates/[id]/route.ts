@@ -9,12 +9,17 @@ import {
 } from '@/lib/schedule-management-permissions';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
+import { listShiftDefinitions } from '@/lib/shift-definition-service';
 
 interface DaySchedule {
   shiftType: string;
   startTime: string;
   endTime: string;
   breakTime: number;
+  workHours: number;
+  specialLeaveHours: number;
+  compLeaveHours: number;
+  overtimeHours: number;
 }
 
 interface WeeklyTemplate {
@@ -48,8 +53,29 @@ function isDaySchedule(value: unknown): value is DaySchedule {
     typeof value.shiftType === 'string' &&
     typeof value.startTime === 'string' &&
     typeof value.endTime === 'string' &&
-    typeof value.breakTime === 'number'
+    typeof value.breakTime === 'number' &&
+    typeof value.workHours === 'number' &&
+    typeof value.specialLeaveHours === 'number' &&
+    typeof value.compLeaveHours === 'number' &&
+    typeof value.overtimeHours === 'number'
   );
+}
+
+function normalizeDaySchedule(value: unknown): DaySchedule {
+  if (isPlainObject(value)) {
+    return {
+      shiftType: typeof value.shiftType === 'string' ? value.shiftType : '',
+      startTime: typeof value.startTime === 'string' ? value.startTime : '',
+      endTime: typeof value.endTime === 'string' ? value.endTime : '',
+      breakTime: typeof value.breakTime === 'number' ? value.breakTime : 0,
+      workHours: typeof value.workHours === 'number' ? value.workHours : 0,
+      specialLeaveHours: typeof value.specialLeaveHours === 'number' ? value.specialLeaveHours : 0,
+      compLeaveHours: typeof value.compLeaveHours === 'number' ? value.compLeaveHours : 0,
+      overtimeHours: typeof value.overtimeHours === 'number' ? value.overtimeHours : 0,
+    };
+  }
+
+  return { shiftType: '', startTime: '', endTime: '', breakTime: 0, workHours: 0, specialLeaveHours: 0, compLeaveHours: 0, overtimeHours: 0 };
 }
 
 // 資料檔案路徑
@@ -77,7 +103,14 @@ function loadTemplates(): WeeklyTemplate[] {
       ...t,
       department: t.department ?? null,
       createdById: t.createdById ?? null,
-      createdByName: t.createdByName ?? '系統'
+      createdByName: t.createdByName ?? '系統',
+      monday: normalizeDaySchedule(t.monday),
+      tuesday: normalizeDaySchedule(t.tuesday),
+      wednesday: normalizeDaySchedule(t.wednesday),
+      thursday: normalizeDaySchedule(t.thursday),
+      friday: normalizeDaySchedule(t.friday),
+      saturday: normalizeDaySchedule(t.saturday),
+      sunday: normalizeDaySchedule(t.sunday)
     }));
   } catch (error) {
     console.error('讀取模版失敗:', error);
@@ -187,12 +220,19 @@ export async function PUT(
 
     // 驗證每日班表資料
     const weekdays = { monday, tuesday, wednesday, thursday, friday, saturday, sunday };
+    const shiftDefinitions = await listShiftDefinitions();
+    const activeShiftCodes = new Set(shiftDefinitions.map((shift) => shift.code));
     for (const [day, schedule] of Object.entries(weekdays)) {
       if (!isDaySchedule(schedule)) {
         return NextResponse.json({ error: `${day} 班表資料格式錯誤` }, { status: 400 });
       }
       if (!schedule.shiftType) {
         return NextResponse.json({ error: `${day} 缺少班別類型` }, { status: 400 });
+      }
+      const existingDaySchedule = existingTemplate[day as keyof WeeklyTemplate] as DaySchedule;
+      const shiftTypeChanged = schedule.shiftType !== existingDaySchedule.shiftType;
+      if (!activeShiftCodes.has(schedule.shiftType) && shiftTypeChanged) {
+        return NextResponse.json({ error: `${day} 班別不存在或已停用` }, { status: 400 });
       }
     }
 

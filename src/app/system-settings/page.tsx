@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { 
   Calendar, 
@@ -120,6 +121,12 @@ export default function SystemSettingsPage() {
           path: '/system-settings/attendance-freeze',
           description: '設定考勤凍結規則與時間點',
           icon: Calendar
+        },
+        {
+          name: '班別設定',
+          path: '/system-settings/shift-definitions',
+          description: '建立與管理班表可使用的班別、時間與休息設定',
+          icon: Clock
         },
         {
           name: 'GPS打卡設定',
@@ -308,6 +315,20 @@ export default function SystemSettingsPage() {
           icon: Calendar
         }
       ]
+    },
+    {
+      title: '財產管理設定',
+      description: '據點、維護人員與主管、頻率與通知設定',
+      icon: Settings,
+      color: 'blue',
+      items: [
+        {
+          name: '財產管理設定',
+          path: '/system-settings/property-management',
+          description: '據點維護/審核人員指派、頻率與時段、Email 通知、資料匯入',
+          icon: Settings
+        }
+      ]
     }
   ];
 
@@ -391,7 +412,7 @@ export default function SystemSettingsPage() {
                     {category.items.map((item, itemIndex) => {
                       const ItemIcon = item.icon;
                       return (
-                        <a
+                        <Link
                           key={itemIndex}
                           href={item.path}
                           className={`${colors.bg} ${colors.border} border rounded-lg p-4 ${colors.hover} transition-colors group`}
@@ -407,7 +428,7 @@ export default function SystemSettingsPage() {
                               </p>
                             </div>
                           </div>
-                        </a>
+                        </Link>
                       );
                     })}
                   </div>

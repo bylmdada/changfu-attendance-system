@@ -70,6 +70,7 @@ const mockGetGPSSettingsFromDB = getGPSSettingsFromDB as jest.MockedFunction<typ
 const mockGetActiveAllowedLocations = getActiveAllowedLocations as jest.MockedFunction<typeof getActiveAllowedLocations>;
 const mockValidateGpsClockLocation = validateGpsClockLocation as jest.MockedFunction<typeof validateGpsClockLocation>;
 const mockIsMobileClockingDevice = isMobileClockingDevice as jest.MockedFunction<typeof isMobileClockingDevice>;
+const validInfectionControl = { hasFever: false, temperature: null, hasAcuteCough: false };
 
 describe('verify-clock quick auth account status', () => {
   beforeEach(() => {
@@ -108,7 +109,7 @@ describe('verify-clock quick auth account status', () => {
         'content-type': 'application/json',
         'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit'
       },
-      body: JSON.stringify({ username: 'inactive.user', password: 'secret', type: 'in' })
+      body: JSON.stringify({ username: 'inactive.user', password: 'secret', type: 'in', infectionControl: validInfectionControl })
     });
 
     const response = await POST(request);
@@ -208,6 +209,53 @@ describe('verify-clock quick auth account status', () => {
     expect(mockVerifyPassword).not.toHaveBeenCalled();
   });
 
+  it('requires infection-control data before authenticating quick clock requests', async () => {
+    jest.setSystemTime(new Date('2026-04-13T04:00:00.000Z'));
+
+    const request = new NextRequest('http://localhost/api/attendance/verify-clock', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit'
+      },
+      body: JSON.stringify({ username: 'worker', password: 'secret', type: 'in' })
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload.error).toBe('請完成感染管控聲明');
+    expect(mockPrisma.user.findUnique).not.toHaveBeenCalled();
+    expect(mockVerifyPassword).not.toHaveBeenCalled();
+  });
+
+  it('requires a temperature when fever is selected', async () => {
+    jest.setSystemTime(new Date('2026-04-13T04:00:00.000Z'));
+
+    const request = new NextRequest('http://localhost/api/attendance/verify-clock', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit'
+      },
+      body: JSON.stringify({
+        username: 'worker',
+        password: 'secret',
+        type: 'in',
+        infectionControl: { hasFever: true, temperature: null, hasAcuteCough: false }
+      })
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload.error).toBe('選擇有發燒時，請輸入體溫數值');
+    expect(mockPrisma.user.findUnique).not.toHaveBeenCalled();
+    expect(mockVerifyPassword).not.toHaveBeenCalled();
+  });
+
   it('blocks clocking when partial stored restriction settings still resolve to the default overnight window', async () => {
     jest.setSystemTime(new Date('2026-04-13T18:00:00.000Z'));
     mockPrisma.systemSettings.findUnique.mockResolvedValue({
@@ -221,7 +269,7 @@ describe('verify-clock quick auth account status', () => {
         'content-type': 'application/json',
         'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit'
       },
-      body: JSON.stringify({ username: 'worker', password: 'secret', type: 'in' })
+      body: JSON.stringify({ username: 'worker', password: 'secret', type: 'in', infectionControl: validInfectionControl })
     });
 
     const response = await POST(request);
@@ -250,7 +298,7 @@ describe('verify-clock quick auth account status', () => {
         'content-type': 'application/json',
         'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit'
       },
-      body: JSON.stringify({ username: 'worker', password: 'secret', type: 'in' })
+      body: JSON.stringify({ username: 'worker', password: 'secret', type: 'in', infectionControl: validInfectionControl })
     });
 
     const response = await POST(request);
@@ -303,7 +351,7 @@ describe('verify-clock quick auth account status', () => {
         'content-type': 'application/json',
         'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit'
       },
-      body: JSON.stringify({ username: 'worker', password: 'secret', clockType: 'out' })
+      body: JSON.stringify({ username: 'worker', password: 'secret', clockType: 'out', infectionControl: validInfectionControl })
     });
 
     const response = await POST(request);
@@ -319,6 +367,60 @@ describe('verify-clock quick auth account status', () => {
         workDate: '2026-04-08'
       }
     });
+  });
+
+  it('stores infection-control data on the matching quick clock-in fields', async () => {
+    jest.setSystemTime(new Date('2026-04-08T00:40:00.000Z'));
+
+    mockPrisma.user.findUnique.mockResolvedValue({
+      id: 1,
+      username: 'worker',
+      isActive: true,
+      passwordHash: 'hash',
+      employee: { id: 9, name: '測試員工' }
+    } as never);
+    mockVerifyPassword.mockResolvedValue(true);
+    mockPrisma.schedule.findFirst.mockResolvedValue({
+      employeeId: 9,
+      workDate: '2026-04-08',
+      startTime: '09:00',
+      shiftType: 'DAY'
+    } as never);
+    mockPrisma.attendanceRecord.findFirst.mockResolvedValue(null as never);
+    mockPrisma.attendanceRecord.upsert.mockResolvedValue({
+      id: 66,
+      clockInTime: '2026-04-08T00:40:00.000Z'
+    } as never);
+
+    const request = new NextRequest('http://localhost/api/attendance/verify-clock', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit'
+      },
+      body: JSON.stringify({
+        username: 'worker',
+        password: 'secret',
+        type: 'in',
+        infectionControl: { hasFever: true, temperature: 38.2, hasAcuteCough: true }
+      })
+    });
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(200);
+    expect(mockPrisma.attendanceRecord.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      update: expect.objectContaining({
+        clockInHasFever: true,
+        clockInTemperature: 38.2,
+        clockInHasAcuteCough: true
+      }),
+      create: expect.objectContaining({
+        clockInHasFever: true,
+        clockInTemperature: 38.2,
+        clockInHasAcuteCough: true
+      })
+    }));
   });
 
   it('returns reason prompt data for late clock-out using Taiwan time', async () => {
@@ -361,7 +463,7 @@ describe('verify-clock quick auth account status', () => {
         'content-type': 'application/json',
         'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit'
       },
-      body: JSON.stringify({ username: 'worker', password: 'secret', clockType: 'out' })
+      body: JSON.stringify({ username: 'worker', password: 'secret', clockType: 'out', infectionControl: validInfectionControl })
     });
 
     const response = await POST(request);
@@ -378,6 +480,64 @@ describe('verify-clock quick auth account status', () => {
       scheduledTime: '17:00',
       recordId: 88
     });
+  });
+
+  it('calculates quick clock-out overtime from the scheduled work hours', async () => {
+    jest.setSystemTime(new Date('2026-04-08T10:00:00.000Z'));
+
+    mockPrisma.user.findUnique.mockResolvedValue({
+      id: 1,
+      username: 'worker',
+      isActive: true,
+      passwordHash: 'hash',
+      employee: { id: 9, name: '測試員工' }
+    } as never);
+    mockVerifyPassword.mockResolvedValue(true);
+    mockPrisma.attendanceRecord.findFirst.mockResolvedValue({
+      id: 88,
+      employeeId: 9,
+      clockInTime: '2026-04-08T02:00:00.000Z',
+      clockOutTime: null,
+      regularHours: 0,
+      overtimeHours: 0
+    } as never);
+    mockPrisma.schedule.findFirst.mockResolvedValue({
+      employeeId: 9,
+      workDate: '2026-04-08',
+      startTime: '10:00',
+      endTime: '16:00',
+      breakTime: 0,
+      workHours: 6,
+      shiftType: 'SHORT'
+    } as never);
+    mockPrisma.attendanceRecord.update.mockResolvedValue({
+      id: 88,
+      regularHours: 6,
+      overtimeHours: 2
+    } as never);
+
+    const request = new NextRequest('http://localhost/api/attendance/verify-clock', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit'
+      },
+      body: JSON.stringify({ username: 'worker', password: 'secret', clockType: 'out', infectionControl: validInfectionControl })
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.regularHours).toBe(6);
+    expect(payload.overtimeHours).toBe(2);
+    expect(mockPrisma.attendanceRecord.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 88 },
+      data: expect.objectContaining({
+        regularHours: 6,
+        overtimeHours: 2
+      })
+    }));
   });
 
   it('stores the fixed late clock-out reason text when business reason is submitted directly', async () => {
@@ -421,7 +581,8 @@ describe('verify-clock quick auth account status', () => {
         username: 'worker',
         password: 'secret',
         clockType: 'out',
-        clockOutReason: 'BUSINESS'
+        clockOutReason: 'BUSINESS',
+        infectionControl: validInfectionControl
       })
     });
 
@@ -472,7 +633,7 @@ describe('verify-clock quick auth account status', () => {
         'content-type': 'application/json',
         'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit'
       },
-      body: JSON.stringify({ username: 'worker', password: 'secret', type: 'in' })
+      body: JSON.stringify({ username: 'worker', password: 'secret', type: 'in', infectionControl: validInfectionControl })
     });
 
     const response = await POST(request);
@@ -537,7 +698,7 @@ describe('verify-clock quick auth account status', () => {
         'content-type': 'application/json',
         'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit'
       },
-      body: JSON.stringify({ username: 'worker', password: 'secret', clockType: 'out' })
+      body: JSON.stringify({ username: 'worker', password: 'secret', clockType: 'out', infectionControl: validInfectionControl })
     });
 
     const response = await POST(request);

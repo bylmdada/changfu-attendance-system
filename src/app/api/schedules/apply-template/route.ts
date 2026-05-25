@@ -5,6 +5,7 @@ import { validateCSRF } from '@/lib/csrf';
 import { getManageableDepartments } from '@/lib/schedule-management-permissions';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
+import { listShiftDefinitions } from '@/lib/shift-definition-service';
 import fs from 'fs';
 import path from 'path';
 
@@ -12,15 +13,26 @@ interface Template {
   id: number;
   name: string;
   description: string;
-  monday: { shiftType: string; startTime: string; endTime: string; breakTime: number };
-  tuesday: { shiftType: string; startTime: string; endTime: string; breakTime: number };
-  wednesday: { shiftType: string; startTime: string; endTime: string; breakTime: number };
-  thursday: { shiftType: string; startTime: string; endTime: string; breakTime: number };
-  friday: { shiftType: string; startTime: string; endTime: string; breakTime: number };
-  saturday: { shiftType: string; startTime: string; endTime: string; breakTime: number };
-  sunday: { shiftType: string; startTime: string; endTime: string; breakTime: number };
+  monday: DaySchedule;
+  tuesday: DaySchedule;
+  wednesday: DaySchedule;
+  thursday: DaySchedule;
+  friday: DaySchedule;
+  saturday: DaySchedule;
+  sunday: DaySchedule;
   createdAt: string;
   updatedAt?: string;
+}
+
+interface DaySchedule {
+  shiftType: string;
+  startTime: string;
+  endTime: string;
+  breakTime: number;
+  workHours?: number;
+  specialLeaveHours?: number;
+  compLeaveHours?: number;
+  overtimeHours?: number;
 }
 
 const DATA_DIR = path.join(process.cwd(), 'data');
@@ -185,6 +197,19 @@ export async function POST(request: NextRequest) {
     }
     console.log(`✅ 找到模版: ${template.name}`);
 
+    const shiftDefinitions = await listShiftDefinitions();
+    const shiftDefinitionMap = new Map(shiftDefinitions.map((shift) => [shift.code, shift]));
+    const templateDays = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] as const;
+    for (const day of templateDays) {
+      const daySchedule = template[day];
+      if (daySchedule?.shiftType && !shiftDefinitionMap.has(daySchedule.shiftType)) {
+        return NextResponse.json(
+          { error: `模版「${template.name}」含有不存在或已停用的班別：${daySchedule.shiftType}` },
+          { status: 400 }
+        );
+      }
+    }
+
     // 從資料庫獲取員工
     console.log('👥 從資料庫獲取員工...');
     const employees = await prisma.employee.findMany({
@@ -248,27 +273,34 @@ export async function POST(request: NextRequest) {
       startTime: string;
       endTime: string;
       breakTime: number;
+      workHours: number;
+      specialLeaveHours: number;
+      compLeaveHours: number;
+      overtimeHours: number;
     }> = [];
 
     for (const employee of employees) {
       for (const dateInfo of monthDates) {
         const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
         const dayName = dayNames[dateInfo.dayOfWeek] as keyof Template;
-        const daySchedule = template[dayName] as { shiftType: string; startTime: string; endTime: string; breakTime: number };
+        const daySchedule = template[dayName] as DaySchedule;
 
-        // 只排除 OFF，RD/rd 等也要建立記錄以便在月曆上顯示
-        if (daySchedule && daySchedule.shiftType && daySchedule.shiftType !== 'OFF') {
-          // 非工作班別（NH/RD/rd/FDL/TD）不應有時間
-          const noTimeShiftTypes = ['NH', 'RD', 'rd', 'FDL', 'TD'];
-          const hasTime = !noTimeShiftTypes.includes(daySchedule.shiftType);
+        // Every configured shift, including OFF, must persist so leave/comp/overtime hours stay auditable.
+        if (daySchedule?.shiftType) {
+          const shiftDefinition = shiftDefinitionMap.get(daySchedule.shiftType);
+          const hasTime = shiftDefinition?.requiresTime ?? true;
           
           newSchedules.push({
             employeeId: employee.id,
             workDate: dateInfo.date,
             shiftType: daySchedule.shiftType,
-            startTime: hasTime ? (daySchedule.startTime || '') : '',
-            endTime: hasTime ? (daySchedule.endTime || '') : '',
-            breakTime: hasTime ? (daySchedule.breakTime || 0) : 0
+            startTime: hasTime ? (daySchedule.startTime || shiftDefinition?.startTime || '') : '',
+            endTime: hasTime ? (daySchedule.endTime || shiftDefinition?.endTime || '') : '',
+            breakTime: hasTime ? (daySchedule.breakTime || shiftDefinition?.breakTime || 0) : 0,
+            workHours: daySchedule.workHours ?? shiftDefinition?.workHours ?? 0,
+            specialLeaveHours: daySchedule.specialLeaveHours ?? shiftDefinition?.specialLeaveHours ?? 0,
+            compLeaveHours: daySchedule.compLeaveHours ?? shiftDefinition?.compLeaveHours ?? 0,
+            overtimeHours: daySchedule.overtimeHours ?? shiftDefinition?.overtimeHours ?? 0
           });
         }
       }
