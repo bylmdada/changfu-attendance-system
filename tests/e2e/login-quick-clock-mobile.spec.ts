@@ -13,7 +13,7 @@ function jsonResponse(body: unknown) {
 test.describe('login quick clock mobile flow', () => {
   test('supports mobile quick clock clock-out and late reason submission without login session', async ({ page, context }) => {
     let verifyClockPayload: Record<string, unknown> | null = null;
-    let updateReasonPayload: Record<string, unknown> | null = null;
+    let clockReasonPayload: Record<string, unknown> | null = null;
 
     await context.route('**/api/system-settings/gps-attendance', async (route) => {
       await route.fulfill(
@@ -55,10 +55,15 @@ test.describe('login quick clock mobile flow', () => {
           clockOutTime: '2026-04-08T10:25:00.000Z',
           workHours: 8,
           overtimeHours: 0.5,
-          isLateClockOut: true,
-          scheduleEndTime: '18:00',
           attendance: {
             id: 99,
+          },
+          requiresReason: true,
+          reasonPrompt: {
+            type: 'LATE_OUT',
+            minutesDiff: 25,
+            scheduledTime: '18:00',
+            recordId: 99,
           },
         })
       );
@@ -68,8 +73,8 @@ test.describe('login quick clock mobile flow', () => {
       await route.fulfill(jsonResponse({ success: true, csrfToken: 'test-csrf-token' }));
     });
 
-    await context.route('**/api/attendance/update-reason', async (route) => {
-      updateReasonPayload = JSON.parse(route.request().postData() ?? '{}') as Record<string, unknown>;
+    await context.route('**/api/attendance/clock-reason', async (route) => {
+      clockReasonPayload = JSON.parse(route.request().postData() ?? '{}') as Record<string, unknown>;
       await route.fulfill(jsonResponse({ message: '原因已記錄' }));
     });
 
@@ -95,20 +100,21 @@ test.describe('login quick clock mobile flow', () => {
         type: 'out',
       });
 
-    await expect(page.getByRole('heading', { name: '超時下班原因' })).toBeVisible();
-    await expect(page.getByText(/已超過班表時間/)).toBeVisible();
+    await expect(page.getByRole('heading', { name: '延後下班提示' })).toBeVisible();
+    await expect(page.getByText(/班表時間：18:00/)).toBeVisible();
 
     await page.getByRole('button', { name: '非公務因素' }).click();
 
     await expect
-      .poll(() => updateReasonPayload)
+      .poll(() => clockReasonPayload)
       .toMatchObject({
-        attendanceId: 99,
-        lateClockOutReason: 'PERSONAL',
+        recordId: 99,
+        clockType: 'out',
+        reason: 'PERSONAL',
         username: 'worker1',
         password: 'secret123',
       });
 
-    await expect(page.getByRole('heading', { name: '超時下班原因' })).not.toBeVisible();
+    await expect(page.getByRole('heading', { name: '延後下班提示' })).not.toBeVisible();
   });
 });
