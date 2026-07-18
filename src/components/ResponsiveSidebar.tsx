@@ -21,7 +21,8 @@ import {
   Bell,
   CreditCard,
   BarChart3,
-  Cloud
+  Cloud,
+  Wrench
 } from 'lucide-react';
 
 interface User {
@@ -31,6 +32,10 @@ interface User {
   isDepartmentManager?: boolean;
   isDeputyManager?: boolean;
   hasSchedulePermission?: boolean; // 有班表管理權限
+  hasPropertyAccess?: boolean; // 有財產管理存取
+  canMaintainProperty?: boolean; // 可提交財產維護
+  isPropertySupervisor?: boolean; // 財產管理主管/稽核
+  canManageProperty?: boolean; // 可管理財產據點/資產主檔
   employee?: {
     id: number;
     employeeId?: string;
@@ -65,6 +70,21 @@ const menuItems: MenuItem[] = [
     href: '/approval-dashboard',
     icon: ClipboardList,
     roles: ['ADMIN', 'HR', 'MANAGER'],
+  },
+  {
+    name: '財產管理',
+    icon: Wrench,
+    roles: ['PROPERTY'],
+    children: [
+      { name: '首頁（今日任務）', href: '/property-management' },
+      { name: '掃碼查詢', href: '/property-management/scan' },
+      { name: '資產清冊', href: '/property-management/assets' },
+      { name: '維護紀錄', href: '/property-management/records' },
+      { name: '修改申請', href: '/property-management/modifications', roles: ['PROPERTY_MAINTAINER'] },
+      { name: '維護審核', href: '/property-management/review', roles: ['PROPERTY_SUPERVISOR'] },
+      { name: '維護統計', href: '/property-management/stats', roles: ['PROPERTY_SUPERVISOR'] },
+      { name: '維護報表', href: '/property-management/reports', roles: ['PROPERTY_SUPERVISOR'] },
+    ],
   },
   
   // ===== 日常工作（所有員工） =====
@@ -227,8 +247,17 @@ export default function ResponsiveSidebar({ user }: SidebarProps) {
     if (item.roles.includes('MANAGER') && (user.isDepartmentManager || user.isDeputyManager)) return true;
     // 如果用戶有班表管理權限，願示班表管理選單
     if (item.roles.includes('SCHEDULE_MANAGER') && user.hasSchedulePermission) return true;
+    if (item.roles.includes('PROPERTY') && user.hasPropertyAccess) return true;
     return item.roles.includes(user.role);
   });
+
+  // 子選單可見性（支援 PROPERTY_SUPERVISOR token）
+  const childVisible = (child: { roles?: string[] }) => {
+    if (!child.roles || child.roles.length === 0) return true;
+    if (child.roles.includes('PROPERTY_MAINTAINER') && user.canMaintainProperty) return true;
+    if (child.roles.includes('PROPERTY_SUPERVISOR') && user.isPropertySupervisor) return true;
+    return child.roles.includes(user.role);
+  };
 
   // 檢查路徑是否匹配
   const isActive = (href: string) => pathname === href;
@@ -265,7 +294,7 @@ export default function ResponsiveSidebar({ user }: SidebarProps) {
           {/* 桌面版：可折疊子選單 */}
           {!isMobile && isExpanded && (
             <div className="ml-8 mt-1 space-y-1">
-              {item.children?.filter(child => !child.roles || child.roles.includes(user.role)).map(child => (
+              {item.children?.filter(childVisible).map(child => (
                 <Link
                   key={child.href}
                   href={child.href}
@@ -283,7 +312,7 @@ export default function ResponsiveSidebar({ user }: SidebarProps) {
           {/* 手機版：展開顯示扁平子選單 */}
           {isMobile && isExpanded && (
             <div className="mt-1 space-y-1">
-              {item.children?.filter(child => !child.roles || child.roles.includes(user.role)).map(child => (
+              {item.children?.filter(childVisible).map(child => (
                 <Link
                   key={child.href}
                   href={child.href}

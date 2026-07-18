@@ -2,6 +2,10 @@
   "name": "changfu-attendance-system",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=20.19.6 <23",
+    "npm": ">=9"
+  },
   "scripts": {
     "dev": "next dev --turbopack --port 3001",
     "dev:http": "next dev --turbopack --port 3001 --hostname 0.0.0.0",
@@ -19,6 +23,7 @@
     "audit:api-routes": "tsx scripts/audit-api-routes.ts",
     "repair:comp-leave-imports": "tsx scripts/repair-comp-leave-import-baselines.ts",
     "repair:schedule-break-times": "tsx scripts/repair-schedule-break-times.ts",
+    "import:property": "tsx scripts/import-property-maintenance.ts",
     "test:e2e": "playwright test"
   },
   "prisma": {
@@ -26,31 +31,34 @@
   },
   "dependencies": {
     "@hookform/resolvers": "^5.1.1",
-    "@pdfme/pdf-lib": "^5.5.8",
-    "@prisma/client": "^6.12.0",
+    "@pdfme/pdf-lib": "^6.1.2",
+    "@prisma/client": "^6.19.3",
     "@sentry/nextjs": "^10.32.1",
     "@simplewebauthn/server": "^13.3.0",
-    "@types/nodemailer": "^7.0.4",
+    "@types/nodemailer": "^8.0.0",
     "@types/qrcode": "^1.5.6",
     "bcryptjs": "^3.0.3",
+    "bwip-js": "^4.10.1",
     "chart.js": "^4.5.1",
     "date-fns": "^4.1.0",
     "fontkit": "^2.0.4",
+    "html5-qrcode": "^2.3.8",
     "jsonwebtoken": "^9.0.3",
-    "jspdf": "^3.0.4",
+    "jspdf": "^4.2.1",
     "lucide-react": "^0.525.0",
-    "next": "^15.4.8",
-    "nodemailer": "^7.0.11",
+    "next": "^15.5.18",
+    "nodemailer": "^8.0.7",
     "otplib": "^12.0.1",
     "pdf-lib": "^1.17.1",
-    "prisma": "^6.12.0",
+    "prisma": "^6.19.3",
     "qrcode": "^1.5.4",
     "react": "^19.2.1",
     "react-chartjs-2": "^5.3.1",
     "react-dom": "^19.2.1",
     "react-hook-form": "^7.60.0",
+    "sharp": "^0.34.5",
     "web-push": "^3.6.7",
-    "xlsx": "^0.18.5",
+    "xlsx": "npm:@e965/xlsx@^0.20.3",
     "zod": "^4.0.5"
   },
   "devDependencies": {
@@ -71,5 +79,26 @@
     "ts-jest": "^29.2.5",
     "tsx": "^4.20.3",
     "typescript": "^5"
+  },
+  "overrides": {
+    "bn.js": "4.12.3",
+    "dompurify": "^3.4.4",
+    "fast-uri": "^3.1.2",
+    "flatted": "^3.4.2",
+    "handlebars": "^4.7.9",
+    "picomatch": "4.0.4",
+    "anymatch": {
+      "picomatch": "2.3.2"
+    },
+    "readdirp": {
+      "picomatch": "2.3.2"
+    },
+    "postcss": "^8.5.14",
+    "rollup": "^4.60.4",
+    "serialize-javascript": "7.0.5",
+    "schema-utils": {
+      "ajv": "^8.20.0"
+    },
+    "terser-webpack-plugin": "^5.6.0"
   }
 }

@@ -19,6 +19,10 @@ import {
   parseClockReasonPromptSettings,
   shouldSkipClockReasonPrompt,
 } from '@/lib/clock-reason-prompt-settings';
+import {
+  buildInfectionControlClockData,
+  parseInfectionControlInput,
+} from '@/lib/attendance-infection-control';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -104,6 +108,12 @@ export async function POST(request: NextRequest) {
     if (!['in', 'out'].includes(clockType)) {
       return NextResponse.json({ error: '無效的打卡類型' }, { status: 400 });
     }
+
+    const infectionControlResult = parseInfectionControlInput(body.infectionControl);
+    if (!infectionControlResult.ok) {
+      return NextResponse.json({ error: infectionControlResult.error }, { status: 400 });
+    }
+    const infectionControlData = buildInfectionControlClockData(clockType as 'in' | 'out', infectionControlResult.data);
 
     const clientIP = getClientIP(request);
     console.log('🔐 開始打卡驗證，用戶:', username, '類型:', clockType, 'IP:', clientIP);
@@ -274,6 +284,7 @@ export async function POST(request: NextRequest) {
         update: {
           clockInTime: currentTime,
           status: 'PRESENT',
+          ...infectionControlData,
           ...locationData
         },
         create: {
@@ -281,6 +292,7 @@ export async function POST(request: NextRequest) {
           workDate: todayStart,
           clockInTime: currentTime,
           status: 'PRESENT',
+          ...infectionControlData,
           ...locationData
         }
       });
@@ -361,7 +373,7 @@ export async function POST(request: NextRequest) {
           const hours = calculateAttendanceHours(
             clockInTime,
             clockOutTime,
-            undefined,
+            todaySchedule?.workHours ?? undefined,
             todaySchedule?.breakTime || 0
           );
 
@@ -386,6 +398,7 @@ export async function POST(request: NextRequest) {
             regularHours: parseFloat(regularHours.toFixed(2)),
             overtimeHours: parseFloat(overtimeHours.toFixed(2)),
             clockOutReason: clockOutReason,
+            ...infectionControlData,
             ...locationData
           }
         });
@@ -435,6 +448,7 @@ export async function POST(request: NextRequest) {
             regularHours: 0,
             overtimeHours: 0,
             clockOutReason: clockOutReason,
+            ...infectionControlData,
             ...locationData
           }
         });

@@ -118,8 +118,8 @@ describe('attendance records route guards', () => {
     ] as never);
 
     mockPrisma.schedule.findMany.mockResolvedValue([
-      { employeeId: 100, workDate: '2026-04-10', startTime: '09:00', endTime: '18:00', breakTime: 0 },
-      { employeeId: 101, workDate: '2026-04-09', startTime: '09:00', endTime: '18:00', breakTime: 0 }
+      { employeeId: 100, workDate: '2026-04-10', startTime: '09:00', endTime: '18:00', breakTime: 0, workHours: 8 },
+      { employeeId: 101, workDate: '2026-04-09', startTime: '09:00', endTime: '18:00', breakTime: 0, workHours: 8 }
     ] as never);
 
     const response = await GET(new NextRequest('http://localhost/api/attendance/records?page=1&pageSize=1&status=異常'));
@@ -131,6 +131,68 @@ describe('attendance records route guards', () => {
     expect(payload.records[0].status).toBe('異常');
     expect(payload.pagination.total).toBe(1);
     expect(payload.pagination.totalPages).toBe(1);
+  });
+
+  it('uses the scheduled work hours when classifying no-time leave shift records', async () => {
+    mockPrisma.attendanceRecord.count.mockResolvedValue(1 as never);
+    mockPrisma.attendanceRecord.findMany
+      .mockResolvedValueOnce([
+        {
+          id: 7,
+          employeeId: 106,
+          workDate: new Date('2026-04-11T00:00:00.000Z'),
+          clockInTime: new Date('2026-04-11T09:00:00.000Z'),
+          clockOutTime: new Date('2026-04-11T10:00:00.000Z'),
+          regularHours: 1,
+          overtimeHours: 0,
+          status: 'PRESENT',
+          createdAt: new Date('2026-04-11T10:05:00.000Z'),
+          clockInLatitude: null,
+          clockInLongitude: null,
+          clockInAccuracy: null,
+          clockInAddress: null,
+          clockOutLatitude: null,
+          clockOutLongitude: null,
+          clockOutAccuracy: null,
+          clockOutAddress: null,
+          employee: {
+            id: 106,
+            employeeId: 'E106',
+            name: '特休員工',
+            department: '製造部',
+            position: 'Staff'
+          }
+        }
+      ] as never)
+      .mockResolvedValueOnce([
+        {
+          employeeId: 106,
+          workDate: new Date('2026-04-11T00:00:00.000Z'),
+          clockInTime: new Date('2026-04-11T09:00:00.000Z'),
+          clockOutTime: new Date('2026-04-11T10:00:00.000Z'),
+          regularHours: 1,
+          overtimeHours: 0,
+        }
+      ] as never);
+
+    mockPrisma.schedule.findMany.mockResolvedValue([
+      {
+        employeeId: 106,
+        workDate: '2026-04-11',
+        shiftType: 'FDL',
+        startTime: '',
+        endTime: '',
+        breakTime: 0,
+        workHours: 0,
+      }
+    ] as never);
+
+    const response = await GET(new NextRequest('http://localhost/api/attendance/records?page=1&pageSize=10'));
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.records[0].shiftType).toBe('FDL');
+    expect(payload.records[0].status).toBe('正常');
   });
 
   it('recalculates regular and overtime hours from clock times so stale stored values do not leak to the records page', async () => {
@@ -182,6 +244,7 @@ describe('attendance records route guards', () => {
         startTime: '09:00',
         endTime: '18:00',
         breakTime: 60,
+        workHours: 8,
       }
     ] as never);
 
@@ -244,6 +307,7 @@ describe('attendance records route guards', () => {
         startTime: '09:00',
         endTime: '18:00',
         breakTime: 60,
+        workHours: 8,
       }
     ] as never);
 
@@ -309,6 +373,7 @@ describe('attendance records route guards', () => {
         startTime: '09:00',
         endTime: '18:00',
         breakTime: 60,
+        workHours: 8,
       }
     ] as never);
 

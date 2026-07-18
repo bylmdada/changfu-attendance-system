@@ -22,6 +22,12 @@ interface AttendanceRecord {
   updatedAt?: string;
   clockInReason?: string | null;
   clockOutReason?: string | null;
+  clockInHasFever?: boolean | null;
+  clockInTemperature?: number | null;
+  clockInHasAcuteCough?: boolean | null;
+  clockOutHasFever?: boolean | null;
+  clockOutTemperature?: number | null;
+  clockOutHasAcuteCough?: boolean | null;
   shiftType?: string | null;
   scheduledStart?: string | null;
   scheduledEnd?: string | null;
@@ -270,6 +276,16 @@ export default function AttendanceRecordsPage() {
     })
   );
 
+  const formatYesNo = (value: boolean | null | undefined) => {
+    if (value === true) return '有';
+    if (value === false) return '無';
+    return '未記錄';
+  };
+
+  const formatTemperature = (value: number | null | undefined) => (
+    value === null || value === undefined ? '-' : `${value.toFixed(1)}°C`
+  );
+
   const handlePageChange = (newPage: number) => {
     console.log('📄 分頁變更:', { from: pagination.current, to: newPage });
     setPagination(prev => ({ ...prev, current: newPage }));
@@ -295,6 +311,12 @@ export default function AttendanceRecordsPage() {
         '班次': getRecordShiftDisplay(record),
         '上班時間': formatTime(record.clockInTime),
         '下班時間': formatTime(record.clockOutTime),
+        '上班發燒': formatYesNo(record.clockInHasFever),
+        '上班體溫': formatTemperature(record.clockInTemperature),
+        '上班急性咳嗽≧24小時': formatYesNo(record.clockInHasAcuteCough),
+        '下班發燒': formatYesNo(record.clockOutHasFever),
+        '下班體溫': formatTemperature(record.clockOutTemperature),
+        '下班急性咳嗽≧24小時': formatYesNo(record.clockOutHasAcuteCough),
         '正常工時': record.regularHours,
         '加班工時': record.overtimeHours,
         '狀態': record.status
@@ -524,6 +546,9 @@ export default function AttendanceRecordsPage() {
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('status')}>
                           狀態 {sortConfig.field === 'status' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
                         </th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          感染管控
+                        </th>
                         {canViewClockReasons && (
                           <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                             打卡原因
@@ -587,6 +612,26 @@ export default function AttendanceRecordsPage() {
                             }`}>
                               {record.status}
                             </span>
+                          </td>
+                          <td className="px-6 py-4 text-xs text-gray-700">
+                            <div className="space-y-1 min-w-48">
+                              <div>
+                                <span className="font-medium text-blue-700">上班：</span>
+                                <span>發燒 {formatYesNo(record.clockInHasFever)}</span>
+                                <span className="mx-1">/</span>
+                                <span>體溫 {formatTemperature(record.clockInTemperature)}</span>
+                                <span className="mx-1">/</span>
+                                <span>咳嗽 {formatYesNo(record.clockInHasAcuteCough)}</span>
+                              </div>
+                              <div>
+                                <span className="font-medium text-orange-700">下班：</span>
+                                <span>發燒 {formatYesNo(record.clockOutHasFever)}</span>
+                                <span className="mx-1">/</span>
+                                <span>體溫 {formatTemperature(record.clockOutTemperature)}</span>
+                                <span className="mx-1">/</span>
+                                <span>咳嗽 {formatYesNo(record.clockOutHasAcuteCough)}</span>
+                              </div>
+                            </div>
                           </td>
                           {canViewClockReasons && (
                             <td className="px-6 py-4 text-xs text-gray-700">

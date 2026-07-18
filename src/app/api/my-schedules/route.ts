@@ -103,6 +103,11 @@ export async function GET(request: NextRequest) {
       shiftType: schedule.shiftType,
       startTime: schedule.startTime,
       endTime: schedule.endTime,
+      breakTime: schedule.breakTime,
+      workHours: schedule.workHours,
+      specialLeaveHours: schedule.specialLeaveHours,
+      compLeaveHours: schedule.compLeaveHours,
+      overtimeHours: schedule.overtimeHours,
       createdAt: schedule.createdAt,
       updatedAt: schedule.updatedAt,
       employee: schedule.employee

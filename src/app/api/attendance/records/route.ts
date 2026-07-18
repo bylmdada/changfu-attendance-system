@@ -225,7 +225,7 @@ export async function GET(request: NextRequest) {
     });
 
     // 建立班表查詢 Map
-    const scheduleMap = new Map<string, { shiftType: string; startTime: string; endTime: string; breakTime: number }>();
+    const scheduleMap = new Map<string, { shiftType: string; startTime: string; endTime: string; breakTime: number; workHours: number }>();
     schedules.forEach(s => {
       const key = `${s.employeeId}-${toWorkDateKey(s.workDate)}`;
       scheduleMap.set(key, {
@@ -233,6 +233,7 @@ export async function GET(request: NextRequest) {
         startTime: s.startTime,
         endTime: s.endTime,
         breakTime: s.breakTime,
+        workHours: s.workHours,
       });
     });
 
@@ -294,6 +295,7 @@ export async function GET(request: NextRequest) {
       const hasClockIn = !!record.clockInTime;
       const hasClockOut = !!record.clockOutTime;
       const hasSchedule = !!schedule;
+      const minimumWorkHours = hasSchedule ? (schedule.workHours ?? 0) : MIN_WORK_HOURS;
       
       if (!hasClockIn && !hasClockOut) {
         // 完全沒有打卡記錄
@@ -307,8 +309,8 @@ export async function GET(request: NextRequest) {
       } else if (!hasClockIn || !hasClockOut) {
         // 只有部分打卡（有上班沒下班，或有下班沒上班）= 異常
         displayStatus = '異常';
-      } else if (totalHours < MIN_WORK_HOURS) {
-        // 工時不足 8 小時
+      } else if (totalHours < minimumWorkHours) {
+        // 工時不足班表設定工時
         displayStatus = '異常';
       } else {
         // 有完整打卡，檢查遲到/早退
@@ -344,6 +346,12 @@ export async function GET(request: NextRequest) {
         status: displayStatus,
         createdAt: record.createdAt.toISOString(),
         employee: record.employee,
+        clockInHasFever: record.clockInHasFever,
+        clockInTemperature: record.clockInTemperature,
+        clockInHasAcuteCough: record.clockInHasAcuteCough,
+        clockOutHasFever: record.clockOutHasFever,
+        clockOutTemperature: record.clockOutTemperature,
+        clockOutHasAcuteCough: record.clockOutHasAcuteCough,
         // 新增：班表資訊
         shiftType: schedule?.shiftType || null,
         scheduledStart: schedule?.startTime || null,

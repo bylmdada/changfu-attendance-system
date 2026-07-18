@@ -108,6 +108,10 @@ export async function GET(request: NextRequest) {
         startTime: s.startTime,
         endTime: s.endTime,
         breakTime: s.breakTime,
+        workHours: s.workHours,
+        specialLeaveHours: s.specialLeaveHours,
+        compLeaveHours: s.compLeaveHours,
+        overtimeHours: s.overtimeHours,
         employee: s.employee
       }))
     });

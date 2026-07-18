@@ -138,6 +138,24 @@ export async function GET(request: NextRequest) {
 
     const employee = buildEmployeeResponse(userData.employee);
 
+    // 財產管理據點存取（沿用 User，§19/§25）
+    const isGlobalAdmin = ['ADMIN', 'HR'].includes(userData.role);
+    const hasPropertyAccess = true;
+    let canMaintainProperty = isGlobalAdmin;
+    let isPropertySupervisor = isGlobalAdmin;
+    let canManageProperty = isGlobalAdmin;
+    if (!isGlobalAdmin) {
+      const siteAssignments = await prisma.userSiteAssignment.findMany({
+        where: { userId: userData.id, isActive: true },
+        select: { maintenanceRole: true }
+      });
+      canMaintainProperty = siteAssignments.length > 0;
+      isPropertySupervisor = siteAssignments.some(
+        (a) => a.maintenanceRole === 'SUPERVISOR' || a.maintenanceRole === 'ADMIN'
+      );
+      canManageProperty = siteAssignments.some((a) => a.maintenanceRole === 'ADMIN');
+    }
+
     return NextResponse.json({
       user: {
         id: userData.id,
@@ -148,6 +166,10 @@ export async function GET(request: NextRequest) {
         isDepartmentManager,
         isDeputyManager,
         hasSchedulePermission,
+        hasPropertyAccess,
+        canMaintainProperty,
+        isPropertySupervisor,
+        canManageProperty,
         attendancePermissions
       }
     });

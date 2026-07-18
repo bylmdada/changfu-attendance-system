@@ -14,6 +14,14 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function parseHour(value: unknown) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 24) {
+    return undefined;
+  }
+
+  return Math.round(value * 100) / 100;
+}
+
 // 班表變更後，失效該員工該月的確認
 async function invalidateScheduleConfirmation(employeeId: number, workDate: string) {
   try {
@@ -111,6 +119,10 @@ export async function GET(
         startTime: schedule.startTime,
         endTime: schedule.endTime,
         breakTime: schedule.breakTime,
+        workHours: schedule.workHours,
+        specialLeaveHours: schedule.specialLeaveHours,
+        compLeaveHours: schedule.compLeaveHours,
+        overtimeHours: schedule.overtimeHours,
         shiftType: schedule.shiftType,
         status: 'active',
         employee: schedule.employee
@@ -175,47 +187,15 @@ export async function PUT(
     const shiftType = typeof body.shiftType === 'string' ? body.shiftType : undefined;
     const workDate = typeof body.workDate === 'string' ? body.workDate : undefined;
     const breakTime = typeof body.breakTime === 'number' ? body.breakTime : undefined;
-
-    // 非工作班別（NH/RD/rd/FDL/TD）應強制清空時間
-    const noTimeShiftTypes = ['NH', 'RD', 'rd', 'FDL', 'TD'];
-    const shouldClearTime = shiftType && noTimeShiftTypes.includes(shiftType);
-
-    // 建立更新資料
-    const updateData: {
-      startTime?: string;
-      endTime?: string;
-      shiftType?: string;
-      workDate?: string;
-      breakTime?: number;
-    } = {};
-
-    if (shiftType) {
-      updateData.shiftType = shiftType;
-    }
-    if (workDate) {
-      updateData.workDate = workDate;
-    }
-    if (breakTime !== undefined) {
-      updateData.breakTime = breakTime;
-    }
-
-    // 處理時間欄位：非工作班別強制清空，否則按傳入值更新
-    if (shouldClearTime) {
-      updateData.startTime = '';
-      updateData.endTime = '';
-    } else {
-      if (startTime !== undefined) {
-        updateData.startTime = startTime;
-      }
-      if (endTime !== undefined) {
-        updateData.endTime = endTime;
-      }
-    }
+    const workHours = parseHour(body.workHours);
+    const specialLeaveHours = parseHour(body.specialLeaveHours);
+    const compLeaveHours = parseHour(body.compLeaveHours);
+    const overtimeHours = parseHour(body.overtimeHours);
 
     const updatedScheduleResult = await prisma.$transaction(async (tx) => {
       const scheduleToUpdate = await tx.schedule.findUnique({
         where: { id: scheduleId },
-        select: { employeeId: true }
+        select: { employeeId: true, shiftType: true }
       });
 
       if (!scheduleToUpdate) {
@@ -233,6 +213,80 @@ export async function PUT(
           status: 403,
           body: { error: '無權限管理該員工的排程' }
         };
+      }
+
+      const updateData: {
+        startTime?: string;
+        endTime?: string;
+        shiftType?: string;
+        workDate?: string;
+        breakTime?: number;
+        workHours?: number;
+        specialLeaveHours?: number;
+        compLeaveHours?: number;
+        overtimeHours?: number;
+      } = {};
+
+      if (workDate) {
+        updateData.workDate = workDate;
+      }
+
+      const shiftTypeChanged = shiftType !== undefined && shiftType !== scheduleToUpdate.shiftType;
+      const requestedShiftType = shiftType ?? scheduleToUpdate.shiftType;
+      const shiftDefinition = shiftTypeChanged
+        ? await tx.shiftDefinition.findFirst({ where: { code: requestedShiftType, isActive: true } })
+        : await tx.shiftDefinition.findUnique({ where: { code: requestedShiftType } });
+
+      if (shiftTypeChanged && !shiftDefinition) {
+        return {
+          ok: false as const,
+          status: 400,
+          body: { success: false, error: '班別不存在或已停用，請先至班別設定確認' }
+        };
+      }
+
+      if (shiftType) {
+        updateData.shiftType = shiftType;
+      }
+
+      if (shiftDefinition && !shiftDefinition.requiresTime) {
+        updateData.startTime = '';
+        updateData.endTime = '';
+        updateData.breakTime = 0;
+        updateData.workHours = workHours ?? shiftDefinition.workHours;
+        updateData.specialLeaveHours = specialLeaveHours ?? shiftDefinition.specialLeaveHours;
+        updateData.compLeaveHours = compLeaveHours ?? shiftDefinition.compLeaveHours;
+        updateData.overtimeHours = overtimeHours ?? shiftDefinition.overtimeHours;
+      } else if (shiftDefinition?.requiresTime) {
+        updateData.startTime = startTime ?? shiftDefinition.startTime;
+        updateData.endTime = endTime ?? shiftDefinition.endTime;
+        updateData.breakTime = breakTime ?? shiftDefinition.breakTime;
+        updateData.workHours = workHours ?? shiftDefinition.workHours;
+        updateData.specialLeaveHours = specialLeaveHours ?? shiftDefinition.specialLeaveHours;
+        updateData.compLeaveHours = compLeaveHours ?? shiftDefinition.compLeaveHours;
+        updateData.overtimeHours = overtimeHours ?? shiftDefinition.overtimeHours;
+      } else {
+        if (startTime !== undefined) {
+          updateData.startTime = startTime;
+        }
+        if (endTime !== undefined) {
+          updateData.endTime = endTime;
+        }
+        if (breakTime !== undefined) {
+          updateData.breakTime = breakTime;
+        }
+        if (workHours !== undefined) {
+          updateData.workHours = workHours;
+        }
+        if (specialLeaveHours !== undefined) {
+          updateData.specialLeaveHours = specialLeaveHours;
+        }
+        if (compLeaveHours !== undefined) {
+          updateData.compLeaveHours = compLeaveHours;
+        }
+        if (overtimeHours !== undefined) {
+          updateData.overtimeHours = overtimeHours;
+        }
       }
 
       const schedule = await tx.schedule.update({
@@ -274,6 +328,10 @@ export async function PUT(
         startTime: updatedScheduleResult.schedule.startTime,
         endTime: updatedScheduleResult.schedule.endTime,
         breakTime: updatedScheduleResult.schedule.breakTime,
+        workHours: updatedScheduleResult.schedule.workHours,
+        specialLeaveHours: updatedScheduleResult.schedule.specialLeaveHours,
+        compLeaveHours: updatedScheduleResult.schedule.compLeaveHours,
+        overtimeHours: updatedScheduleResult.schedule.overtimeHours,
         shiftType: updatedScheduleResult.schedule.shiftType
       }
     });

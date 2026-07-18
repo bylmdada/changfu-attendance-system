@@ -112,7 +112,11 @@ export async function POST(request: NextRequest) {
               shiftType: schedule.shiftType,
               startTime: schedule.startTime,
               endTime: schedule.endTime,
-              breakTime: schedule.breakTime
+              breakTime: schedule.breakTime,
+              workHours: schedule.workHours,
+              specialLeaveHours: schedule.specialLeaveHours,
+              compLeaveHours: schedule.compLeaveHours,
+              overtimeHours: schedule.overtimeHours
             }
           });
           createdCount++;
@@ -224,7 +228,11 @@ export async function POST(request: NextRequest) {
               shiftType: schedule.shiftType,
               startTime: schedule.startTime,
               endTime: schedule.endTime,
-              breakTime: schedule.breakTime
+              breakTime: schedule.breakTime,
+              workHours: schedule.workHours,
+              specialLeaveHours: schedule.specialLeaveHours,
+              compLeaveHours: schedule.compLeaveHours,
+              overtimeHours: schedule.overtimeHours
             }
           });
           createdCount++;
@@ -239,7 +247,11 @@ export async function POST(request: NextRequest) {
             shiftType: schedule.shiftType,
             startTime: schedule.startTime,
             endTime: schedule.endTime,
-            breakTime: schedule.breakTime
+            breakTime: schedule.breakTime,
+            workHours: schedule.workHours,
+            specialLeaveHours: schedule.specialLeaveHours,
+            compLeaveHours: schedule.compLeaveHours,
+            overtimeHours: schedule.overtimeHours
           }
         });
         createdCount++;

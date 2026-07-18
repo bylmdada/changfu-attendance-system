@@ -71,6 +71,7 @@ const mockedIsMobileClockingDevice = isMobileClockingDevice as jest.MockedFuncti
 const mockedGetGPSSettingsFromDB = getGPSSettingsFromDB as jest.MockedFunction<typeof getGPSSettingsFromDB>;
 const mockedGetActiveAllowedLocations = getActiveAllowedLocations as jest.MockedFunction<typeof getActiveAllowedLocations>;
 const mockedValidateGpsClockLocation = validateGpsClockLocation as jest.MockedFunction<typeof validateGpsClockLocation>;
+const validInfectionControl = { hasFever: false, temperature: null, hasAcuteCough: false };
 
 describe('attendance clock route GPS validation', () => {
   beforeEach(() => {
@@ -126,6 +127,7 @@ describe('attendance clock route GPS validation', () => {
       },
       body: JSON.stringify({
         type: 'in',
+        infectionControl: validInfectionControl,
         location: { latitude: 25.2, longitude: 121.5, accuracy: 15 },
       }),
     });
@@ -235,6 +237,7 @@ describe('attendance clock route GPS validation', () => {
       },
       body: JSON.stringify({
         type: 'in',
+        infectionControl: validInfectionControl,
         location: { latitude: 25.0, longitude: 121.0, accuracy: 10, address: 'Office' },
       }),
     });
@@ -285,6 +288,7 @@ describe('attendance clock route GPS validation', () => {
         },
         body: JSON.stringify({
           type: 'in',
+          infectionControl: validInfectionControl,
           location: { latitude: 25.0, longitude: 121.0, accuracy: 10 },
         }),
       });
@@ -303,6 +307,65 @@ describe('attendance clock route GPS validation', () => {
         scheduledTime: '09:00',
         recordId: 101
       });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('calculates clock-out regular and overtime hours from the scheduled work hours', async () => {
+    jest.useFakeTimers();
+    try {
+      jest.setSystemTime(new Date('2026-04-11T10:00:00.000Z'));
+      mockedPrisma.attendanceRecord.findFirst.mockResolvedValue({
+        id: 202,
+        employeeId: 9,
+        workDate: new Date('2026-04-11T00:00:00.000Z'),
+        clockInTime: new Date('2026-04-11T02:00:00.000Z'),
+        clockOutTime: null,
+      } as never);
+      mockedPrisma.schedule.findFirst.mockResolvedValue({
+        employeeId: 9,
+        workDate: '2026-04-11',
+        startTime: '10:00',
+        endTime: '16:00',
+        breakTime: 0,
+        workHours: 6,
+        shiftType: 'SHORT',
+      } as never);
+      mockedPrisma.attendanceRecord.update.mockResolvedValue({
+        id: 202,
+        regularHours: 6,
+        overtimeHours: 2,
+      } as never);
+
+      const request = new NextRequest('http://localhost/api/attendance/clock', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit',
+        },
+        body: JSON.stringify({
+          type: 'out',
+          infectionControl: validInfectionControl,
+          location: { latitude: 25.0, longitude: 121.0, accuracy: 10 },
+        }),
+      });
+
+      const response = await POST(request);
+      const payload = await response?.json();
+
+      expect(response?.status).toBe(200);
+      expect(payload.regularHours).toBe(6);
+      expect(payload.overtimeHours).toBe(2);
+      expect(mockedPrisma.attendanceRecord.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 202 },
+          data: expect.objectContaining({
+            regularHours: 6,
+            overtimeHours: 2,
+          }),
+        })
+      );
     } finally {
       jest.useRealTimers();
     }

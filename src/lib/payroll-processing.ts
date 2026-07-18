@@ -38,6 +38,11 @@ interface PayrollAttendanceSource {
   overtimeHours: number | null;
 }
 
+interface PayrollScheduleHourSource {
+  workDate: string;
+  specialLeaveHours: number | null;
+}
+
 export interface PayrollBonusBreakdown {
   festivalBonus: number;
   yearEndBonus: number;
@@ -121,6 +126,26 @@ export function buildAttendanceForPayroll(
       isMandatoryRest: dayOfWeek === 0,
     };
   });
+}
+
+function toPayrollWorkDate(workDate: string): Date {
+  return new Date(`${workDate}T00:00:00.000Z`);
+}
+
+export function buildPaidLeaveAttendanceForPayroll(
+  schedules: PayrollScheduleHourSource[]
+): AttendanceForPayroll[] {
+  return schedules
+    .filter(schedule => (schedule.specialLeaveHours || 0) > 0)
+    .map(schedule => ({
+      workDate: toPayrollWorkDate(schedule.workDate),
+      regularHours: schedule.specialLeaveHours || 0,
+      overtimeHours: 0,
+      overtimeType: OvertimeType.WEEKDAY,
+      isHoliday: false,
+      isRestDay: false,
+      isMandatoryRest: false,
+    }));
 }
 
 export async function calculateBonusForPayrollMonth(
@@ -319,8 +344,29 @@ export async function computePayrollForEmployee(
       },
     },
   });
+  const monthStart = `${year}-${String(month).padStart(2, '0')}-01`;
+  const monthEnd = `${year}-${String(month).padStart(2, '0')}-${String(endDate.getDate()).padStart(2, '0')}`;
+  const scheduleRecords = await prisma.schedule.findMany({
+    where: {
+      employeeId: employee.id,
+      workDate: {
+        gte: monthStart,
+        lte: monthEnd,
+      },
+      specialLeaveHours: {
+        gt: 0,
+      },
+    },
+    select: {
+      workDate: true,
+      specialLeaveHours: true,
+    },
+  });
 
-  const attendanceForPayroll = buildAttendanceForPayroll(attendanceRecords, options.holidayDates);
+  const attendanceForPayroll = [
+    ...buildAttendanceForPayroll(attendanceRecords, options.holidayDates),
+    ...buildPaidLeaveAttendanceForPayroll(scheduleRecords),
+  ];
   const employeeInfo = await buildEmployeePayrollInfo(employee, year, month);
   const payrollResult = calculateMonthlyPayroll(employeeInfo, attendanceForPayroll, year, month);
   const validation = validatePayrollCalculation(payrollResult);

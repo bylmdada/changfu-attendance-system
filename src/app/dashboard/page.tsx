@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Image from 'next/image';
-import { Users, Clock, Calendar, DollarSign, LogOut, Timer, BarChart3, UserPlus, FileText, Key, Megaphone, X, AlertTriangle, ShoppingCart, Heart, Cloud, Wallet, Settings } from 'lucide-react';
+import { Users, Clock, Calendar, DollarSign, LogOut, Timer, BarChart3, UserPlus, FileText, Key, Megaphone, X, AlertTriangle, ShoppingCart, Heart, Cloud, Wallet, Settings, Wrench } from 'lucide-react';
 import ResponsiveSidebar from '@/components/ResponsiveSidebar';
 import { clearCSRFToken, fetchWithCSRF } from '@/lib/fetchWithCSRF';
 
@@ -27,6 +27,10 @@ export default function DashboardPage() {
     username: string;
     role: string;
     hasSchedulePermission?: boolean;
+    hasPropertyAccess?: boolean;
+    canMaintainProperty?: boolean;
+    isPropertySupervisor?: boolean;
+    canManageProperty?: boolean;
     attendancePermissions?: {
       leaveRequests?: string[];
       overtimeRequests?: string[];
@@ -992,6 +996,18 @@ export default function DashboardPage() {
                 <h3 className="font-medium text-gray-900">請購管理</h3>
                 <p className="text-sm text-gray-500">申請採購、查看審核狀態</p>
               </a>
+
+              {user?.hasPropertyAccess && (
+                <a href="/property-management" className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors group">
+                  <Wrench className="h-8 w-8 text-amber-600 mb-2 group-hover:scale-110 transition-transform" />
+                  <h3 className="font-medium text-gray-900">財產管理</h3>
+                  <p className="text-sm text-gray-500">
+                    {user.canMaintainProperty
+                      ? `掃碼維護、資產清冊、維護紀錄${user.isPropertySupervisor ? '與審核報表' : ''}`
+                      : '查詢財產主檔、維護狀態與歷史紀錄'}
+                  </p>
+                </a>
+              )}
 
               {/* 天災假管理 - 管理員 */}
               {(user?.role === 'ADMIN' || user?.role === 'HR') && (

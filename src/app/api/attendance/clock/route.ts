@@ -15,6 +15,10 @@ import {
   parseClockReasonPromptSettings,
   shouldSkipClockReasonPrompt,
 } from '@/lib/clock-reason-prompt-settings';
+import {
+  buildInfectionControlClockData,
+  parseInfectionControlInput,
+} from '@/lib/attendance-infection-control';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -117,6 +121,12 @@ export async function POST(request: NextRequest) {
     if (!type || !['in', 'out'].includes(type)) {
       return NextResponse.json({ error: '無效的打卡類型' }, { status: 400 });
     }
+
+    const infectionControlResult = parseInfectionControlInput(body.infectionControl);
+    if (!infectionControlResult.ok) {
+      return NextResponse.json({ error: infectionControlResult.error }, { status: 400 });
+    }
+    const infectionControlData = buildInfectionControlClockData(type as 'in' | 'out', infectionControlResult.data);
 
     // 使用統一的身份驗證方式
     const userAuth = await getUserFromRequest(request);
@@ -258,6 +268,7 @@ export async function POST(request: NextRequest) {
         update: {
           clockInTime: currentTime,
           status: 'PRESENT',
+          ...infectionControlData,
           // 新增GPS位置資訊
           ...(location && {
             clockInLatitude: location.latitude,
@@ -271,6 +282,7 @@ export async function POST(request: NextRequest) {
           workDate: todayStart,
           clockInTime: currentTime,
           status: 'PRESENT',
+          ...infectionControlData,
           // 新增GPS位置資訊
           ...(location && {
             clockInLatitude: location.latitude,
@@ -319,7 +331,7 @@ export async function POST(request: NextRequest) {
           const hours = calculateAttendanceHours(
             clockInTime,
             clockOutTime,
-            undefined,
+            todaySchedule?.workHours ?? undefined,
             todaySchedule?.breakTime || 0
           );
 
@@ -334,6 +346,7 @@ export async function POST(request: NextRequest) {
             clockOutTime: currentTime,
             regularHours: parseFloat(regularHours.toFixed(2)),
             overtimeHours: parseFloat(overtimeHours.toFixed(2)),
+            ...infectionControlData,
             // 新增GPS位置資訊
             ...(location && {
               clockOutLatitude: location.latitude,
@@ -353,6 +366,7 @@ export async function POST(request: NextRequest) {
             status: 'PRESENT',
             regularHours: 0,
             overtimeHours: 0,
+            ...infectionControlData,
             // 新增GPS位置資訊
             ...(location && {
               clockOutLatitude: location.latitude,
