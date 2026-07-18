@@ -49,3 +49,16 @@ next-env.d.ts
 ops/comp-leave-import-validation/**/*.db
 ops/comp-leave-import-validation/**/*.db-*
 ops/comp-leave-import-validation/**/*.db.gz
+
+# local databases & data (never commit real data)
+dev.db
+prisma/*.db
+prisma/*.db-journal
+*.db-journal
+backups/
+
+# local reference material
+*.pdf
+
+# local AI tooling config
+.claude/
