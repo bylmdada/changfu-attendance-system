@@ -7,6 +7,12 @@ import { calculateOvertimePayForRequest, OvertimeType } from '@/lib/salary-utils
 import { getTaiwanYearMonth } from '@/lib/timezone';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
+import {
+  calculateOvertimeRequestEligibility,
+  getOvertimeEligibilityError,
+} from '@/lib/overtime-eligibility';
+import { isReviewerFor } from '@/lib/approval-service';
+import { getApprovalWorkflow } from '@/lib/approval-workflow';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -32,10 +38,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
 
-    // 只有 ADMIN 和 HR 可以批量審核
-    if (user.role !== 'ADMIN' && user.role !== 'HR') {
-      return NextResponse.json({ error: '權限不足' }, { status: 403 });
-    }
+    const isFinalReviewer = user.role === 'ADMIN' || user.role === 'HR';
 
     const parseResult = await safeParseJSON(request);
     if (!parseResult.success) {
@@ -55,6 +58,9 @@ export async function POST(request: NextRequest) {
     const requestedOvertimeType = typeof body.overtimeType === 'string'
       ? body.overtimeType as OvertimeType
       : undefined;
+    const reviewNote = [body.notes, body.remarks, body.reason]
+      .find((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      ?.trim();
 
     // 驗證參數
     if (!ids || !Array.isArray(ids) || ids.length === 0) {
@@ -84,6 +90,12 @@ export async function POST(request: NextRequest) {
     // 批量處理
     for (const id of normalizedIds) {
       try {
+        let managerFinalReviewData: {
+          managerReviewerId: number;
+          managerOpinion: 'AGREE' | 'DISAGREE';
+          managerNote: string | null;
+          managerReviewedAt: Date;
+        } | null = null;
         // 檢查申請是否存在且為待審核狀態
         const overtimeRequest = await prisma.overtimeRequest.findUnique({
           where: { id },
@@ -97,15 +109,82 @@ export async function POST(request: NextRequest) {
           continue;
         }
 
-        if (overtimeRequest.status !== 'PENDING' && overtimeRequest.status !== 'PENDING_ADMIN') {
+        const isReviewable = isFinalReviewer
+          ? overtimeRequest.status === 'PENDING' || overtimeRequest.status === 'PENDING_ADMIN'
+          : overtimeRequest.status === 'PENDING';
+        if (!isReviewable) {
           results.failedIds.push(id);
           results.errors.push(`ID ${id}: 申請已被處理`);
           results.failedCount++;
           continue;
         }
 
+        if (!isFinalReviewer) {
+          const department = overtimeRequest.employee?.department;
+          const reviewPermission = user.employeeId && department
+            ? await isReviewerFor(user.employeeId, department, 'OVERTIME')
+            : { isReviewer: false };
+
+          if (!reviewPermission.isReviewer || !user.employeeId) {
+            results.failedIds.push(id);
+            results.errors.push(`ID ${id}: 無權限審核此部門的加班申請`);
+            results.failedCount++;
+            continue;
+          }
+
+          const reviewedAt = new Date();
+          managerFinalReviewData = {
+            managerReviewerId: user.employeeId,
+            managerOpinion: action === 'APPROVED' ? 'AGREE' : 'DISAGREE',
+            managerNote: reviewNote || null,
+            managerReviewedAt: reviewedAt,
+          };
+          const workflow = await getApprovalWorkflow('OVERTIME', { department });
+
+          if ((workflow?.approvalLevel ?? 2) > 1) {
+            await prisma.overtimeRequest.update({
+              where: { id },
+              data: {
+                status: 'PENDING_ADMIN',
+                ...managerFinalReviewData,
+              },
+            });
+            results.successCount++;
+            continue;
+          }
+        }
+
+        if (!managerFinalReviewData && overtimeRequest.status === 'PENDING') {
+          const workflow = await getApprovalWorkflow('OVERTIME', {
+            department: overtimeRequest.employee?.department,
+          });
+          if (workflow?.requireManager) {
+            results.failedIds.push(id);
+            results.errors.push(`ID ${id}: 此加班申請需先由部門主管審核`);
+            results.failedCount++;
+            continue;
+          }
+        }
+
+        let effectiveHours = overtimeRequest.totalHours;
+        let overtimeType: OvertimeType = requestedOvertimeType || 'WEEKDAY';
+
+        if (action === 'APPROVED') {
+          const eligibility = await calculateOvertimeRequestEligibility(overtimeRequest, {
+            overtimeType: requestedOvertimeType,
+          });
+          const eligibilityError = getOvertimeEligibilityError(eligibility);
+          if (eligibilityError) {
+            results.failedIds.push(id);
+            results.errors.push(`ID ${id}: ${eligibilityError}`);
+            results.failedCount++;
+            continue;
+          }
+          effectiveHours = eligibility.effectiveHours;
+          overtimeType = eligibility.overtimeType as OvertimeType;
+        }
+
         if (action === 'APPROVED' && overtimeRequest.compensationType === 'COMP_LEAVE') {
-          const hours = overtimeRequest.totalHours;
           const yearMonth = getTaiwanYearMonth(new Date(overtimeRequest.overtimeDate));
 
           await prisma.$transaction(async (tx) => {
@@ -114,18 +193,20 @@ export async function POST(request: NextRequest) {
               data: {
                 status: action,
                 approvedBy: user.employeeId,
-                approvedAt: new Date()
+                approvedAt: new Date(),
+                overtimeType,
+                ...(managerFinalReviewData ?? {}),
               }
             });
 
             await tx.compLeaveBalance.upsert({
               where: { employeeId: overtimeRequest.employeeId },
               update: {
-                pendingEarn: { increment: hours }
+                pendingEarn: { increment: effectiveHours }
               },
               create: {
                 employeeId: overtimeRequest.employeeId,
-                pendingEarn: hours
+                pendingEarn: effectiveHours
               }
             });
 
@@ -133,7 +214,7 @@ export async function POST(request: NextRequest) {
               data: {
                 employeeId: overtimeRequest.employeeId,
                 transactionType: 'EARN',
-                hours: hours,
+                hours: effectiveHours,
                 isFrozen: false,
                 referenceId: overtimeRequest.id,
                 referenceType: 'OVERTIME',
@@ -143,11 +224,10 @@ export async function POST(request: NextRequest) {
             });
           });
         } else if (action === 'APPROVED' && overtimeRequest.compensationType === 'OVERTIME_PAY') {
-          const overtimeType = requestedOvertimeType || 'WEEKDAY';
           const payResult = await calculateOvertimePayForRequest(
             overtimeRequest.employeeId,
             overtimeRequest.overtimeDate,
-            overtimeRequest.totalHours,
+            effectiveHours,
             overtimeType
           );
 
@@ -167,6 +247,7 @@ export async function POST(request: NextRequest) {
               overtimeType,
               overtimePay: payResult.overtimePay ?? undefined,
               hourlyRateUsed: payResult.hourlyRate ?? undefined,
+              ...(managerFinalReviewData ?? {}),
             }
           });
         } else {
@@ -176,7 +257,8 @@ export async function POST(request: NextRequest) {
             data: {
               status: action,
               approvedBy: user.employeeId,
-              approvedAt: new Date()
+              approvedAt: new Date(),
+              ...(managerFinalReviewData ?? {}),
             }
           });
         }

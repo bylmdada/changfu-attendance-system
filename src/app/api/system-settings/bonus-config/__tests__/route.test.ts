@@ -2,6 +2,11 @@ jest.mock('@/lib/database', () => ({
   prisma: {
     bonusConfiguration: {
       findMany: jest.fn(),
+      findFirst: jest.fn(),
+      update: jest.fn(),
+      create: jest.fn(),
+    },
+    systemSettings: {
       findUnique: jest.fn(),
       upsert: jest.fn(),
     },
@@ -38,13 +43,25 @@ describe('bonus config route regressions', () => {
     } as never);
     mockValidateCSRF.mockResolvedValue({ valid: true } as never);
     mockPrisma.bonusConfiguration.findMany.mockResolvedValue([] as never);
-    mockPrisma.bonusConfiguration.findUnique.mockResolvedValue(null as never);
-    mockPrisma.bonusConfiguration.upsert.mockResolvedValue({
+    mockPrisma.bonusConfiguration.findFirst.mockResolvedValue(null as never);
+    mockPrisma.bonusConfiguration.update.mockResolvedValue({
       bonusType: 'YEAR_END',
       bonusTypeName: '年終獎金',
       eligibilityRules: '{}',
       paymentSchedule: '{}',
       isActive: true,
+    } as never);
+    mockPrisma.bonusConfiguration.create.mockResolvedValue({
+      bonusType: 'YEAR_END',
+      bonusTypeName: '年終獎金',
+      eligibilityRules: '{}',
+      paymentSchedule: '{}',
+      isActive: true,
+    } as never);
+    mockPrisma.systemSettings.findUnique.mockResolvedValue(null as never);
+    mockPrisma.systemSettings.upsert.mockResolvedValue({
+      key: 'bonus_department_configs',
+      value: '{}',
     } as never);
     mockPrisma.$transaction.mockImplementation(async (callback: (tx: typeof prisma) => unknown) => {
       return callback(mockPrisma as never) as never;
@@ -88,8 +105,8 @@ describe('bonus config route regressions', () => {
 
     expect(response.status).toBe(403);
     expect(payload.error).toBe('CSRF 驗證失敗');
-    expect(mockPrisma.bonusConfiguration.findUnique).not.toHaveBeenCalled();
-    expect(mockPrisma.bonusConfiguration.upsert).not.toHaveBeenCalled();
+    expect(mockPrisma.bonusConfiguration.findFirst).not.toHaveBeenCalled();
+    expect(mockPrisma.bonusConfiguration.create).not.toHaveBeenCalled();
   });
 
   it('restricts POST requests to admin users only', async () => {
@@ -116,8 +133,8 @@ describe('bonus config route regressions', () => {
 
     expect(response.status).toBe(403);
     expect(payload.error).toBe('無權限');
-    expect(mockPrisma.bonusConfiguration.findUnique).not.toHaveBeenCalled();
-    expect(mockPrisma.bonusConfiguration.upsert).not.toHaveBeenCalled();
+    expect(mockPrisma.bonusConfiguration.findFirst).not.toHaveBeenCalled();
+    expect(mockPrisma.bonusConfiguration.create).not.toHaveBeenCalled();
   });
 
   it('falls back to empty objects when stored bonus config JSON is malformed', async () => {
@@ -144,12 +161,15 @@ describe('bonus config route regressions', () => {
         paymentSchedule: { month: 1 },
       }),
     ]);
+    expect(payload.departmentConfigs).toEqual({});
   });
 
   it('preserves stored nested config fields on partial updates', async () => {
-    mockPrisma.bonusConfiguration.findUnique.mockResolvedValue({
+    mockPrisma.bonusConfiguration.findFirst.mockResolvedValue({
+      id: 9,
       bonusType: 'YEAR_END',
       bonusTypeName: '舊年終獎金',
+      defaultAmount: null,
       eligibilityRules: JSON.stringify({ minimumServiceMonths: 6, includeProbation: false }),
       paymentSchedule: JSON.stringify({ month: 1, splitPayment: true }),
       isActive: true,
@@ -172,16 +192,10 @@ describe('bonus config route regressions', () => {
 
     expect(response.status).toBe(200);
     expect(payload.success).toBe(true);
-    expect(mockPrisma.bonusConfiguration.upsert).toHaveBeenCalledWith(
+    expect(mockPrisma.bonusConfiguration.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { bonusType: 'YEAR_END' },
-        update: expect.objectContaining({
-          bonusTypeName: '新年終獎金',
-          isActive: true,
-          eligibilityRules: JSON.stringify({ minimumServiceMonths: 6, includeProbation: false }),
-          paymentSchedule: JSON.stringify({ month: 1, splitPayment: true }),
-        }),
-        create: expect.objectContaining({
+        where: { id: 9 },
+        data: expect.objectContaining({
           bonusTypeName: '新年終獎金',
           isActive: true,
           eligibilityRules: JSON.stringify({ minimumServiceMonths: 6, includeProbation: false }),
@@ -205,8 +219,8 @@ describe('bonus config route regressions', () => {
 
     expect(response.status).toBe(400);
     expect(payload).toEqual({ error: '請提供有效的設定資料' });
-    expect(mockPrisma.bonusConfiguration.findUnique).not.toHaveBeenCalled();
-    expect(mockPrisma.bonusConfiguration.upsert).not.toHaveBeenCalled();
+    expect(mockPrisma.bonusConfiguration.findFirst).not.toHaveBeenCalled();
+    expect(mockPrisma.bonusConfiguration.create).not.toHaveBeenCalled();
   });
 
   it('rejects malformed JSON bodies before reading bonus config payload fields', async () => {
@@ -223,8 +237,8 @@ describe('bonus config route regressions', () => {
 
     expect(response.status).toBe(400);
     expect(payload).toEqual({ error: '無效的 JSON 格式' });
-    expect(mockPrisma.bonusConfiguration.findUnique).not.toHaveBeenCalled();
-    expect(mockPrisma.bonusConfiguration.upsert).not.toHaveBeenCalled();
+    expect(mockPrisma.bonusConfiguration.findFirst).not.toHaveBeenCalled();
+    expect(mockPrisma.bonusConfiguration.create).not.toHaveBeenCalled();
   });
 
   it('rejects non-object year-end config payloads before reading nested fields', async () => {
@@ -243,8 +257,8 @@ describe('bonus config route regressions', () => {
 
     expect(response.status).toBe(400);
     expect(payload).toEqual({ error: '年終獎金設定格式無效' });
-    expect(mockPrisma.bonusConfiguration.findUnique).not.toHaveBeenCalled();
-    expect(mockPrisma.bonusConfiguration.upsert).not.toHaveBeenCalled();
+    expect(mockPrisma.bonusConfiguration.findFirst).not.toHaveBeenCalled();
+    expect(mockPrisma.bonusConfiguration.create).not.toHaveBeenCalled();
   });
 
   it('rejects malformed nested eligibility rules before upserting bonus config', async () => {
@@ -266,8 +280,8 @@ describe('bonus config route regressions', () => {
 
     expect(response.status).toBe(400);
     expect(payload).toEqual({ error: '三節獎金資格規則格式無效' });
-    expect(mockPrisma.bonusConfiguration.findUnique).not.toHaveBeenCalled();
-    expect(mockPrisma.bonusConfiguration.upsert).not.toHaveBeenCalled();
+    expect(mockPrisma.bonusConfiguration.findFirst).not.toHaveBeenCalled();
+    expect(mockPrisma.bonusConfiguration.create).not.toHaveBeenCalled();
   });
 
   it('rejects non-boolean active flags before upserting bonus config', async () => {
@@ -289,7 +303,7 @@ describe('bonus config route regressions', () => {
     expect(response.status).toBe(400);
     expect(payload).toEqual({ error: '年終獎金啟用狀態必須為布林值' });
     expect(mockPrisma.$transaction).not.toHaveBeenCalled();
-    expect(mockPrisma.bonusConfiguration.upsert).not.toHaveBeenCalled();
+    expect(mockPrisma.bonusConfiguration.create).not.toHaveBeenCalled();
   });
 
   it('persists disabled state from incoming config instead of forcing active', async () => {
@@ -311,11 +325,81 @@ describe('bonus config route regressions', () => {
     expect(response.status).toBe(200);
     expect(payload).toEqual({ success: true, message: '設定已儲存' });
     expect(mockPrisma.$transaction).toHaveBeenCalled();
-    expect(mockPrisma.bonusConfiguration.upsert).toHaveBeenCalledWith(
+    expect(mockPrisma.bonusConfiguration.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { bonusType: 'FESTIVAL' },
-        update: expect.objectContaining({ isActive: false }),
-        create: expect.objectContaining({ isActive: false }),
+        data: expect.objectContaining({ isActive: false }),
+      })
+    );
+  });
+
+  it('returns stored department bonus overrides on GET', async () => {
+    mockPrisma.systemSettings.findUnique.mockResolvedValue({
+      key: 'bonus_department_configs',
+      value: JSON.stringify({
+        資訊部: {
+          YEAR_END: {
+            isActive: true,
+            eligibilityRules: { minimumServiceMonths: 2 },
+          },
+        },
+      }),
+    } as never);
+
+    const request = new NextRequest('http://localhost/api/system-settings/bonus-config');
+    const response = await GET(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.departmentConfigs).toEqual({
+      資訊部: {
+        YEAR_END: {
+          isActive: true,
+          eligibilityRules: { minimumServiceMonths: 2 },
+        },
+      },
+    });
+  });
+
+  it('persists validated department bonus overrides on POST', async () => {
+    const request = new NextRequest('http://localhost/api/system-settings/bonus-config', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        departmentConfigs: {
+          資訊部: {
+            YEAR_END: {
+              isActive: true,
+              eligibilityRules: {
+                minimumServiceMonths: 2,
+              },
+            },
+          },
+        },
+      }),
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload).toEqual({ success: true, message: '設定已儲存' });
+    expect(mockPrisma.systemSettings.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { key: 'bonus_department_configs' },
+        update: expect.objectContaining({
+          value: JSON.stringify({
+            資訊部: {
+              YEAR_END: {
+                isActive: true,
+                eligibilityRules: {
+                  minimumServiceMonths: 2,
+                },
+              },
+            },
+          }),
+        }),
       })
     );
   });

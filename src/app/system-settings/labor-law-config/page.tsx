@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Save, Info, History, DollarSign, Percent, Loader2, Shield } from 'lucide-react';
 import SystemNavbar from '@/components/SystemNavbar';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
+import { calculateLaborInsurancePremium } from '@/lib/insurance-calculator';
 
 interface User {
   id: number;
@@ -23,6 +24,7 @@ interface LaborLawConfig {
   id: number | null;
   basicWage: number;
   laborInsuranceRate: number;
+  employmentInsuranceRate: number;
   laborInsuranceMax: number;
   laborEmployeeRate: number;
   effectiveDate: string;
@@ -42,6 +44,7 @@ export default function LaborLawConfigPage() {
     id: null,
     basicWage: 29500,
     laborInsuranceRate: 0.115,
+    employmentInsuranceRate: 0.01,
     laborInsuranceMax: 45800,
     laborEmployeeRate: 0.2,
     effectiveDate: new Date().toISOString().split('T')[0],
@@ -121,6 +124,24 @@ export default function LaborLawConfigPage() {
   const handleInputChange = (field: keyof LaborLawConfig, value: string | number) => {
     setConfig(prev => ({ ...prev, [field]: value }));
   };
+
+  const calculateLaborExample = (salary: number) => calculateLaborInsurancePremium({
+    salary,
+    ordinaryRate: config.laborInsuranceRate,
+    employmentRate: config.employmentInsuranceRate,
+    employeeRate: config.laborEmployeeRate,
+    maxInsuredAmount: config.laborInsuranceMax,
+  });
+
+  const exampleRows = [
+    { label: '2026 基本工資', salary: 29500 },
+    { label: '勞保投保上限', salary: config.laborInsuranceMax },
+  ].map(example => ({
+    ...example,
+    result: calculateLaborExample(example.salary),
+  }));
+
+  const formatCurrency = (amount: number) => `NT$ ${amount.toLocaleString()}`;
 
   if (loading) {
     return (
@@ -230,10 +251,10 @@ export default function LaborLawConfigPage() {
               </div>
             </div>
             <div className="p-6">
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div>
                   <label className="block text-sm font-medium text-gray-900 mb-2">
-                    勞保費率 (小數)
+                    普通事故保險費率 (小數)
                   </label>
                   <input
                     type="number"
@@ -243,6 +264,19 @@ export default function LaborLawConfigPage() {
                     className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-gray-900"
                   />
                   <p className="mt-1 text-sm text-gray-600">目前 11.5% = 0.115</p>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-900 mb-2">
+                    就業保險費率 (小數)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.001"
+                    value={config.employmentInsuranceRate}
+                    onChange={(e) => handleInputChange('employmentInsuranceRate', parseFloat(e.target.value) || 0)}
+                    className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-gray-900"
+                  />
+                  <p className="mt-1 text-sm text-gray-600">目前 1% = 0.01</p>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-900 mb-2">
@@ -269,6 +303,76 @@ export default function LaborLawConfigPage() {
                   />
                   <p className="mt-1 text-sm text-gray-600">員工 20% = 0.2</p>
                 </div>
+              </div>
+              <div className="mt-4 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
+                員工自付額會分別計算普通事故保險與就業保險，兩者各自四捨五入後再相加。
+              </div>
+            </div>
+          </div>
+
+          {/* 計算示例 */}
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200">
+            <div className="px-6 py-4 border-b border-gray-200">
+              <div className="flex items-center gap-2">
+                <Info className="h-5 w-5 text-emerald-600" />
+                <h2 className="text-lg font-medium text-gray-900">計算示例</h2>
+              </div>
+              <p className="mt-1 text-sm text-gray-600">
+                勞工保險扣款會使用 2026 勞保投保薪資級距，普通事故與就業保險分開四捨五入後再相加。
+              </p>
+            </div>
+            <div className="p-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {exampleRows.map(example => (
+                  <div
+                    key={example.label}
+                    className="rounded-xl border border-emerald-100 bg-gradient-to-br from-emerald-50 to-blue-50 p-5"
+                  >
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <p className="text-sm font-medium text-emerald-800">{example.label}</p>
+                        <p className="mt-1 text-2xl font-bold text-gray-900">
+                          {formatCurrency(example.salary)}
+                        </p>
+                      </div>
+                      <div className="rounded-full bg-white px-3 py-1 text-sm font-semibold text-blue-700 shadow-sm">
+                        投保 {formatCurrency(example.result.insuredAmount)}
+                      </div>
+                    </div>
+
+                    <div className="mt-5 space-y-3 text-sm">
+                      <div className="flex items-center justify-between">
+                        <span className="text-gray-700">普通事故個人負擔</span>
+                        <span className="font-semibold text-gray-900">
+                          {formatCurrency(example.result.ordinaryEmployeePremium)}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-gray-700">就業保險個人負擔</span>
+                        <span className="font-semibold text-gray-900">
+                          {formatCurrency(example.result.employmentEmployeePremium)}
+                        </span>
+                      </div>
+                      <div className="border-t border-emerald-200 pt-3 flex items-center justify-between">
+                        <span className="font-medium text-gray-900">薪資條勞工保險扣款</span>
+                        <span className="text-xl font-bold text-emerald-700">
+                          {formatCurrency(example.result.employeePremium)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700">
+                <p className="font-medium text-gray-900">公式說明</p>
+                <p className="mt-1">
+                  員工自付額 = round(月投保薪資 × 普通事故費率 × 員工負擔比例)
+                  + round(月投保薪資 × 就業保險費率 × 員工負擔比例)。
+                </p>
+                <p className="mt-1">
+                  薪資條中的「勞工保險」扣除項目與此示例使用同一個計算器；「健康保險」則同步使用健保費率設定頁的級距與比例。
+                </p>
               </div>
             </div>
           </div>

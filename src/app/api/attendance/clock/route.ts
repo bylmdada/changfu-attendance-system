@@ -19,9 +19,21 @@ import {
   buildInfectionControlClockData,
   parseInfectionControlInput,
 } from '@/lib/attendance-infection-control';
+import { getAttendanceRegularTimeExclusions } from '@/lib/attendance-leave-hours';
+import {
+  indexApprovedOvertimeRequests,
+  resolveAttendanceOvertimeType,
+  resolveApprovedAttendanceOvertime,
+} from '@/lib/approved-overtime';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isCrossMidnightSchedule(schedule?: { startTime?: string | null; endTime?: string | null } | null) {
+  if (!schedule?.startTime || !schedule.endTime) return false;
+
+  return schedule.endTime <= schedule.startTime;
 }
 
 // GET - 獲取今日打卡狀態
@@ -206,6 +218,40 @@ export async function POST(request: NextRequest) {
         workDate: todayStr
       }
     });
+    let clockOutAttendance = existingAttendance;
+    let clockOutSchedule = todaySchedule;
+    let clockOutWorkDate = todayStart;
+
+    if (type === 'out' && !existingAttendance?.clockInTime) {
+      const previousDayStart = new Date(todayStart.getTime() - 24 * 60 * 60 * 1000);
+      const previousDayStr = toTaiwanDateStr(previousDayStart);
+      const previousSchedule = await prisma.schedule.findFirst({
+        where: {
+          employeeId: user.employee.id,
+          workDate: previousDayStr,
+        },
+      });
+
+      if (isCrossMidnightSchedule(previousSchedule)) {
+        const previousAttendance = await prisma.attendanceRecord.findFirst({
+          where: {
+            employeeId: user.employee.id,
+            workDate: {
+              gte: previousDayStart,
+              lt: todayStart,
+            },
+            clockInTime: { not: null },
+            clockOutTime: null,
+          },
+        });
+
+        if (previousAttendance) {
+          clockOutAttendance = previousAttendance;
+          clockOutSchedule = previousSchedule;
+          clockOutWorkDate = previousDayStart;
+        }
+      }
+    }
     const reasonPromptSetting = await prisma.systemSettings.findUnique({
       where: { key: 'clock_reason_prompt' }
     });
@@ -316,32 +362,91 @@ export async function POST(request: NextRequest) {
       // 下班打卡 - 移除必須先上班打卡的限制
       let attendance;
       
-      if (existingAttendance) {
+      if (clockOutAttendance) {
         // 如果已有記錄，檢查是否已打下班卡
-        if (existingAttendance.clockOutTime) {
+        if (clockOutAttendance.clockOutTime) {
           return NextResponse.json({ error: '今日已打過下班卡' }, { status: 400 });
         }
         // 計算工作時間（如果有上班打卡時間）
         let regularHours = 0;
         let overtimeHours = 0;
         
-        if (existingAttendance.clockInTime) {
-          const clockInTime = new Date(existingAttendance.clockInTime);
+        if (clockOutAttendance.clockInTime) {
+          const clockInTime = new Date(clockOutAttendance.clockInTime);
           const clockOutTime = new Date(currentTime);
+          const leaveRequests = await prisma.leaveRequest.findMany({
+            where: {
+              employeeId: user.employee.id,
+              voidedAt: null,
+              OR: [
+                { status: 'APPROVED' },
+                { status: 'PENDING_ADMIN', managerOpinion: 'AGREE' },
+              ],
+              startDate: { lt: new Date(clockOutWorkDate.getTime() + 24 * 60 * 60 * 1000) },
+              endDate: { gt: clockOutWorkDate },
+            },
+            select: {
+              startDate: true,
+              endDate: true,
+              status: true,
+              managerOpinion: true,
+              voidedAt: true,
+            },
+          });
           const hours = calculateAttendanceHours(
             clockInTime,
             clockOutTime,
-            todaySchedule?.workHours ?? undefined,
-            todaySchedule?.breakTime || 0
+            clockOutSchedule?.workHours ?? undefined,
+            clockOutSchedule?.breakTime || 0,
+            {
+              startTime: clockOutSchedule?.startTime,
+              endTime: clockOutSchedule?.endTime,
+              workDate: clockOutWorkDate,
+              regularTimeExclusions: getAttendanceRegularTimeExclusions(leaveRequests),
+            }
+          );
+          const approvedOvertimeRequests = await prisma.overtimeRequest.findMany({
+            where: {
+              employeeId: user.employee.id,
+              status: 'APPROVED',
+              overtimeDate: {
+                gte: clockOutWorkDate,
+                lt: new Date(clockOutWorkDate.getTime() + 24 * 60 * 60 * 1000),
+              },
+            },
+            select: {
+              id: true,
+              employeeId: true,
+              overtimeDate: true,
+              totalHours: true,
+              compensationType: true,
+            },
+          });
+          const resolvedOvertime = resolveApprovedAttendanceOvertime(
+            {
+              employeeId: user.employee.id,
+              workDate: clockOutWorkDate,
+              regularHours: hours.regularHours,
+              actualWorkHours: hours.totalHours,
+              overtimeHours: hours.overtimeHours,
+              clockInOvertimeId: clockOutAttendance.clockInOvertimeId,
+              clockOutOvertimeId: clockOutAttendance.clockOutOvertimeId,
+              overtimeType: resolveAttendanceOvertimeType({
+                shiftType: clockOutSchedule?.shiftType,
+                workDate: clockOutWorkDate,
+              }),
+            },
+            indexApprovedOvertimeRequests(approvedOvertimeRequests),
+            0
           );
 
-          regularHours = hours.regularHours;
-          overtimeHours = hours.overtimeHours;
+          regularHours = resolvedOvertime.regularHours;
+          overtimeHours = resolvedOvertime.effectiveHours;
         }
 
         // 更新現有記錄
         attendance = await prisma.attendanceRecord.update({
-          where: { id: existingAttendance.id },
+          where: { id: clockOutAttendance.id },
           data: {
             clockOutTime: currentTime,
             regularHours: parseFloat(regularHours.toFixed(2)),
@@ -381,12 +486,12 @@ export async function POST(request: NextRequest) {
       const workHours = (attendance.regularHours || 0) + (attendance.overtimeHours || 0);
 
       // 檢查是否需要填寫延後下班原因
-      const reasonPromptData = skipReasonPrompt || !todaySchedule?.endTime
+      const reasonPromptData = skipReasonPrompt || !clockOutSchedule?.endTime
         ? null
         : buildClockReasonPromptData({
             settings: reasonPromptSettings,
             type: 'LATE_OUT',
-            scheduledTime: todaySchedule.endTime,
+            scheduledTime: clockOutSchedule.endTime,
             actualTime: currentTaiwanTime,
             recordId: attendance.id,
           });

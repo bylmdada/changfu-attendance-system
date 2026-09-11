@@ -8,6 +8,7 @@ import {
   PROPERTY_FIELD_LABEL,
   type PropertyEditableField,
 } from '@/lib/property-modification-fields';
+import { normalizeFrequencyDays } from '@/lib/property-maintenance-utils';
 
 // GET：修改申請清單（site-scoped）。?status= ?assetId= ?mine=1
 export async function GET(request: NextRequest) {
@@ -48,6 +49,12 @@ export async function POST(request: NextRequest) {
   const proposedValue = body?.proposedValue != null ? String(body.proposedValue) : '';
   if (!PROPERTY_EDITABLE_FIELDS.includes(field)) return fail('參數錯誤：field');
   if (!proposedValue.trim()) return fail('請填寫建議修改值');
+  if (field === 'maintenanceFrequency' && normalizeFrequencyDays(proposedValue) === null) {
+    return fail('無法識別應維護頻率，請使用系統支援的頻率');
+  }
+  if (field === 'nextMaintenanceDate' && Number.isNaN(new Date(proposedValue).getTime())) {
+    return fail('建議日期格式錯誤');
+  }
 
   const requestedSiteId = body?.siteId != null ? parsePositiveInt(body.siteId) : null;
   if (body?.siteId != null && !requestedSiteId) return fail('參數錯誤：siteId');

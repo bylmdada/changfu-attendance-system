@@ -10,7 +10,17 @@ import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
-import { canAccessAttendanceDepartment } from '@/lib/attendance-permission-scopes';
+import { getStoredOvertimeCalculationSettings } from '@/lib/overtime-settings';
+import { isReviewerFor } from '@/lib/approval-service';
+import {
+  calculateActualOvertimeHoursFromTimeRange,
+  getMinimumOvertimeHours,
+} from '@/lib/overtime-hours';
+import { checkAttendanceFreeze, getAttendanceFreezeError } from '@/lib/attendance-freeze';
+import {
+  calculateOvertimeRequestEligibility,
+  getOvertimeEligibilityError,
+} from '@/lib/overtime-eligibility';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -80,19 +90,32 @@ export async function PATCH(
       return NextResponse.json({ error: '找不到加班申請' }, { status: 404 });
     }
 
+    if (requestedStatus || requestedOpinion) {
+      const freezeError = getAttendanceFreezeError(
+        await checkAttendanceFreeze(existing.overtimeDate)
+      );
+      if (freezeError) {
+        return NextResponse.json({ error: freezeError }, { status: 409 });
+      }
+    }
+
     // 若傳入 status 或 opinion，視為審核
     if (requestedStatus || requestedOpinion) {
       const managerOpinion: 'AGREE' | 'DISAGREE' | undefined = requestedOpinion
         ?? (requestedStatus === 'APPROVED' ? 'AGREE' : requestedStatus === 'REJECTED' ? 'DISAGREE' : undefined);
+      let managerFinalReviewData: {
+        managerReviewerId: number;
+        managerOpinion: 'AGREE' | 'DISAGREE';
+        managerNote: string | null;
+        managerReviewedAt: Date;
+      } | null = null;
 
       if (user.role !== 'ADMIN' && user.role !== 'HR' && existing.status === 'PENDING' && managerOpinion) {
-        const canReviewDepartment = await canAccessAttendanceDepartment(
-          { role: user.role, employeeId: user.employeeId },
-          existing.employee.department,
-          'overtimeRequests'
-        );
+        const reviewPermission = user.employeeId && existing.employee.department
+          ? await isReviewerFor(user.employeeId, existing.employee.department, 'OVERTIME')
+          : { isReviewer: false };
 
-        if (!canReviewDepartment || !user.employeeId) {
+        if (!reviewPermission.isReviewer || !user.employeeId) {
           return NextResponse.json({ error: '無權限審核此部門的加班申請' }, { status: 403 });
         }
 
@@ -106,40 +129,49 @@ export async function PATCH(
           select: { name: true }
         });
 
-        await prisma.overtimeRequest.update({
-          where: { id: overtimeRequestId },
-          data: {
-            status: 'PENDING_ADMIN',
-            managerReviewerId: user.employeeId,
-            managerOpinion,
-            managerNote: note || null,
-            managerReviewedAt: new Date()
-          }
-        });
+        const workflow = await getApprovalWorkflow('OVERTIME', { department: existing.employee.department });
+        const reviewedAt = new Date();
+        managerFinalReviewData = {
+          managerReviewerId: user.employeeId,
+          managerOpinion,
+          managerNote: note || null,
+          managerReviewedAt: reviewedAt,
+        };
 
-        // 檢查是否需要 CC 通知 HR
-        const workflow = await getApprovalWorkflow('OVERTIME');
-        if (workflow?.enableCC) {
-          await notifyHRAfterManagerReview({
-            requestType: 'OVERTIME',
-            requestId: overtimeRequestId,
-            employeeName: existing.employee.name,
-            employeeDepartment: existing.employee.department || '未指定',
-            managerName: manager?.name || '主管',
-            managerOpinion,
-            managerNote: note
+        if ((workflow?.approvalLevel ?? 2) > 1) {
+          await prisma.overtimeRequest.update({
+            where: { id: overtimeRequestId },
+            data: {
+              status: 'PENDING_ADMIN',
+              ...managerFinalReviewData,
+            }
+          });
+
+          // 檢查是否需要 CC 通知 HR
+          if (workflow?.enableCC) {
+            await notifyHRAfterManagerReview({
+              requestType: 'OVERTIME',
+              requestId: overtimeRequestId,
+              employeeName: existing.employee.name,
+              employeeDepartment: existing.employee.department || '未指定',
+              managerName: manager?.name || '主管',
+              managerOpinion,
+              managerNote: note
+            });
+          }
+
+          return NextResponse.json({
+            success: true,
+            message: '主管審核完成，已轉交最終審核'
           });
         }
-
-        return NextResponse.json({
-          success: true,
-          message: '主管審核完成，已轉交最終審核'
-        });
       }
 
-      // ADMIN / HR 最終決核
-      if (user.role === 'ADMIN' || user.role === 'HR') {
-        const status = requestedStatus as 'APPROVED' | 'REJECTED';
+      // ADMIN / HR 最終決核，或一階流程由主管直接決核
+      if (user.role === 'ADMIN' || user.role === 'HR' || managerFinalReviewData) {
+        const status = managerFinalReviewData
+          ? (managerOpinion === 'AGREE' ? 'APPROVED' : 'REJECTED')
+          : requestedStatus as 'APPROVED' | 'REJECTED';
 
         if (!['APPROVED', 'REJECTED'].includes(status ?? '')) {
           return NextResponse.json({ error: '無效的審核狀態' }, { status: 400 });
@@ -150,18 +182,37 @@ export async function PATCH(
           return NextResponse.json({ error: '該加班申請已經被審核過' }, { status: 400 });
         }
 
+        const workflow = await getApprovalWorkflow('OVERTIME', { department: existing.employee.department });
+        if (!managerFinalReviewData && workflow?.requireManager && existing.status === 'PENDING') {
+          return NextResponse.json(
+            { error: '此加班申請需先由部門主管審核，管理員或 HR 不可略過主管流程' },
+            { status: 409 }
+          );
+        }
+
         // 如果選擇加班費，計算加班費金額
         let overtimePay: number | null = null;
         let hourlyRateUsed: number | null = null;
         let overtimeType: OvertimeType = 'WEEKDAY';
+        let effectiveHours = existing.totalHours;
+
+        if (status === 'APPROVED') {
+          const eligibility = await calculateOvertimeRequestEligibility(existing, {
+            overtimeType: requestedOvertimeType,
+          });
+          const eligibilityError = getOvertimeEligibilityError(eligibility);
+          if (eligibilityError) {
+            return NextResponse.json({ error: eligibilityError }, { status: 400 });
+          }
+          effectiveHours = eligibility.effectiveHours;
+          overtimeType = eligibility.overtimeType;
+        }
 
         if (status === 'APPROVED' && existing.compensationType === 'OVERTIME_PAY') {
-          overtimeType = requestedOvertimeType || 'WEEKDAY';
-          
           const payResult = await calculateOvertimePayForRequest(
             existing.employeeId,
             existing.overtimeDate,
-            existing.totalHours,
+            effectiveHours,
             overtimeType
           );
 
@@ -187,7 +238,8 @@ export async function PATCH(
                   approvedAt: new Date(),
                   overtimeType: overtimeType || undefined,
                   overtimePay: overtimePay || undefined,
-                  hourlyRateUsed: hourlyRateUsed || undefined
+                  hourlyRateUsed: hourlyRateUsed || undefined,
+                  ...(managerFinalReviewData ?? {}),
                 },
                 include: {
                   employee: {
@@ -202,7 +254,7 @@ export async function PATCH(
                 data: {
                   employeeId: existing.employeeId,
                   transactionType: 'EARN',
-                  hours: existing.totalHours,
+                  hours: effectiveHours,
                   referenceId: overtimeRequestId,
                   referenceType: 'OVERTIME',
                   yearMonth,
@@ -214,11 +266,11 @@ export async function PATCH(
               await tx.compLeaveBalance.upsert({
                 where: { employeeId: existing.employeeId },
                 update: {
-                  pendingEarn: { increment: existing.totalHours }
+                  pendingEarn: { increment: effectiveHours }
                 },
                 create: {
                   employeeId: existing.employeeId,
-                  pendingEarn: existing.totalHours
+                  pendingEarn: effectiveHours
                 }
               });
 
@@ -232,7 +284,8 @@ export async function PATCH(
                 approvedAt: new Date(),
                 overtimeType: overtimeType || undefined,
                 overtimePay: overtimePay || undefined,
-                hourlyRateUsed: hourlyRateUsed || undefined
+                hourlyRateUsed: hourlyRateUsed || undefined,
+                ...(managerFinalReviewData ?? {}),
               },
               include: {
                 employee: {
@@ -249,7 +302,7 @@ export async function PATCH(
             employeeEmail: existing.employee.email || undefined,
             approved: status === 'APPROVED',
             overtimeDate: toTaiwanDateStr(existing.overtimeDate),
-            hours: existing.totalHours,
+            hours: status === 'APPROVED' ? effectiveHours : existing.totalHours,
             reason: rejectionReason,
           });
         } catch (notifyError) {
@@ -266,12 +319,22 @@ export async function PATCH(
       return NextResponse.json({ error: '無權限執行此操作' }, { status: 403 });
     }
 
-    // 否則視為「編輯」：申請人自己或管理員/HR可在待審核狀態下修改
+    // 否則視為「編輯」：申請人、管理員/HR，或該部門的有效審核主管可修改待審核申請
     if (existing.status !== 'PENDING') {
       return NextResponse.json({ error: '僅能修改待審核的申請' }, { status: 400 });
     }
 
-    if (existing.employeeId !== user.employeeId && user.role !== 'ADMIN' && user.role !== 'HR') {
+    let canEdit = existing.employeeId === user.employeeId || user.role === 'ADMIN' || user.role === 'HR';
+    if (!canEdit && user.employeeId && existing.employee.department) {
+      const reviewPermission = await isReviewerFor(
+        user.employeeId,
+        existing.employee.department,
+        'OVERTIME'
+      );
+      canEdit = reviewPermission.isReviewer;
+    }
+
+    if (!canEdit) {
       return NextResponse.json({ error: '無權限修改此申請' }, { status: 403 });
     }
 
@@ -283,28 +346,26 @@ export async function PATCH(
       }
     }
 
-    // 計算時數（若提供了時間）
-    function calculateOvertimeHours(st: string, et: string): number {
-      const [sh, sm] = st.split(':').map(Number);
-      const [eh, em] = et.split(':').map(Number);
-      let minutes = (eh * 60 + em) - (sh * 60 + sm);
-      if (minutes < 0) minutes += 24 * 60;
-      const hours = minutes / 60;
-      return Math.ceil(hours * 2) / 2; // 0.5 單位進位
-    }
-
+    const overtimeSettings = await getStoredOvertimeCalculationSettings();
+    const minimumOvertimeHours = getMinimumOvertimeHours(overtimeSettings.overtimeMinUnit);
     let totalHours: number | undefined = existing.totalHours;
-    if (startTime && endTime) {
-      totalHours = calculateOvertimeHours(startTime, endTime);
-      if (totalHours < 0.5) {
-        return NextResponse.json({ error: '加班時數最少0.5小時' }, { status: 400 });
+    if (startTime || endTime) {
+      const nextStartTime = startTime ?? existing.startTime;
+      const nextEndTime = endTime ?? existing.endTime;
+      const actualHours = calculateActualOvertimeHoursFromTimeRange(nextStartTime, nextEndTime);
+      if (actualHours === null) {
+        return NextResponse.json({ error: '加班時間格式無效' }, { status: 400 });
       }
-      if (totalHours > 4) {
+      if (actualHours < minimumOvertimeHours) {
+        return NextResponse.json({ error: `加班時數最少${minimumOvertimeHours}小時` }, { status: 400 });
+      }
+      if (actualHours > 4) {
         return NextResponse.json({ error: '單日加班時數不能超過4小時' }, { status: 400 });
       }
-      if ((8 + totalHours) > 12) {
+      if ((8 + actualHours) > 12) {
         return NextResponse.json({ error: '一天工作時間不能超過12小時' }, { status: 400 });
       }
+      totalHours = actualHours;
     }
 
     const updated = await prisma.overtimeRequest.update({

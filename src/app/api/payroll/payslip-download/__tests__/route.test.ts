@@ -6,6 +6,12 @@ jest.mock('@/lib/database', () => ({
     systemSettings: {
       findUnique: jest.fn(),
     },
+    schedule: {
+      findMany: jest.fn(),
+    },
+    holiday: {
+      findMany: jest.fn(),
+    },
   },
 }));
 
@@ -40,6 +46,8 @@ describe('payroll payslip download route guards', () => {
     jest.clearAllMocks();
     mockGetUserFromRequest.mockResolvedValue({ role: 'ADMIN', employeeId: 1 } as never);
     mockPrisma.systemSettings.findUnique.mockResolvedValue(null as never);
+    mockPrisma.schedule.findMany.mockResolvedValue([] as never);
+    mockPrisma.holiday.findMany.mockResolvedValue([] as never);
   });
 
   it('rejects mixed payroll ids before querying prisma', async () => {
@@ -78,6 +86,12 @@ describe('payroll payslip download route guards', () => {
       employeeId: 1,
       payYear: 2026,
       payMonth: 4,
+      regularHours: 160,
+      overtimeHours: 8,
+      weekdayOvertimeHours: 8,
+      restDayOvertimeHours: 0,
+      holidayOvertimeHours: 0,
+      mandatoryRestOvertimeHours: 0,
       basePay: 32000,
       overtimePay: 2000,
       grossPay: 34000,

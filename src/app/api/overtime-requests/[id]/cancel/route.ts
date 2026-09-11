@@ -5,6 +5,9 @@ import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
+import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
+import { getPayrollImpactWarning } from '@/lib/payroll-impact-warning';
+import { clearOvertimeAttendanceLinks } from '@/lib/overtime-attendance';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -26,7 +29,6 @@ async function getManagedDepartments(employeeId: number): Promise<string[]> {
 async function reverseCompLeave(
   tx: Pick<typeof prisma, 'compLeaveBalance' | 'compLeaveTransaction'>,
   employeeId: number,
-  hours: number,
   overtimeRequestId: number
 ) {
   // 取得員工補休餘額
@@ -35,8 +37,7 @@ async function reverseCompLeave(
   });
 
   if (!balance) {
-    console.log(`員工 ${employeeId} 沒有補休餘額記錄`);
-    return false;
+    throw new Error(`員工 ${employeeId} 沒有補休餘額記錄`);
   }
 
   const originalAccrual = await tx.compLeaveTransaction.findFirst({
@@ -50,12 +51,14 @@ async function reverseCompLeave(
   });
 
   if (!originalAccrual) {
-    console.log(`找不到加班申請 ${overtimeRequestId} 對應的補休獲得交易`);
-    return false;
+    throw new Error(`找不到加班申請 ${overtimeRequestId} 對應的補休獲得交易`);
   }
 
   // 計算要扣減的時數
-  const hoursToDeduct = hours;
+  const hoursToDeduct = originalAccrual.hours;
+  if (originalAccrual.isFrozen && balance.balance < hoursToDeduct) {
+    throw new Error('補休餘額不足，無法回沖加班補休');
+  }
   
   // 更新餘額
   await tx.compLeaveBalance.update({
@@ -291,12 +294,16 @@ export async function PUT(
       }
 
       if (action === 'APPROVE') {
+        const freezeCheck = await checkAttendanceFreeze(new Date(overtimeRequest.overtimeDate));
+        if (freezeCheck.isFrozen) {
+          return NextResponse.json({ error: '該月份已被凍結，無法核准加班撤銷' }, { status: 403 });
+        }
+
         const compLeaveReversed = await prisma.$transaction(async (tx) => {
           const reversed = overtimeRequest.compensationType === 'COMP_LEAVE'
             ? await reverseCompLeave(
                 tx,
                 overtimeRequest.employeeId,
-                overtimeRequest.totalHours,
                 overtimeId
               )
             : false;
@@ -313,15 +320,22 @@ export async function PUT(
               compLeaveReversedAt: reversed ? new Date() : null
             }
           });
+          await clearOvertimeAttendanceLinks(tx, overtimeId);
 
           return reversed;
+        });
+        const warning = await getPayrollImpactWarning(prisma, {
+          employeeId: overtimeRequest.employeeId,
+          startDate: overtimeRequest.overtimeDate,
+          endDate: overtimeRequest.overtimeDate,
         });
 
         return NextResponse.json({
           success: true,
           message: compLeaveReversed 
             ? '撤銷申請已核准，加班已取消，補休已回沖' 
-            : '撤銷申請已核准，加班已取消'
+            : '撤銷申請已核准，加班已取消',
+          warning,
         });
       } else {
         await prisma.overtimeRequest.update({

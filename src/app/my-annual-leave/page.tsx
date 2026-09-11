@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { 
   Calendar, 
   Clock, 
@@ -16,6 +16,7 @@ import {
   Filter
 } from 'lucide-react';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import EmployeeListSelect, { useActiveEmployeeDepartments } from '@/components/EmployeeListSelect';
 
 interface Employee {
   id: number;
@@ -97,6 +98,8 @@ export default function MyAnnualLeavePage() {
   const [adminData, setAdminData] = useState<AdminData | null>(null);
   const [viewMode, setViewMode] = useState<'personal' | 'all'>('personal');
   const [selectedDepartment, setSelectedDepartment] = useState<string>('all');
+  const [selectedEmployeeId, setSelectedEmployeeId] = useState('');
+  const { departments } = useActiveEmployeeDepartments();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -165,6 +168,14 @@ export default function MyAnnualLeavePage() {
       fetchAdminData(selectedDepartment);
     }
   };
+
+  const filteredAdminEmployees = useMemo(
+    () =>
+      (adminData?.employees || []).filter((employee) =>
+        !selectedEmployeeId || employee.employeeId === selectedEmployeeId
+      ),
+    [adminData?.employees, selectedEmployeeId]
+  );
 
   if (loading && !personalData && !adminData) {
     return (
@@ -260,18 +271,31 @@ export default function MyAnnualLeavePage() {
                   <Filter className="w-5 h-5" />
                   <span className="font-medium">部門篩選：</span>
                 </div>
-                <select
-                  value={selectedDepartment}
-                  onChange={(e) => setSelectedDepartment(e.target.value)}
-                  className="px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                >
-                  <option value="all">全部部門</option>
-                  {adminData.departments.map((dept) => (
-                    <option key={dept} value={dept}>{dept}</option>
-                  ))}
-                </select>
+                <div className="flex flex-wrap items-center gap-3">
+                  <select
+                    value={selectedDepartment}
+                    onChange={(e) => {
+                      setSelectedDepartment(e.target.value);
+                      setSelectedEmployeeId('');
+                    }}
+                    className="px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="all">全部部門</option>
+                    {departments.map((dept) => (
+                      <option key={dept} value={dept}>{dept}</option>
+                    ))}
+                  </select>
+                  <EmployeeListSelect
+                    value={selectedEmployeeId}
+                    onChange={(value) => setSelectedEmployeeId(value)}
+                    emptyLabel="全部員工"
+                    departmentFilter={selectedDepartment === 'all' ? '' : selectedDepartment}
+                    className="min-w-[260px]"
+                    selectClassName="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100"
+                  />
+                </div>
                 <span className="text-gray-500 text-sm">
-                  共 {adminData.employees.length} 位員工
+                  共 {filteredAdminEmployees.length} 位員工
                 </span>
               </div>
             </div>
@@ -298,7 +322,7 @@ export default function MyAnnualLeavePage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200">
-                    {adminData.employees.map((emp) => (
+                    {filteredAdminEmployees.map((emp) => (
                       <tr key={emp.id} className="hover:bg-gray-50">
                         <td className="px-4 py-3">
                           <div>

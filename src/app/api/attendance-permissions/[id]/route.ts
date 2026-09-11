@@ -115,7 +115,8 @@ export async function PATCH(
             employeeId: true,
             name: true,
             department: true,
-            position: true
+            position: true,
+            isActive: true
           }
         }
       }

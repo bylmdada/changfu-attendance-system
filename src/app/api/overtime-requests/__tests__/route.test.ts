@@ -8,6 +8,12 @@ jest.mock('@/lib/database', () => ({
       findMany: jest.fn(),
       create: jest.fn(),
     },
+    employee: {
+      findMany: jest.fn(),
+    },
+    approvalInstance: {
+      findMany: jest.fn(),
+    },
     systemSettings: {
       findUnique: jest.fn(),
     }
@@ -39,6 +45,14 @@ jest.mock('@/lib/approval-helper', () => ({
   createApprovalForRequest: jest.fn()
 }));
 
+jest.mock('@/lib/overtime-eligibility', () => ({
+  calculateOvertimeRequestsEligibility: jest.fn().mockResolvedValue({
+    byRequestId: new Map(),
+    byEmployeeDate: new Map(),
+    totalEffectiveHours: 0,
+  }),
+}));
+
 import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest, verifyPassword } from '@/lib/auth';
@@ -46,7 +60,7 @@ import { checkRateLimit } from '@/lib/rate-limit';
 import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
 import { validateCSRF } from '@/lib/csrf';
 import { createApprovalForRequest } from '@/lib/approval-helper';
-import { POST } from '../route';
+import { GET, POST } from '../route';
 
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
@@ -66,6 +80,8 @@ describe('overtime-requests quick auth account status', () => {
     mockCreateApprovalForRequest.mockResolvedValue(undefined as never);
     mockPrisma.overtimeRequest.findFirst.mockResolvedValue(null as never);
     mockPrisma.overtimeRequest.findMany.mockResolvedValue([] as never);
+    mockPrisma.employee.findMany.mockResolvedValue([] as never);
+    mockPrisma.approvalInstance.findMany.mockResolvedValue([] as never);
     mockPrisma.systemSettings.findUnique.mockResolvedValue(null as never);
   });
 
@@ -97,6 +113,143 @@ describe('overtime-requests quick auth account status', () => {
     expect(response.status).toBe(401);
     expect(payload.error).toBe('帳號已停用，請聯繫管理員');
     expect(mockVerifyPassword).not.toHaveBeenCalled();
+  });
+
+  it('returns the actual manager reviewer for requests that passed first-stage approval', async () => {
+    mockGetUserFromRequest.mockResolvedValue({
+      userId: 1,
+      employeeId: 88,
+      role: 'ADMIN',
+      username: 'admin',
+    } as never);
+    mockPrisma.overtimeRequest.findMany.mockResolvedValue([
+      {
+        id: 31,
+        employeeId: 10,
+        overtimeDate: new Date('2026-08-17T00:00:00.000Z'),
+        startTime: '17:00',
+        endTime: '19:00',
+        totalHours: 2,
+        reason: '設備盤點',
+        workContent: null,
+        compensationType: 'COMP_LEAVE',
+        status: 'PENDING_ADMIN',
+        managerReviewerId: 7,
+        managerOpinion: 'AGREE',
+        managerReviewedAt: new Date('2026-08-17T10:00:00.000Z'),
+        approvedBy: null,
+        approver: null,
+        createdAt: new Date('2026-08-17T09:00:00.000Z'),
+        employee: {
+          id: 10,
+          employeeId: 'E010',
+          name: '溪北員工',
+          department: '溪北輔具中心',
+          position: '專員',
+        },
+      },
+    ] as never);
+    mockPrisma.employee.findMany.mockResolvedValue([
+      {
+        id: 7,
+        employeeId: 'M007',
+        name: '溪北中心主任',
+        department: '溪北輔具中心',
+        position: '主任',
+      },
+    ] as never);
+
+    const response = await GET(new NextRequest('http://localhost/api/overtime-requests'));
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.overtimeRequests[0].managerReviewer).toEqual({
+      id: 7,
+      employeeId: 'M007',
+      name: '溪北中心主任',
+      department: '溪北輔具中心',
+      position: '主任',
+    });
+    expect(mockPrisma.employee.findMany).toHaveBeenCalledWith({
+      where: { id: { in: [7] } },
+      select: {
+        id: true,
+        employeeId: true,
+        name: true,
+        department: true,
+        position: true,
+      },
+    });
+  });
+
+  it('returns the final reviewer from approval history when legacy approvedBy is missing', async () => {
+    mockGetUserFromRequest.mockResolvedValue({
+      userId: 1,
+      employeeId: 88,
+      role: 'ADMIN',
+      username: 'admin',
+    } as never);
+    mockPrisma.overtimeRequest.findMany.mockResolvedValue([
+      {
+        id: 32,
+        employeeId: 10,
+        overtimeDate: new Date('2026-08-16T00:00:00.000Z'),
+        startTime: '17:00',
+        endTime: '19:00',
+        totalHours: 2,
+        reason: '設備盤點',
+        workContent: null,
+        compensationType: 'COMP_LEAVE',
+        status: 'APPROVED',
+        managerReviewerId: 7,
+        managerOpinion: 'AGREE',
+        approvedBy: null,
+        approver: null,
+        createdAt: new Date('2026-08-16T09:00:00.000Z'),
+        employee: {
+          id: 10,
+          employeeId: 'E010',
+          name: '溪北員工',
+          department: '溪北輔具中心',
+          position: '專員',
+        },
+      },
+    ] as never);
+    mockPrisma.employee.findMany.mockResolvedValue([
+      {
+        id: 7,
+        employeeId: 'M007',
+        name: '溪北中心主任',
+        department: '溪北輔具中心',
+        position: '主任',
+      },
+    ] as never);
+    mockPrisma.approvalInstance.findMany.mockResolvedValue([
+      {
+        requestId: 32,
+        reviews: [{
+          reviewer: {
+            id: 8,
+            employeeId: 'A008',
+            name: '系統管理員',
+            department: '行政部',
+            position: '管理員',
+          },
+        }],
+      },
+    ] as never);
+
+    const response = await GET(new NextRequest('http://localhost/api/overtime-requests'));
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.overtimeRequests[0].historyApprover).toEqual({
+      id: 8,
+      employeeId: 'A008',
+      name: '系統管理員',
+      department: '行政部',
+      position: '管理員',
+    });
   });
 
   it('requires csrf validation for session-authenticated submissions even when username is present', async () => {
@@ -313,5 +466,92 @@ describe('overtime-requests quick auth account status', () => {
 
     expect(response.status).toBe(400);
     expect(payload.error).toBe('該日期已有加班申請');
+  });
+
+  it('rejects overtime ranges shorter than the configured minimum instead of rounding them up', async () => {
+    mockGetUserFromRequest.mockResolvedValue({
+      userId: 11,
+      employeeId: 99,
+      role: 'EMPLOYEE',
+      username: 'session.user'
+    } as never);
+    mockPrisma.systemSettings.findUnique.mockImplementation(async (args: { where: { key: string } }) => {
+      if (args.where.key === 'overtime_calculation_settings') {
+        return { key: args.where.key, value: JSON.stringify({ overtimeMinUnit: 60 }) } as never;
+      }
+
+      return null as never;
+    });
+
+    const request = new NextRequest('http://localhost/api/overtime-requests', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        workDate: '2026-07-08',
+        startTime: '17:00',
+        endTime: '17:59',
+        reason: '短時加班'
+      })
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload.error).toBe('加班時數最少1小時');
+    expect(mockPrisma.overtimeRequest.create).not.toHaveBeenCalled();
+  });
+
+  it('stores the full requested minutes after the configured minimum is met', async () => {
+    mockGetUserFromRequest.mockResolvedValue({
+      userId: 11,
+      employeeId: 99,
+      role: 'EMPLOYEE',
+      username: 'session.user'
+    } as never);
+    mockPrisma.systemSettings.findUnique.mockImplementation(async (args: { where: { key: string } }) => {
+      if (args.where.key === 'overtime_calculation_settings') {
+        return { key: args.where.key, value: JSON.stringify({ overtimeMinUnit: 60 }) } as never;
+      }
+
+      return null as never;
+    });
+    mockPrisma.overtimeRequest.create.mockResolvedValue({
+      id: 125,
+      employeeId: 99,
+      status: 'PENDING',
+      totalHours: 2,
+      employee: {
+        id: 99,
+        employeeId: 'E099',
+        name: '一般員工',
+        department: '製造部',
+        position: '技術員'
+      }
+    } as never);
+
+    const request = new NextRequest('http://localhost/api/overtime-requests', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        workDate: '2026-07-01',
+        startTime: '17:00',
+        endTime: '19:31',
+        reason: '活動支援'
+      })
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.success).toBe(true);
+    expect(mockPrisma.overtimeRequest.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          totalHours: 2.52
+        })
+      })
+    );
   });
 });

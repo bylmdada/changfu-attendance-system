@@ -9,6 +9,7 @@ import {
   normalizeClockReasonPromptSettings,
   parseClockReasonPromptSettings,
 } from '@/lib/clock-reason-prompt-settings';
+import { logSystemSettingsChange } from '@/lib/system-settings-audit';
 
 function parseThresholdValue(
   value: unknown,
@@ -164,6 +165,15 @@ export async function PUT(request: NextRequest) {
       where: { key: 'clock_reason_prompt' },
       update: { value: JSON.stringify(settings) },
       create: { key: 'clock_reason_prompt', value: JSON.stringify(settings) }
+    });
+
+    await logSystemSettingsChange({
+      request,
+      user,
+      settingKey: 'clock_reason_prompt',
+      description: '打卡原因提示設定變更',
+      oldValue: normalizeClockReasonPromptSettings(baseSettings),
+      newValue: settings,
     });
 
     return NextResponse.json({ success: true, settings, message: '設定已儲存' });

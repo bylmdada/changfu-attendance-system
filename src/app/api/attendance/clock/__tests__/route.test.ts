@@ -24,6 +24,10 @@ jest.mock('@/lib/database', () => ({
     },
     overtimeRequest: {
       findFirst: jest.fn(),
+      findMany: jest.fn(),
+    },
+    leaveRequest: {
+      findMany: jest.fn(),
     },
   },
 }));
@@ -110,6 +114,8 @@ describe('attendance clock route GPS validation', () => {
     mockedPrisma.schedule.findFirst.mockResolvedValue(null as never);
     mockedPrisma.holiday.findFirst.mockResolvedValue(null as never);
     mockedPrisma.overtimeRequest.findFirst.mockResolvedValue(null as never);
+    mockedPrisma.overtimeRequest.findMany.mockResolvedValue([] as never);
+    mockedPrisma.leaveRequest.findMany.mockResolvedValue([] as never);
   });
 
   it('rejects invalid GPS payload before writing attendance data', async () => {
@@ -312,7 +318,7 @@ describe('attendance clock route GPS validation', () => {
     }
   });
 
-  it('calculates clock-out regular and overtime hours from the scheduled work hours', async () => {
+  it('does not treat short-shift hours within the statutory 8-hour limit as overtime', async () => {
     jest.useFakeTimers();
     try {
       jest.setSystemTime(new Date('2026-04-11T10:00:00.000Z'));
@@ -335,7 +341,7 @@ describe('attendance clock route GPS validation', () => {
       mockedPrisma.attendanceRecord.update.mockResolvedValue({
         id: 202,
         regularHours: 6,
-        overtimeHours: 2,
+        overtimeHours: 0,
       } as never);
 
       const request = new NextRequest('http://localhost/api/attendance/clock', {
@@ -356,16 +362,121 @@ describe('attendance clock route GPS validation', () => {
 
       expect(response?.status).toBe(200);
       expect(payload.regularHours).toBe(6);
-      expect(payload.overtimeHours).toBe(2);
+      expect(payload.overtimeHours).toBe(0);
       expect(mockedPrisma.attendanceRecord.update).toHaveBeenCalledWith(
         expect.objectContaining({
           where: { id: 202 },
           data: expect.objectContaining({
             regularHours: 6,
-            overtimeHours: 2,
+            overtimeHours: 0,
           }),
         })
       );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('stores scheduled regular hours without the manager-agreed public trip interval', async () => {
+    jest.useFakeTimers();
+    try {
+      jest.setSystemTime(new Date('2026-07-17T05:10:00.000Z'));
+      mockedPrisma.attendanceRecord.findFirst.mockResolvedValue({
+        id: 203,
+        employeeId: 9,
+        workDate: new Date('2026-07-16T16:00:00.000Z'),
+        clockInTime: new Date('2026-07-16T23:45:00.000Z'),
+        clockOutTime: null,
+      } as never);
+      mockedPrisma.schedule.findFirst.mockResolvedValue({
+        employeeId: 9,
+        workDate: '2026-07-17',
+        startTime: '08:00',
+        endTime: '17:00',
+        breakTime: 60,
+        workHours: 0,
+        shiftType: 'B',
+      } as never);
+      mockedPrisma.leaveRequest.findMany.mockResolvedValue([
+        {
+          startDate: new Date('2026-07-17T05:00:00.000Z'),
+          endDate: new Date('2026-07-17T09:00:00.000Z'),
+          status: 'PENDING_ADMIN',
+          managerOpinion: 'AGREE',
+          voidedAt: null,
+        },
+      ] as never);
+      mockedPrisma.attendanceRecord.update.mockResolvedValue({
+        id: 203,
+        regularHours: 4,
+        overtimeHours: 0,
+      } as never);
+
+      const response = await POST(new NextRequest('http://localhost/api/attendance/clock', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit',
+        },
+        body: JSON.stringify({
+          type: 'out',
+          infectionControl: validInfectionControl,
+          location: { latitude: 25.0, longitude: 121.0, accuracy: 10 },
+        }),
+      }));
+
+      expect(response?.status).toBe(200);
+      expect(mockedPrisma.attendanceRecord.update).toHaveBeenCalledWith(expect.objectContaining({
+        where: { id: 203 },
+        data: expect.objectContaining({ regularHours: 4, overtimeHours: 0 }),
+      }));
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not persist clock-time excess as overtime without an approved overtime request', async () => {
+    jest.useFakeTimers();
+    try {
+      jest.setSystemTime(new Date('2026-04-11T10:00:00.000Z'));
+      mockedPrisma.attendanceRecord.findFirst.mockResolvedValue({
+        id: 204,
+        employeeId: 9,
+        workDate: new Date('2026-04-10T16:00:00.000Z'),
+        clockInTime: new Date('2026-04-11T00:00:00.000Z'),
+        clockOutTime: null,
+        clockInOvertimeId: null,
+        clockOutOvertimeId: null,
+      } as never);
+      mockedPrisma.schedule.findFirst.mockResolvedValue({
+        employeeId: 9,
+        workDate: '2026-04-11',
+        startTime: '08:00',
+        endTime: '17:00',
+        breakTime: 0,
+        workHours: 8,
+        shiftType: 'B',
+      } as never);
+      mockedPrisma.attendanceRecord.update.mockResolvedValue({ id: 204 } as never);
+
+      const response = await POST(new NextRequest('http://localhost/api/attendance/clock', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit',
+        },
+        body: JSON.stringify({
+          type: 'out',
+          infectionControl: validInfectionControl,
+          location: { latitude: 25.0, longitude: 121.0, accuracy: 10 },
+        }),
+      }));
+
+      expect(response?.status).toBe(200);
+      expect(mockedPrisma.attendanceRecord.update).toHaveBeenCalledWith(expect.objectContaining({
+        where: { id: 204 },
+        data: expect.objectContaining({ regularHours: 8, overtimeHours: 0 }),
+      }));
     } finally {
       jest.useRealTimers();
     }

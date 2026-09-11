@@ -3,6 +3,8 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { safeParseJSON } from '@/lib/validation';
+import { getStoredOvertimeCalculationSettings } from '@/lib/overtime-settings';
+import { normalizeOvertimeUnitMinutes } from '@/lib/overtime-hours';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -166,9 +168,13 @@ export async function POST(request: NextRequest) {
         const endTime = now;
         const durationMs = endTime.getTime() - startTime.getTime();
         const durationHours = durationMs / (1000 * 60 * 60);  // 轉換為小時
-        const totalHours = Math.round(durationHours * 2) / 2; // 以 0.5 小時為單位四捨五入
+        const totalHours = Math.round(durationHours * 100) / 100;
+        const overtimeSettings = await getStoredOvertimeCalculationSettings();
+        const minimumDurationMs = normalizeOvertimeUnitMinutes(
+          overtimeSettings.overtimeMinUnit
+        ) * 60 * 1000;
 
-        if (totalHours >= 0.5) {
+        if (durationMs >= minimumDurationMs) {
           overtimeRequest = await prisma.overtimeRequest.create({
             data: {
               employeeId,

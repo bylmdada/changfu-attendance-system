@@ -5,6 +5,10 @@ import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { calculateOvertimePayForRequest } from '@/lib/salary-utils';
+import {
+  calculateOvertimeRequestEligibility,
+  getOvertimeEligibilityError,
+} from '@/lib/overtime-eligibility';
 
 jest.mock('@/lib/database', () => ({
   prisma: {
@@ -39,11 +43,18 @@ jest.mock('@/lib/salary-utils', () => ({
   calculateOvertimePayForRequest: jest.fn(),
 }));
 
+jest.mock('@/lib/overtime-eligibility', () => ({
+  calculateOvertimeRequestEligibility: jest.fn(),
+  getOvertimeEligibilityError: jest.fn(),
+}));
+
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockedGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
 const mockedCheckRateLimit = checkRateLimit as jest.MockedFunction<typeof checkRateLimit>;
 const mockedValidateCSRF = validateCSRF as jest.MockedFunction<typeof validateCSRF>;
 const mockedCalculateOvertimePayForRequest = calculateOvertimePayForRequest as jest.MockedFunction<typeof calculateOvertimePayForRequest>;
+const mockedCalculateOvertimeRequestEligibility = calculateOvertimeRequestEligibility as jest.MockedFunction<typeof calculateOvertimeRequestEligibility>;
+const mockedGetOvertimeEligibilityError = getOvertimeEligibilityError as jest.MockedFunction<typeof getOvertimeEligibilityError>;
 
 const transactionClient = {
   overtimeRequest: {
@@ -85,6 +96,12 @@ describe('overtime batch-approve route guards', () => {
     mockPrisma.overtimeRequest.findMany.mockResolvedValue([] as never);
     mockPrisma.$transaction.mockImplementation(async (callback) => callback(transactionClient as never) as never);
     mockedCalculateOvertimePayForRequest.mockResolvedValue({ success: true, overtimePay: 600, hourlyRate: 200 } as never);
+    mockedCalculateOvertimeRequestEligibility.mockImplementation(async (overtimeRequest, options) => ({
+      hasCompleteAttendance: true,
+      overtimeType: options?.overtimeType ?? 'WEEKDAY',
+      effectiveHours: overtimeRequest.totalHours,
+    } as never));
+    mockedGetOvertimeEligibilityError.mockReturnValue(null);
   });
 
   it('allows HR users to batch approve final overtime decisions', async () => {
@@ -313,6 +330,11 @@ describe('overtime batch-approve route guards', () => {
       },
     ] as never);
     transactionClient.overtimeRequest.update.mockResolvedValue({ id: 8 } as never);
+    mockedCalculateOvertimeRequestEligibility.mockResolvedValue({
+      hasCompleteAttendance: true,
+      effectiveHours: 0.5,
+      overtimeType: 'REST_DAY',
+    } as never);
 
     const request = new NextRequest('http://localhost:3000/api/overtime-requests/batch-approve', {
       method: 'POST',
@@ -335,6 +357,7 @@ describe('overtime batch-approve route guards', () => {
         data: expect.objectContaining({
           status: 'APPROVED',
           approvedBy: 88,
+          overtimeType: 'REST_DAY',
         }),
       })
     );
@@ -343,7 +366,7 @@ describe('overtime batch-approve route guards', () => {
         data: expect.objectContaining({
           employeeId: 31,
           transactionType: 'EARN',
-          hours: 2,
+          hours: 0.5,
           yearMonth: '2026-04',
           isFrozen: false,
         }),
@@ -352,7 +375,7 @@ describe('overtime batch-approve route guards', () => {
     expect(transactionClient.compLeaveBalance.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         update: expect.objectContaining({
-          pendingEarn: { increment: 2 },
+          pendingEarn: { increment: 0.5 },
         }),
       })
     );
@@ -372,6 +395,11 @@ describe('overtime batch-approve route guards', () => {
       },
     ] as never);
     mockPrisma.overtimeRequest.update.mockResolvedValue({ id: 9 } as never);
+    mockedCalculateOvertimeRequestEligibility.mockResolvedValue({
+      hasCompleteAttendance: true,
+      effectiveHours: 1,
+      overtimeType: 'HOLIDAY',
+    } as never);
 
     const request = new NextRequest('http://localhost:3000/api/overtime-requests/batch-approve', {
       method: 'POST',
@@ -390,7 +418,7 @@ describe('overtime batch-approve route guards', () => {
     expect(mockedCalculateOvertimePayForRequest).toHaveBeenCalledWith(
       32,
       new Date('2026-04-05T10:00:00.000Z'),
-      3,
+      1,
       'HOLIDAY'
     );
     expect(mockPrisma.overtimeRequest.update).toHaveBeenCalledWith(
@@ -451,5 +479,44 @@ describe('overtime batch-approve route guards', () => {
     expect(consoleErrorSpy).toHaveBeenCalledWith('批次計算加班費失敗:', 'salary missing');
 
     consoleErrorSpy.mockRestore();
+  });
+
+  it('does not approve or credit requests without eligible actual overtime', async () => {
+    mockPrisma.overtimeRequest.findMany.mockResolvedValue([
+      {
+        id: 11,
+        employeeId: 46,
+        overtimeDate: new Date('2026-04-07T10:00:00.000Z'),
+        totalHours: 1,
+        compensationType: 'COMP_LEAVE',
+        reason: '延後下班',
+        status: 'PENDING_ADMIN',
+      },
+    ] as never);
+    mockedCalculateOvertimeRequestEligibility.mockResolvedValue({
+      hasCompleteAttendance: true,
+      effectiveHours: 0,
+      overtimeType: 'WEEKDAY',
+    } as never);
+    mockedGetOvertimeEligibilityError.mockReturnValue('當日實際淨工時未達法定加班門檻，無可核准的加班時數');
+
+    const request = new NextRequest('http://localhost:3000/api/overtime-requests/batch-approve', {
+      method: 'POST',
+      headers: {
+        cookie: 'token=session-token',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ ids: [11], action: 'APPROVED' }),
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload.failedIds).toEqual([11]);
+    expect(payload.error).toContain('當日實際淨工時未達法定加班門檻');
+    expect(mockPrisma.overtimeRequest.update).not.toHaveBeenCalled();
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+    expect(mockedCalculateOvertimePayForRequest).not.toHaveBeenCalled();
   });
 });

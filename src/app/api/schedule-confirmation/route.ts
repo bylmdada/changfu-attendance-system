@@ -8,8 +8,18 @@ import {
   sendSchedulePublishNotification,
   sendReminderToUnconfirmed,
 } from '@/lib/schedule-confirm-service';
+import { listShiftDefinitions } from '@/lib/shift-definition-service';
+import { resolveScheduleHourFields } from '@/lib/shift-definition-utils';
 import { parseYearMonthQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
+import {
+  type ScheduleConfirmStatus,
+  SCHEDULE_ALL_DEPARTMENTS,
+  getScheduleReleaseDepartmentFilters,
+  isScheduleConfirmStatus,
+  pickApplicableScheduleRelease,
+} from '@/lib/schedule-confirmation-status';
+import { getTaiwanMonthEnd } from '@/lib/timezone';
 
 /**
  * 班表確認 API
@@ -21,17 +31,20 @@ import { safeParseJSON } from '@/lib/validation';
 // 取得某月最後一天
 function getLastDayOfMonth(yearMonth: string): Date {
   const [year, month] = yearMonth.split('-').map(Number);
-  // 下個月的第0天 = 這個月的最後一天
-  return new Date(year, month, 0, 23, 59, 59);
+  const deadline = getTaiwanMonthEnd(year, month);
+  deadline.setUTCMilliseconds(0);
+  return deadline;
 }
 
-// 取得確認狀態
-type ConfirmStatus = 
-  | 'NOT_RELEASED'     // 尚未發布
-  | 'PENDING'          // 待確認
-  | 'CONFIRMED'        // 已確認
-  | 'NEED_RECONFIRM'   // 班表異動需重新確認
-  | 'EXPIRED';         // 已逾期未確認
+function getMonthDateRange(yearMonth: string) {
+  const [year, month] = yearMonth.split('-').map(Number);
+  const lastDay = new Date(year, month, 0).getDate();
+
+  return {
+    start: `${yearMonth}-01`,
+    end: `${yearMonth}-${String(lastDay).padStart(2, '0')}`,
+  };
+}
 
 interface ConfirmationRecord {
   id: number;
@@ -47,11 +60,33 @@ interface ReleaseRecord {
   deadline: Date | null;
 }
 
+interface ScheduleMonthlyReleaseRecord extends ReleaseRecord {
+  yearMonth: string;
+  department: string | null;
+  publishedAt: Date;
+  lastModified: Date;
+  publishedBy: {
+    name: string;
+  };
+  confirmations?: ConfirmationRecord[];
+}
+
+interface EmployeeConfirmationRecord {
+  id: number;
+  employeeId: number;
+  yearMonth: string;
+  releaseId: number;
+  version: number;
+  confirmedAt: Date;
+  comment: string | null;
+  isValid: boolean;
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function getConfirmStatus(release: ReleaseRecord | null, confirmation: ConfirmationRecord | null): ConfirmStatus {
+function getConfirmStatus(release: ReleaseRecord | null, confirmation: ConfirmationRecord | null): ScheduleConfirmStatus {
   if (!release) return 'NOT_RELEASED';
   
   if (!confirmation) {
@@ -74,6 +109,89 @@ function getConfirmStatus(release: ReleaseRecord | null, confirmation: Confirmat
   return 'CONFIRMED';
 }
 
+function parseStatusFilter(value: string | null): ScheduleConfirmStatus | null {
+  if (!value) return null;
+  return isScheduleConfirmStatus(value) ? value : null;
+}
+
+function groupReleasesByMonth(releases: ScheduleMonthlyReleaseRecord[]) {
+  return releases.reduce<Map<string, ScheduleMonthlyReleaseRecord[]>>((result, release) => {
+    const existing = result.get(release.yearMonth);
+    if (existing) {
+      existing.push(release);
+    } else {
+      result.set(release.yearMonth, [release]);
+    }
+    return result;
+  }, new Map());
+}
+
+function serializeRelease(release: ScheduleMonthlyReleaseRecord | null) {
+  if (!release) {
+    return null;
+  }
+
+  return {
+    id: release.id,
+    yearMonth: release.yearMonth,
+    department: release.department === SCHEDULE_ALL_DEPARTMENTS ? null : release.department,
+    publishedAt: release.publishedAt.toISOString(),
+    deadline: release.deadline?.toISOString() ?? null,
+    version: release.version,
+    lastModified: release.lastModified.toISOString(),
+    publisherName: release.publishedBy.name,
+  };
+}
+
+function serializeConfirmation(confirmation: EmployeeConfirmationRecord | null) {
+  if (!confirmation) {
+    return null;
+  }
+
+  return {
+    id: confirmation.id,
+    confirmedAt: confirmation.confirmedAt.toISOString(),
+    version: confirmation.version,
+    comment: confirmation.comment,
+    isValid: confirmation.isValid,
+  };
+}
+
+function buildStatusStats<T extends { status: ScheduleConfirmStatus }>(items: T[]) {
+  const confirmed = items.filter((item) => item.status === 'CONFIRMED').length;
+  const pending = items.filter((item) => item.status === 'PENDING').length;
+  const needReconfirm = items.filter((item) => item.status === 'NEED_RECONFIRM').length;
+  const expired = items.filter((item) => item.status === 'EXPIRED').length;
+  const notReleased = items.filter((item) => item.status === 'NOT_RELEASED').length;
+  const actionableTotal = items.length - notReleased;
+
+  return {
+    total: items.length,
+    confirmed,
+    pending,
+    needReconfirm,
+    expired,
+    notReleased,
+    progress: actionableTotal > 0 ? Math.round((confirmed / actionableTotal) * 100) : 0,
+  };
+}
+
+function compareYearMonthDesc(left: string, right: string) {
+  return right.localeCompare(left, 'zh-Hant');
+}
+
+function buildShiftCounts(schedules: Array<{ shiftType: string }>) {
+  const counts = new Map<string, number>();
+
+  for (const schedule of schedules) {
+    counts.set(schedule.shiftType, (counts.get(schedule.shiftType) ?? 0) + 1);
+  }
+
+  return Array.from(counts.entries())
+    .map(([shiftType, count]) => ({ shiftType, count }))
+    .sort((a, b) => a.shiftType.localeCompare(b.shiftType));
+}
+
 export async function GET(request: NextRequest) {
   try {
     const rateLimitResult = await checkRateLimit(request, '/api/schedule-confirmation');
@@ -90,6 +208,12 @@ export async function GET(request: NextRequest) {
     const type = searchParams.get('type');
     const rawYearMonth = searchParams.get('yearMonth');
     const department = searchParams.get('department');
+    const employeeCode = searchParams.get('employeeId');
+    const statusFilter = parseStatusFilter(searchParams.get('status'));
+
+    if (searchParams.get('status') && !statusFilter) {
+      return NextResponse.json({ error: 'status 參數格式錯誤' }, { status: 400 });
+    }
 
     // 查詢員工自己的確認狀態
     if (type === 'my-status') {
@@ -114,13 +238,10 @@ export async function GET(request: NextRequest) {
       }
 
       // 查詢發布記錄
-      const release = await prisma.scheduleMonthlyRelease.findFirst({
+      const releases = await prisma.scheduleMonthlyRelease.findMany({
         where: {
           yearMonth,
-          OR: [
-            { department: null },
-            { department: employee.department || '' }
-          ],
+          OR: getScheduleReleaseDepartmentFilters(employee.department),
           status: 'PUBLISHED'
         },
         include: {
@@ -132,28 +253,44 @@ export async function GET(request: NextRequest) {
         },
         orderBy: { publishedAt: 'desc' }
       });
+      const release = pickApplicableScheduleRelease(releases as ScheduleMonthlyReleaseRecord[], employee.department);
 
-      const confirmation = release?.confirmations[0] || null;
+      const confirmation = release?.confirmations?.[0] || null;
       const status = getConfirmStatus(release, confirmation);
       const scheduleConfirmSettings = await getScheduleConfirmSettings();
 
       // 查詢班表摘要
       let scheduleSummary = null;
       if (release) {
-        const schedules = await prisma.schedule.findMany({
-          where: {
-            employeeId: employee.id,
-            workDate: {
-              startsWith: yearMonth
+        const [schedules, shiftDefinitions] = await Promise.all([
+          prisma.schedule.findMany({
+            where: {
+              employeeId: employee.id,
+              workDate: {
+                startsWith: yearMonth
+              }
             }
-          }
-        });
+          }),
+          listShiftDefinitions({ includeInactive: true }),
+        ]);
 
-        const workDays = schedules.filter(s => !['RD', 'rd', 'OFF', 'FDL', 'NH'].includes(s.shiftType)).length;
-        const restDays = schedules.filter(s => ['RD', 'rd', 'OFF'].includes(s.shiftType)).length;
+        const resolvedSchedules = schedules.map((schedule) => resolveScheduleHourFields({
+          shiftType: schedule.shiftType,
+          startTime: schedule.startTime,
+          endTime: schedule.endTime,
+          breakTime: schedule.breakTime,
+          workHours: schedule.workHours,
+          specialLeaveHours: schedule.specialLeaveHours,
+          compLeaveHours: schedule.compLeaveHours,
+          overtimeHours: schedule.overtimeHours,
+        }, shiftDefinitions));
+
+        const workDays = resolvedSchedules.filter((schedule) => schedule.workHours > 0).length;
+        const restDays = resolvedSchedules.filter((schedule) => schedule.workHours <= 0).length;
         const shiftA = schedules.filter(s => s.shiftType === 'A').length;
         const shiftB = schedules.filter(s => s.shiftType === 'B').length;
         const shiftC = schedules.filter(s => s.shiftType === 'C').length;
+        const shiftCounts = buildShiftCounts(schedules);
 
         scheduleSummary = {
           total: schedules.length,
@@ -161,7 +298,8 @@ export async function GET(request: NextRequest) {
           restDays,
           shiftA,
           shiftB,
-          shiftC
+          shiftC,
+          shiftCounts
         };
       }
 
@@ -189,6 +327,253 @@ export async function GET(request: NextRequest) {
       });
     }
 
+    if (type === 'my-history') {
+      const employee = await prisma.employee.findUnique({
+        where: { id: user.employeeId },
+        select: { id: true, department: true }
+      });
+
+      if (!employee) {
+        return NextResponse.json({ error: '找不到員工資料' }, { status: 400 });
+      }
+
+      if (rawYearMonth) {
+        const yearMonthResult = parseYearMonthQueryParam(rawYearMonth);
+        if (!yearMonthResult.isValid || yearMonthResult.value === null) {
+          return NextResponse.json({ error: 'yearMonth 格式錯誤' }, { status: 400 });
+        }
+      }
+
+      const yearMonthFilter = rawYearMonth || null;
+      const scheduleMonths = await prisma.schedule.findMany({
+        where: {
+          employeeId: employee.id,
+          ...(yearMonthFilter ? { workDate: { startsWith: yearMonthFilter } } : {}),
+        },
+        select: { workDate: true },
+      });
+
+      const releases = await prisma.scheduleMonthlyRelease.findMany({
+        where: {
+          status: 'PUBLISHED',
+          OR: [
+            { department: null },
+            { department: SCHEDULE_ALL_DEPARTMENTS },
+            { department: employee.department || '' }
+          ],
+          ...(yearMonthFilter ? { yearMonth: yearMonthFilter } : {}),
+        },
+        include: {
+          publishedBy: { select: { name: true } }
+        },
+        orderBy: [
+          { yearMonth: 'desc' },
+          { publishedAt: 'desc' }
+        ],
+      });
+
+      const confirmationWhere = {
+        employeeId: employee.id,
+        ...(yearMonthFilter ? { yearMonth: yearMonthFilter } : {}),
+        ...(releases.length > 0 ? { releaseId: { in: releases.map((release) => release.id) } } : {}),
+      };
+
+      const confirmations = releases.length > 0
+        ? await prisma.scheduleConfirmation.findMany({
+            where: confirmationWhere,
+            select: {
+              id: true,
+              employeeId: true,
+              yearMonth: true,
+              releaseId: true,
+              version: true,
+              confirmedAt: true,
+              comment: true,
+              isValid: true,
+            },
+          })
+        : [];
+
+      const releaseMapByMonth = groupReleasesByMonth(releases as ScheduleMonthlyReleaseRecord[]);
+      const confirmationMap = new Map(confirmations.map((confirmation) => [confirmation.releaseId, confirmation]));
+      const months = new Set<string>();
+
+      if (yearMonthFilter) {
+        months.add(yearMonthFilter);
+      }
+
+      releases.forEach((release) => {
+        months.add(release.yearMonth);
+      });
+      scheduleMonths.forEach((schedule) => {
+        months.add(schedule.workDate.slice(0, 7));
+      });
+      confirmations.forEach((confirmation) => {
+        months.add(confirmation.yearMonth);
+      });
+
+      const items = Array.from(months)
+        .sort(compareYearMonthDesc)
+        .map((yearMonth) => {
+          const applicableRelease = pickApplicableScheduleRelease(releaseMapByMonth.get(yearMonth) ?? [], employee.department);
+          const confirmation = applicableRelease ? confirmationMap.get(applicableRelease.id) ?? null : null;
+          const status = getConfirmStatus(applicableRelease, confirmation);
+
+          return {
+            yearMonth,
+            status,
+            release: serializeRelease(applicableRelease),
+            confirmation: serializeConfirmation(confirmation),
+          };
+        })
+        .filter((item) => (statusFilter ? item.status === statusFilter : true));
+
+      return NextResponse.json({
+        success: true,
+        items,
+        stats: buildStatusStats(items),
+      });
+    }
+
+    if (type === 'admin-status-list') {
+      if (!['ADMIN', 'HR'].includes(user.role)) {
+        return NextResponse.json({ error: '無權限' }, { status: 403 });
+      }
+
+      if (!rawYearMonth) {
+        return NextResponse.json({ error: '缺少 yearMonth 參數' }, { status: 400 });
+      }
+
+      const yearMonthResult = parseYearMonthQueryParam(rawYearMonth);
+      if (!yearMonthResult.isValid || yearMonthResult.value === null) {
+        return NextResponse.json({ error: 'yearMonth 格式錯誤' }, { status: 400 });
+      }
+
+      const yearMonth = yearMonthResult.value;
+
+      const employees = await prisma.employee.findMany({
+        where: {
+          isActive: true,
+          ...(department ? { department } : {}),
+          ...(employeeCode ? { employeeId: employeeCode } : {}),
+        },
+        select: {
+          id: true,
+          employeeId: true,
+          name: true,
+          department: true,
+          position: true,
+        },
+        orderBy: [
+          { department: 'asc' },
+          { employeeId: 'asc' },
+          { name: 'asc' },
+        ],
+      });
+
+      if (employees.length === 0) {
+        return NextResponse.json({
+          success: true,
+          employees: [],
+          stats: buildStatusStats([]),
+        });
+      }
+
+      const employeeDepartments = [...new Set(
+        employees.map((employee) => employee.department).filter((value): value is string => Boolean(value))
+      )];
+
+      const [releases, scheduleRows] = await Promise.all([
+        prisma.scheduleMonthlyRelease.findMany({
+          where: {
+            yearMonth,
+            status: 'PUBLISHED',
+            OR: [
+              { department: null },
+              { department: SCHEDULE_ALL_DEPARTMENTS },
+              ...(employeeDepartments.length > 0 ? [{ department: { in: employeeDepartments } }] : []),
+            ],
+          },
+          include: {
+            publishedBy: { select: { name: true } }
+          },
+          orderBy: { publishedAt: 'desc' },
+        }),
+        prisma.schedule.findMany({
+          where: {
+            employeeId: { in: employees.map((employee) => employee.id) },
+            workDate: { startsWith: `${yearMonth}-` },
+          },
+          select: {
+            employeeId: true,
+          },
+        }),
+      ]);
+
+      const confirmations = releases.length > 0
+        ? await prisma.scheduleConfirmation.findMany({
+            where: {
+              employeeId: { in: employees.map((employee) => employee.id) },
+              releaseId: { in: releases.map((release) => release.id) },
+            },
+            select: {
+              id: true,
+              employeeId: true,
+              yearMonth: true,
+              releaseId: true,
+              version: true,
+              confirmedAt: true,
+              comment: true,
+              isValid: true,
+            },
+          })
+        : [];
+
+      const confirmationMap = new Map(
+        confirmations.map((confirmation) => [`${confirmation.employeeId}:${confirmation.releaseId}`, confirmation])
+      );
+      const scheduleCountMap = scheduleRows.reduce<Map<number, number>>((result, schedule) => {
+        result.set(schedule.employeeId, (result.get(schedule.employeeId) ?? 0) + 1);
+        return result;
+      }, new Map());
+
+      const items = employees
+        .map((employee) => {
+          const applicableRelease = pickApplicableScheduleRelease(releases as ScheduleMonthlyReleaseRecord[], employee.department);
+          const confirmation = applicableRelease
+            ? confirmationMap.get(`${employee.id}:${applicableRelease.id}`) ?? null
+            : null;
+          const scheduleCount = scheduleCountMap.get(employee.id) ?? 0;
+          const hasSchedules = scheduleCount > 0;
+          const status = applicableRelease
+            ? getConfirmStatus(applicableRelease, confirmation)
+            : hasSchedules
+              ? 'PENDING'
+              : 'NOT_RELEASED';
+
+          return {
+            id: employee.id,
+            employeeId: employee.employeeId,
+            name: employee.name,
+            department: employee.department,
+            position: employee.position,
+            yearMonth,
+            status,
+            release: serializeRelease(applicableRelease),
+            confirmation: serializeConfirmation(confirmation),
+            scheduleCount,
+            hasSchedules,
+          };
+        })
+        .filter((item) => (statusFilter ? item.status === statusFilter : true));
+
+      return NextResponse.json({
+        success: true,
+        employees: items,
+        stats: buildStatusStats(items),
+      });
+    }
+
     // 管理員查詢部門確認進度
     if (type === 'department-progress') {
       if (!['ADMIN', 'HR'].includes(user.role)) {
@@ -210,9 +595,9 @@ export async function GET(request: NextRequest) {
       const release = await prisma.scheduleMonthlyRelease.findFirst({
         where: {
           yearMonth,
-          OR: department 
+          OR: department
             ? [{ department }]
-            : [{ department: null }]
+            : [{ department: null }, { department: SCHEDULE_ALL_DEPARTMENTS }]
         },
         include: {
           publishedBy: { select: { name: true } }
@@ -332,6 +717,11 @@ export async function POST(request: NextRequest) {
     const department = typeof body.department === 'string' ? body.department : '';
     const comment = typeof body.comment === 'string' ? body.comment : undefined;
     const rawYearMonth = typeof body.yearMonth === 'string' ? body.yearMonth : null;
+    const confirmRepublish = body.confirmRepublish === true;
+
+    if (body.confirmRepublish !== undefined && typeof body.confirmRepublish !== 'boolean') {
+      return NextResponse.json({ error: 'confirmRepublish 必須是布林值' }, { status: 400 });
+    }
 
     // 員工確認班表
     if (action === 'confirm') {
@@ -385,17 +775,15 @@ export async function POST(request: NextRequest) {
       }
 
       // 查詢已正式發布的記錄
-      const release = await prisma.scheduleMonthlyRelease.findFirst({
+      const releases = await prisma.scheduleMonthlyRelease.findMany({
         where: {
           yearMonth,
           status: 'PUBLISHED',
-          OR: [
-            { department: null },
-            { department: employee.department || '' }
-          ]
+          OR: getScheduleReleaseDepartmentFilters(employee.department),
         },
         orderBy: { publishedAt: 'desc' }
       });
+      const release = pickApplicableScheduleRelease(releases, employee.department);
 
       if (!release) {
         return NextResponse.json({ error: '本月班表尚未發布，無法確認' }, { status: 409 });
@@ -465,14 +853,29 @@ export async function POST(request: NextRequest) {
 
       const deadline = getLastDayOfMonth(yearMonth);
 
-      const targetDepartment = department || null;
+      const targetDepartment = department || SCHEDULE_ALL_DEPARTMENTS;
 
       const existingRelease = await prisma.scheduleMonthlyRelease.findFirst({
         where: {
           yearMonth,
-          department: targetDepartment
+          ...(department
+            ? { department: targetDepartment }
+            : { OR: [{ department: null }, { department: SCHEDULE_ALL_DEPARTMENTS }] })
         }
       });
+
+      if (existingRelease && !confirmRepublish) {
+        const confirmedCount = await prisma.scheduleConfirmation.count({
+          where: { releaseId: existingRelease.id, isValid: true },
+        });
+        if (confirmedCount > 0) {
+          return NextResponse.json({
+            error: `重新發布將使 ${confirmedCount} 筆已確認班表失效`,
+            requiresRepublishConfirmation: true,
+            confirmedCount,
+          }, { status: 409 });
+        }
+      }
 
       const release = existingRelease
         ? await prisma.scheduleMonthlyRelease.update({
@@ -486,8 +889,19 @@ export async function POST(request: NextRequest) {
               lastModified: new Date()
             }
           })
-        : await prisma.scheduleMonthlyRelease.create({
-            data: {
+        : await prisma.scheduleMonthlyRelease.upsert({
+            where: {
+              yearMonth_department: { yearMonth, department: targetDepartment }
+            },
+            update: {
+              publishedById: employee.id,
+              publishedAt: new Date(),
+              deadline,
+              status: 'PUBLISHED',
+              version: { increment: 1 },
+              lastModified: new Date()
+            },
+            create: {
               yearMonth,
               department: targetDepartment,
               publishedById: employee.id,
@@ -506,18 +920,28 @@ export async function POST(request: NextRequest) {
         });
       }
 
-      // 發送通知給相關員工
-      const employeesToNotify = await prisma.employee.findMany({
+      // 發送通知給該月有班表的相關員工
+      const monthRange = getMonthDateRange(yearMonth);
+      const schedulesToNotify = await prisma.schedule.findMany({
         where: {
-          isActive: true,
-          ...(department ? { department } : {})
+          workDate: {
+            gte: monthRange.start,
+            lte: monthRange.end,
+          },
+          employee: {
+            is: {
+              isActive: true,
+              ...(department ? { department } : {})
+            }
+          }
         },
-        select: { id: true }
+        select: { employeeId: true }
       });
-      
+      const employeeIdsToNotify = Array.from(new Set(schedulesToNotify.map((schedule) => schedule.employeeId)));
+
       const notifyResult = await sendSchedulePublishNotification(
         yearMonth,
-        employeesToNotify.map(e => e.id),
+        employeeIdsToNotify,
         deadline
       );
 

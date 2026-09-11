@@ -31,6 +31,30 @@ interface BonusConfig {
   };
 }
 
+interface DepartmentOption {
+  id: number;
+  name: string;
+}
+
+interface DepartmentBonusConfigState {
+  yearEndConfig: {
+    baseMultiplier: number;
+    minimumServiceMonths: number;
+    paymentMonth: number;
+    enabled: boolean;
+  };
+  festivalConfig: {
+    springMultiplier: number;
+    dragonBoatMultiplier: number;
+    midAutumnMultiplier: number;
+    minimumServiceMonths: number;
+    springMonth: number;
+    dragonBoatMonth: number;
+    midAutumnMonth: number;
+    enabled: boolean;
+  };
+}
+
 interface User {
   id: number;
   username: string;
@@ -44,6 +68,48 @@ interface User {
   };
 }
 
+const DEFAULT_YEAR_END_CONFIG = {
+  baseMultiplier: 1.5,
+  minimumServiceMonths: 3,
+  paymentMonth: 2,
+  enabled: true
+};
+
+const DEFAULT_FESTIVAL_CONFIG = {
+  springMultiplier: 0.5,
+  dragonBoatMultiplier: 0.3,
+  midAutumnMultiplier: 0.3,
+  minimumServiceMonths: 1,
+  springMonth: 2,
+  dragonBoatMonth: 6,
+  midAutumnMonth: 9,
+  enabled: true
+};
+
+interface DepartmentBonusTypeConfig {
+  isActive?: boolean;
+  eligibilityRules?: {
+    minimumServiceMonths?: number;
+    baseMultiplier?: number;
+    festivalMultipliers?: {
+      spring_festival?: number;
+      dragon_boat?: number;
+      mid_autumn?: number;
+    };
+  };
+  paymentSchedule?: {
+    yearEndMonth?: number;
+    springMonth?: number;
+    dragonBoatMonth?: number;
+    midAutumnMonth?: number;
+  };
+}
+
+interface DepartmentBonusConfigPayload {
+  YEAR_END?: DepartmentBonusTypeConfig;
+  FESTIVAL?: DepartmentBonusTypeConfig;
+}
+
 export default function BonusConfigPage() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
@@ -51,6 +117,8 @@ export default function BonusConfigPage() {
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [configs, setConfigs] = useState<BonusConfig[]>([]);
+  const [departments, setDepartments] = useState<DepartmentOption[]>([]);
+  const [departmentConfigs, setDepartmentConfigs] = useState<Record<string, DepartmentBonusConfigState>>({});
 
   // 計算設定（整合自 prorated-bonus）
   const [calculationSettings, setCalculationSettings] = useState({
@@ -62,24 +130,76 @@ export default function BonusConfigPage() {
   });
 
   // 年終獎金設定
-  const [yearEndConfig, setYearEndConfig] = useState({
-    baseMultiplier: 1.5,
-    minimumServiceMonths: 3,
-    paymentMonth: 2,
-    enabled: true
-  });
+  const [yearEndConfig, setYearEndConfig] = useState(DEFAULT_YEAR_END_CONFIG);
 
   // 三節獎金設定
-  const [festivalConfig, setFestivalConfig] = useState({
-    springMultiplier: 0.5,
-    dragonBoatMultiplier: 0.3,
-    midAutumnMultiplier: 0.3,
-    minimumServiceMonths: 1,
-    springMonth: 2,
-    dragonBoatMonth: 6,
-    midAutumnMonth: 9,
-    enabled: true
+  const [festivalConfig, setFestivalConfig] = useState(DEFAULT_FESTIVAL_CONFIG);
+
+  const cloneDepartmentConfig = (
+    baseYearEnd = yearEndConfig,
+    baseFestival = festivalConfig
+  ): DepartmentBonusConfigState => ({
+    yearEndConfig: { ...baseYearEnd },
+    festivalConfig: { ...baseFestival },
   });
+
+  const toggleDepartmentOverride = (
+    departmentName: string,
+    enabled: boolean,
+    baseYearEnd = yearEndConfig,
+    baseFestival = festivalConfig
+  ) => {
+    setDepartmentConfigs(prev => {
+      if (!enabled) {
+        const next = { ...prev };
+        delete next[departmentName];
+        return next;
+      }
+
+      return {
+        ...prev,
+        [departmentName]: prev[departmentName] || cloneDepartmentConfig(baseYearEnd, baseFestival),
+      };
+    });
+  };
+
+  const updateDepartmentYearEndConfig = (
+    departmentName: string,
+    updates: Partial<DepartmentBonusConfigState['yearEndConfig']>
+  ) => {
+    setDepartmentConfigs(prev => {
+      const current = prev[departmentName] || cloneDepartmentConfig();
+      return {
+        ...prev,
+        [departmentName]: {
+          ...current,
+          yearEndConfig: {
+            ...current.yearEndConfig,
+            ...updates,
+          },
+        },
+      };
+    });
+  };
+
+  const updateDepartmentFestivalConfig = (
+    departmentName: string,
+    updates: Partial<DepartmentBonusConfigState['festivalConfig']>
+  ) => {
+    setDepartmentConfigs(prev => {
+      const current = prev[departmentName] || cloneDepartmentConfig();
+      return {
+        ...prev,
+        [departmentName]: {
+          ...current,
+          festivalConfig: {
+            ...current.festivalConfig,
+            ...updates,
+          },
+        },
+      };
+    });
+  };
 
   useEffect(() => {
     const fetchData = async () => {
@@ -109,21 +229,24 @@ export default function BonusConfigPage() {
           const data = await configResponse.json();
           setConfigs(data.configs || []);
 
+          let resolvedYearEndConfig = DEFAULT_YEAR_END_CONFIG;
+          let resolvedFestivalConfig = DEFAULT_FESTIVAL_CONFIG;
+
           // 解析年終獎金設定
           const yearEnd = data.configs?.find((c: BonusConfig) => c.bonusType === 'YEAR_END');
           if (yearEnd?.eligibilityRules) {
-            setYearEndConfig({
+            resolvedYearEndConfig = {
               baseMultiplier: yearEnd.eligibilityRules.baseMultiplier || 1.5,
               minimumServiceMonths: yearEnd.eligibilityRules.minimumServiceMonths || 3,
               paymentMonth: yearEnd.paymentSchedule?.yearEndMonth || 2,
               enabled: yearEnd.isActive !== false
-            });
+            };
           }
 
           // 解析三節獎金設定
           const festival = data.configs?.find((c: BonusConfig) => c.bonusType === 'FESTIVAL');
           if (festival?.eligibilityRules) {
-            setFestivalConfig({
+            resolvedFestivalConfig = {
               springMultiplier: festival.eligibilityRules.festivalMultipliers?.spring_festival || 0.5,
               dragonBoatMultiplier: festival.eligibilityRules.festivalMultipliers?.dragon_boat || 0.3,
               midAutumnMultiplier: festival.eligibilityRules.festivalMultipliers?.mid_autumn || 0.3,
@@ -132,8 +255,50 @@ export default function BonusConfigPage() {
               dragonBoatMonth: festival.paymentSchedule?.dragonBoatMonth || 6,
               midAutumnMonth: festival.paymentSchedule?.midAutumnMonth || 9,
               enabled: festival.isActive !== false
-            });
+            };
           }
+
+          setYearEndConfig(resolvedYearEndConfig);
+          setFestivalConfig(resolvedFestivalConfig);
+
+          if (data.departmentConfigs && typeof data.departmentConfigs === 'object') {
+            const nextDepartmentConfigs: Record<string, DepartmentBonusConfigState> = {};
+
+            Object.entries(data.departmentConfigs as Record<string, DepartmentBonusConfigPayload>).forEach(([departmentName, bonusTypeConfig]) => {
+              const yearEndOverride = bonusTypeConfig?.YEAR_END || {};
+              const festivalOverride = bonusTypeConfig?.FESTIVAL || {};
+
+              nextDepartmentConfigs[departmentName] = {
+                yearEndConfig: {
+                  baseMultiplier: yearEndOverride.eligibilityRules?.baseMultiplier ?? resolvedYearEndConfig.baseMultiplier,
+                  minimumServiceMonths: yearEndOverride.eligibilityRules?.minimumServiceMonths ?? resolvedYearEndConfig.minimumServiceMonths,
+                  paymentMonth: yearEndOverride.paymentSchedule?.yearEndMonth ?? resolvedYearEndConfig.paymentMonth,
+                  enabled: yearEndOverride.isActive ?? resolvedYearEndConfig.enabled,
+                },
+                festivalConfig: {
+                  springMultiplier: festivalOverride.eligibilityRules?.festivalMultipliers?.spring_festival ?? resolvedFestivalConfig.springMultiplier,
+                  dragonBoatMultiplier: festivalOverride.eligibilityRules?.festivalMultipliers?.dragon_boat ?? resolvedFestivalConfig.dragonBoatMultiplier,
+                  midAutumnMultiplier: festivalOverride.eligibilityRules?.festivalMultipliers?.mid_autumn ?? resolvedFestivalConfig.midAutumnMultiplier,
+                  minimumServiceMonths: festivalOverride.eligibilityRules?.minimumServiceMonths ?? resolvedFestivalConfig.minimumServiceMonths,
+                  springMonth: festivalOverride.paymentSchedule?.springMonth ?? resolvedFestivalConfig.springMonth,
+                  dragonBoatMonth: festivalOverride.paymentSchedule?.dragonBoatMonth ?? resolvedFestivalConfig.dragonBoatMonth,
+                  midAutumnMonth: festivalOverride.paymentSchedule?.midAutumnMonth ?? resolvedFestivalConfig.midAutumnMonth,
+                  enabled: festivalOverride.isActive ?? resolvedFestivalConfig.enabled,
+                },
+              };
+            });
+
+            setDepartmentConfigs(nextDepartmentConfigs);
+          }
+        }
+
+        const departmentResponse = await fetch('/api/departments', {
+          credentials: 'include'
+        });
+
+        if (departmentResponse.ok) {
+          const departmentData = await departmentResponse.json();
+          setDepartments(departmentData.departments || []);
         }
 
         // 載入按比例計算設定
@@ -168,6 +333,42 @@ export default function BonusConfigPage() {
 
     try {
       // 儲存獎金配置
+      const serializedDepartmentConfigs = Object.fromEntries(
+        Object.entries(departmentConfigs).map(([departmentName, config]) => [
+          departmentName,
+          {
+            YEAR_END: {
+              bonusTypeName: '年終獎金',
+              isActive: config.yearEndConfig.enabled,
+              eligibilityRules: {
+                baseMultiplier: config.yearEndConfig.baseMultiplier,
+                minimumServiceMonths: config.yearEndConfig.minimumServiceMonths
+              },
+              paymentSchedule: {
+                yearEndMonth: config.yearEndConfig.paymentMonth
+              }
+            },
+            FESTIVAL: {
+              bonusTypeName: '三節獎金',
+              isActive: config.festivalConfig.enabled,
+              eligibilityRules: {
+                minimumServiceMonths: config.festivalConfig.minimumServiceMonths,
+                festivalMultipliers: {
+                  spring_festival: config.festivalConfig.springMultiplier,
+                  dragon_boat: config.festivalConfig.dragonBoatMultiplier,
+                  mid_autumn: config.festivalConfig.midAutumnMultiplier
+                }
+              },
+              paymentSchedule: {
+                springMonth: config.festivalConfig.springMonth,
+                dragonBoatMonth: config.festivalConfig.dragonBoatMonth,
+                midAutumnMonth: config.festivalConfig.midAutumnMonth
+              }
+            }
+          }
+        ])
+      );
+
       const configResponse = await fetchJSONWithCSRF('/api/system-settings/bonus-config', {
         method: 'POST',
         body: {
@@ -200,7 +401,8 @@ export default function BonusConfigPage() {
               dragonBoatMonth: festivalConfig.dragonBoatMonth,
               midAutumnMonth: festivalConfig.midAutumnMonth
             }
-          }
+          },
+          departmentConfigs: serializedDepartmentConfigs
         }
       });
 
@@ -594,6 +796,234 @@ export default function BonusConfigPage() {
                 </div>
               </div>
             </div>
+          </div>
+        </div>
+
+        {/* 部門別獎金覆蓋設定 */}
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 mb-6">
+          <div className="px-6 py-4 border-b border-gray-200 bg-amber-50">
+            <h2 className="text-lg font-medium text-amber-900">部門別獎金覆蓋設定</h2>
+            <p className="text-sm text-amber-800 mt-1">未啟用部門自訂時，會沿用上方全公司預設設定。</p>
+          </div>
+          <div className="p-6 space-y-4">
+            {departments.length === 0 ? (
+              <p className="text-sm text-gray-500">尚無可用部門資料。</p>
+            ) : (
+              departments.map((department) => {
+                const hasOverride = Boolean(departmentConfigs[department.name]);
+                const departmentConfig = departmentConfigs[department.name];
+
+                return (
+                  <div key={department.id} className="rounded-xl border border-gray-200 p-4">
+                    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                      <div>
+                        <h3 className="text-base font-medium text-gray-900">{department.name}</h3>
+                        <p className="text-sm text-gray-500">可獨立設定年終與三節獎金參數。</p>
+                      </div>
+                      <label className="flex items-center gap-2 text-sm text-gray-700">
+                        <input
+                          type="checkbox"
+                          checked={hasOverride}
+                          onChange={(e) => toggleDepartmentOverride(department.name, e.target.checked)}
+                          className="rounded border-gray-300 text-amber-600"
+                        />
+                        啟用部門自訂
+                      </label>
+                    </div>
+
+                    {hasOverride && departmentConfig && (
+                      <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-2">
+                        <div className="rounded-lg border border-blue-100 bg-blue-50 p-4">
+                          <div className="flex items-center justify-between">
+                            <h4 className="text-sm font-semibold text-blue-900">年終獎金</h4>
+                            <label className="flex items-center gap-2 text-sm text-blue-900">
+                              <input
+                                type="checkbox"
+                                checked={departmentConfig.yearEndConfig.enabled}
+                                onChange={(e) => updateDepartmentYearEndConfig(
+                                  department.name,
+                                  { enabled: e.target.checked }
+                                )}
+                                className="rounded border-gray-300 text-blue-600"
+                              />
+                              啟用
+                            </label>
+                          </div>
+                          <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
+                            <label className="text-sm text-gray-700">
+                              <span className="mb-1 block">倍數</span>
+                              <input
+                                type="number"
+                                step="0.1"
+                                min="0"
+                                value={departmentConfig.yearEndConfig.baseMultiplier}
+                                onChange={(e) => updateDepartmentYearEndConfig(
+                                  department.name,
+                                  { baseMultiplier: parseFloat(e.target.value) || 0 }
+                                )}
+                                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-gray-900"
+                              />
+                            </label>
+                            <label className="text-sm text-gray-700">
+                              <span className="mb-1 block">最低服務月數</span>
+                              <input
+                                type="number"
+                                min="0"
+                                value={departmentConfig.yearEndConfig.minimumServiceMonths}
+                                onChange={(e) => updateDepartmentYearEndConfig(
+                                  department.name,
+                                  { minimumServiceMonths: parseInt(e.target.value) || 0 }
+                                )}
+                                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-gray-900"
+                              />
+                            </label>
+                            <label className="text-sm text-gray-700">
+                              <span className="mb-1 block">發放月份</span>
+                              <select
+                                value={departmentConfig.yearEndConfig.paymentMonth}
+                                onChange={(e) => updateDepartmentYearEndConfig(
+                                  department.name,
+                                  { paymentMonth: parseInt(e.target.value) }
+                                )}
+                                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-gray-900"
+                              >
+                                {[1, 2, 3, 12].map(month => (
+                                  <option key={month} value={month}>{month} 月</option>
+                                ))}
+                              </select>
+                            </label>
+                          </div>
+                        </div>
+
+                        <div className="rounded-lg border border-green-100 bg-green-50 p-4">
+                          <div className="flex items-center justify-between">
+                            <h4 className="text-sm font-semibold text-green-900">三節獎金</h4>
+                            <label className="flex items-center gap-2 text-sm text-green-900">
+                              <input
+                                type="checkbox"
+                                checked={departmentConfig.festivalConfig.enabled}
+                                onChange={(e) => updateDepartmentFestivalConfig(
+                                  department.name,
+                                  { enabled: e.target.checked }
+                                )}
+                                className="rounded border-gray-300 text-green-600"
+                              />
+                              啟用
+                            </label>
+                          </div>
+                          <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+                            <label className="text-sm text-gray-700">
+                              <span className="mb-1 block">最低服務月數</span>
+                              <input
+                                type="number"
+                                min="0"
+                                value={departmentConfig.festivalConfig.minimumServiceMonths}
+                                onChange={(e) => updateDepartmentFestivalConfig(
+                                  department.name,
+                                  { minimumServiceMonths: parseInt(e.target.value) || 0 }
+                                )}
+                                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-gray-900"
+                              />
+                            </label>
+                            <div className="grid grid-cols-3 gap-2">
+                              <label className="text-sm text-gray-700">
+                                <span className="mb-1 block">春節</span>
+                                <input
+                                  type="number"
+                                  step="0.1"
+                                  min="0"
+                                  value={departmentConfig.festivalConfig.springMultiplier}
+                                  onChange={(e) => updateDepartmentFestivalConfig(
+                                    department.name,
+                                    { springMultiplier: parseFloat(e.target.value) || 0 }
+                                  )}
+                                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-gray-900"
+                                />
+                              </label>
+                              <label className="text-sm text-gray-700">
+                                <span className="mb-1 block">端午</span>
+                                <input
+                                  type="number"
+                                  step="0.1"
+                                  min="0"
+                                  value={departmentConfig.festivalConfig.dragonBoatMultiplier}
+                                  onChange={(e) => updateDepartmentFestivalConfig(
+                                    department.name,
+                                    { dragonBoatMultiplier: parseFloat(e.target.value) || 0 }
+                                  )}
+                                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-gray-900"
+                                />
+                              </label>
+                              <label className="text-sm text-gray-700">
+                                <span className="mb-1 block">中秋</span>
+                                <input
+                                  type="number"
+                                  step="0.1"
+                                  min="0"
+                                  value={departmentConfig.festivalConfig.midAutumnMultiplier}
+                                  onChange={(e) => updateDepartmentFestivalConfig(
+                                    department.name,
+                                    { midAutumnMultiplier: parseFloat(e.target.value) || 0 }
+                                  )}
+                                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-gray-900"
+                                />
+                              </label>
+                            </div>
+                            <div className="grid grid-cols-3 gap-2">
+                              <label className="text-sm text-gray-700">
+                                <span className="mb-1 block">春節月份</span>
+                                <select
+                                  value={departmentConfig.festivalConfig.springMonth}
+                                  onChange={(e) => updateDepartmentFestivalConfig(
+                                    department.name,
+                                    { springMonth: parseInt(e.target.value) }
+                                  )}
+                                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-gray-900"
+                                >
+                                  {[1, 2].map(month => (
+                                    <option key={month} value={month}>{month} 月</option>
+                                  ))}
+                                </select>
+                              </label>
+                              <label className="text-sm text-gray-700">
+                                <span className="mb-1 block">端午月份</span>
+                                <select
+                                  value={departmentConfig.festivalConfig.dragonBoatMonth}
+                                  onChange={(e) => updateDepartmentFestivalConfig(
+                                    department.name,
+                                    { dragonBoatMonth: parseInt(e.target.value) }
+                                  )}
+                                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-gray-900"
+                                >
+                                  {[5, 6].map(month => (
+                                    <option key={month} value={month}>{month} 月</option>
+                                  ))}
+                                </select>
+                              </label>
+                              <label className="text-sm text-gray-700">
+                                <span className="mb-1 block">中秋月份</span>
+                                <select
+                                  value={departmentConfig.festivalConfig.midAutumnMonth}
+                                  onChange={(e) => updateDepartmentFestivalConfig(
+                                    department.name,
+                                    { midAutumnMonth: parseInt(e.target.value) }
+                                  )}
+                                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-gray-900"
+                                >
+                                  {[8, 9, 10].map(month => (
+                                    <option key={month} value={month}>{month} 月</option>
+                                  ))}
+                                </select>
+                              </label>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
           </div>
         </div>
 

@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { Download, Building2, Calendar, DollarSign, Users, FileSpreadsheet, Loader2, CreditCard } from 'lucide-react';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import { SimpleToast, useLocalToast } from '@/components/Toast';
 
 interface Employee {
   id: number;
@@ -20,6 +21,7 @@ interface PayrollSummary {
 }
 
 export default function SalaryTransferPage() {
+  const { toast, showToast, clearToast } = useLocalToast();
   const [year, setYear] = useState(new Date().getFullYear());
   const [month, setMonth] = useState(new Date().getMonth() + 1);
   const [loading, setLoading] = useState(false);
@@ -136,11 +138,11 @@ export default function SalaryTransferPage() {
         document.body.removeChild(a);
       } else {
         const errorData = await response.json();
-        alert(errorData.error || '匯出失敗');
+        showToast('error', errorData.error || '匯出失敗');
       }
     } catch (error) {
       console.error('匯出失敗:', error);
-      alert('匯出失敗，請稍後再試');
+      showToast('error', '匯出失敗，請稍後再試');
     } finally {
       setExporting(null);
     }
@@ -445,6 +447,7 @@ export default function SalaryTransferPage() {
           </div>
         </div>
       </div>
+      <SimpleToast toast={toast} onClose={clearToast} />
     </AuthenticatedLayout>
   );
 }

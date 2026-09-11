@@ -4,6 +4,7 @@ import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { getUserFromRequest } from '@/lib/auth';
 import { safeParseJSON } from '@/lib/validation';
+import { logSystemSettingsChange } from '@/lib/system-settings-audit';
 
 function parsePositiveInteger(value: unknown) {
   if (typeof value === 'number') {
@@ -260,6 +261,16 @@ export async function POST(request: NextRequest) {
       isActive: exception.isActive
     };
 
+    await logSystemSettingsChange({
+      request,
+      user: userAuth,
+      settingKey: 'password-exceptions',
+      description: '密碼政策例外新增',
+      oldValue: null,
+      newValue: formattedException,
+      targetId: exception.id,
+    });
+
     return NextResponse.json({ 
       success: true, 
       exception: formattedException 
@@ -281,6 +292,7 @@ export async function DELETE(request: NextRequest) {
     if (authError) {
       return authError;
     }
+    const user = await getUserFromRequest(request);
 
     const csrfResult = await validateCSRF(request);
     if (!csrfResult.valid) {
@@ -327,8 +339,22 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
+    const existingException = await prisma.passwordException.findUnique({
+      where: { id: parsedId }
+    });
+
     await prisma.passwordException.delete({
       where: { id: parsedId }
+    });
+
+    await logSystemSettingsChange({
+      request,
+      user: user!,
+      settingKey: 'password-exceptions',
+      description: '密碼政策例外刪除',
+      oldValue: existingException,
+      newValue: null,
+      targetId: parsedId,
     });
 
     return NextResponse.json({ 

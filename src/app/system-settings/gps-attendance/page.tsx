@@ -254,7 +254,7 @@ export default function GPSAttendanceSettings() {
       });
 
       if (response.ok) {
-        alert('GPS設定已儲存！');
+        showToast('success', 'GPS設定已儲存');
       } else {
         let errorMessage = `HTTP ${response.status}`;
         
@@ -274,11 +274,11 @@ export default function GPSAttendanceSettings() {
             console.warn('Unable to parse error response, using HTTP status');
           }
         }
-        alert(`儲存失敗: ${errorMessage}`);
+        showToast('error', `儲存失敗: ${errorMessage}`);
       }
     } catch (error) {
       console.error('儲存設定失敗:', error);
-      alert('儲存失敗，請重試');
+      showToast('error', '儲存失敗，請重試');
     } finally {
       setSaving(false);
     }
@@ -295,11 +295,11 @@ export default function GPSAttendanceSettings() {
             latitude: latitude.toFixed(6),
             longitude: longitude.toFixed(6)
           }));
-          alert('已獲取當前位置座標');
+          showToast('success', '已獲取當前位置座標');
         },
         (error) => {
           console.error('獲取位置失敗:', error);
-          alert('無法獲取當前位置，請手動輸入座標');
+          showToast('error', '無法獲取當前位置，請手動輸入座標');
         },
         {
           enableHighAccuracy: true,
@@ -308,7 +308,7 @@ export default function GPSAttendanceSettings() {
         }
       );
     } else {
-      alert('瀏覽器不支援GPS定位功能');
+      showToast('error', '瀏覽器不支援GPS定位功能');
     }
   };
 
@@ -359,7 +359,7 @@ export default function GPSAttendanceSettings() {
         setShowLocationForm(false);
         setEditingLocation(null);
         resetLocationForm();
-        alert(editingLocation ? '位置更新成功' : '位置添加成功');
+        showToast('success', editingLocation ? '位置更新成功' : '位置添加成功');
       } else {
         let errorMessage = `HTTP ${response.status}`;
         
@@ -381,11 +381,11 @@ export default function GPSAttendanceSettings() {
             console.warn('Unable to parse error response, using HTTP status');
           }
         }
-        alert(`操作失敗: ${errorMessage}`);
+        showToast('error', `操作失敗: ${errorMessage}`);
       }
     } catch (error) {
       console.error('儲存位置失敗:', error);
-      alert('操作失敗，請重試');
+      showToast('error', '操作失敗，請重試');
     }
   };
 
@@ -629,14 +629,14 @@ export default function GPSAttendanceSettings() {
         setShowPermissionForm(false);
         setEditingPermission(null);
         resetPermissionForm();
-        alert(editingPermission ? '權限更新成功' : '權限新增成功');
+        showToast('success', editingPermission ? '權限更新成功' : '權限新增成功');
       } else {
         const error = await response.json();
-        alert(`操作失敗: ${error.error || '未知錯誤'}`);
+        showToast('error', `操作失敗: ${error.error || '未知錯誤'}`);
       }
     } catch (error) {
       console.error('保存權限失敗:', error);
-      alert('操作失敗，請重試');
+      showToast('error', '操作失敗，請重試');
     }
   };
 
@@ -1169,8 +1169,9 @@ export default function GPSAttendanceSettings() {
                 <p>尚未設定任何允許的打卡位置</p>
               </div>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full">
+              <>
+                <div className="overflow-x-auto">
+                  <table className="w-full">
                   <thead className="border-b border-gray-200">
                     <tr>
                       <th className="py-3 px-4 w-10">
@@ -1270,8 +1271,12 @@ export default function GPSAttendanceSettings() {
                       </tr>
                     ))}
                   </tbody>
-                </table>
-              </div>
+                  </table>
+                </div>
+                <p className="mt-2 text-sm text-gray-500 sm:hidden">
+                  表格可左右滑動查看座標、狀態與操作。
+                </p>
+              </>
             )}
           </div>
         </div>
@@ -1340,8 +1345,9 @@ export default function GPSAttendanceSettings() {
                 <p className="text-sm text-gray-500 mt-1">所有員工預設啟用GPS打卡功能</p>
               </div>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full">
+              <>
+                <div className="overflow-x-auto">
+                  <table className="w-full">
                   <thead className="border-b border-gray-200">
                     <tr>
                       <th className="py-3 px-4 w-10">
@@ -1451,8 +1457,12 @@ export default function GPSAttendanceSettings() {
                       </tr>
                     ))}
                   </tbody>
-                </table>
-              </div>
+                  </table>
+                </div>
+                <p className="mt-2 text-sm text-gray-500 sm:hidden">
+                  表格可左右滑動查看目標、優先級、原因與操作。
+                </p>
+              </>
             )}
           </div>
         </div>

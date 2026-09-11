@@ -5,6 +5,7 @@ import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
+import { getApprovalWorkflow } from '@/lib/approval-workflow';
 
 jest.mock('@/lib/database', () => ({
   prisma: {
@@ -46,11 +47,16 @@ jest.mock('@/lib/attendance-freeze', () => ({
   checkAttendanceFreeze: jest.fn(),
 }));
 
+jest.mock('@/lib/approval-workflow', () => ({
+  getApprovalWorkflow: jest.fn(),
+}));
+
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
 const mockCheckRateLimit = checkRateLimit as jest.MockedFunction<typeof checkRateLimit>;
 const mockValidateCSRF = validateCSRF as jest.MockedFunction<typeof validateCSRF>;
 const mockCheckAttendanceFreeze = checkAttendanceFreeze as jest.MockedFunction<typeof checkAttendanceFreeze>;
+const mockGetApprovalWorkflow = getApprovalWorkflow as jest.MockedFunction<typeof getApprovalWorkflow>;
 
 const transactionClient = {
   missedClockRequest: {
@@ -61,6 +67,15 @@ const transactionClient = {
     update: jest.fn(),
     create: jest.fn(),
   },
+  schedule: {
+    findFirst: jest.fn(),
+  },
+  leaveRequest: {
+    findMany: jest.fn(),
+  },
+  overtimeRequest: {
+    findMany: jest.fn(),
+  },
 };
 
 describe('missed clock route guards', () => {
@@ -69,12 +84,16 @@ describe('missed clock route guards', () => {
     mockCheckRateLimit.mockResolvedValue({ allowed: true } as never);
     mockValidateCSRF.mockResolvedValue({ valid: true } as never);
     mockCheckAttendanceFreeze.mockResolvedValue({ isFrozen: false } as never);
+    mockGetApprovalWorkflow.mockResolvedValue({ requireManager: true } as never);
     mockGetUserFromRequest.mockResolvedValue({
       role: 'ADMIN',
       employeeId: 10,
       userId: 1,
     } as never);
     mockPrisma.departmentManager.findMany.mockResolvedValue([] as never);
+    transactionClient.schedule.findFirst.mockResolvedValue(null as never);
+    transactionClient.leaveRequest.findMany.mockResolvedValue([] as never);
+    transactionClient.overtimeRequest.findMany.mockResolvedValue([] as never);
     mockPrisma.$transaction.mockImplementation(async (callback) => callback(transactionClient as never) as never);
   });
 
@@ -99,7 +118,7 @@ describe('missed clock route guards', () => {
     mockPrisma.missedClockRequest.findUnique.mockResolvedValue({
       id: 55,
       employeeId: 20,
-      status: 'PENDING',
+      status: 'PENDING_ADMIN',
       workDate: new Date('2024-01-01T00:00:00.000Z'),
       clockType: 'CLOCK_IN',
       requestedTime: '09:00',
@@ -138,11 +157,44 @@ describe('missed clock route guards', () => {
     expect(transactionClient.attendanceRecord.create).toHaveBeenCalledWith({
       data: {
         employeeId: 20,
-        workDate: new Date('2024-01-01T00:00:00.000Z'),
+        workDate: new Date('2023-12-31T16:00:00.000Z'),
         status: 'PRESENT',
-        clockInTime: '09:00',
+        clockInTime: new Date('2024-01-01T01:00:00.000Z'),
+        regularHours: 0,
+        overtimeHours: 0,
       },
     });
+  });
+
+  it('blocks final reviewers from skipping the required manager review', async () => {
+    mockPrisma.missedClockRequest.findUnique.mockResolvedValue({
+      id: 56,
+      employeeId: 20,
+      status: 'PENDING',
+      workDate: new Date('2024-01-01T00:00:00.000Z'),
+      clockType: 'CLOCK_IN',
+      requestedTime: '09:00',
+      employee: {
+        id: 20,
+        name: '員工',
+        department: '製造部',
+      },
+    } as never);
+
+    const request = new NextRequest('http://localhost:3000/api/missed-clock-requests', {
+      method: 'PUT',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ id: 56, status: 'APPROVED' }),
+    });
+
+    const response = await PUT(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(payload.error).toContain('需先由部門主管審核');
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
   });
 
   it('allows managers to submit opinions and escalates requests to pending admin', async () => {
@@ -240,9 +292,11 @@ describe('missed clock route guards', () => {
     expect(transactionClient.attendanceRecord.create).toHaveBeenCalledWith({
       data: {
         employeeId: 21,
-        workDate: new Date('2024-02-03T00:00:00.000Z'),
+        workDate: new Date('2024-02-02T16:00:00.000Z'),
         status: 'PRESENT',
-        clockOutTime: '18:30',
+        clockOutTime: new Date('2024-02-03T10:30:00.000Z'),
+        regularHours: 0,
+        overtimeHours: 0,
       },
     });
   });

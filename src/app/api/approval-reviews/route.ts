@@ -18,6 +18,7 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const requestType = searchParams.get('requestType');
     const requestId = searchParams.get('requestId');
+    const department = searchParams.get('department');
 
     if (!requestType || !requestId) {
       return NextResponse.json({ error: '缺少 requestType 或 requestId' }, { status: 400 });
@@ -37,7 +38,7 @@ export async function GET(request: NextRequest) {
     });
 
     if (!instance) {
-      const workflow = await getApprovalWorkflow(requestType);
+      const workflow = await getApprovalWorkflow(requestType, { department });
 
       return NextResponse.json({
         success: true,

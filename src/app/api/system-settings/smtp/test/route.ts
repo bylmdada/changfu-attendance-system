@@ -76,6 +76,8 @@ export async function POST(request: NextRequest) {
       host: settings.smtpHost,
       port: settings.smtpPort || 587,
       secure: settings.smtpSecure || false,
+      disableFileAccess: true,
+      disableUrlAccess: true,
       auth: {
         user: settings.smtpUser,
         pass: settings.smtpPassword,

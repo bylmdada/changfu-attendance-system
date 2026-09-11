@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { UserCheck, Plus, Trash2, Calendar, Users, Clock, AlertCircle, X } from 'lucide-react';
 import SystemNavbar from '@/components/SystemNavbar';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
+import ConfirmDialog from '@/components/ConfirmDialog';
 
 interface User {
   id: number;
@@ -52,6 +53,7 @@ export default function ApprovalDelegatesPage() {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAddForm, setShowAddForm] = useState(false);
+  const [deleteConfirmDelegate, setDeleteConfirmDelegate] = useState<Delegate | null>(null);
 
   // 新增表單
   const [form, setForm] = useState({
@@ -173,16 +175,20 @@ export default function ApprovalDelegatesPage() {
     }
   };
 
-  const handleDelete = async (id: number) => {
-    if (!confirm('確定要取消此代理設定嗎？')) return;
+  const handleDelete = async (delegate: Delegate) => {
+    setDeleteConfirmDelegate(delegate);
+  };
 
+  const performDelete = async () => {
+    if (!deleteConfirmDelegate) return;
     try {
-      const response = await fetchJSONWithCSRF(`/api/approval-delegates?id=${id}`, {
+      const response = await fetchJSONWithCSRF(`/api/approval-delegates?id=${deleteConfirmDelegate.id}`, {
         method: 'DELETE'
       });
 
       if (response.ok) {
         showToast('success', '代理設定已取消');
+        setDeleteConfirmDelegate(null);
         fetchDelegates();
       } else {
         const data = await response.json();
@@ -336,7 +342,7 @@ export default function ApprovalDelegatesPage() {
                       <td className="px-6 py-4 whitespace-nowrap">
                         {d.isActive && (
                           <button
-                            onClick={() => handleDelete(d.id)}
+                            onClick={() => handleDelete(d)}
                             className="text-red-600 hover:text-red-800"
                             title="取消代理"
                           >
@@ -473,6 +479,15 @@ export default function ApprovalDelegatesPage() {
           </div>
         )}
       </main>
+      <ConfirmDialog
+        open={Boolean(deleteConfirmDelegate)}
+        title="取消代理設定"
+        message={deleteConfirmDelegate ? `確定要取消「${deleteConfirmDelegate.delegator.name} → ${deleteConfirmDelegate.delegate.name}」的代理設定嗎？` : ''}
+        tone="danger"
+        confirmLabel="取消代理"
+        onCancel={() => setDeleteConfirmDelegate(null)}
+        onConfirm={performDelete}
+      />
     </div>
   );
 }

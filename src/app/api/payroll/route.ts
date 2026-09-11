@@ -14,7 +14,11 @@ import {
   getPendingApprovedPayrollDisputeAdjustments,
   getPayrollHolidayDates,
 } from '@/lib/payroll-processing';
+import { getStoredIncomeTaxManagementSettings } from '@/lib/income-tax-settings';
+import { getStoredOvertimeCalculationSettings } from '@/lib/overtime-settings';
 import { getStoredSupplementaryPremiumSettings } from '@/lib/supplementary-premium-settings';
+import { getStoredHealthInsuranceFormulaConfig } from '@/lib/health-insurance-config';
+import { getStoredAttendanceSalaryDeductionSettings } from '@/lib/attendance-salary-deduction-settings';
 import { safeParseJSON } from '@/lib/validation';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -208,21 +212,43 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '找不到員工資訊' }, { status: 404 });
     }
 
-    const [holidayDates, supplementaryPremiumSettings, laborLawConfig] = await Promise.all([
+    if (employee.isActive === false) {
+      return NextResponse.json({ error: '只能為活躍員工建立薪資記錄' }, { status: 400 });
+    }
+
+    const [
+      holidayDates,
+      supplementaryPremiumSettings,
+      laborLawConfig,
+      healthInsuranceConfig,
+      overtimeSettings,
+      incomeTaxSettings,
+      attendanceSalaryDeductionSettings,
+    ] = await Promise.all([
       getPayrollHolidayDates(payYearNumber, payMonthNumber),
       getStoredSupplementaryPremiumSettings(),
       getStoredLaborLawConfig(),
+      getStoredHealthInsuranceFormulaConfig(),
+      getStoredOvertimeCalculationSettings(),
+      getStoredIncomeTaxManagementSettings(),
+      getStoredAttendanceSalaryDeductionSettings(),
     ]);
     const {
+      employeeInfo,
       payrollResult,
       validation,
       bonuses,
       totals,
+      attendancePenaltySummary,
     } = await computePayrollForEmployee(employee, payYearNumber, payMonthNumber, {
       holidayDates,
       includeBonus: true,
       supplementaryPremiumSettings,
       laborLawConfig,
+      healthInsuranceConfig,
+      overtimeSettings,
+      incomeTaxSettings,
+      attendanceSalaryDeductionSettings,
     });
 
     if (!validation.isValid) {
@@ -259,7 +285,9 @@ export async function POST(request: NextRequest) {
       payrollResult,
       totals,
       bonuses,
-      disputeAdjustments
+      disputeAdjustments,
+      employeeInfo.dependents,
+      attendancePenaltySummary
     ) as unknown as Prisma.PayrollRecordUncheckedCreateInput;
 
     const payrollRecord = await prisma.$transaction(async (tx) => {

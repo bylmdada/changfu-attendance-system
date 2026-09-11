@@ -4,6 +4,7 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
 
 jest.mock('@/lib/database', () => ({
   prisma: {
@@ -13,6 +14,12 @@ jest.mock('@/lib/database', () => ({
     },
     annualLeave: {
       updateMany: jest.fn(),
+    },
+    schedule: {
+      findMany: jest.fn(),
+    },
+    payrollRecord: {
+      findMany: jest.fn(),
     },
     $transaction: jest.fn(),
   },
@@ -30,10 +37,15 @@ jest.mock('@/lib/csrf', () => ({
   validateCSRF: jest.fn(),
 }));
 
+jest.mock('@/lib/attendance-freeze', () => ({
+  checkAttendanceFreeze: jest.fn(),
+}));
+
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
 const mockCheckRateLimit = checkRateLimit as jest.MockedFunction<typeof checkRateLimit>;
 const mockValidateCSRF = validateCSRF as jest.MockedFunction<typeof validateCSRF>;
+const mockCheckAttendanceFreeze = checkAttendanceFreeze as jest.MockedFunction<typeof checkAttendanceFreeze>;
 
 const transactionClient = {
   leaveRequest: {
@@ -42,6 +54,10 @@ const transactionClient = {
   annualLeave: {
     updateMany: jest.fn(),
   },
+  schedule: {
+    findUnique: jest.fn(),
+    update: jest.fn(),
+  },
 };
 
 describe('leave request void guards', () => {
@@ -49,6 +65,9 @@ describe('leave request void guards', () => {
     jest.clearAllMocks();
     mockCheckRateLimit.mockResolvedValue({ allowed: true } as never);
     mockValidateCSRF.mockResolvedValue({ valid: true } as never);
+    mockCheckAttendanceFreeze.mockResolvedValue({ isFrozen: false } as never);
+    mockPrisma.payrollRecord.findMany.mockResolvedValue([] as never);
+    mockPrisma.schedule.findMany.mockResolvedValue([] as never);
     mockGetUserFromRequest.mockResolvedValue({
       role: 'ADMIN',
       employeeId: 1,
@@ -142,7 +161,7 @@ describe('leave request void guards', () => {
     expect(mockPrisma.annualLeave.updateMany).not.toHaveBeenCalled();
     expect(transactionClient.leaveRequest.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 8 },
+        where: { id: 8, status: 'APPROVED' },
         data: expect.objectContaining({
           status: 'VOIDED',
           voidedBy: 1,

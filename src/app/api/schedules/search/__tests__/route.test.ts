@@ -53,4 +53,34 @@ describe('schedule search route guards', () => {
     expect(payload.error).toBe('yearMonth 格式錯誤');
     expect(mockPrisma.schedule.findMany).not.toHaveBeenCalled();
   });
+
+  it('uses Prisma relation filters with is-clause for schedule permission departments', async () => {
+    mockGetUserFromRequest.mockResolvedValue({
+      userId: 22,
+      employeeId: 12,
+      role: 'EMPLOYEE',
+      username: 'huang',
+    } as never);
+    mockHasFullAccess.mockReturnValue(false);
+    mockGetManageableDepartments.mockResolvedValue(['溪北輔具中心'] as never);
+
+    const request = new NextRequest('http://localhost/api/schedules/search?yearMonth=2026-06');
+
+    const response = await GET(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.success).toBe(true);
+    expect(mockPrisma.schedule.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          employee: {
+            is: {
+              department: { in: ['溪北輔具中心'] },
+            },
+          },
+        }),
+      })
+    );
+  });
 });

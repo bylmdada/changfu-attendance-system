@@ -23,6 +23,15 @@ jest.mock('@/lib/schedule-management-permissions', () => ({
   getManageableDepartments: jest.fn(),
 }));
 
+jest.mock('@/lib/schedule-confirm-service', () => ({
+  invalidateConfirmation: jest.fn(),
+}));
+
+jest.mock('@/lib/attendance-freeze', () => ({
+  checkMultipleDatesFreeze: jest.fn().mockResolvedValue(null),
+  getAttendanceFreezeError: jest.fn().mockReturnValue(null),
+}));
+
 jest.mock('fs', () => ({
   existsSync: jest.fn(),
   mkdirSync: jest.fn(),
@@ -35,6 +44,7 @@ import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { prisma } from '@/lib/database';
 import { getManageableDepartments } from '@/lib/schedule-management-permissions';
+import { invalidateConfirmation } from '@/lib/schedule-confirm-service';
 import { POST } from '../route';
 
 const mockFs = fs as jest.Mocked<typeof fs>;
@@ -42,6 +52,7 @@ const mockGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof 
 const mockValidateCSRF = validateCSRF as jest.MockedFunction<typeof validateCSRF>;
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockGetManageableDepartments = getManageableDepartments as jest.MockedFunction<typeof getManageableDepartments>;
+const mockInvalidateConfirmation = invalidateConfirmation as jest.MockedFunction<typeof invalidateConfirmation>;
 
 describe('schedule apply-template csrf guard', () => {
   beforeEach(() => {
@@ -54,6 +65,7 @@ describe('schedule apply-template csrf guard', () => {
       role: 'ADMIN',
     } as never);
     mockGetManageableDepartments.mockResolvedValue([] as never);
+    mockInvalidateConfirmation.mockResolvedValue({ invalidated: false } as never);
     mockFs.existsSync.mockReturnValue(true);
     mockFs.readFileSync.mockReturnValue(JSON.stringify([
       {
@@ -272,6 +284,7 @@ describe('schedule apply-template csrf guard', () => {
         }),
       ]),
     });
+    expect(mockInvalidateConfirmation).toHaveBeenCalledWith(31, '2026-05');
   });
 
   it('rejects malformed JSON bodies before evaluating apply-template payload', async () => {

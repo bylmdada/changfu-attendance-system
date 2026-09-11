@@ -16,6 +16,31 @@ export interface ShiftDefinitionDTO {
   label: string;
 }
 
+export interface ScheduleHourFields {
+  shiftType: string;
+  startTime?: string | null;
+  endTime?: string | null;
+  breakTime?: number | null;
+  workHours?: number | null;
+  specialLeaveHours?: number | null;
+  compLeaveHours?: number | null;
+  overtimeHours?: number | null;
+}
+
+export interface ResolvedScheduleHourFields {
+  shiftType: string;
+  startTime: string;
+  endTime: string;
+  breakTime: number;
+  workHours: number;
+  specialLeaveHours: number;
+  compLeaveHours: number;
+  overtimeHours: number;
+  shiftDefinition: ShiftDefinitionDTO | null;
+  usedDefinitionFallback: boolean;
+  usedCalculatedWorkHours: boolean;
+}
+
 export interface ShiftDefinitionSeed {
   code: string;
   name: string;
@@ -77,6 +102,17 @@ export function calculateNetWorkHours(startTime: string, endTime: string, breakT
   return Math.round((netMinutes / 60) * 100) / 100;
 }
 
+export function isScheduleHourConsistent(
+  startTime: string,
+  endTime: string,
+  breakTime: number,
+  workHours: number
+) {
+  if (!startTime && !endTime) return workHours === 0;
+  if (!startTime || !endTime) return false;
+  return Math.abs(calculateNetWorkHours(startTime, endTime, breakTime) - workHours) <= 0.5;
+}
+
 export function formatShiftHourSummary(shift: Pick<ShiftDefinitionDTO, 'workHours' | 'specialLeaveHours' | 'compLeaveHours' | 'overtimeHours'>) {
   const parts = [`工時 ${formatHourLabel(shift.workHours) || '0小時'}`];
   const specialLeave = formatHourLabel(shift.specialLeaveHours);
@@ -86,6 +122,14 @@ export function formatShiftHourSummary(shift: Pick<ShiftDefinitionDTO, 'workHour
   if (compLeave) parts.push(`補休 ${compLeave}`);
   if (overtime) parts.push(`加班 ${overtime}`);
   return parts.join(' / ');
+}
+
+function normalizeHourValue(hours: number | null | undefined) {
+  if (typeof hours !== 'number' || !Number.isFinite(hours) || hours < 0) {
+    return 0;
+  }
+
+  return Math.round(hours * 100) / 100;
 }
 
 export function formatShiftDefinitionLabel(
@@ -140,4 +184,121 @@ export function getShiftTemplate(code: string, shiftDefinitions: ShiftDefinition
     overtimeHours: shift?.overtimeHours ?? 0,
     requiresTime: shift?.requiresTime ?? true,
   };
+}
+
+export function resolveScheduleHourFields(
+  schedule: ScheduleHourFields,
+  shiftDefinitions: ShiftDefinitionDTO[]
+): ResolvedScheduleHourFields {
+  const shiftDefinition = shiftDefinitions.find((definition) => definition.code === schedule.shiftType) ?? null;
+  const rawStartTime = typeof schedule.startTime === 'string' ? schedule.startTime : '';
+  const rawEndTime = typeof schedule.endTime === 'string' ? schedule.endTime : '';
+  const normalizedWorkHours = normalizeHourValue(schedule.workHours);
+  const normalizedSpecialLeaveHours = normalizeHourValue(schedule.specialLeaveHours);
+  const normalizedCompLeaveHours = normalizeHourValue(schedule.compLeaveHours);
+  const normalizedOvertimeHours = normalizeHourValue(schedule.overtimeHours);
+  const hasStoredHourSummary = (
+    normalizedWorkHours > 0
+    || normalizedSpecialLeaveHours > 0
+    || normalizedCompLeaveHours > 0
+    || normalizedOvertimeHours > 0
+  );
+
+  const startTime = rawStartTime || (shiftDefinition?.requiresTime ? shiftDefinition.startTime : '');
+  const endTime = rawEndTime || (shiftDefinition?.requiresTime ? shiftDefinition.endTime : '');
+  const rawBreakTime = typeof schedule.breakTime === 'number' && Number.isFinite(schedule.breakTime)
+    ? Math.max(0, schedule.breakTime)
+    : undefined;
+  const alignsWithDefinitionTimeIgnoringBreak = Boolean(
+    shiftDefinition
+    && (
+      !shiftDefinition.requiresTime
+      || (
+        startTime === shiftDefinition.startTime
+        && endTime === shiftDefinition.endTime
+      )
+    )
+  );
+  const breakTime = rawBreakTime !== undefined
+    ? (!hasStoredHourSummary && alignsWithDefinitionTimeIgnoringBreak && rawBreakTime === 0 && (shiftDefinition?.breakTime ?? 0) > 0
+      ? shiftDefinition!.breakTime
+      : rawBreakTime)
+    : (shiftDefinition?.breakTime ?? 0);
+  const alignsWithDefinitionTime = Boolean(
+    shiftDefinition
+    && (
+      !shiftDefinition.requiresTime
+      || (
+        startTime === shiftDefinition.startTime
+        && endTime === shiftDefinition.endTime
+        && breakTime === shiftDefinition.breakTime
+      )
+    )
+  );
+
+  let workHours = normalizedWorkHours;
+  let specialLeaveHours = normalizedSpecialLeaveHours;
+  let compLeaveHours = normalizedCompLeaveHours;
+  let overtimeHours = normalizedOvertimeHours;
+  let usedDefinitionFallback = false;
+  let usedCalculatedWorkHours = false;
+
+  const definitionHasHourSummary = Boolean(
+    shiftDefinition
+    && (
+      shiftDefinition.workHours > 0
+      || shiftDefinition.specialLeaveHours > 0
+      || shiftDefinition.compLeaveHours > 0
+      || shiftDefinition.overtimeHours > 0
+    )
+  );
+
+  if (!hasStoredHourSummary && shiftDefinition && definitionHasHourSummary && alignsWithDefinitionTime) {
+    workHours = shiftDefinition.workHours;
+    specialLeaveHours = shiftDefinition.specialLeaveHours;
+    compLeaveHours = shiftDefinition.compLeaveHours;
+    overtimeHours = shiftDefinition.overtimeHours;
+    usedDefinitionFallback = true;
+  } else if (
+    workHours <= 0
+    && specialLeaveHours <= 0
+    && compLeaveHours <= 0
+    && shiftDefinition?.requiresTime
+    && startTime
+    && endTime
+  ) {
+    const calculatedWorkHours = calculateNetWorkHours(startTime, endTime, breakTime);
+    if (calculatedWorkHours > 0) {
+      workHours = calculatedWorkHours;
+      usedCalculatedWorkHours = true;
+    }
+  }
+
+  return {
+    shiftType: schedule.shiftType,
+    startTime,
+    endTime,
+    breakTime,
+    workHours,
+    specialLeaveHours,
+    compLeaveHours,
+    overtimeHours,
+    shiftDefinition,
+    usedDefinitionFallback,
+    usedCalculatedWorkHours,
+  };
+}
+
+export function formatScheduleTimeLabel(
+  schedule: Pick<ResolvedScheduleHourFields, 'startTime' | 'endTime' | 'shiftDefinition' | 'shiftType'>
+) {
+  if (schedule.startTime && schedule.endTime) {
+    return `${schedule.startTime}-${schedule.endTime}`;
+  }
+
+  if (schedule.shiftDefinition && !schedule.shiftDefinition.requiresTime) {
+    return schedule.shiftDefinition.name;
+  }
+
+  return schedule.shiftType;
 }

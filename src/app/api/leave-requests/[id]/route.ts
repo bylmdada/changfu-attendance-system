@@ -8,15 +8,37 @@ import { getApprovalWorkflow } from '@/lib/approval-workflow';
 import { validateCSRF } from '@/lib/csrf';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
-import { getAnnualLeaveYearBreakdown } from '@/lib/annual-leave';
 import { isAnnualLeaveType, isBereavementLeaveType, splitLeaveReason } from '@/lib/leave-types';
-import { canAccessAttendanceDepartment } from '@/lib/attendance-permission-scopes';
 import { validateLeaveRequest } from '@/lib/leave-rules-validator';
+import { calculateLeaveDuration } from '@/lib/leave-management-helpers';
+import { getLeaveDurationSchedules } from '@/lib/leave-duration-schedules';
+import {
+  applyApprovedLeaveAccounting,
+  getAnnualLeaveHoursByDate,
+} from '@/lib/annual-leave-schedule-accounting';
+import { isReviewerFor } from '@/lib/approval-service';
+import { invalidateConfirmation } from '@/lib/schedule-confirm-service';
+import { checkAttendanceFreeze, getAttendanceFreezeError } from '@/lib/attendance-freeze';
+import { isValidLeaveDurationMinutes, isValidLeaveMinute } from '@/lib/leave-time-options';
+import type { Prisma } from '@prisma/client';
 
-interface PrismaWithSchedule {
-  schedule?: {
-    updateMany: (args: { where: Record<string, unknown>; data: Record<string, unknown> }) => Promise<unknown>
-  }
+interface ApprovalSyncClient {
+  approvalInstance?: {
+    findFirst: (args: { where: { requestType: string; requestId: number } }) => Promise<{
+      id: number;
+      currentLevel: number;
+      maxLevel: number;
+      status: string;
+    } | null>;
+    updateMany: (args: {
+      where: { id: number; currentLevel: number; status: string };
+      data: { status: string; currentLevel: number };
+    }) => Promise<unknown>;
+  };
+  approvalReview?: {
+    findFirst: (args: { where: { instanceId: number; reviewerId: number; level: number } }) => Promise<{ id: number } | null>;
+    create: (args: { data: Record<string, unknown> }) => Promise<unknown>;
+  };
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -39,13 +61,156 @@ function hasLegacyBereavementReason(leaveType?: string | null, reason?: string |
   return splitLeaveReason(reason, leaveType).leaveReason.length === 0;
 }
 
-function toYmd(d: Date) {
-  // 使用台灣時區轉換日期
-  const tw = new Date(d.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
-  const yyyy = tw.getFullYear();
-  const mm = String(tw.getMonth() + 1).padStart(2, '0');
-  const dd = String(tw.getDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
+async function syncApprovalProgress(
+  client: ApprovalSyncClient,
+  params: {
+    requestId: number;
+    reviewerId: number;
+    reviewerName: string;
+    reviewerRole: string;
+    action: string;
+    comment?: string | null;
+    nextStatus: string;
+    nextLevel: number;
+  }
+) {
+  if (!client.approvalInstance || !client.approvalReview) return;
+
+  const instance = await client.approvalInstance.findFirst({
+    where: { requestType: 'LEAVE', requestId: params.requestId }
+  });
+  if (!instance || instance.status === 'APPROVED' || instance.status === 'REJECTED') return;
+
+  const existingReview = await client.approvalReview.findFirst({
+    where: {
+      instanceId: instance.id,
+      reviewerId: params.reviewerId,
+      level: instance.currentLevel
+    }
+  });
+
+  if (!existingReview) {
+    await client.approvalReview.create({
+      data: {
+        instanceId: instance.id,
+        level: instance.currentLevel,
+        reviewerId: params.reviewerId,
+        reviewerName: params.reviewerName,
+        reviewerRole: params.reviewerRole,
+        action: params.action,
+        comment: params.comment || null
+      }
+    });
+  }
+
+  await client.approvalInstance.updateMany({
+    where: {
+      id: instance.id,
+      currentLevel: instance.currentLevel,
+      status: instance.status
+    },
+    data: {
+      status: params.nextStatus,
+      currentLevel: Math.min(params.nextLevel, instance.maxLevel)
+    }
+  });
+}
+
+type LeaveRequestWithEmployee = Prisma.LeaveRequestGetPayload<{
+  include: { employee: true };
+}>;
+
+async function finalizeLeaveRequest(params: {
+  leaveRequestId: number;
+  existing: LeaveRequestWithEmployee;
+  status: 'APPROVED' | 'REJECTED';
+  reviewerId: number;
+  reviewerName: string;
+  reviewerRole: string;
+  approvalLevel: number;
+  comment?: string | null;
+  managerReview?: {
+    opinion: 'AGREE' | 'DISAGREE';
+    note?: string | null;
+  };
+}) {
+  const {
+    leaveRequestId,
+    existing,
+    status,
+    reviewerId,
+    reviewerName,
+    reviewerRole,
+    approvalLevel,
+    comment,
+    managerReview,
+  } = params;
+  const reviewedAt = new Date();
+  const annualLeaveHoursByDate = status === 'APPROVED' && isAnnualLeaveType(existing.leaveType)
+    ? await getAnnualLeaveHoursByDate(existing.employeeId, existing.startDate, existing.endDate)
+    : {};
+
+  const updatedLeaveRequest = await prisma.$transaction(async (tx) => {
+    const updated = await tx.leaveRequest.update({
+      where: { id: leaveRequestId, status: existing.status },
+      data: {
+        status,
+        approvedBy: reviewerId,
+        approvedAt: reviewedAt,
+        ...(managerReview ? {
+          managerReviewerId: reviewerId,
+          managerOpinion: managerReview.opinion,
+          managerNote: managerReview.note || null,
+          managerReviewedAt: reviewedAt,
+        } : {}),
+      },
+      include: {
+        employee: {
+          select: { id: true, employeeId: true, name: true, department: true, position: true },
+        },
+      },
+    });
+
+    if (status === 'APPROVED') {
+      await applyApprovedLeaveAccounting(tx, existing);
+    }
+
+    await syncApprovalProgress(tx as unknown as ApprovalSyncClient, {
+      requestId: leaveRequestId,
+      reviewerId,
+      reviewerName,
+      reviewerRole,
+      action: status === 'APPROVED' ? 'APPROVE' : 'REJECT',
+      comment: comment || null,
+      nextStatus: status,
+      nextLevel: approvalLevel,
+    });
+
+    return updated;
+  });
+
+  if (status === 'APPROVED') {
+    await Promise.all(Array.from(new Set(
+      Object.keys(annualLeaveHoursByDate).map((date) => date.slice(0, 7))
+    )).map((yearMonth) => invalidateConfirmation(existing.employeeId, yearMonth)));
+  }
+
+  try {
+    await notifyLeaveApproval({
+      employeeId: existing.employeeId,
+      employeeName: existing.employee.name,
+      employeeEmail: existing.employee.email || undefined,
+      approved: status === 'APPROVED',
+      leaveType: existing.leaveType,
+      startDate: toTaiwanDateStr(existing.startDate),
+      endDate: toTaiwanDateStr(existing.endDate),
+      reason: comment || undefined,
+    });
+  } catch (notifyError) {
+    console.error('發送通知失敗:', notifyError);
+  }
+
+  return updatedLeaveRequest;
 }
 
 export async function PATCH(
@@ -114,19 +279,26 @@ export async function PATCH(
       return NextResponse.json({ error: '找不到請假申請' }, { status: 404 });
     }
 
+    if (requestedStatus || requestedOpinion) {
+      const freezeError = getAttendanceFreezeError(
+        await checkAttendanceFreeze(new Date(existing.startDate))
+      );
+      if (freezeError) {
+        return NextResponse.json({ error: freezeError }, { status: 409 });
+      }
+    }
+
     // 若傳入 status 或 opinion，視為審核
     if (requestedStatus || requestedOpinion) {
       const managerOpinion: 'AGREE' | 'DISAGREE' | undefined = requestedOpinion
         ?? (requestedStatus === 'APPROVED' ? 'AGREE' : requestedStatus === 'REJECTED' ? 'DISAGREE' : undefined);
 
       if (user.role !== 'ADMIN' && user.role !== 'HR' && existing.status === 'PENDING' && managerOpinion) {
-        const canReviewDepartment = await canAccessAttendanceDepartment(
-          { role: user.role, employeeId: user.employeeId },
-          existing.employee.department,
-          'leaveRequests'
-        );
+        const reviewPermission = user.employeeId && existing.employee.department
+          ? await isReviewerFor(user.employeeId, existing.employee.department, 'LEAVE')
+          : { isReviewer: false, role: null };
 
-        if (!canReviewDepartment || !user.employeeId) {
+        if (!reviewPermission.isReviewer || !user.employeeId) {
           return NextResponse.json({ error: '無權限審核此部門的請假申請' }, { status: 403 });
         }
 
@@ -140,6 +312,50 @@ export async function PATCH(
           select: { name: true }
         });
 
+        const workflow = await getApprovalWorkflow('LEAVE', { department: existing.employee.department });
+        const approvalInstance = await prisma.approvalInstance.findFirst({
+          where: { requestType: 'LEAVE', requestId: leaveRequestId },
+        });
+        const approvalLevel = approvalInstance?.maxLevel
+          ?? workflow?.approvalLevel
+          ?? 2;
+
+        if (approvalLevel <= 1) {
+          const finalStatus = managerOpinion === 'AGREE' ? 'APPROVED' : 'REJECTED';
+          const updatedLeaveRequest = await finalizeLeaveRequest({
+            leaveRequestId,
+            existing,
+            status: finalStatus,
+            reviewerId: user.employeeId,
+            reviewerName: manager?.name || user.username,
+            reviewerRole: reviewPermission.role ?? 'MANAGER',
+            approvalLevel: 1,
+            comment: note,
+            managerReview: {
+              opinion: managerOpinion,
+              note,
+            },
+          });
+
+          if (workflow?.enableCC) {
+            await notifyHRAfterManagerReview({
+              requestType: 'LEAVE',
+              requestId: leaveRequestId,
+              employeeName: existing.employee.name,
+              employeeDepartment: existing.employee.department || '未指定',
+              managerName: manager?.name || '主管',
+              managerOpinion,
+              managerNote: note,
+            });
+          }
+
+          return NextResponse.json({
+            success: true,
+            leaveRequest: updatedLeaveRequest,
+            message: finalStatus === 'APPROVED' ? '請假申請已批准' : '請假申請已拒絕',
+          });
+        }
+
         await prisma.leaveRequest.update({
           where: { id: leaveRequestId },
           data: {
@@ -150,9 +366,18 @@ export async function PATCH(
             managerReviewedAt: new Date()
           }
         });
+        await syncApprovalProgress(prisma as unknown as ApprovalSyncClient, {
+          requestId: leaveRequestId,
+          reviewerId: user.employeeId,
+          reviewerName: manager?.name || user.username,
+          reviewerRole: reviewPermission.role ?? 'MANAGER',
+          action: managerOpinion === 'AGREE' ? 'APPROVE' : 'DISAGREE',
+          comment: note || null,
+          nextStatus: 'LEVEL2_REVIEWING',
+          nextLevel: 2
+        });
 
         // 檢查是否需要 CC 通知 HR
-        const workflow = await getApprovalWorkflow('LEAVE');
         if (workflow?.enableCC) {
           await notifyHRAfterManagerReview({
             requestType: 'LEAVE',
@@ -183,72 +408,30 @@ export async function PATCH(
           return NextResponse.json({ error: '該請假申請已經被審核過' }, { status: 400 });
         }
 
-        const updatedLeaveRequest = await prisma.$transaction(async (tx) => {
-          const updated = await tx.leaveRequest.update({
-            where: { id: leaveRequestId },
-            data: {
-              status,
-              approvedBy: user.employeeId,
-              approvedAt: new Date()
-            },
-            include: {
-              employee: {
-                select: { id: true, employeeId: true, name: true, department: true, position: true }
-              }
-            }
-          });
-
-          if (status === 'APPROVED' && isAnnualLeaveType(existing.leaveType)) {
-            const startDate = new Date(existing.startDate);
-            const endDate = new Date(existing.endDate);
-            for (const { year, days } of getAnnualLeaveYearBreakdown(startDate, endDate)) {
-              await tx.annualLeave.updateMany({
-                where: {
-                  employeeId: existing.employeeId,
-                  year,
-                },
-                data: {
-                  usedDays: { increment: days },
-                  remainingDays: { decrement: days },
-                },
-              });
-            }
-          }
-
-          const txWithSchedule = tx as unknown as PrismaWithSchedule;
-
-          // 若批准，更新班表為請假（FDL）
-          if (status === 'APPROVED' && txWithSchedule.schedule) {
-            const empId = existing.employeeId;
-            const start = new Date(existing.startDate);
-            const end = new Date(existing.endDate);
-            for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-              const ymd = toYmd(d);
-              await txWithSchedule.schedule.updateMany({
-                where: { employeeId: empId, workDate: ymd },
-                data: { shiftType: 'FDL', startTime: '', endTime: '' }
-              });
-            }
-          }
-
-          return updated;
-        });
-
-        // 發送審核結果通知
-        try {
-          await notifyLeaveApproval({
-            employeeId: existing.employeeId,
-            employeeName: existing.employee.name,
-            employeeEmail: existing.employee.email || undefined,
-            approved: status === 'APPROVED',
-            leaveType: existing.leaveType,
-            startDate: toTaiwanDateStr(existing.startDate),
-            endDate: toTaiwanDateStr(existing.endDate),
-            reason: rejectionReason,
-          });
-        } catch (notifyError) {
-          console.error('發送通知失敗:', notifyError);
+        const workflow = await getApprovalWorkflow('LEAVE', { department: existing.employee.department });
+        if (workflow?.requireManager && existing.status === 'PENDING') {
+          return NextResponse.json(
+            { error: '此請假申請需先由部門主管審核，管理員或 HR 不可略過主管流程' },
+            { status: 409 }
+          );
         }
+
+        const approvalInstance = await prisma.approvalInstance.findFirst({
+          where: { requestType: 'LEAVE', requestId: leaveRequestId },
+        });
+        const approvalLevel = approvalInstance?.maxLevel
+          ?? workflow?.approvalLevel
+          ?? (existing.status === 'PENDING_ADMIN' ? 2 : 1);
+        const updatedLeaveRequest = await finalizeLeaveRequest({
+          leaveRequestId,
+          existing,
+          status,
+          reviewerId: user.employeeId,
+          reviewerName: user.username,
+          reviewerRole: user.role,
+          approvalLevel,
+          comment: rejectionReason,
+        });
 
         return NextResponse.json({
           success: true,
@@ -276,7 +459,7 @@ export async function PATCH(
 
     const hasTime = startHour !== undefined && startMinute !== undefined && endHour !== undefined && endMinute !== undefined;
     if (hasTime && startDate && endDate) {
-      // 分鐘 0..59，且 30 分鐘倍數
+      // 分鐘 0..55，且以 5 分鐘為增量
       const sm = Number(startMinute);
       const em = Number(endMinute);
       const sh = Number(startHour);
@@ -284,8 +467,8 @@ export async function PATCH(
       if ([sm, em, sh, eh].some(n => Number.isNaN(n))) {
         return NextResponse.json({ error: '請輸入有效的起訖時間' }, { status: 400 });
       }
-      if (sm < 0 || sm > 59 || em < 0 || em > 59) {
-        return NextResponse.json({ error: '分鐘僅允許 0 ~ 59' }, { status: 400 });
+      if (!isValidLeaveMinute(sm) || !isValidLeaveMinute(em)) {
+        return NextResponse.json({ error: '分鐘僅允許 0 至 55 分，並以 5 分鐘為增量' }, { status: 400 });
       }
       const s = new Date(`${startDate}T${String(sh).padStart(2,'0')}:${String(sm).padStart(2,'0')}:00`);
       const e = new Date(`${endDate}T${String(eh).padStart(2,'0')}:${String(em).padStart(2,'0')}:00`);
@@ -293,11 +476,25 @@ export async function PATCH(
       if (diffMin <= 0) {
         return NextResponse.json({ error: '請假時數必須為正數' }, { status: 400 });
       }
-      if (diffMin % 30 !== 0) {
-        return NextResponse.json({ error: '請假時數需以 0.5 小時為增量（30 分鐘）' }, { status: 400 });
+      if (!isValidLeaveDurationMinutes(diffMin)) {
+        return NextResponse.json({ error: '請假時數需以 5 分鐘為增量' }, { status: 400 });
       }
+      const schedulesByDate = await getLeaveDurationSchedules(existing.employeeId, startDate, endDate);
+      const duration = calculateLeaveDuration({
+        startDate,
+        endDate,
+        startHour: String(sh).padStart(2, '0'),
+        startMinute: String(sm).padStart(2, '0'),
+        endHour: String(eh).padStart(2, '0'),
+        endMinute: String(em).padStart(2, '0'),
+      }, schedulesByDate);
+
+      if (!duration) {
+        return NextResponse.json({ error: '請假時數必須落在有效排班時段內' }, { status: 400 });
+      }
+
       nextStart = s; nextEnd = e;
-      nextTotalDays = (diffMin / 60) / 8;
+      nextTotalDays = duration.totalDays;
     } else {
       // 以天為單位（如未提供時間）
       if (startDate && endDate) {
@@ -330,9 +527,9 @@ export async function PATCH(
       where: {
         id: { not: leaveRequestId },
         employeeId: existing.employeeId,
-        status: { in: ['PENDING', 'APPROVED'] },
-        startDate: { lte: finalEnd },
-        endDate: { gte: finalStart }
+        status: { in: ['PENDING', 'PENDING_ADMIN', 'APPROVED'] },
+        startDate: { lt: finalEnd },
+        endDate: { gt: finalStart }
       }
     });
 

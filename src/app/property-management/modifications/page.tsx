@@ -5,6 +5,7 @@ import { X, Plus, Check, RotateCcw } from 'lucide-react';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import { useLocalToast, SimpleToast } from '@/components/Toast';
+import PromptDialog from '@/components/PromptDialog';
 import { fmtDate } from '@/lib/property-status-ui';
 
 interface MR {
@@ -44,6 +45,7 @@ export default function ModificationsPage() {
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ assetCode: '', field: 'name', proposedValue: '', reason: '' });
+  const [rejectTargetId, setRejectTargetId] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -84,11 +86,7 @@ export default function ModificationsPage() {
     }
   };
 
-  const review = async (id: number, decision: 'APPROVE' | 'REJECT') => {
-    let reviewNote: string | null = null;
-    if (decision === 'REJECT') {
-      reviewNote = window.prompt('退回原因（可留空）') ?? '';
-    }
+  const review = async (id: number, decision: 'APPROVE' | 'REJECT', reviewNote: string | null = null) => {
     const res = await fetchJSONWithCSRF(
       `/api/property-maintenance/modification-requests/${id}`,
       { method: 'PUT', body: { decision, reviewNote } }
@@ -178,7 +176,7 @@ export default function ModificationsPage() {
                           <Check className="w-3.5 h-3.5" /> 核准
                         </button>
                         <button
-                          onClick={() => review(r.id, 'REJECT')}
+                          onClick={() => setRejectTargetId(r.id)}
                           className="inline-flex items-center gap-1 px-2.5 py-1 bg-red-600 text-white rounded text-xs hover:bg-red-700"
                         >
                           <RotateCcw className="w-3.5 h-3.5" /> 退回
@@ -256,6 +254,23 @@ export default function ModificationsPage() {
           </div>
         </div>
       )}
+      <PromptDialog
+        open={rejectTargetId !== null}
+        title="退回修改申請"
+        message="可填寫退回原因，讓申請人知道需要調整的內容。"
+        label="退回原因"
+        placeholder="可留空"
+        confirmLabel="退回"
+        cancelLabel="取消"
+        required={false}
+        tone="danger"
+        onConfirm={(value) => {
+          const id = rejectTargetId;
+          setRejectTargetId(null);
+          if (id !== null) void review(id, 'REJECT', value);
+        }}
+        onCancel={() => setRejectTargetId(null)}
+      />
       <SimpleToast toast={toast} onClose={clearToast} />
     </AuthenticatedLayout>
   );

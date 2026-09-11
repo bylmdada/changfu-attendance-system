@@ -11,6 +11,7 @@
 
 import { prisma } from './database';
 import { safeParseSystemSettingsValue } from './system-settings-json';
+import { getTaiwanDateParts, getTaiwanMonthEnd, getTaiwanMonthStart, getTaiwanTimeParts, toTaiwanDateStr } from './timezone';
 
 // 全勤獎金設定
 export interface PerfectAttendanceConfig {
@@ -76,6 +77,166 @@ const AFFECTED_LEAVE_TYPES = [
   'PERSONAL',    // 事假
   'SICK',        // 普通病假
 ];
+
+type PerfectAttendanceRecordForTiming = {
+  workDate: Date;
+  clockInTime: Date | null;
+  clockOutTime: Date | null;
+};
+
+type PerfectAttendanceScheduleForTiming = {
+  workDate: string;
+  shiftType: string;
+  startTime: string;
+  endTime: string;
+};
+
+type PerfectAttendanceLeaveForTiming = {
+  startDate: Date;
+  endDate: Date;
+  totalDays: number;
+};
+
+function parseTimeToMinutes(value: string): number | null {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(value);
+  if (!match) return null;
+
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+
+  return hour * 60 + minute;
+}
+
+function isWorkingSchedule(schedule: PerfectAttendanceScheduleForTiming) {
+  return !['OFF', 'RD', 'rd', 'NH', 'FDL', 'TD'].includes(schedule.shiftType) && Boolean(schedule.startTime && schedule.endTime);
+}
+
+function dateToDayIndex(date: Date) {
+  const day = getTaiwanDateParts(date);
+  return Date.UTC(day.year, day.month - 1, day.day) / 86400000;
+}
+
+function ymdToDayIndex(ymd: string) {
+  const [year, month, day] = ymd.split('-').map(Number);
+  return Date.UTC(year, month - 1, day) / 86400000;
+}
+
+function getTaiwanAbsoluteMinutes(value: Date) {
+  const time = getTaiwanTimeParts(value);
+  return dateToDayIndex(value) * 24 * 60 + time.hour * 60 + time.minute;
+}
+
+function getScheduleWindow(schedule: PerfectAttendanceScheduleForTiming) {
+  const scheduleStart = parseTimeToMinutes(schedule.startTime);
+  const rawScheduleEnd = parseTimeToMinutes(schedule.endTime);
+  if (scheduleStart === null || rawScheduleEnd === null) return null;
+
+  const dayStart = ymdToDayIndex(schedule.workDate) * 24 * 60;
+  return {
+    start: dayStart + scheduleStart,
+    end: dayStart + rawScheduleEnd + (rawScheduleEnd <= scheduleStart ? 24 * 60 : 0),
+  };
+}
+
+function getLeaveIntervalForSchedule(
+  leave: PerfectAttendanceLeaveForTiming,
+  schedule: PerfectAttendanceScheduleForTiming,
+  scheduleStart: number,
+  scheduleEnd: number
+) {
+  const startDay = dateToDayIndex(leave.startDate);
+  const endDay = dateToDayIndex(leave.endDate);
+  const scheduleDay = ymdToDayIndex(schedule.workDate);
+
+  if (leave.totalDays >= 1 && startDay <= scheduleDay && endDay >= scheduleDay) {
+    return { start: scheduleStart, end: scheduleEnd };
+  }
+
+  return {
+    start: getTaiwanAbsoluteMinutes(leave.startDate),
+    end: getTaiwanAbsoluteMinutes(leave.endDate),
+  };
+}
+
+function getEffectiveScheduleWindow(
+  schedule: PerfectAttendanceScheduleForTiming,
+  leaves: PerfectAttendanceLeaveForTiming[]
+) {
+  const window = getScheduleWindow(schedule);
+  if (!window) return null;
+
+  let effectiveStart = window.start;
+  let effectiveEnd = window.end;
+
+  for (const leave of leaves) {
+    const interval = getLeaveIntervalForSchedule(leave, schedule, window.start, window.end);
+    if (interval.end <= window.start || interval.start >= window.end) continue;
+
+    if (interval.start <= effectiveStart && interval.end > effectiveStart) {
+      effectiveStart = Math.min(interval.end, window.end);
+    }
+
+    if (interval.end >= effectiveEnd && interval.start < effectiveEnd) {
+      effectiveEnd = Math.max(interval.start, window.start);
+    }
+  }
+
+  return effectiveStart >= effectiveEnd ? null : { start: effectiveStart, end: effectiveEnd };
+}
+
+function getMonthlyLeaveDays(
+  leave: { startDate: Date; endDate: Date; totalDays: number },
+  monthStartDate: string,
+  monthEndDate: string
+) {
+  const startDay = dateToDayIndex(leave.startDate);
+  const endDay = dateToDayIndex(leave.endDate);
+  const monthStartDay = ymdToDayIndex(monthStartDate);
+  const monthEndDay = ymdToDayIndex(monthEndDate);
+  const totalCalendarDays = Math.max(1, endDay - startDay + 1);
+  const overlapDays = Math.max(0, Math.min(endDay, monthEndDay) - Math.max(startDay, monthStartDay) + 1);
+
+  return (leave.totalDays / totalCalendarDays) * overlapDays;
+}
+
+function getLeaveDaysForSchedule(
+  schedule: PerfectAttendanceScheduleForTiming,
+  leaves: PerfectAttendanceLeaveForTiming[]
+) {
+  return leaves.reduce((total, leave) => (
+    total + getMonthlyLeaveDays(leave, schedule.workDate, schedule.workDate)
+  ), 0);
+}
+
+export function countPerfectAttendanceScheduleIssues(
+  attendanceRecords: PerfectAttendanceRecordForTiming[],
+  schedules: PerfectAttendanceScheduleForTiming[],
+  approvedLeaves: PerfectAttendanceLeaveForTiming[] = []
+) {
+  const scheduleByDate = new Map(schedules.map(schedule => [schedule.workDate, schedule]));
+  let lateCount = 0;
+  let earlyLeaveCount = 0;
+
+  for (const record of attendanceRecords) {
+    const workDate = toTaiwanDateStr(record.workDate);
+    const schedule = scheduleByDate.get(workDate);
+    if (!schedule || !isWorkingSchedule(schedule)) continue;
+
+    const effectiveWindow = getEffectiveScheduleWindow(schedule, approvedLeaves);
+    if (!effectiveWindow) continue;
+
+    if (record.clockInTime && getTaiwanAbsoluteMinutes(record.clockInTime) > effectiveWindow.start) {
+      lateCount++;
+    }
+
+    if (record.clockOutTime && getTaiwanAbsoluteMinutes(record.clockOutTime) < effectiveWindow.end) {
+      earlyLeaveCount++;
+    }
+  }
+
+  return { lateCount, earlyLeaveCount };
+}
 
 /**
  * 取得全勤獎金設定
@@ -173,8 +334,12 @@ export async function calculatePerfectAttendanceBonus(
   }
 
   // 計算該月份的工作日
-  const startDate = new Date(year, month - 1, 1);
-  const endDate = new Date(year, month, 0);
+  const startDate = getTaiwanMonthStart(year, month);
+  const endDate = getTaiwanMonthEnd(year, month);
+  const firstDay = new Date(year, month - 1, 1);
+  const lastDay = new Date(year, month, 0);
+  const monthPrefix = `${year}-${String(month).padStart(2, '0')}`;
+  const monthLastDate = `${monthPrefix}-${String(lastDay.getDate()).padStart(2, '0')}`;
   
   // 取得考勤記錄
   const attendanceRecords = await prisma.attendanceRecord.findMany({
@@ -187,58 +352,58 @@ export async function calculatePerfectAttendanceBonus(
     }
   });
 
+  const schedules = await prisma.schedule.findMany({
+    where: {
+      employeeId,
+      workDate: {
+        gte: `${monthPrefix}-01`,
+        lte: monthLastDate
+      }
+    }
+  });
+
   // 取得請假記錄
   const leaveRequests = await prisma.leaveRequest.findMany({
     where: {
       employeeId,
       status: 'APPROVED',
-      OR: [
-        {
-          startDate: {
-            gte: startDate,
-            lte: endDate
-          }
-        },
-        {
-          endDate: {
-            gte: startDate,
-            lte: endDate
-          }
-        }
-      ]
+      startDate: { lte: endDate },
+      endDate: { gte: startDate }
     }
   });
 
-  // 計算應出勤日數（排除週末）
-  let workDays = 0;
-  const currentDate = new Date(startDate);
-  while (currentDate <= endDate) {
+  // 計算應出勤日數：優先依實際班表，沒有班表才沿用週一至週五。
+  const workingSchedules = schedules.filter(isWorkingSchedule);
+  let fallbackWeekdays = 0;
+  const currentDate = new Date(firstDay);
+  while (currentDate <= lastDay) {
     const dayOfWeek = currentDate.getDay();
     if (dayOfWeek !== 0 && dayOfWeek !== 6) {
-      workDays++;
+      fallbackWeekdays++;
     }
     currentDate.setDate(currentDate.getDate() + 1);
   }
+  const workDays = workingSchedules.length > 0 ? workingSchedules.length : fallbackWeekdays;
 
   // 統計遲到、早退、曠職次數
-  // 注意：目前 AttendanceRecord 沒有 isLate/isEarlyLeave 欄位，
-  // 需透過班表比對打卡時間來判斷，此處簡化為只統計曠職
-  const lateCount = 0;
-  const earlyLeaveCount = 0;
+  const scheduleIssues = countPerfectAttendanceScheduleIssues(attendanceRecords, schedules, leaveRequests);
+  const lateCount = scheduleIssues.lateCount;
+  const earlyLeaveCount = scheduleIssues.earlyLeaveCount;
   let absentCount = 0;
+  const attendanceByDate = new Map(attendanceRecords.map(record => [toTaiwanDateStr(record.workDate), record]));
 
-  attendanceRecords.forEach(record => {
-    // 統計曠職
-    if (record.status === 'ABSENT') absentCount++;
-    // TODO: 未來可新增遲到/早退判斷邏輯
-  });
+  for (const schedule of workingSchedules) {
+    const record = attendanceByDate.get(schedule.workDate);
+    if (record?.clockInTime || record?.clockOutTime) continue;
+
+    absentCount += Math.max(0, 1 - getLeaveDaysForSchedule(schedule, leaveRequests));
+  }
 
   // 計算影響全勤的請假天數
   let affectedLeavedays = 0;
   leaveRequests.forEach(leave => {
     if (AFFECTED_LEAVE_TYPES.includes(leave.leaveType)) {
-      // 使用 totalDays 欄位
-      affectedLeavedays += leave.totalDays;
+      affectedLeavedays += getMonthlyLeaveDays(leave, `${monthPrefix}-01`, monthLastDate);
     }
   });
 

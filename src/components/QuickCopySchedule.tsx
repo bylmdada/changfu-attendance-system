@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Copy, Loader2, Calendar } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
+import { SimpleToast, useLocalToast } from '@/components/Toast';
 
 interface QuickCopyScheduleProps {
   onSuccess: () => void;
@@ -11,6 +12,7 @@ interface QuickCopyScheduleProps {
 export default function QuickCopySchedule({ onSuccess }: QuickCopyScheduleProps) {
   const [showModal, setShowModal] = useState(false);
   const [loading, setLoading] = useState(false);
+  const { toast, showToast, clearToast } = useLocalToast();
   const [form, setForm] = useState({
     sourceType: 'week' as 'week' | 'month',
     sourceDate: '',
@@ -20,7 +22,7 @@ export default function QuickCopySchedule({ onSuccess }: QuickCopyScheduleProps)
 
   const handleSubmit = async () => {
     if (!form.sourceDate || !form.targetDate) {
-      alert('請選擇來源日期和目標日期');
+      showToast('error', '請選擇來源日期和目標日期');
       return;
     }
 
@@ -33,17 +35,17 @@ export default function QuickCopySchedule({ onSuccess }: QuickCopyScheduleProps)
 
       if (response.ok) {
         const data = await response.json();
-        alert(`${data.message}\n\n${data.details.sourceRange} → ${data.details.targetRange}\n複製：${data.details.created} 筆\n跳過：${data.details.skipped} 筆`);
+        showToast('success', `${data.message}\n\n${data.details.sourceRange} → ${data.details.targetRange}\n複製：${data.details.created} 筆\n跳過：${data.details.skipped} 筆`, 7000);
         setShowModal(false);
         setForm({ sourceType: 'week', sourceDate: '', targetDate: '', overwrite: false });
         onSuccess();
       } else {
         const error = await response.json();
-        alert(error.error || '複製失敗');
+        showToast('error', error.error || '複製失敗');
       }
     } catch (error) {
       console.error('複製班表失敗:', error);
-      alert('操作失敗，請稍後再試');
+      showToast('error', '操作失敗，請稍後再試');
     } finally {
       setLoading(false);
     }
@@ -181,6 +183,8 @@ export default function QuickCopySchedule({ onSuccess }: QuickCopyScheduleProps)
           </div>
         </div>
       )}
+
+      <SimpleToast toast={toast} onClose={clearToast} />
     </>
   );
 }

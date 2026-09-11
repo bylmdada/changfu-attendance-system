@@ -13,6 +13,9 @@ jest.mock('@/lib/database', () => ({
       update: jest.fn(),
       delete: jest.fn(),
     },
+    schedule: {
+      findMany: jest.fn(),
+    },
   },
 }));
 
@@ -70,6 +73,7 @@ describe('leave request item csrf guards', () => {
     } as never);
     mockedPrisma.leaveRequest.findFirst.mockResolvedValue(null as never);
     mockedPrisma.leaveRequest.update.mockResolvedValue({ id: 5 } as never);
+    mockedPrisma.schedule.findMany.mockResolvedValue([] as never);
     mockedValidateLeaveRequest.mockResolvedValue({ valid: true } as never);
   });
 
@@ -262,6 +266,55 @@ describe('leave request item csrf guards', () => {
 
     expect(response.status).toBe(200);
     expect(mockedPrisma.leaveRequest.update).toHaveBeenCalled();
+  });
+
+  it('deducts scheduled break time when editing timed leave requests', async () => {
+    mockedValidateCSRF.mockResolvedValue({ valid: true } as never);
+    mockedGetUserFromRequest.mockResolvedValue({
+      role: 'EMPLOYEE',
+      employeeId: 10,
+      userId: 110,
+    } as never);
+    mockedPrisma.schedule.findMany.mockResolvedValue([
+      {
+        workDate: '2026-07-02',
+        shiftType: 'B',
+        startTime: '08:00',
+        endTime: '17:00',
+        breakTime: 60,
+        workHours: 8,
+      },
+    ] as never);
+
+    const request = new NextRequest('http://localhost:3000/api/leave-requests/5', {
+      method: 'PATCH',
+      headers: {
+        cookie: 'auth-token=legacy-auth-token',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        leaveType: 'BUSINESS_TRIP',
+        startDate: '2026-07-02',
+        endDate: '2026-07-02',
+        startHour: '08',
+        startMinute: '00',
+        endHour: '17',
+        endMinute: '00',
+        reason: '外部會議',
+      }),
+    });
+
+    const response = await PATCH(request, { params: Promise.resolve({ id: '5' }) });
+
+    expect(response.status).toBe(200);
+    expect(mockedValidateLeaveRequest).toHaveBeenCalledWith(10, 'BUSINESS_TRIP', 1, 2026);
+    expect(mockedPrisma.leaveRequest.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          totalDays: 1,
+        }),
+      })
+    );
   });
 
   it('rejects edits that overlap another leave request', async () => {

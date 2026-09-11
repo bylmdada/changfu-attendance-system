@@ -5,6 +5,8 @@ import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { safeParseSystemSettingsValue } from '@/lib/system-settings-json';
 import { safeParseJSON } from '@/lib/validation';
+import { logSystemSettingsChange } from '@/lib/system-settings-audit';
+import { getAttendanceFreezeDescription } from '@/lib/attendance-freeze-rules';
 
 interface AttendanceFreezeSettings {
   freezeDay: number;
@@ -19,7 +21,7 @@ const DEFAULT_SETTINGS: AttendanceFreezeSettings = {
   freezeDay: 5,
   freezeTime: '18:00',
   isEnabled: true,
-  description: '每月5日下午6點後，前一個月的考勤記錄將被凍結，無法修改。',
+  description: getAttendanceFreezeDescription(5, '18:00'),
 };
 
 function getDefaultSettings(): AttendanceFreezeSettings {
@@ -35,13 +37,17 @@ async function getStoredSettings(): Promise<AttendanceFreezeSettings> {
     return getDefaultSettings();
   }
 
-  return {
+  const settings = {
     ...getDefaultSettings(),
     ...safeParseSystemSettingsValue<Partial<AttendanceFreezeSettings>>(
       existingSettings.value,
       {},
       SETTINGS_KEY
     ),
+  };
+  return {
+    ...settings,
+    description: getAttendanceFreezeDescription(settings.freezeDay, settings.freezeTime),
   };
 }
 
@@ -151,7 +157,6 @@ export async function POST(request: NextRequest) {
     const freezeDay = bodyRecord.freezeDay === undefined ? existingSettings.freezeDay : bodyRecord.freezeDay;
     const freezeTime = bodyRecord.freezeTime === undefined ? existingSettings.freezeTime : bodyRecord.freezeTime;
     const isEnabled = bodyRecord.isEnabled === undefined ? existingSettings.isEnabled : bodyRecord.isEnabled;
-    const description = bodyRecord.description === undefined ? existingSettings.description : bodyRecord.description;
 
     // 驗證輸入
     if (typeof freezeDay !== 'number' || freezeDay < 1 || freezeDay > 31) {
@@ -175,18 +180,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (typeof description !== 'string') {
-      return NextResponse.json(
-        { error: '描述必須是字串' },
-        { status: 400 }
-      );
-    }
-
     const settings: AttendanceFreezeSettings = {
       freezeDay,
       freezeTime,
       isEnabled,
-      description: description || ''
+      description: getAttendanceFreezeDescription(freezeDay, freezeTime)
     };
 
     // 更新或創建設定
@@ -201,6 +199,15 @@ export async function POST(request: NextRequest) {
         value: JSON.stringify(settings),
         description: '考勤凍結設定'
       }
+    });
+
+    await logSystemSettingsChange({
+      request,
+      user,
+      settingKey: SETTINGS_KEY,
+      description: '考勤凍結設定變更',
+      oldValue: existingSettings,
+      newValue: settings,
     });
 
     return NextResponse.json({

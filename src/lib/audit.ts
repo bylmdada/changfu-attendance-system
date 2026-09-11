@@ -52,6 +52,7 @@ export enum AuditTargetType {
   SYSTEM_SETTINGS = 'SystemSettings',
   BONUS = 'Bonus',
   SHIFT_EXCHANGE = 'ShiftExchange',
+  ATTENDANCE_FREEZE = 'AttendanceFreeze',
 }
 
 // 記錄操作日誌選項

@@ -9,6 +9,7 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { safeParseJSON } from '@/lib/validation';
+import { logSystemSettingsChange } from '@/lib/system-settings-audit';
 
 // 預設設定
 const DEFAULT_SETTINGS = {
@@ -145,6 +146,16 @@ export async function POST(request: NextRequest) {
         },
       });
     }
+
+    await logSystemSettingsChange({
+      request,
+      user,
+      settingKey: 'notification-settings',
+      description: '系統通知設定變更',
+      oldValue: existing ?? DEFAULT_SETTINGS,
+      newValue: settings,
+      targetId: settings.id,
+    });
 
     return NextResponse.json({
       success: true,

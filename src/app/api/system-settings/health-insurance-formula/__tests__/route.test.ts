@@ -9,6 +9,7 @@ jest.mock('@/lib/database', () => ({
   prisma: {
     healthInsuranceConfig: {
       findFirst: jest.fn(),
+      findUnique: jest.fn(),
       create: jest.fn(),
     },
     healthInsuranceSalaryLevel: {
@@ -30,6 +31,10 @@ jest.mock('@/lib/auth', () => ({
   getUserFromRequest: jest.fn(),
 }));
 
+jest.mock('@/lib/system-settings-audit', () => ({
+  logSystemSettingsChange: jest.fn(),
+}));
+
 const mockedPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockedRateLimit = checkRateLimit as jest.MockedFunction<typeof checkRateLimit>;
 const mockedValidateCSRF = validateCSRF as jest.MockedFunction<typeof validateCSRF>;
@@ -43,6 +48,8 @@ describe('health insurance formula route guards', () => {
       id: 10,
       premiumRate: 0.0517,
       employeeContributionRatio: 0.3,
+      companyContributionRatio: 0.6,
+      governmentSubsidyRatio: 0.1,
       maxDependents: 3,
       supplementaryRate: 0.0211,
       supplementaryThreshold: 4,
@@ -58,6 +65,7 @@ describe('health insurance formula route guards', () => {
         },
       ],
     } as never);
+    mockedPrisma.healthInsuranceConfig.findUnique.mockResolvedValue({ id: 10 } as never);
 
     mockedPrisma.$transaction.mockImplementation(async (callback) => callback({
       healthInsuranceConfig: {
@@ -65,6 +73,8 @@ describe('health insurance formula route guards', () => {
           id: 10,
           premiumRate: 0.052,
           employeeContributionRatio: 0.31,
+          companyContributionRatio: 0.59,
+          governmentSubsidyRatio: 0.1,
           maxDependents: 4,
           supplementaryRate: 0.022,
           supplementaryThreshold: 5,
@@ -109,8 +119,15 @@ describe('health insurance formula route guards', () => {
       id: 10,
       premiumRate: 0.0517,
       employeeContributionRatio: 0.3,
+      companyContributionRatio: 0.6,
+      governmentSubsidyRatio: 0.1,
     });
-    expect(data.salaryLevels).toHaveLength(1);
+    expect(data.salaryLevels).toHaveLength(30);
+    expect(data.salaryLevels[0]).toMatchObject({
+      level: 1,
+      maxSalary: 29500,
+      insuredAmount: 29500,
+    });
   });
 
   it('allows authenticated non-admin GET requests for payroll calculations', async () => {
@@ -136,6 +153,8 @@ describe('health insurance formula route guards', () => {
       id: 10,
       premiumRate: 0.0517,
       employeeContributionRatio: 0.3,
+      companyContributionRatio: 0.6,
+      governmentSubsidyRatio: 0.1,
     });
   });
 
@@ -157,9 +176,15 @@ describe('health insurance formula route guards', () => {
       id: 0,
       premiumRate: 0.0517,
       employeeContributionRatio: 0.3,
+      companyContributionRatio: 0.6,
+      governmentSubsidyRatio: 0.1,
       maxDependents: 3,
     });
-    expect(data.salaryLevels).toHaveLength(15);
+    expect(data.salaryLevels).toHaveLength(30);
+    expect(data.salaryLevels[29]).toMatchObject({
+      level: 30,
+      insuredAmount: 110100,
+    });
     expect(mockedPrisma.healthInsuranceConfig.create).not.toHaveBeenCalled();
     expect(mockedPrisma.healthInsuranceSalaryLevel.create).not.toHaveBeenCalled();
   });
@@ -176,6 +201,8 @@ describe('health insurance formula route guards', () => {
           id: 10,
           premiumRate: 0.052,
           employeeContributionRatio: 0.31,
+          companyContributionRatio: 0.59,
+          governmentSubsidyRatio: 0.1,
           maxDependents: 4,
           supplementaryRate: 0.022,
           supplementaryThreshold: 5,
@@ -202,6 +229,8 @@ describe('health insurance formula route guards', () => {
       id: 10,
       premiumRate: 0.052,
       employeeContributionRatio: 0.31,
+      companyContributionRatio: 0.59,
+      governmentSubsidyRatio: 0.1,
       maxDependents: 4,
     });
   });
@@ -254,6 +283,8 @@ describe('health insurance formula route guards', () => {
           id: 10,
           premiumRate: 0.052,
           employeeContributionRatio: 0.31,
+          companyContributionRatio: 0.59,
+          governmentSubsidyRatio: 0.1,
           maxDependents: 4,
           supplementaryRate: 0.022,
           supplementaryThreshold: 5,
@@ -284,6 +315,8 @@ describe('health insurance formula route guards', () => {
           id: 10,
           premiumRate: 0.052,
           employeeContributionRatio: 0.31,
+          companyContributionRatio: 0.59,
+          governmentSubsidyRatio: 0.1,
           maxDependents: 4,
           supplementaryRate: 0.022,
           supplementaryThreshold: 5,
@@ -314,6 +347,8 @@ describe('health insurance formula route guards', () => {
           id: 10,
           premiumRate: 0.052,
           employeeContributionRatio: 0.31,
+          companyContributionRatio: 0.59,
+          governmentSubsidyRatio: 0.1,
           maxDependents: 4,
           supplementaryRate: 0.022,
           supplementaryThreshold: 5,
@@ -343,6 +378,8 @@ describe('health insurance formula route guards', () => {
           id: 10,
           premiumRate: 0.052,
           employeeContributionRatio: 0.31,
+          companyContributionRatio: 0.59,
+          governmentSubsidyRatio: 0.1,
           maxDependents: 4,
           supplementaryRate: 0.022,
           supplementaryThreshold: 0,
@@ -357,6 +394,37 @@ describe('health insurance formula route guards', () => {
 
     expect(response.status).toBe(400);
     expect(data).toEqual({ error: '補充保費免扣門檻倍數必須大於 0' });
+    expect(mockedPrisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects contribution ratios that do not add up to 100%', async () => {
+    const request = new NextRequest('http://localhost:3000/api/system-settings/health-insurance-formula', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: 'token=shared-session-token',
+      },
+      body: JSON.stringify({
+        config: {
+          id: 10,
+          premiumRate: 0.052,
+          employeeContributionRatio: 0.3,
+          companyContributionRatio: 0.7,
+          governmentSubsidyRatio: 0.1,
+          maxDependents: 4,
+          supplementaryRate: 0.022,
+          supplementaryThreshold: 5,
+          effectiveDate: '2026-02-01',
+          isActive: true,
+        },
+      }),
+    });
+
+    const response = await POST(request);
+    const data = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(data).toEqual({ error: '員工、公司與政府負擔比例合計必須為 100%' });
     expect(mockedPrisma.$transaction).not.toHaveBeenCalled();
   });
 });

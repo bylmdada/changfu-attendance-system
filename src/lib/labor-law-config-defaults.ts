@@ -1,6 +1,7 @@
 export interface LaborLawConfigValues {
   basicWage: number;
   laborInsuranceRate: number;
+  employmentInsuranceRate: number;
   laborInsuranceMax: number;
   laborEmployeeRate: number;
 }
@@ -8,6 +9,7 @@ export interface LaborLawConfigValues {
 export const DEFAULT_LABOR_LAW_CONFIG: LaborLawConfigValues = {
   basicWage: 29500,
   laborInsuranceRate: 0.115,
+  employmentInsuranceRate: 0.01,
   laborInsuranceMax: 45800,
   laborEmployeeRate: 0.2,
 };

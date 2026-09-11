@@ -113,7 +113,7 @@ export async function PUT(
           photoPath,
           signaturePath,
           note: body.note ?? rec.note,
-          auditStatus: '待主管稽核',
+          auditStatus: 'PENDING',
           rejectReason: null,
           supervisorName: null,
           supervisorAuditDate: null,
@@ -126,32 +126,14 @@ export async function PUT(
         where: { recordId: rec.recordId },
       });
 
-      const existingAudit = await tx.auditApproval.findFirst({
-        where: { recordId: rec.recordId },
+      await tx.auditApproval.create({
+        data: {
+          recordId: rec.recordId,
+          assetCode: rec.assetCode,
+          submittedAt: now,
+          auditStatus: 'PENDING',
+        },
       });
-      if (existingAudit) {
-        await tx.auditApproval.update({
-          where: { id: existingAudit.id },
-          data: {
-            auditStatus: 'PENDING',
-            submittedAt: now,
-            supervisorName: null,
-            supervisorUserId: null,
-            supervisorAuditDate: null,
-            supervisorSignaturePath: null,
-            note: null,
-          },
-        });
-      } else {
-        await tx.auditApproval.create({
-          data: {
-            recordId: rec.recordId,
-            assetCode: rec.assetCode,
-            submittedAt: now,
-            auditStatus: 'PENDING',
-          },
-        });
-      }
 
       return maintenanceRecord;
     });

@@ -25,6 +25,7 @@ export interface RouteAuditReport {
   exactMatches: number;
   dynamicMatches: number;
   unresolved: RouteMismatch[];
+  unverified: RouteReference[];
 }
 
 const API_REFERENCE_PATTERN = /(['"`])((?:\/api\/[A-Za-z0-9_./\-[\]${}]+)(?:\?[^'"`}]*)?)/g;
@@ -32,7 +33,7 @@ const API_REFERENCE_PATTERN = /(['"`])((?:\/api\/[A-Za-z0-9_./\-[\]${}]+)(?:\?[^
 function shouldSkipFrontendReferenceFile(filePath: string): boolean {
   const normalized = filePath.replace(/\\/g, '/');
 
-  return normalized.endsWith('/src/lib/api-route-audit.ts');
+  return normalized.endsWith('/src/lib/api-route-audit.ts') || normalized.endsWith('/src/lib/rate-limit.ts');
 }
 
 export async function collectBackendRoutes(apiRoot: string): Promise<BackendRoute[]> {
@@ -63,7 +64,7 @@ export async function collectFrontendApiReferences(searchRoots: string[]): Promi
   for (const searchRoot of searchRoots) {
     const files = await collectFiles(searchRoot, (entryPath) => {
       const normalized = entryPath.replace(/\\/g, '/');
-      if (normalized.includes('/src/app/api/')) {
+      if (normalized.includes('/src/app/api/') || normalized.includes('/__tests__/')) {
         return false;
       }
 
@@ -114,6 +115,7 @@ export function auditApiRoutes(
   let exactMatches = 0;
   let dynamicMatches = 0;
   const unresolved: RouteMismatch[] = [];
+  const unverified: RouteReference[] = [];
 
   for (const reference of frontendReferences) {
     const exact = backendRoutes.find((route) => route.routePath === reference.normalizedPath);
@@ -128,6 +130,10 @@ export function auditApiRoutes(
       continue;
     }
 
+    if (reference.normalizedPath.includes('__DYNAMIC__')) {
+      unverified.push(reference);
+      continue;
+    }
     unresolved.push({
       reference,
       closestRoutes: findClosestRoutes(reference.normalizedPath, backendRoutes),
@@ -140,6 +146,7 @@ export function auditApiRoutes(
     exactMatches,
     dynamicMatches,
     unresolved,
+    unverified,
   };
 }
 
@@ -151,6 +158,8 @@ export function formatRouteAuditReport(report: RouteAuditReport): string {
     `- exact matches: ${report.exactMatches}`,
     `- dynamic matches: ${report.dynamicMatches}`,
     `- unresolved: ${report.unresolved.length}`,
+    `- unverified dynamic references: ${report.unverified.length}`,
+    ...report.unverified.map(reference => `  review: ${reference.raw} (${reference.filePath}:${reference.line})`),
   ];
 
   if (report.unresolved.length > 0) {

@@ -48,6 +48,7 @@ const mockValidateCSRF = validateCSRF as jest.MockedFunction<typeof validateCSRF
 const mockGetManageableDepartments = getManageableDepartments as jest.MockedFunction<typeof getManageableDepartments>;
 let mockTxEmployeeCreate: jest.Mock;
 let mockTxUserCreate: jest.Mock;
+let mockTxSalaryHistoryCreate: jest.Mock;
 
 describe('employees route guards', () => {
   beforeEach(() => {
@@ -71,6 +72,7 @@ describe('employees route guards', () => {
     mockHashPassword.mockResolvedValue('hashed-password' as never);
     mockTxEmployeeCreate = jest.fn().mockResolvedValue({ id: 11, employeeId: 'E011', name: '王小明' });
     mockTxUserCreate = jest.fn().mockResolvedValue({ id: 20 });
+    mockTxSalaryHistoryCreate = jest.fn().mockResolvedValue({ id: 30 });
     mockPrisma.$transaction.mockImplementation(async (callback) => callback({
       employee: {
         create: mockTxEmployeeCreate,
@@ -78,7 +80,20 @@ describe('employees route guards', () => {
       user: {
         create: mockTxUserCreate,
       },
+      salaryHistory: {
+        create: mockTxSalaryHistoryCreate,
+      },
     } as never) as never);
+  });
+
+  it('limits scheduling-only readers to non-sensitive employee fields', async () => {
+    mockGetUserFromRequest.mockResolvedValue({ userId: 2, employeeId: 20, role: 'EMPLOYEE' } as never);
+    const response = await GET(new NextRequest('http://localhost/api/employees'));
+    expect(response.status).toBe(200);
+    expect(mockPrisma.employee.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { department: '行政部' },
+      select: { id: true, employeeId: true, name: true, department: true, position: true, isActive: true },
+    }));
   });
 
   it('rejects malformed pagination query values instead of coercing them with parseInt', async () => {
@@ -178,6 +193,103 @@ describe('employees route guards', () => {
       }),
     });
     expect(mockTxUserCreate).not.toHaveBeenCalled();
+  });
+
+  it('recalculates rounded hourly rate for monthly employees when creating records', async () => {
+    const response = await POST(new NextRequest('http://localhost/api/employees', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-csrf-token': 'csrf-token',
+      },
+      body: JSON.stringify({
+        employeeId: 'E101',
+        name: '陳小華',
+        birthday: '1990-01-01',
+        hireDate: '2024-01-01',
+        baseSalary: 40100,
+        hourlyRate: 999,
+        department: '行政部',
+        position: '專員',
+        employeeType: 'MONTHLY',
+        createAccount: false,
+      }),
+    }));
+
+    expect(response.status).toBe(201);
+    expect(mockTxEmployeeCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        baseSalary: 40100,
+        hourlyRate: 167,
+        employeeType: 'MONTHLY',
+      }),
+    });
+  });
+
+  it('creates the initial salary history in the employee transaction', async () => {
+    const response = await POST(new NextRequest('http://localhost/api/employees', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-csrf-token': 'csrf-token',
+      },
+      body: JSON.stringify({
+        employeeId: 'E103',
+        name: '測試甲',
+        birthday: '1986-04-04',
+        hireDate: '2026-06-14',
+        baseSalary: 40000,
+        hourlyRate: 999,
+        department: '蘇西日照中心',
+        position: '日照中心主任',
+        employeeType: 'MONTHLY',
+        createAccount: false,
+      }),
+    }));
+
+    expect(response.status).toBe(201);
+    expect(mockTxSalaryHistoryCreate).toHaveBeenCalledWith({
+      data: {
+        employeeId: 11,
+        effectiveDate: new Date('2026-06-14'),
+        baseSalary: 40000,
+        hourlyRate: 167,
+        adjustmentType: 'INITIAL',
+        reason: '入職薪資',
+        approvedById: 10,
+      },
+    });
+  });
+
+  it('keeps manual hourly rate for hourly employees when creating records', async () => {
+    const response = await POST(new NextRequest('http://localhost/api/employees', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-csrf-token': 'csrf-token',
+      },
+      body: JSON.stringify({
+        employeeId: 'E102',
+        name: '林小美',
+        birthday: '1990-01-01',
+        hireDate: '2024-01-01',
+        baseSalary: 0,
+        hourlyRate: 190,
+        department: '行政部',
+        position: '專員',
+        employeeType: 'HOURLY',
+        createAccount: false,
+      }),
+    }));
+
+    expect(response.status).toBe(201);
+    expect(mockTxEmployeeCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        baseSalary: 0,
+        hourlyRate: 190,
+        employeeType: 'HOURLY',
+      }),
+    });
   });
 
   it('rejects weak account passwords when createAccount is enabled', async () => {

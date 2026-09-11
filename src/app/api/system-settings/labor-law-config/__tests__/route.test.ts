@@ -37,6 +37,7 @@ const createdLaborLawConfig = {
   id: 3,
   basicWage: 30000,
   laborInsuranceRate: 0.12,
+  employmentInsuranceRate: 0.01,
   laborInsuranceMax: 46000,
   laborEmployeeRate: 0.2,
   effectiveDate: new Date('2025-01-01'),
@@ -109,6 +110,7 @@ describe('labor law config route guards', () => {
       body: JSON.stringify({
         basicWage: 30000,
         laborInsuranceRate: 0.12,
+        employmentInsuranceRate: 0.01,
         laborInsuranceMax: 46000,
         laborEmployeeRate: 0.2,
         effectiveDate: '2025-01-01',
@@ -139,6 +141,7 @@ describe('labor law config route guards', () => {
       body: JSON.stringify({
         basicWage: 30000,
         laborInsuranceRate: 0.12,
+        employmentInsuranceRate: 0.01,
         laborInsuranceMax: 46000,
         laborEmployeeRate: 0.2,
         effectiveDate: '2025-02-30',
@@ -192,6 +195,7 @@ describe('labor law config route guards', () => {
       body: JSON.stringify({
         basicWage: 'abc',
         laborInsuranceRate: 0.12,
+        employmentInsuranceRate: 0.01,
         laborInsuranceMax: 46000,
         laborEmployeeRate: 0.2,
         effectiveDate: '2025-01-01',
@@ -221,6 +225,7 @@ describe('labor law config route guards', () => {
       body: JSON.stringify({
         basicWage: 30000,
         laborInsuranceRate: 1.2,
+        employmentInsuranceRate: 0.01,
         laborInsuranceMax: 46000,
         laborEmployeeRate: 0.2,
         effectiveDate: '2025-01-01',
@@ -230,6 +235,36 @@ describe('labor law config route guards', () => {
 
     expect(response.status).toBe(400);
     expect(data).toEqual({ error: '勞保費率必須為 0 到 1 之間的數值' });
+    expect(mockedPrisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects out-of-range employment insurance rates before replacing the active config', async () => {
+    mockedGetUserFromRequest.mockResolvedValueOnce({
+      id: 1,
+      username: 'admin',
+      role: 'ADMIN',
+      employee: null,
+    } as never);
+
+    const response = await POST(new NextRequest('http://localhost:3000/api/system-settings/labor-law-config', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: 'token=shared-session-token',
+      },
+      body: JSON.stringify({
+        basicWage: 30000,
+        laborInsuranceRate: 0.12,
+        employmentInsuranceRate: 1.01,
+        laborInsuranceMax: 46000,
+        laborEmployeeRate: 0.2,
+        effectiveDate: '2025-01-01',
+      }),
+    }));
+    const data = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(data).toEqual({ error: '就業保險費率必須為 0 到 1 之間的數值' });
     expect(mockedPrisma.$transaction).not.toHaveBeenCalled();
   });
 
@@ -250,6 +285,7 @@ describe('labor law config route guards', () => {
       body: JSON.stringify({
         basicWage: 30000,
         laborInsuranceRate: 0.12,
+        employmentInsuranceRate: 0.01,
         laborInsuranceMax: 29000,
         laborEmployeeRate: 0.2,
         effectiveDate: '2025-01-01',

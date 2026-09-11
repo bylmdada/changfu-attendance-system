@@ -30,6 +30,7 @@ export async function getStoredLaborLawConfig(): Promise<LaborLawConfigValues> {
   return {
     basicWage: config.basicWage,
     laborInsuranceRate: config.laborInsuranceRate,
+    employmentInsuranceRate: config.employmentInsuranceRate ?? DEFAULT_LABOR_LAW_CONFIG.employmentInsuranceRate,
     laborInsuranceMax: config.laborInsuranceMax,
     laborEmployeeRate: config.laborEmployeeRate,
   };

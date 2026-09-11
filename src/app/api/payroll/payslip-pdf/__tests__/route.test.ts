@@ -12,6 +12,12 @@ jest.mock('@/lib/database', () => ({
     systemSettings: {
       findUnique: jest.fn(),
     },
+    schedule: {
+      findMany: jest.fn(),
+    },
+    holiday: {
+      findMany: jest.fn(),
+    },
   },
 }));
 
@@ -69,25 +75,33 @@ describe('payslip pdf template settings integration', () => {
         baseSalary: 32000,
       },
     } as never);
+    mockPrisma.schedule.findMany.mockResolvedValue([] as never);
+    mockPrisma.holiday.findMany.mockResolvedValue([] as never);
     mockedGetDefaultSecurityConfig.mockReturnValue({
       passwordProtected: false,
       passwordType: 'none',
     });
     mockedGetEmployeePDFPassword.mockResolvedValue('990101' as never);
     mockedGetPasswordHint.mockReturnValue('birthday');
-    mockPrisma.systemSettings.findUnique.mockResolvedValue({
-      key: 'payslip_templates',
-      value: JSON.stringify([
-        {
-          id: 1,
-          isDefault: true,
-          securityConfig: {
-            passwordProtected: true,
-            passwordType: 'birthday',
-          },
-        },
-      ]),
-    } as never);
+    mockPrisma.systemSettings.findUnique.mockImplementation(async ({ where }) => {
+      if (where.key === 'payslip_templates') {
+        return {
+          key: 'payslip_templates',
+          value: JSON.stringify([
+            {
+              id: 1,
+              isDefault: true,
+              securityConfig: {
+                passwordProtected: true,
+                passwordType: 'birthday',
+              },
+            },
+          ]),
+        } as never;
+      }
+
+      return null as never;
+    });
   });
 
   it('loads the default template security config from payslip_templates', async () => {
@@ -161,6 +175,49 @@ describe('payslip pdf template settings integration', () => {
     expect(payload.htmlContent).toContain('重複津貼扣回');
   });
 
+  it('renders stored bonus details into the payslip pdf html', async () => {
+    mockPrisma.payrollRecord.findUnique.mockResolvedValue({
+      id: 1,
+      employeeId: 10,
+      payYear: 2026,
+      payMonth: 2,
+      regularHours: 160,
+      overtimeHours: 0,
+      basePay: 32000,
+      overtimePay: 0,
+      grossPay: 77000,
+      laborInsurance: 500,
+      healthInsurance: 600,
+      supplementaryInsurance: 321,
+      incomeTax: 200,
+      totalDeductions: 1621,
+      netPay: 75379,
+      deductionDetails: {
+        bonusSupplementaryInsurance: 321,
+        bonusDetails: [
+          { bonusType: 'YEAR_END', bonusTypeName: '年終獎金', amount: 45000 },
+        ],
+      },
+      adjustments: [],
+      employee: {
+        id: 10,
+        employeeId: 'E001',
+        name: '王小明',
+        department: '製造部',
+        position: '照服員',
+        baseSalary: 32000,
+      },
+    } as never);
+
+    const request = new NextRequest('http://localhost:3000/api/payroll/payslip-pdf?payrollId=1');
+    const response = await GET(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.htmlContent).toContain('年終獎金');
+    expect(payload.htmlContent).toContain('獎金補充保費');
+  });
+
   it('escapes employee and adjustment text before rendering html', async () => {
     mockPrisma.payrollRecord.findUnique.mockResolvedValue({
       id: 1,
@@ -201,5 +258,34 @@ describe('payslip pdf template settings integration', () => {
     expect(payload.htmlContent).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
     expect(payload.htmlContent).not.toContain('<script>alert(1)</script>');
     expect(payload.htmlContent).not.toContain('<img src=x onerror=alert(1)>');
+  });
+
+  it('omits income tax row from pdf html when withholding is disabled', async () => {
+    mockPrisma.systemSettings.findUnique.mockImplementation(async ({ where }) => {
+      if (where.key === 'payslip_templates') {
+        return {
+          key: 'payslip_templates',
+          value: JSON.stringify([{ id: 1, isDefault: true }]),
+        } as never;
+      }
+
+      if (where.key === 'income_tax_management_settings') {
+        return {
+          key: 'income_tax_management_settings',
+          value: JSON.stringify({ withholdingEnabled: false }),
+        } as never;
+      }
+
+      return null as never;
+    });
+
+    const request = new NextRequest('http://localhost:3000/api/payroll/payslip-pdf?payrollId=1');
+    const response = await GET(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.htmlContent).not.toContain('<td>所得稅</td>');
+    expect(payload.htmlContent).toContain('NT$ 1,100');
+    expect(payload.htmlContent).toContain('NT$ 32,900');
   });
 });

@@ -6,6 +6,8 @@ import { getManageableDepartments } from '@/lib/schedule-management-permissions'
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
 import { listShiftDefinitions } from '@/lib/shift-definition-service';
+import { invalidateConfirmation } from '@/lib/schedule-confirm-service';
+import { checkMultipleDatesFreeze, getAttendanceFreezeError } from '@/lib/attendance-freeze';
 import fs from 'fs';
 import path from 'path';
 
@@ -251,6 +253,13 @@ export async function POST(request: NextRequest) {
     const monthDates = getMonthDates(yearValue, monthValue);
     console.log(`📆 月份日期數量: ${monthDates.length}`);
 
+    const freezeError = getAttendanceFreezeError(
+      await checkMultipleDatesFreeze(monthDates.map(({ date }) => new Date(`${date}T00:00:00+08:00`)))
+    );
+    if (freezeError) {
+      return NextResponse.json({ error: freezeError }, { status: 409 });
+    }
+
     // 刪除該月份選定員工的現有排程
     const monthStart = `${yearValue}-${String(monthValue).padStart(2, '0')}-01`;
     const monthEnd = `${yearValue}-${String(monthValue).padStart(2, '0')}-31`;
@@ -328,6 +337,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '套用模版失敗，未建立任何班表' }, { status: 400 });
     }
     console.log('✅ 排程儲存完成');
+
+    await Promise.all(employees.map((employee) => (
+      invalidateConfirmation(employee.id, `${yearValue}-${String(monthValue).padStart(2, '0')}`)
+    )));
 
     return NextResponse.json({
       message: `成功套用模版 "${template.name}" 到 ${yearValue}年${monthValue}月，共建立 ${createResult.count} 筆班表`,

@@ -3,11 +3,13 @@ jest.mock('@/lib/database', () => ({
     employee: {
       findMany: jest.fn(),
       findUnique: jest.fn(),
+      update: jest.fn(),
     },
     healthInsuranceDependent: {
       findMany: jest.fn(),
       findFirst: jest.fn(),
       findUnique: jest.fn(),
+      count: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
       delete: jest.fn(),
@@ -59,6 +61,8 @@ describe('health insurance dependents route guards', () => {
     } as never);
     mockPrisma.dependentApplication.findFirst.mockResolvedValue(null as never);
     mockPrisma.$transaction.mockResolvedValue([{ id: 2 }, { id: 10 }] as never);
+    mockPrisma.employee.update.mockResolvedValue({ id: 1 } as never);
+    mockPrisma.healthInsuranceDependent.count.mockResolvedValue(1 as never);
   });
 
   it('accepts shared token cookie extraction on GET requests', async () => {
@@ -69,6 +73,11 @@ describe('health insurance dependents route guards', () => {
         name: '王小明',
         department: 'HR',
         position: 'Manager',
+        isActive: true,
+        baseSalary: 30000,
+        insuredBase: null,
+        dependents: 1,
+        healthInsuranceActive: true,
       },
     ] as never);
     mockPrisma.healthInsuranceDependent.findMany.mockResolvedValue([
@@ -99,6 +108,9 @@ describe('health insurance dependents route guards', () => {
     expect(payload.success).toBe(true);
     expect(payload.dependentSummaries).toHaveLength(1);
     expect(payload.dependentSummaries[0].dependentCount).toBe(1);
+    expect(mockPrisma.employee.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { isActive: true },
+    }));
   });
 
   it('allows HR users to access the management list', async () => {
@@ -115,6 +127,34 @@ describe('health insurance dependents route guards', () => {
 
     expect(response.status).toBe(200);
     expect(payload.success).toBe(true);
+  });
+
+  it('rejects dependent updates for inactive employees', async () => {
+    mockPrisma.employee.findUnique.mockResolvedValue({ id: 1, name: '王小明', isActive: false } as never);
+
+    const request = new NextRequest('http://localhost/api/system-settings/health-insurance-dependents', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: 'token=shared-session-token',
+      },
+      body: JSON.stringify({
+        employeeId: 1,
+        dependentName: '王小華',
+        relationship: 'CHILD',
+        idNumber: 'A123456789',
+        birthDate: '2015-01-01',
+        isActive: true,
+        startDate: '2024-01-01',
+      }),
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload.error).toBe('此員工已停用，不能新增或更新健保眷屬資料');
+    expect(mockPrisma.healthInsuranceDependent.create).not.toHaveBeenCalled();
   });
 
   it('accepts shared token cookie extraction on POST requests', async () => {
@@ -255,6 +295,7 @@ describe('health insurance dependents route guards', () => {
   it('accepts shared token cookie extraction on DELETE requests', async () => {
     mockPrisma.healthInsuranceDependent.findUnique.mockResolvedValue({
       id: 10,
+      employeeId: 1,
       dependentName: '王小華',
       employee: { name: '王小明' },
     } as never);
@@ -298,6 +339,7 @@ describe('health insurance dependents route guards', () => {
   it('blocks deletion when a pending dependent application still exists', async () => {
     mockPrisma.healthInsuranceDependent.findUnique.mockResolvedValue({
       id: 10,
+      employeeId: 1,
       dependentName: '王小華',
       employee: { name: '王小明' },
     } as never);

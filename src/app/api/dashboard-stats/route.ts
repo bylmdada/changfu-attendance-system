@@ -3,6 +3,8 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { getManageableDepartments } from '@/lib/schedule-management-permissions';
+import { getTaiwanTodayEnd, getTaiwanTodayStart, toTaiwanDateStr } from '@/lib/timezone';
+import { calculateOvertimeRequestsEligibility } from '@/lib/overtime-eligibility';
 
 // GET - 取得儀表板統計資料
 export async function GET(request: NextRequest) {
@@ -73,17 +75,24 @@ export async function GET(request: NextRequest) {
 
     // 計算今日打卡狀況（使用台灣時區）
     const todayNow = new Date();
-    const taiwanToday = new Date(todayNow.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
-    const today = new Date(Date.UTC(taiwanToday.getFullYear(), taiwanToday.getMonth(), taiwanToday.getDate()) - 8 * 60 * 60 * 1000);
+    const todayStart = getTaiwanTodayStart(todayNow);
+    const todayEnd = getTaiwanTodayEnd(todayNow);
     const todayRecords = await prisma.attendanceRecord.findMany({
       where: {
-        workDate: today,
+        workDate: {
+          gte: todayStart,
+          lt: todayEnd,
+        },
         ...(employeeScope ? { employee: employeeScope } : {}),
       }
     });
 
-    const clockedInToday = todayRecords.filter(r => r.clockInTime).length;
-    const clockedOutToday = todayRecords.filter(r => r.clockOutTime).length;
+    const clockedInToday = new Set(
+      todayRecords.filter(r => r.clockInTime).map(r => r.employeeId)
+    ).size;
+    const clockedOutToday = new Set(
+      todayRecords.filter(r => r.clockOutTime).map(r => r.employeeId)
+    ).size;
 
     // 計算出勤率
     const expectedAttendance = totalEmployees * workDays;
@@ -104,7 +113,8 @@ export async function GET(request: NextRequest) {
       }
     });
 
-    const totalOvertimeHours = overtimeRequests.reduce((sum, r) => sum + r.totalHours, 0);
+    const overtimeEligibility = await calculateOvertimeRequestsEligibility(overtimeRequests);
+    const totalOvertimeHours = overtimeEligibility.totalEffectiveHours;
     const avgOvertimePerEmployee = totalEmployees > 0 
       ? Math.round((totalOvertimeHours / totalEmployees) * 10) / 10 
       : 0;
@@ -196,7 +206,7 @@ export async function GET(request: NextRequest) {
           pendingApprovals: pendingLeaves + pendingOvertimes
         },
         today: {
-          date: `${taiwanToday.getFullYear()}-${String(taiwanToday.getMonth() + 1).padStart(2, '0')}-${String(taiwanToday.getDate()).padStart(2, '0')}`,
+          date: toTaiwanDateStr(todayNow),
           clockedIn: clockedInToday,
           clockedOut: clockedOutToday,
           notClockedIn: totalEmployees - clockedInToday

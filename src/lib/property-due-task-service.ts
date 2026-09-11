@@ -6,8 +6,6 @@ import {
   startOfDay,
 } from '@/lib/property-maintenance-utils';
 
-const DAY_MS = 24 * 60 * 60 * 1000;
-
 type DueAsset = {
   id: number;
   siteId: number;
@@ -31,8 +29,6 @@ export function getImmediateMaintenanceDueDate(
   if (!asset.nextMaintenanceDate) return today;
 
   const nextMaintenanceDate = startOfDay(asset.nextMaintenanceDate);
-  const diffDays = Math.trunc((nextMaintenanceDate.getTime() - today.getTime()) / DAY_MS);
-  if (Math.abs(diffDays) > asset.frequencyDays) return today;
   if (nextMaintenanceDate.getTime() <= today.getTime()) return nextMaintenanceDate;
   return null;
 }
@@ -44,7 +40,6 @@ export async function ensureImmediateMaintenanceTasks({
   now?: Date;
   where?: Prisma.PropertyAssetWhereInput;
 } = {}) {
-  const today = startOfDay(now);
   const assets = await prisma.propertyAsset.findMany({
     where: {
       ...where,
@@ -85,7 +80,7 @@ export async function ensureImmediateMaintenanceTasks({
             isActive: true,
             nextMaintenanceDate: asset.nextMaintenanceDate,
           },
-          data: { nextMaintenanceDate: addDays(today, asset.frequencyDays!) },
+          data: { nextMaintenanceDate: addDays(dueDate, asset.frequencyDays!) },
         });
         if (advanced.count === 0) return false;
 
@@ -98,7 +93,7 @@ export async function ensureImmediateMaintenanceTasks({
             maintenanceCycle: asset.maintenanceFrequency,
             dueDate,
             status: 'PENDING',
-            auditStatus: '待主管稽核',
+            auditStatus: 'PENDING',
             maintainerRaw: asset.managerName,
             generatedByCron: true,
             note: `系統即時產生待維護任務（頻率：${asset.maintenanceFrequency ?? ''}）`,

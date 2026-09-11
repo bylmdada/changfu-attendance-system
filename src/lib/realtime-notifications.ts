@@ -12,6 +12,8 @@
  * @phase Phase 2C - 完整系統優化
  */
 
+import { prisma } from '@/lib/database';
+
 
 
 
@@ -220,8 +222,10 @@ export class RealTimeNotificationSystem {
 
         switch (channel) {
           case 'WEB':
-          case 'IN_APP':
             success = await this.deliverWebNotification(notification, userId);
+            break;
+          case 'IN_APP':
+            success = await this.deliverInAppNotification(notification, userId);
             break;
           case 'EMAIL':
             success = await this.deliverEmailNotification(notification, userId);
@@ -263,6 +267,35 @@ export class RealTimeNotificationSystem {
     this.emit('notification:web', { notification, userId });
     
     return true;
+  }
+
+  // 系統內通知分發，落地寫入 InAppNotification 供通知鈴鐺讀取
+  private async deliverInAppNotification(notification: Notification, userId: string): Promise<boolean> {
+    const employeeId = Number(userId);
+    if (!Number.isSafeInteger(employeeId) || employeeId <= 0) {
+      console.warn(`略過系統內通知，targetUsers 需為員工數字 ID: ${userId}`);
+      return false;
+    }
+
+    try {
+      await prisma.inAppNotification.create({
+        data: {
+          employeeId,
+          type: notification.type,
+          title: notification.title,
+          message: notification.message,
+          data: notification.data ? JSON.stringify(notification.data) : null,
+          isRead: false,
+          createdAt: notification.createdAt,
+        },
+      });
+
+      this.emit('notification:in-app', { notification, userId });
+      return true;
+    } catch (error) {
+      console.error(`系統內通知寫入失敗 -> ${userId}:`, error);
+      return false;
+    }
   }
 
   // 郵件通知分發 (模擬)

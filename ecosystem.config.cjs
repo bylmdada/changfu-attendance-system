@@ -7,7 +7,7 @@ module.exports = {
       name: process.env.PM2_APP_NAME || 'attendance',
       cwd: __dirname,
       script: process.env.NODE_BINARY || 'node',
-      args: `./node_modules/next/dist/bin/next start --port ${port} --hostname ${hostname}`,
+      args: `--env-file=${process.env.ENV_FILE || '.env.production'} ./node_modules/next/dist/bin/next start --port ${port} --hostname ${hostname}`,
       interpreter: 'none',
       exec_mode: 'fork',
       instances: 1,

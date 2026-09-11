@@ -1,4 +1,10 @@
 import { prisma } from '@/lib/database';
+import { sendNotification } from '@/lib/realtime-notifications';
+import {
+  getScheduleReleaseDepartmentFilters,
+  pickApplicableScheduleRelease,
+} from '@/lib/schedule-confirmation-status';
+import { getTaiwanYearMonth } from '@/lib/timezone';
 
 /**
  * 班表確認機制設定服務
@@ -23,17 +29,16 @@ export interface ScheduleConfirmSettings {
 }
 
 async function findApplicablePublishedRelease(yearMonth: string, department?: string | null) {
-  return prisma.scheduleMonthlyRelease.findFirst({
+  const releases = await prisma.scheduleMonthlyRelease.findMany({
     where: {
       yearMonth,
       status: 'PUBLISHED',
-      OR: [
-        { department: null },
-        { department: department || '' }
-      ]
+      OR: getScheduleReleaseDepartmentFilters(department),
     },
-    orderBy: { publishedAt: 'desc' }
+    orderBy: { publishedAt: 'desc' },
   });
+
+  return pickApplicableScheduleRelease(releases, department);
 }
 
 /**
@@ -74,7 +79,7 @@ export async function canEmployeeClockIn(employeeId: number, clockDate: Date): P
     return { allowed: true };
   }
   
-  const yearMonth = `${clockDate.getFullYear()}-${(clockDate.getMonth() + 1).toString().padStart(2, '0')}`;
+  const yearMonth = getTaiwanYearMonth(clockDate);
 
   const employee = await prisma.employee.findUnique({
     where: { id: employeeId },
@@ -89,6 +94,14 @@ export async function canEmployeeClockIn(employeeId: number, clockDate: Date): P
       allowed: false,
       reason: '找不到員工資料'
     };
+  }
+
+  const schedule = await prisma.schedule.findFirst({
+    where: { employeeId, workDate: { startsWith: `${yearMonth}-` } },
+    select: { id: true },
+  });
+  if (!schedule) {
+    return { allowed: true };
   }
 
   const release = await findApplicablePublishedRelease(yearMonth, employee.department);
@@ -116,7 +129,7 @@ export async function canEmployeeClockIn(employeeId: number, clockDate: Date): P
   }
   
   // 檢查版本是否匹配
-  if (confirmation.version < release.version) {
+  if (!confirmation.isValid || confirmation.version < release.version) {
     return {
       allowed: false,
       reason: '班表已更新，請重新確認後再打卡'
@@ -136,37 +149,31 @@ export async function sendSchedulePublishNotification(
 ): Promise<{ sent: number; errors: number }> {
   const settings = await getScheduleConfirmSettings();
   
-  if (!settings.enabled || !settings.enableReminder) {
+  if (!settings.enabled || employeeIds.length === 0) {
     return { sent: 0, errors: 0 };
   }
-
-  let sent = 0;
-  let errors = 0;
 
   const [year, month] = yearMonth.split('-');
   const deadlineStr = deadline 
     ? deadline.toLocaleDateString('zh-TW') 
     : `${year}年${parseInt(month)}月底`;
 
-  for (const employeeId of employeeIds) {
-    try {
-      await prisma.notification.create({
-        data: {
-          employeeId,
-          type: 'SCHEDULE_PUBLISH',
-          title: `📅 ${year}年${parseInt(month)}月班表已發布`,
-          message: `您的${parseInt(month)}月份班表已發布，請於${deadlineStr}前至「個人班表查詢」頁面確認。`,
-          data: JSON.stringify({ yearMonth, deadline: deadline?.toISOString() })
-        }
-      });
-      sent++;
-    } catch (error) {
-      console.error(`發送通知給員工 ${employeeId} 失敗:`, error);
-      errors++;
-    }
+  try {
+    await sendNotification({
+      type: 'SCHEDULE_UPDATE',
+      priority: 'NORMAL',
+      channels: ['IN_APP'],
+      title: `${year}年${parseInt(month)}月班表已發布`,
+      message: `您的${parseInt(month)}月份班表已發布，請於${deadlineStr}前至「個人班表查詢」頁面確認。`,
+      data: { yearMonth, deadline: deadline?.toISOString(), path: '/my-schedule' },
+      targetUsers: employeeIds.map(String),
+      createdBy: 'SYSTEM',
+    });
+    return { sent: employeeIds.length, errors: 0 };
+  } catch (error) {
+    console.error('發送班表發布通知失敗:', error);
+    return { sent: 0, errors: employeeIds.length };
   }
-
-  return { sent, errors };
 }
 
 /**
@@ -183,13 +190,7 @@ export async function sendReminderToUnconfirmed(
   }
 
   // 查詢發布記錄
-  const release = await prisma.scheduleMonthlyRelease.findFirst({
-    where: {
-      yearMonth,
-      status: 'PUBLISHED',
-      ...(department ? { department } : { department: null })
-    }
-  });
+  const release = await findApplicablePublishedRelease(yearMonth, department);
 
   if (!release) {
     return { sent: 0, pending: 0, errors: 0 };
@@ -199,7 +200,8 @@ export async function sendReminderToUnconfirmed(
   const employees = await prisma.employee.findMany({
     where: {
       isActive: true,
-      ...(department ? { department } : {})
+      ...(department ? { department } : {}),
+      schedules: { some: { workDate: { startsWith: `${yearMonth}-` } } },
     },
     select: { id: true, name: true }
   });
@@ -222,28 +224,26 @@ export async function sendReminderToUnconfirmed(
     ? release.deadline.toLocaleDateString('zh-TW')
     : `${year}年${parseInt(month)}月底`;
 
-  let sent = 0;
-  let errors = 0;
-
-  for (const emp of unconfirmedEmployees) {
-    try {
-      await prisma.notification.create({
-        data: {
-          employeeId: emp.id,
-          type: 'SCHEDULE_REMINDER',
-          title: `⏰ 班表確認提醒`,
-          message: `您尚未確認${parseInt(month)}月份班表，請於${deadlineStr}前至「個人班表查詢」頁面完成確認。`,
-          data: JSON.stringify({ yearMonth, releaseId: release.id })
-        }
-      });
-      sent++;
-    } catch (error) {
-      console.error(`發送提醒給員工 ${emp.id} 失敗:`, error);
-      errors++;
-    }
+  if (unconfirmedEmployees.length === 0) {
+    return { sent: 0, pending: 0, errors: 0 };
   }
 
-  return { sent, pending: unconfirmedEmployees.length, errors };
+  try {
+    await sendNotification({
+      type: 'SCHEDULE_UPDATE',
+      priority: 'HIGH',
+      channels: ['IN_APP'],
+      title: '班表確認提醒',
+      message: `您尚未確認${parseInt(month)}月份班表，請於${deadlineStr}前至「個人班表查詢」頁面完成確認。`,
+      data: { yearMonth, releaseId: release.id, path: '/my-schedule' },
+      targetUsers: unconfirmedEmployees.map((employee) => String(employee.id)),
+      createdBy: 'SYSTEM',
+    });
+    return { sent: unconfirmedEmployees.length, pending: unconfirmedEmployees.length, errors: 0 };
+  } catch (error) {
+    console.error('發送班表確認提醒失敗:', error);
+    return { sent: 0, pending: unconfirmedEmployees.length, errors: unconfirmedEmployees.length };
+  }
 }
 
 /**
@@ -253,13 +253,7 @@ export async function getUnconfirmedEmployees(
   yearMonth: string,
   department?: string
 ): Promise<Array<{ id: number; employeeId: string; name: string; department: string | null }>> {
-  const release = await prisma.scheduleMonthlyRelease.findFirst({
-    where: {
-      yearMonth,
-      status: 'PUBLISHED',
-      ...(department ? { department } : { department: null })
-    }
-  });
+  const release = await findApplicablePublishedRelease(yearMonth, department);
 
   if (!release) {
     return [];
@@ -268,7 +262,8 @@ export async function getUnconfirmedEmployees(
   const employees = await prisma.employee.findMany({
     where: {
       isActive: true,
-      ...(department ? { department } : {})
+      ...(department ? { department } : {}),
+      schedules: { some: { workDate: { startsWith: `${yearMonth}-` } } },
     },
     select: { id: true, employeeId: true, name: true, department: true }
   });
@@ -296,13 +291,18 @@ export async function invalidateConfirmation(
   yearMonth: string
 ): Promise<{ invalidated: boolean; message?: string }> {
   try {
-    // 查詢該月份的發布記錄
-    const release = await prisma.scheduleMonthlyRelease.findFirst({
-      where: { yearMonth }
+    const employee = await prisma.employee.findUnique({
+      where: { id: employeeId },
+      select: { id: true, department: true, name: true }
     });
 
+    if (!employee) {
+      return { invalidated: false, message: '找不到員工資料' };
+    }
+
+    const release = await findApplicablePublishedRelease(yearMonth, employee.department);
+
     if (!release) {
-      // 沒有發布記錄，不需要失效
       return { invalidated: false, message: '尚無發布記錄' };
     }
 
@@ -320,22 +320,17 @@ export async function invalidateConfirmation(
     });
 
     if (updated.count > 0) {
-      // 發送重新確認通知
-      const employee = await prisma.employee.findUnique({
-        where: { id: employeeId },
-        select: { name: true }
-      });
-
       const [, month] = yearMonth.split('-');
-      
-      await prisma.notification.create({
-        data: {
-          employeeId,
-          type: 'SCHEDULE_RECONFIRM',
-          title: '🔄 班表異動通知',
-          message: `您${parseInt(month)}月份的班表已異動，請重新至「我的班表」頁面確認。`,
-          data: JSON.stringify({ yearMonth, reason: 'schedule_changed' })
-        }
+
+      await sendNotification({
+        type: 'SCHEDULE_UPDATE',
+        priority: 'HIGH',
+        channels: ['IN_APP'],
+        title: '班表異動通知',
+        message: `您${parseInt(month)}月份的班表已異動，請重新至「我的班表」頁面確認。`,
+        data: { yearMonth, reason: 'schedule_changed', path: '/my-schedule' },
+        targetUsers: [String(employeeId)],
+        createdBy: 'SYSTEM',
       });
 
       return { invalidated: true, message: `已通知 ${employee?.name || '員工'} 重新確認班表` };
@@ -344,6 +339,6 @@ export async function invalidateConfirmation(
     return { invalidated: false, message: '無需更新確認狀態' };
   } catch (error) {
     console.error('失效確認記錄失敗:', error);
-    return { invalidated: false, message: '操作失敗' };
+    throw error;
   }
 }

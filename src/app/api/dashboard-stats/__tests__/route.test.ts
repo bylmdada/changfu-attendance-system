@@ -4,6 +4,7 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { getManageableDepartments } from '@/lib/schedule-management-permissions';
+import { calculateOvertimeRequestsEligibility } from '@/lib/overtime-eligibility';
 
 jest.mock('@/lib/database', () => ({
   prisma: {
@@ -37,11 +38,18 @@ jest.mock('@/lib/schedule-management-permissions', () => ({
   getManageableDepartments: jest.fn(),
 }));
 
+jest.mock('@/lib/overtime-eligibility', () => ({
+  calculateOvertimeRequestsEligibility: jest.fn(),
+}));
+
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
 const mockCheckRateLimit = checkRateLimit as jest.MockedFunction<typeof checkRateLimit>;
 const mockGetManageableDepartments = getManageableDepartments as jest.MockedFunction<typeof getManageableDepartments>;
 const mockEmployeeGroupBy = mockPrisma.employee.groupBy as jest.Mock;
+const mockCalculateEligibility = calculateOvertimeRequestsEligibility as jest.MockedFunction<
+  typeof calculateOvertimeRequestsEligibility
+>;
 
 describe('dashboard stats supervisor scope guards', () => {
   beforeEach(() => {
@@ -62,6 +70,11 @@ describe('dashboard stats supervisor scope guards', () => {
     mockPrisma.overtimeRequest.count.mockResolvedValue(0 as never);
     mockPrisma.leaveRequest.findMany.mockResolvedValue([] as never);
     mockPrisma.leaveRequest.count.mockResolvedValue(0 as never);
+    mockCalculateEligibility.mockResolvedValue({
+      byRequestId: new Map(),
+      byEmployeeDate: new Map(),
+      totalEffectiveHours: 0,
+    } as never);
   });
 
   it('returns 401 when shared request auth cannot resolve a user', async () => {
@@ -140,5 +153,73 @@ describe('dashboard stats supervisor scope guards', () => {
     expect(payload.data.departments[0].rate).toBe(
       Math.round((1 / (2 * payload.data.period.workDays)) * 100)
     );
+  });
+
+  it('counts today clocked-in employees by Taiwan date range and unique employee', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-07-01T04:30:00.000Z')); // 12:30 in Taiwan
+    mockGetUserFromRequest.mockResolvedValue({
+      role: 'ADMIN',
+      employeeId: 1,
+      userId: 1,
+      username: 'admin',
+    } as never);
+    mockPrisma.employee.count.mockResolvedValue(3 as never);
+    mockPrisma.attendanceRecord.findMany
+      .mockResolvedValueOnce([] as never)
+      .mockResolvedValueOnce([
+        { employeeId: 1, clockInTime: new Date('2026-07-01T00:00:00.000Z'), clockOutTime: null },
+        { employeeId: 1, clockInTime: new Date('2026-07-01T01:00:00.000Z'), clockOutTime: null },
+        { employeeId: 2, clockInTime: new Date('2026-07-01T00:05:00.000Z'), clockOutTime: new Date('2026-07-01T09:00:00.000Z') },
+        { employeeId: 3, clockInTime: null, clockOutTime: null },
+      ] as never);
+
+    const request = new NextRequest('http://localhost/api/dashboard-stats?year=2026&month=7');
+    const response = await GET(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.success).toBe(true);
+    expect(payload.data.today).toMatchObject({
+      date: '2026-07-01',
+      clockedIn: 2,
+      clockedOut: 1,
+      notClockedIn: 1,
+    });
+    expect(mockPrisma.attendanceRecord.findMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: {
+          workDate: {
+            gte: new Date('2026-06-30T16:00:00.000Z'),
+            lt: new Date('2026-07-01T16:00:00.000Z'),
+          },
+        },
+      })
+    );
+
+    jest.useRealTimers();
+  });
+
+  it('uses actual eligible overtime instead of approved request duration', async () => {
+    const approved = [{
+      id: 10,
+      employeeId: 20,
+      overtimeDate: new Date('2026-03-05T00:00:00.000Z'),
+      totalHours: 2,
+    }];
+    mockPrisma.overtimeRequest.findMany.mockResolvedValue(approved as never);
+    mockCalculateEligibility.mockResolvedValue({
+      byRequestId: new Map(),
+      byEmployeeDate: new Map(),
+      totalEffectiveHours: 0.19,
+    } as never);
+
+    const response = await GET(new NextRequest('http://localhost/api/dashboard-stats?year=2026&month=3'));
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(mockCalculateEligibility).toHaveBeenCalledWith(approved);
+    expect(payload.data.overtime.totalHours).toBe(0.19);
   });
 });

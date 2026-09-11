@@ -4,48 +4,13 @@ import { getUserFromRequest } from '@/lib/auth';
 import { DEFAULT_LABOR_LAW_CONFIG } from '@/lib/labor-law-config-defaults';
 import { toCsvRow } from '@/lib/csv';
 import { parseIntegerQueryParam } from '@/lib/query-params';
-
-/**
- * 勞健保費率查表
- * 勞保：投保薪資分級表
- * 健保：投保金額分級表
- */
-const LABOR_INSURANCE_GRADES = [
-  27470, 28800, 30300, 31800, 33300, 34800, 36300, 38200, 40100,
-  42000, 43900, 45800 // 最高級
-];
-
-const HEALTH_INSURANCE_GRADES = [
-  27470, 28800, 30300, 31800, 33300, 34800, 36300, 38200, 40100,
-  42000, 43900, 45800, 48200, 50600, 53000, 55400, 57800, 60800,
-  63800, 66800, 69800, 72800, 76500, 80200, 83900, 87600, 92100,
-  96600, 101100, 105600, 110100, 115500, 120900, 126300, 131700,
-  137100, 142500, 147900, 150000, 156400, 162800, 169200, 175600,
-  182000, 189500, 219500 // 最高級
-];
-
-/**
- * 根據月薪查找投保金額
- */
-function findInsuredAmount(salary: number, grades: number[]): number {
-  for (const grade of grades) {
-    if (salary <= grade) return grade;
-  }
-  return grades[grades.length - 1];
-}
-
-function findConfiguredHealthInsuredAmount(
-  salary: number,
-  salaryLevels: Array<{ minSalary: number; maxSalary: number; insuredAmount: number }>
-): number {
-  for (const level of salaryLevels) {
-    if (salary >= level.minSalary && salary <= level.maxSalary) {
-      return level.insuredAmount;
-    }
-  }
-
-  return salaryLevels[salaryLevels.length - 1]?.insuredAmount ?? 0;
-}
+import {
+  calculateHealthInsurancePremium,
+  calculateLaborInsurancePremium,
+  findInsuredAmountByLevels,
+  resolveHealthInsuranceLevels,
+  LABOR_INSURANCE_2026_LEVELS,
+} from '@/lib/insurance-calculator';
 
 /**
  * GET - 匯出勞健保繳費清冊
@@ -107,11 +72,15 @@ export async function GET(request: NextRequest) {
 
     // 預設費率
     const laborRate = laborConfig?.laborInsuranceRate || DEFAULT_LABOR_LAW_CONFIG.laborInsuranceRate;
+    const employmentRate = laborConfig?.employmentInsuranceRate || DEFAULT_LABOR_LAW_CONFIG.employmentInsuranceRate;
     const laborEmployeeRate = laborConfig?.laborEmployeeRate || DEFAULT_LABOR_LAW_CONFIG.laborEmployeeRate;
     const laborInsuranceMax = laborConfig?.laborInsuranceMax || DEFAULT_LABOR_LAW_CONFIG.laborInsuranceMax;
     const healthRate = healthConfig?.premiumRate || 0.0517;
     const healthEmployeeRate = healthConfig?.employeeContributionRatio || 0.3;
+    const healthCompanyRate = healthConfig?.companyContributionRatio || 0.6;
+    const healthGovernmentRate = healthConfig?.governmentSubsidyRatio || 0.1;
     const maxDependents = healthConfig?.maxDependents || 3;
+    const healthSalaryLevels = resolveHealthInsuranceLevels(healthConfig?.salaryLevels);
 
     // 取得所有在職員工
     const employees = await prisma.employee.findMany({
@@ -124,6 +93,7 @@ export async function GET(request: NextRequest) {
         baseSalary: true,
         insuredBase: true,
         dependents: true,
+        laborInsuranceActive: true,
         healthInsuranceActive: true
       },
       orderBy: { name: 'asc' }
@@ -135,34 +105,45 @@ export async function GET(request: NextRequest) {
       const insuredBase = emp.insuredBase || salary;
       
       // 勞保
-      const laborInsuredAmount = findInsuredAmount(
-        Math.min(insuredBase, laborInsuranceMax),
-        LABOR_INSURANCE_GRADES
-      );
-      const laborTotal = Math.round(laborInsuredAmount * laborRate);
-      const laborEmployee = Math.round(laborTotal * laborEmployeeRate);
-      const laborEmployer = laborTotal - laborEmployee;
+      const isLaborActive = emp.laborInsuranceActive !== false;
+      const laborCalculation = isLaborActive
+        ? calculateLaborInsurancePremium({
+            salary: Math.min(insuredBase, laborInsuranceMax),
+            ordinaryRate: laborRate,
+            employmentRate,
+            employeeRate: laborEmployeeRate,
+            maxInsuredAmount: laborInsuranceMax,
+          })
+        : null;
+      const laborInsuredAmount = isLaborActive
+        ? laborCalculation?.insuredAmount ?? findInsuredAmountByLevels(Math.min(insuredBase, laborInsuranceMax), LABOR_INSURANCE_2026_LEVELS)
+        : 0;
+      const laborEmployee = laborCalculation?.employeePremium ?? 0;
+      const laborEmployer = laborCalculation?.employerPremium ?? 0;
+      const laborGovernment = laborCalculation?.governmentPremium ?? 0;
+      const laborTotal = laborCalculation?.totalPremium ?? 0;
       
       // 健保
       const isHealthActive = emp.healthInsuranceActive !== false;
-      const healthInsuredAmount = isHealthActive
-        ? (
-          healthConfig?.salaryLevels && healthConfig.salaryLevels.length > 0
-            ? findConfiguredHealthInsuredAmount(insuredBase, healthConfig.salaryLevels)
-            : findInsuredAmount(insuredBase, HEALTH_INSURANCE_GRADES)
-        )
-        : 0;
-      const dependents = isHealthActive ? Math.min(emp.dependents || 0, maxDependents) : 0;
-      const totalPersons = isHealthActive ? 1 + dependents : 0;
-      const healthTotal = isHealthActive
-        ? Math.round(healthInsuredAmount * healthRate * totalPersons)
-        : 0;
-      const healthEmployee = isHealthActive
-        ? Math.round(healthTotal * healthEmployeeRate)
-        : 0;
-      const healthEmployer = isHealthActive
-        ? Math.round(healthTotal * 0.6)
-        : 0;
+      const healthCalculation = isHealthActive
+        ? calculateHealthInsurancePremium({
+            salary: insuredBase,
+            premiumRate: healthRate,
+            employeeRate: healthEmployeeRate,
+            employerRate: healthCompanyRate,
+            governmentRate: healthGovernmentRate,
+            dependents: emp.dependents || 0,
+            maxDependents,
+            levels: healthSalaryLevels,
+          })
+        : null;
+      const healthInsuredAmount = healthCalculation?.insuredAmount ?? 0;
+      const dependents = healthCalculation?.dependents ?? 0;
+      const totalPersons = healthCalculation?.totalPersons ?? 0;
+      const healthTotal = healthCalculation?.totalPremium ?? 0;
+      const healthEmployee = healthCalculation?.employeePremium ?? 0;
+      const healthEmployer = healthCalculation?.employerPremium ?? 0;
+      const healthGovernment = healthCalculation?.governmentPremium ?? 0;
       
       return {
         employeeId: emp.employeeId,
@@ -174,6 +155,7 @@ export async function GET(request: NextRequest) {
         laborInsuredAmount,
         laborEmployee,
         laborEmployer,
+        laborGovernment,
         laborTotal,
         // 健保
         healthInsuredAmount,
@@ -181,6 +163,7 @@ export async function GET(request: NextRequest) {
         totalPersons,
         healthEmployee,
         healthEmployer,
+        healthGovernment,
         healthTotal,
         // 總計
         totalEmployee: laborEmployee + healthEmployee,
@@ -197,9 +180,11 @@ export async function GET(request: NextRequest) {
       laborTotal: records.reduce((sum, r) => sum + r.laborTotal, 0),
       laborEmployee: records.reduce((sum, r) => sum + r.laborEmployee, 0),
       laborEmployer: records.reduce((sum, r) => sum + r.laborEmployer, 0),
+      laborGovernment: records.reduce((sum, r) => sum + r.laborGovernment, 0),
       healthTotal: records.reduce((sum, r) => sum + r.healthTotal, 0),
       healthEmployee: records.reduce((sum, r) => sum + r.healthEmployee, 0),
       healthEmployer: records.reduce((sum, r) => sum + r.healthEmployer, 0),
+      healthGovernment: records.reduce((sum, r) => sum + r.healthGovernment, 0),
       grandTotalEmployee: records.reduce((sum, r) => sum + r.totalEmployee, 0),
       grandTotalEmployer: records.reduce((sum, r) => sum + r.totalEmployer, 0)
     };
@@ -208,8 +193,8 @@ export async function GET(request: NextRequest) {
       // 匯出 CSV
       const headers = [
         '員工編號', '姓名', '部門', '底薪', '投保薪資',
-        '勞保投保金額', '勞保員工負擔', '勞保公司負擔', '勞保合計',
-        '健保投保金額', '健保眷屬數', '健保員工負擔', '健保公司負擔', '健保合計',
+        '勞保投保金額', '勞保員工負擔', '勞保公司負擔', '勞保政府補助', '勞保合計',
+        '健保投保金額', '健保眷屬數', '健保員工負擔', '健保公司負擔', '健保政府補助', '健保合計',
         '員工負擔總計', '公司負擔總計'
       ];
 
@@ -217,8 +202,8 @@ export async function GET(request: NextRequest) {
         toCsvRow(headers),
         ...records.map(r => toCsvRow([
           r.employeeId, r.name, r.department, r.baseSalary, r.insuredBase,
-          r.laborInsuredAmount, r.laborEmployee, r.laborEmployer, r.laborTotal,
-          r.healthInsuredAmount, r.dependents, r.healthEmployee, r.healthEmployer, r.healthTotal,
+          r.laborInsuredAmount, r.laborEmployee, r.laborEmployer, r.laborGovernment, r.laborTotal,
+          r.healthInsuredAmount, r.dependents, r.healthEmployee, r.healthEmployer, r.healthGovernment, r.healthTotal,
           r.totalEmployee, r.totalEmployer
         ])),
         '',
@@ -226,11 +211,13 @@ export async function GET(request: NextRequest) {
           '合計', '', '', '', '', '',
           summary.laborEmployee,
           summary.laborEmployer,
+          summary.laborGovernment,
           summary.laborTotal,
           '',
           '',
           summary.healthEmployee,
           summary.healthEmployer,
+          summary.healthGovernment,
           summary.healthTotal,
           summary.grandTotalEmployee,
           summary.grandTotalEmployer
@@ -254,9 +241,12 @@ export async function GET(request: NextRequest) {
       summary,
       rates: {
         laborRate,
+        employmentRate,
         laborEmployeeRate,
         healthRate,
-        healthEmployeeRate
+        healthEmployeeRate,
+        healthCompanyRate,
+        healthGovernmentRate
       }
     });
   } catch (error) {

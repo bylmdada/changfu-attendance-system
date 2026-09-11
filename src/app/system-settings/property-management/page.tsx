@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { Save, Trash2, Upload, Plus, Loader2 } from 'lucide-react';
+import { Save, Trash2, Upload, Plus, Loader2, Filter } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import fetchWithCSRF from '@/lib/fetchWithCSRF';
 import { useLocalToast, SimpleToast } from '@/components/Toast';
@@ -29,7 +29,7 @@ interface Site {
 interface Assignment {
   id: number;
   userId: number;
-  maintenanceRole: string;
+  maintenanceRole: MaintenanceRole;
   employeeId?: string;
   employeeName?: string;
   username?: string;
@@ -57,6 +57,28 @@ interface SettingsForm {
 }
 
 const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六'];
+type MaintenanceRole = 'MAINTAINER' | 'SUPERVISOR' | 'ADMIN';
+type AssignmentRoleFilter = MaintenanceRole | 'ALL';
+
+const ROLE_LABELS: Record<MaintenanceRole, string> = {
+  MAINTAINER: '維護人員',
+  SUPERVISOR: '主管/稽核',
+  ADMIN: '據點管理員',
+};
+
+const ROLE_FILTER_OPTIONS: Array<{ value: AssignmentRoleFilter; label: string }> = [
+  { value: 'ALL', label: '全部角色' },
+  { value: 'MAINTAINER', label: ROLE_LABELS.MAINTAINER },
+  { value: 'SUPERVISOR', label: ROLE_LABELS.SUPERVISOR },
+  { value: 'ADMIN', label: ROLE_LABELS.ADMIN },
+];
+
+const ROLE_FILTER_CHIP_CLASS: Record<AssignmentRoleFilter, string> = {
+  ALL: 'bg-gray-100 text-gray-700 ring-gray-200',
+  MAINTAINER: 'bg-blue-50 text-blue-700 ring-blue-200',
+  SUPERVISOR: 'bg-amber-50 text-amber-700 ring-amber-200',
+  ADMIN: 'bg-emerald-50 text-emerald-700 ring-emerald-200',
+};
 
 export default function PropertyMgmtSettingsPage() {
   const { showToast, toast, clearToast } = useLocalToast();
@@ -71,7 +93,12 @@ export default function PropertyMgmtSettingsPage() {
     supervisorEmail: '',
   });
   const [assignments, setAssignments] = useState<Assignment[]>([]);
-  const [newUser, setNewUser] = useState({ userId: '', username: '', maintenanceRole: 'MAINTAINER' });
+  const [newUser, setNewUser] = useState<{ userId: string; username: string; maintenanceRole: MaintenanceRole }>({
+    userId: '',
+    username: '',
+    maintenanceRole: 'MAINTAINER',
+  });
+  const [assignmentRoleFilter, setAssignmentRoleFilter] = useState<AssignmentRoleFilter>('ALL');
   const [employeeCandidates, setEmployeeCandidates] = useState<EmployeeCandidate[]>([]);
   const [employeeFilterOptions, setEmployeeFilterOptions] = useState({
     departments: [] as string[],
@@ -79,11 +106,14 @@ export default function PropertyMgmtSettingsPage() {
   });
   const [employeeFilters, setEmployeeFilters] = useState({ q: '', department: '', position: '' });
   const [employeeFilterDraft, setEmployeeFilterDraft] = useState({ q: '', department: '', position: '' });
+  const [showAssignedCandidates, setShowAssignedCandidates] = useState(false);
   const [loadingSites, setLoadingSites] = useState(true);
   const [loadingSiteData, setLoadingSiteData] = useState(false);
   const [loadingCandidates, setLoadingCandidates] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
   const [savingAssignment, setSavingAssignment] = useState(false);
+  const [savingRoleUserId, setSavingRoleUserId] = useState<number | null>(null);
+  const [assignmentRoleDrafts, setAssignmentRoleDrafts] = useState<Record<number, MaintenanceRole>>({});
   const [removingUserId, setRemovingUserId] = useState<number | null>(null);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<string>('');
@@ -140,6 +170,11 @@ export default function PropertyMgmtSettingsPage() {
       }
       if (aRes.ok) {
         setAssignments(assignmentsJson.data);
+        setAssignmentRoleFilter((current) =>
+          current === 'ALL' || assignmentsJson.data.some((assignment: Assignment) => assignment.maintenanceRole === current)
+            ? current
+            : 'ALL'
+        );
       } else {
         setAssignments([]);
         showToast('error', assignmentsJson.error || '載入人員指派失敗');
@@ -206,6 +241,11 @@ export default function PropertyMgmtSettingsPage() {
   useEffect(() => {
     if (siteId !== null) loadEmployeeCandidates(siteId, employeeFilters);
   }, [siteId, employeeFilters, loadEmployeeCandidates]);
+  useEffect(() => {
+    setAssignmentRoleDrafts(
+      Object.fromEntries(assignments.map((assignment) => [assignment.userId, assignment.maintenanceRole]))
+    );
+  }, [assignments]);
 
   const saveSettings = async () => {
     if (siteId === null) return;
@@ -254,7 +294,7 @@ export default function PropertyMgmtSettingsPage() {
       );
       const json = await res.json();
       if (res.ok) {
-        showToast('success', '已新增指派');
+        showToast('success', '已儲存指派');
         setNewUser({ userId: '', username: '', maintenanceRole: 'MAINTAINER' });
         loadSiteData(siteId);
       } else {
@@ -268,10 +308,12 @@ export default function PropertyMgmtSettingsPage() {
   };
 
   const selectCandidate = (candidate: EmployeeCandidate) => {
+    const existingAssignment = assignments.find((assignment) => assignment.userId === candidate.userId);
     setNewUser((current) => ({
       ...current,
       userId: String(candidate.userId),
       username: candidate.username,
+      maintenanceRole: existingAssignment?.maintenanceRole ?? current.maintenanceRole,
     }));
   };
 
@@ -281,6 +323,46 @@ export default function PropertyMgmtSettingsPage() {
       department: employeeFilterDraft.department,
       position: employeeFilterDraft.position,
     });
+  };
+
+  const assignmentByUserId = new Map(assignments.map((assignment) => [assignment.userId, assignment]));
+  const selectedAssignment = newUser.userId ? assignmentByUserId.get(Number(newUser.userId)) : undefined;
+  const visibleEmployeeCandidates = employeeCandidates.filter((candidate) =>
+    showAssignedCandidates ? true : !assignmentByUserId.has(candidate.userId)
+  );
+  const filteredAssignments = assignments.filter((assignment) =>
+    assignmentRoleFilter === 'ALL' ? true : assignment.maintenanceRole === assignmentRoleFilter
+  );
+  const roleCounts = assignments.reduce(
+    (counts, assignment) => {
+      counts[assignment.maintenanceRole] += 1;
+      return counts;
+    },
+    { MAINTAINER: 0, SUPERVISOR: 0, ADMIN: 0 } as Record<MaintenanceRole, number>
+  );
+
+  const saveAssignmentRole = async (userId: number) => {
+    if (siteId === null) return;
+    const maintenanceRole = assignmentRoleDrafts[userId];
+    if (!maintenanceRole) return;
+    setSavingRoleUserId(userId);
+    try {
+      const res = await fetchJSONWithCSRF(`/api/property-maintenance/sites/${siteId}/assignments`, {
+        method: 'POST',
+        body: { userId, maintenanceRole },
+      });
+      const json = await res.json();
+      if (res.ok) {
+        showToast('success', '已更新角色');
+        loadSiteData(siteId);
+      } else {
+        showToast('error', json.error || '更新角色失敗');
+      }
+    } catch {
+      showToast('error', '更新角色失敗');
+    } finally {
+      setSavingRoleUserId(null);
+    }
   };
 
   const removeAssignment = async (userId: number) => {
@@ -455,7 +537,7 @@ export default function PropertyMgmtSettingsPage() {
           </div>
 
           <div className="bg-white rounded-xl border border-gray-200 p-4 mb-4">
-            <h2 className="font-semibold text-gray-900 mb-3">維護／審核人員指派</h2>
+            <h2 className="font-semibold text-gray-900 mb-3">① 新增指派</h2>
             <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr_1fr_auto] gap-2 mb-3">
               <input
                 value={employeeFilterDraft.q}
@@ -491,12 +573,23 @@ export default function PropertyMgmtSettingsPage() {
                 套用篩選
               </button>
             </div>
+            <label className="mb-3 flex items-center gap-2 text-sm text-gray-900">
+              <input
+                type="checkbox"
+                checked={showAssignedCandidates}
+                onChange={(e) => setShowAssignedCandidates(e.target.checked)}
+                className="h-4 w-4"
+              />
+              顯示已指派員工
+            </label>
             <div className="mb-3 rounded-lg border border-gray-200 bg-gray-50">
               <div className="px-3 py-2 text-sm font-medium text-gray-900 border-b border-gray-200">
-                員工清單（{loadingCandidates ? '載入中…' : `${employeeCandidates.length} 筆`}）
+                員工清單（{loadingCandidates ? '載入中…' : `${visibleEmployeeCandidates.length} 筆`}）
               </div>
               <div className="max-h-56 overflow-y-auto divide-y divide-gray-200">
-                {employeeCandidates.map((candidate) => (
+                {visibleEmployeeCandidates.map((candidate) => {
+                  const existingAssignment = assignmentByUserId.get(candidate.userId);
+                  return (
                   <button
                     key={candidate.userId}
                     type="button"
@@ -506,8 +599,13 @@ export default function PropertyMgmtSettingsPage() {
                     }`}
                   >
                     <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 text-sm text-gray-900">
-                      <span className="font-medium">
+                      <span className="flex flex-wrap items-center gap-2 font-medium">
                         {candidate.name}（{candidate.employeeId}）
+                        {existingAssignment && (
+                          <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[11px] text-blue-700">
+                            已指派為 {ROLE_LABELS[existingAssignment.maintenanceRole]}
+                          </span>
+                        )}
                       </span>
                       <span className="text-gray-800">
                         {candidate.department || '未填部門'}／{candidate.position || '未填職位'}
@@ -517,13 +615,13 @@ export default function PropertyMgmtSettingsPage() {
                       帳號：{candidate.username}　Email：{candidate.email || '無'}
                     </div>
                   </button>
-                ))}
-                {!loadingCandidates && employeeCandidates.length === 0 && (
+                )})}
+                {!loadingCandidates && visibleEmployeeCandidates.length === 0 && (
                   <div className="px-3 py-4 text-sm text-gray-900">查無可指派員工</div>
                 )}
               </div>
             </div>
-            <div className="flex flex-col md:flex-row gap-2 mb-3">
+            <div className="flex flex-col md:flex-row gap-2">
               <input
                 value={newUser.username}
                 onChange={(e) => setNewUser({ ...newUser, userId: '', username: e.target.value })}
@@ -532,53 +630,147 @@ export default function PropertyMgmtSettingsPage() {
               />
               <select
                 value={newUser.maintenanceRole}
-                onChange={(e) => setNewUser({ ...newUser, maintenanceRole: e.target.value })}
+                onChange={(e) => setNewUser({ ...newUser, maintenanceRole: e.target.value as MaintenanceRole })}
                 className="px-3 py-2 border border-gray-300 rounded-lg bg-white text-gray-900"
+                aria-label="新增指派角色"
               >
-                <option value="MAINTAINER">維護人員</option>
-                <option value="SUPERVISOR">主管/稽核</option>
-                <option value="ADMIN">據點管理員</option>
+                <option value="MAINTAINER">{ROLE_LABELS.MAINTAINER}</option>
+                <option value="SUPERVISOR">{ROLE_LABELS.SUPERVISOR}</option>
+                <option value="ADMIN">{ROLE_LABELS.ADMIN}</option>
               </select>
               <button
                 onClick={addAssignment}
-                disabled={savingAssignment || (!newUser.userId && !newUser.username.trim())}
+                disabled={savingAssignment || !!selectedAssignment || (!newUser.userId && !newUser.username.trim())}
                 className="inline-flex items-center gap-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
               >
                 {savingAssignment ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
                 新增
               </button>
             </div>
+            {selectedAssignment && (
+              <p className="mt-3 text-xs text-amber-700">
+                此員工已在下方「現有指派清單」，請於清單調整角色。
+              </p>
+            )}
+          </div>
+
+          {/* ② 現有指派清單 */}
+          <div className="bg-white rounded-xl border border-gray-200 p-4 mb-4">
+            <h2 className="font-semibold text-gray-900 mb-3">② 現有指派清單</h2>
+            <div className="mb-3 flex flex-wrap gap-2 text-xs text-gray-800">
+              {ROLE_FILTER_OPTIONS.map((option) => {
+                const count = option.value === 'ALL' ? assignments.length : roleCounts[option.value];
+                const isActive = assignmentRoleFilter === option.value;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => setAssignmentRoleFilter(option.value)}
+                    aria-pressed={isActive}
+                    className={`rounded-full px-2.5 py-1 font-medium ring-1 transition hover:brightness-95 ${
+                      ROLE_FILTER_CHIP_CLASS[option.value]
+                    } ${isActive ? 'ring-2' : ''}`}
+                  >
+                    {option.label} {count} 位
+                  </button>
+                );
+              })}
+            </div>
+            <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <label className="relative inline-flex">
+                <span className="sr-only">篩選指派清單角色</span>
+                <Filter className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" />
+                <select
+                  value={assignmentRoleFilter}
+                  onChange={(e) => setAssignmentRoleFilter(e.target.value as AssignmentRoleFilter)}
+                  className="w-full sm:w-40 pl-9 pr-3 py-2 border border-gray-300 rounded-lg bg-white text-gray-900"
+                  aria-label="篩選指派清單角色"
+                >
+                  {ROLE_FILTER_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="flex items-center gap-3 text-xs text-gray-800">
+                <span>顯示 {filteredAssignments.length} / {assignments.length} 位</span>
+                {assignmentRoleFilter !== 'ALL' && (
+                  <button
+                    type="button"
+                    onClick={() => setAssignmentRoleFilter('ALL')}
+                    className="text-blue-600 hover:text-blue-800"
+                  >
+                    清除篩選
+                  </button>
+                )}
+              </div>
+            </div>
             <ul className="divide-y divide-gray-100 text-gray-900">
-              {assignments.map((a) => (
-                <li key={a.id} className="flex items-center justify-between py-2 text-sm">
+              {filteredAssignments.map((a) => (
+                <li key={a.id} className="flex flex-col gap-2 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
                   <div>
                     <p className="font-medium text-gray-900">
                       {a.employeeName || `User#${a.userId}`}（{a.employeeId || a.username || '無員工編號'}）
                     </p>
                     <p className="text-xs text-gray-800">
                       {a.department || '未填部門'}／{a.position || '未填職位'}・{a.email || '無 email'}・
-                      {a.maintenanceRole === 'SUPERVISOR'
-                        ? '主管/稽核'
-                        : a.maintenanceRole === 'ADMIN'
-                          ? '據點管理員'
-                          : '維護人員'}
+                      {ROLE_LABELS[a.maintenanceRole] ?? a.maintenanceRole}
                     </p>
                   </div>
-                  <button
-                    onClick={() => removeAssignment(a.userId)}
-                    disabled={removingUserId === a.userId}
-                    className="text-red-600 hover:text-red-800 disabled:opacity-50"
-                  >
-                    {removingUserId === a.userId ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <Trash2 className="w-4 h-4" />
-                    )}
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={assignmentRoleDrafts[a.userId] || a.maintenanceRole}
+                      onChange={(e) =>
+                        setAssignmentRoleDrafts((current) => ({
+                          ...current,
+                          [a.userId]: e.target.value as MaintenanceRole,
+                        }))
+                      }
+                      className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900"
+                      aria-label={`${a.employeeName || a.username || `User#${a.userId}`} 的角色`}
+                    >
+                      <option value="MAINTAINER">{ROLE_LABELS.MAINTAINER}</option>
+                      <option value="SUPERVISOR">{ROLE_LABELS.SUPERVISOR}</option>
+                      <option value="ADMIN">{ROLE_LABELS.ADMIN}</option>
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => saveAssignmentRole(a.userId)}
+                      disabled={
+                        savingRoleUserId === a.userId ||
+                        (assignmentRoleDrafts[a.userId] || a.maintenanceRole) === a.maintenanceRole
+                      }
+                      className="inline-flex items-center gap-1 rounded-lg border border-gray-300 px-3 py-2 text-gray-900 hover:bg-gray-50 disabled:opacity-50"
+                    >
+                      {savingRoleUserId === a.userId ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Save className="h-4 w-4" />
+                      )}
+                      儲存
+                    </button>
+                    <button
+                      onClick={() => removeAssignment(a.userId)}
+                      disabled={removingUserId === a.userId}
+                      className="text-red-600 hover:text-red-800 disabled:opacity-50"
+                    >
+                      {removingUserId === a.userId ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Trash2 className="w-4 h-4" />
+                      )}
+                    </button>
+                  </div>
                 </li>
               ))}
               {assignments.length === 0 && (
                 <li className="py-3 text-sm text-gray-900">尚無指派人員</li>
+              )}
+              {assignments.length > 0 && filteredAssignments.length === 0 && (
+                <li className="py-3 text-sm text-gray-900">
+                  目前沒有符合「{ROLE_FILTER_OPTIONS.find((option) => option.value === assignmentRoleFilter)?.label}」的指派人員
+                </li>
               )}
             </ul>
           </div>

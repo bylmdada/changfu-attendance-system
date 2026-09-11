@@ -10,6 +10,8 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
+import ConfirmDialog from '@/components/ConfirmDialog';
+import { SimpleToast, useLocalToast } from '@/components/Toast';
 
 // 系統健康狀態介面
 interface SystemHealth {
@@ -30,7 +32,7 @@ interface SystemHealth {
 }
 
 interface ComponentHealth {
-  status: 'healthy' | 'warning' | 'critical' | 'offline';
+  status: 'healthy' | 'warning' | 'critical' | 'offline' | 'unknown';
   score: number;
   responseTime: number;
   errorRate: number;
@@ -69,6 +71,9 @@ export default function SystemMonitoringDashboard() {
   const [error, setError] = useState<string | null>(null);
   const [csrfToken, setCsrfToken] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
+  const [maintenanceConfirm, setMaintenanceConfirm] = useState<{ taskId: string; taskName: string } | null>(null);
+  const [optimizeConfirmOpen, setOptimizeConfirmOpen] = useState(false);
+  const { toast, showToast, clearToast } = useLocalToast();
 
   // 獲取 CSRF Token
   const getCSRFToken = useCallback(async (): Promise<string | null> => {
@@ -120,7 +125,7 @@ export default function SystemMonitoringDashboard() {
       setLoading(true);
       const token = await getCSRFToken();
       if (!token) {
-        alert('無法獲取安全令牌，請刷新頁面重試');
+        showToast('error', '無法獲取安全令牌，請刷新頁面重試');
         return;
       }
 
@@ -136,12 +141,12 @@ export default function SystemMonitoringDashboard() {
       const result = await response.json();
       if (result.success) {
         setSystemHealth(result.data);
-        alert('健康檢查已完成！');
+        showToast('success', '健康檢查已完成');
       } else {
-        alert('健康檢查失敗: ' + result.error);
+        showToast('error', '健康檢查失敗: ' + result.error);
       }
     } catch (err) {
-      alert('健康檢查錯誤: ' + err);
+      showToast('error', '健康檢查錯誤: ' + err);
     } finally {
       setLoading(false);
     }
@@ -152,7 +157,7 @@ export default function SystemMonitoringDashboard() {
     try {
       const token = await getCSRFToken();
       if (!token) {
-        alert('無法獲取安全令牌，請刷新頁面重試');
+        showToast('error', '無法獲取安全令牌，請刷新頁面重試');
         return;
       }
 
@@ -169,25 +174,21 @@ export default function SystemMonitoringDashboard() {
       const result = await response.json();
       if (result.success) {
         setIsMonitoring(!isMonitoring);
-        alert(result.message);
+        showToast('success', result.message);
       } else {
-        alert('操作失敗: ' + result.error);
+        showToast('error', '操作失敗: ' + result.error);
       }
     } catch (err) {
-      alert('操作錯誤: ' + err);
+      showToast('error', '操作錯誤: ' + err);
     }
   };
 
   // 執行維護任務
-  const runMaintenanceTask = async (taskId: string, taskName: string) => {
-    if (!confirm(`確定要執行維護任務「${taskName}」嗎？`)) {
-      return;
-    }
-
+  const runMaintenanceTask = async (taskId: string) => {
     try {
       const token = await getCSRFToken();
       if (!token) {
-        alert('無法獲取安全令牌，請刷新頁面重試');
+        showToast('error', '無法獲取安全令牌，請刷新頁面重試');
         return;
       }
 
@@ -204,27 +205,26 @@ export default function SystemMonitoringDashboard() {
       });
       
       const result = await response.json();
-      alert(result.message);
       
       if (result.success) {
+        showToast('success', result.message);
+        setMaintenanceConfirm(null);
         loadSystemStatus(); // 重新載入狀態
+      } else {
+        showToast('error', result.message || '執行任務失敗');
       }
     } catch (err) {
-      alert('執行任務錯誤: ' + err);
+      showToast('error', '執行任務錯誤: ' + err);
     }
   };
 
   // 系統優化
   const optimizeSystem = async () => {
-    if (!confirm('確定要執行系統優化嗎？這可能會暫時影響性能。')) {
-      return;
-    }
-
     try {
       setLoading(true);
       const token = await getCSRFToken();
       if (!token) {
-        alert('無法獲取安全令牌，請刷新頁面重試');
+        showToast('error', '無法獲取安全令牌，請刷新頁面重試');
         setLoading(false);
         return;
       }
@@ -239,13 +239,16 @@ export default function SystemMonitoringDashboard() {
       });
       
       const result = await response.json();
-      alert(result.message);
       
       if (result.success) {
+        showToast('success', result.message);
+        setOptimizeConfirmOpen(false);
         loadSystemStatus();
+      } else {
+        showToast('error', result.message || '系統優化失敗');
       }
     } catch (err) {
-      alert('系統優化錯誤: ' + err);
+      showToast('error', '系統優化錯誤: ' + err);
     } finally {
       setLoading(false);
     }
@@ -373,7 +376,7 @@ export default function SystemMonitoringDashboard() {
             </button>
             
             <button
-              onClick={optimizeSystem}
+              onClick={() => setOptimizeConfirmOpen(true)}
               disabled={loading}
               className="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-50"
             >
@@ -397,7 +400,7 @@ export default function SystemMonitoringDashboard() {
             <div className="bg-white rounded-lg shadow-md p-6">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm font-medium text-gray-600">整體健康</p>
+                  <p className="text-sm font-medium text-gray-600">已量測項目健康</p>
                   <p className="text-3xl font-bold text-gray-900">{systemHealth.score}</p>
                   <p className={`text-sm px-2 py-1 rounded-full inline-block mt-2 ${getStatusColor(systemHealth.overall)}`}>
                     {systemHealth.overall.toUpperCase()}
@@ -470,8 +473,8 @@ export default function SystemMonitoringDashboard() {
                     </span>
                   </div>
                   <p className="font-medium text-gray-900 capitalize">{name}</p>
-                  <p className="text-sm text-gray-600">{Math.round(component.score)}分</p>
-                  <p className="text-xs text-gray-500">{component.responseTime}ms</p>
+                  <p className="text-sm text-gray-600">{component.status === 'unknown' ? '尚未檢查' : `${Math.round(component.score)}分`}</p>
+                  <p className="text-xs text-gray-500">{component.status === 'unknown' ? '尚無量測資料' : `${component.responseTime}ms`}</p>
                 </div>
               ))}
             </div>
@@ -500,7 +503,7 @@ export default function SystemMonitoringDashboard() {
                     </div>
                     
                     <button
-                      onClick={() => runMaintenanceTask(task.id, task.name)}
+                      onClick={() => setMaintenanceConfirm({ taskId: task.id, taskName: task.name })}
                       className="ml-4 px-3 py-1 bg-blue-600 text-white text-sm rounded hover:bg-blue-700"
                     >
                       立即執行
@@ -570,6 +573,35 @@ export default function SystemMonitoringDashboard() {
             </ul>
           </div>
         )}
+        <ConfirmDialog
+          open={!!maintenanceConfirm}
+          title="執行維護任務"
+          message={maintenanceConfirm ? `確定要執行維護任務「${maintenanceConfirm.taskName}」嗎？` : ''}
+          confirmLabel="立即執行"
+          cancelLabel="取消"
+          loading={loading}
+          onConfirm={() => {
+            if (!maintenanceConfirm) return;
+            void runMaintenanceTask(maintenanceConfirm.taskId);
+          }}
+          onCancel={() => {
+            if (!loading) setMaintenanceConfirm(null);
+          }}
+        />
+
+        <ConfirmDialog
+          open={optimizeConfirmOpen}
+          title="執行系統優化"
+          message="確定要執行系統優化嗎？這可能會暫時影響性能。"
+          confirmLabel="執行優化"
+          cancelLabel="取消"
+          loading={loading}
+          onConfirm={optimizeSystem}
+          onCancel={() => {
+            if (!loading) setOptimizeConfirmOpen(false);
+          }}
+        />
+        <SimpleToast toast={toast} onClose={clearToast} />
       </div>
     </div>
   );

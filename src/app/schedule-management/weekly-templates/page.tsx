@@ -23,6 +23,8 @@ import {
   getShiftTemplate,
   type ShiftDefinitionDTO,
 } from '@/lib/shift-definition-utils';
+import ConfirmDialog from '@/components/ConfirmDialog';
+import { SimpleToast, useLocalToast } from '@/components/Toast';
 
 interface DaySchedule {
   shiftType: string;
@@ -109,8 +111,10 @@ export default function WeeklyTemplatesPage() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [editingTemplate, setEditingTemplate] = useState<WeeklyTemplate | null>(null);
+  const [deleteConfirmTemplate, setDeleteConfirmTemplate] = useState<WeeklyTemplate | null>(null);
   const [shiftDefinitions, setShiftDefinitions] = useState<ShiftDefinitionDTO[]>([]);
   const [shiftDefinitionsLoaded, setShiftDefinitionsLoaded] = useState(false);
+  const { toast, showToast, clearToast } = useLocalToast();
   const shiftDisplayDefinitions = useMemo(
     () => shiftDefinitionsLoaded ? shiftDefinitions : buildDefaultShiftDTOs(),
     [shiftDefinitions, shiftDefinitionsLoaded]
@@ -241,16 +245,16 @@ export default function WeeklyTemplatesPage() {
       });
 
       if (response.ok) {
-        alert('週班模版建立成功');
+        showToast('success', '週班模版建立成功');
         setShowCreateModal(false);
         resetForm();
         fetchTemplates();
       } else {
         const error = await response.json();
-        alert(error.error || '建立失敗');
+        showToast('error', error.error || '建立失敗');
       }
     } catch {
-      alert('建立失敗，請稍後再試');
+      showToast('error', '建立失敗，請稍後再試');
     }
   };
 
@@ -265,42 +269,46 @@ export default function WeeklyTemplatesPage() {
       });
 
       if (response.ok) {
-        alert('週班模版更新成功');
+        showToast('success', '週班模版更新成功');
         setShowEditModal(false);
         setEditingTemplate(null);
         fetchTemplates();
       } else {
         const error = await response.json();
-        alert(error.error || '更新失敗');
+        showToast('error', error.error || '更新失敗');
       }
     } catch {
-      alert('更新失敗，請稍後再試');
+      showToast('error', '更新失敗，請稍後再試');
     }
   };
 
-  const handleDeleteTemplate = async (id: number) => {
-    if (!confirm('確認刪除此週班模版？此操作無法撤銷。')) return;
+  const handleDeleteTemplate = async (template: WeeklyTemplate) => {
+    setDeleteConfirmTemplate(template);
+  };
 
+  const performDeleteTemplate = async () => {
+    if (!deleteConfirmTemplate) return;
     try {
-      const response = await fetchJSONWithCSRF(`/api/schedules/templates/${id}`, {
+      const response = await fetchJSONWithCSRF(`/api/schedules/templates/${deleteConfirmTemplate.id}`, {
         method: 'DELETE',
       });
 
       if (response.ok) {
-        alert('週班模版刪除成功');
+        showToast('success', '週班模版刪除成功');
+        setDeleteConfirmTemplate(null);
         fetchTemplates();
       } else {
         const error = await response.json();
-        alert(error.error || '刪除失敗');
+        showToast('error', error.error || '刪除失敗');
       }
     } catch {
-      alert('刪除失敗，請稍後再試');
+      showToast('error', '刪除失敗，請稍後再試');
     }
   };
 
   const handleDuplicateTemplate = (template: WeeklyTemplate) => {
     if (shiftOptions.length === 0) {
-      alert('目前沒有啟用中的班別，請先至系統設定啟用或新增班別');
+      showToast('error', '目前沒有啟用中的班別，請先至系統設定啟用或新增班別');
       return;
     }
     const defaultShiftCode = shiftOptions[0].code;
@@ -451,7 +459,7 @@ export default function WeeklyTemplatesPage() {
             <button
               onClick={() => {
                 if (shiftOptions.length === 0) {
-                  alert('目前沒有啟用中的班別，請先至系統設定啟用或新增班別');
+                  showToast('error', '目前沒有啟用中的班別，請先至系統設定啟用或新增班別');
                   return;
                 }
                 resetForm();
@@ -556,7 +564,7 @@ export default function WeeklyTemplatesPage() {
                       <Edit2 className="w-4 h-4" />
                     </button>
                     <button
-                      onClick={() => handleDeleteTemplate(template.id)}
+                      onClick={() => handleDeleteTemplate(template)}
                       className="p-2 text-red-600 hover:text-red-800 hover:bg-red-50 rounded-lg transition-colors"
                       title="刪除"
                     >
@@ -610,7 +618,7 @@ export default function WeeklyTemplatesPage() {
               <button
                 onClick={() => {
                   if (shiftOptions.length === 0) {
-                    alert('目前沒有啟用中的班別，請先至系統設定啟用或新增班別');
+                    showToast('error', '目前沒有啟用中的班別，請先至系統設定啟用或新增班別');
                     return;
                   }
                   resetForm();
@@ -978,6 +986,16 @@ export default function WeeklyTemplatesPage() {
           </div>
         </div>
       )}
+      <ConfirmDialog
+        open={Boolean(deleteConfirmTemplate)}
+        title="刪除週班模版"
+        message={deleteConfirmTemplate ? `確認刪除「${deleteConfirmTemplate.name}」週班模版？\n\n此操作無法復原，但不會刪除已經建立的員工班表。` : ''}
+        tone="danger"
+        confirmLabel="刪除模版"
+        onCancel={() => setDeleteConfirmTemplate(null)}
+        onConfirm={performDeleteTemplate}
+      />
+      <SimpleToast toast={toast} onClose={clearToast} />
     </AuthenticatedLayout>
   );
 }

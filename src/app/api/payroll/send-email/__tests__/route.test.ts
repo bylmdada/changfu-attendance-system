@@ -36,6 +36,7 @@ jest.mock('nodemailer', () => ({
 }));
 
 import { NextRequest } from 'next/server';
+import nodemailer from 'nodemailer';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
@@ -44,6 +45,7 @@ import { GET, POST } from '../route';
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
 const mockValidateCSRF = validateCSRF as jest.MockedFunction<typeof validateCSRF>;
+const mockCreateTransport = nodemailer.createTransport as jest.MockedFunction<typeof nodemailer.createTransport>;
 
 describe('payroll send email route', () => {
   let consoleErrorSpy: jest.SpyInstance;
@@ -227,6 +229,10 @@ describe('payroll send email route', () => {
     expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({
       html: 'Hi &lt;b&gt;王小明&lt;/b&gt;<br>Line 2',
       text: 'Hi <b>王小明</b>\nLine 2',
+    }));
+    expect(mockCreateTransport).toHaveBeenCalledWith(expect.objectContaining({
+      disableFileAccess: true,
+      disableUrlAccess: true,
     }));
   });
 

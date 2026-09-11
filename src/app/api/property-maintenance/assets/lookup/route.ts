@@ -4,6 +4,7 @@ import { guard, ok, fail } from '@/lib/property-api';
 import { canMaintainSite, siteWhere } from '@/lib/property-access';
 import { deriveDisplayStatus, type MaintenanceStatus } from '@/lib/property-maintenance-utils';
 import { ensureImmediateMaintenanceTasks } from '@/lib/property-due-task-service';
+import { parsePropertyBarcodeValue } from '@/lib/property-barcode';
 
 /**
  * GET ?code=：掃碼/手動輸入後查詢財產（§7）。
@@ -15,10 +16,20 @@ export async function GET(request: NextRequest) {
   const code = request.nextUrl.searchParams.get('code')?.trim();
   if (!code) return fail('請提供財產編號');
 
-  const asset = await prisma.propertyAsset.findFirst({
-    where: { ...siteWhere(g.ctx.access), assetCode: code, isActive: true },
+  const barcode = parsePropertyBarcodeValue(code);
+  const matches = await prisma.propertyAsset.findMany({
+    where: {
+      ...siteWhere(g.ctx.access),
+      assetCode: barcode.assetCode,
+      isActive: true,
+      ...(barcode.siteCode ? { site: { code: barcode.siteCode } } : {}),
+    },
     include: { site: { select: { id: true, name: true } } },
+    orderBy: { siteId: 'asc' },
+    take: 2,
   });
+  if (matches.length > 1) return fail('財產編號存在於多個據點，請掃描新版條碼', 409);
+  const asset = matches[0];
   if (!asset) return fail('查無此財產或無權限', 404);
 
   await ensureImmediateMaintenanceTasks({ where: { id: asset.id } });

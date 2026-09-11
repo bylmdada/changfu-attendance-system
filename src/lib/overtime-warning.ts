@@ -10,6 +10,8 @@
 
 import { prisma } from '@/lib/database';
 import { systemLogger } from '@/lib/logger';
+import { calculateOvertimeRequestsEligibility } from '@/lib/overtime-eligibility';
+import { getTaiwanMonthEnd, getTaiwanMonthStart } from '@/lib/timezone';
 
 // 加班閾值設定
 export const OVERTIME_THRESHOLDS = {
@@ -40,6 +42,71 @@ export interface OvertimeWarningResult {
   details: EmployeeOvertimeStatus[];
 }
 
+function getAlertLevel(totalHours: number): OvertimeAlertLevel {
+  if (totalHours >= OVERTIME_THRESHOLDS.LEGAL_LIMIT) return 'CRITICAL';
+  if (totalHours >= OVERTIME_THRESHOLDS.WARNING) return 'WARNING';
+  return 'NONE';
+}
+
+async function getMonthlyEffectiveOvertimeTotals(
+  year: number,
+  month: number,
+  employeeIds?: number[]
+) {
+  if (employeeIds && employeeIds.length === 0) return new Map<number, number>();
+
+  const overtimeRecords = await prisma.overtimeRequest.findMany({
+    where: {
+      status: 'APPROVED',
+      overtimeDate: {
+        gte: getTaiwanMonthStart(year, month),
+        lte: getTaiwanMonthEnd(year, month),
+      },
+      ...(employeeIds ? { employeeId: { in: employeeIds } } : {}),
+    },
+  });
+  const eligibility = await calculateOvertimeRequestsEligibility(overtimeRecords);
+  const totals = new Map<number, number>();
+
+  for (const result of eligibility.byEmployeeDate.values()) {
+    totals.set(
+      result.employeeId,
+      Math.round(((totals.get(result.employeeId) || 0) + result.effectiveHours) * 100) / 100
+    );
+  }
+
+  return totals;
+}
+
+async function getActiveEmployeeOvertimeStatuses(year: number, month: number) {
+  const employees = await prisma.employee.findMany({
+    where: { isActive: true },
+    select: {
+      id: true,
+      employeeId: true,
+      name: true,
+      department: true,
+    },
+  });
+  const totals = await getMonthlyEffectiveOvertimeTotals(
+    year,
+    month,
+    employees.map(employee => employee.id)
+  );
+
+  return employees.map(employee => {
+    const totalHours = totals.get(employee.id) || 0;
+    return {
+      employeeId: employee.id,
+      employeeCode: employee.employeeId,
+      name: employee.name,
+      department: employee.department,
+      totalHours,
+      alertLevel: getAlertLevel(totalHours),
+    } satisfies EmployeeOvertimeStatus;
+  });
+}
+
 /**
  * 計算員工當月加班時數
  */
@@ -48,24 +115,8 @@ export async function getEmployeeMonthlyOvertime(
   year: number,
   month: number
 ): Promise<number> {
-  const startDate = new Date(year, month - 1, 1);
-  const endDate = new Date(year, month, 0, 23, 59, 59);
-
-  const overtimeRecords = await prisma.overtimeRequest.findMany({
-    where: {
-      employeeId,
-      status: 'APPROVED',
-      overtimeDate: {
-        gte: startDate,
-        lte: endDate
-      }
-    },
-    select: {
-      totalHours: true
-    }
-  });
-
-  return overtimeRecords.reduce((sum, record) => sum + record.totalHours, 0);
+  const totals = await getMonthlyEffectiveOvertimeTotals(year, month, [employeeId]);
+  return totals.get(employeeId) || 0;
 }
 
 /**
@@ -92,12 +143,7 @@ export async function checkEmployeeOvertimeStatus(
 
   const totalHours = await getEmployeeMonthlyOvertime(employeeId, year, month);
   
-  let alertLevel: OvertimeAlertLevel = 'NONE';
-  if (totalHours >= OVERTIME_THRESHOLDS.LEGAL_LIMIT) {
-    alertLevel = 'CRITICAL';
-  } else if (totalHours >= OVERTIME_THRESHOLDS.WARNING) {
-    alertLevel = 'WARNING';
-  }
+  const alertLevel = getAlertLevel(totalHours);
 
   return {
     employeeId: employee.id,
@@ -120,46 +166,25 @@ export async function scanAllEmployeesOvertime(
   const targetYear = year || now.getFullYear();
   const targetMonth = month || (now.getMonth() + 1);
 
-  // 取得所有在職員工
-  const employees = await prisma.employee.findMany({
-    where: { isActive: true },
-    select: {
-      id: true,
-      employeeId: true,
-      name: true,
-      department: true
-    }
-  });
+  const statuses = await getActiveEmployeeOvertimeStatuses(targetYear, targetMonth);
 
   const result: OvertimeWarningResult = {
-    scannedEmployees: employees.length,
+    scannedEmployees: statuses.length,
     warningCount: 0,
     criticalCount: 0,
     notificationsSent: 0,
     details: []
   };
 
-  for (const employee of employees) {
-    const totalHours = await getEmployeeMonthlyOvertime(employee.id, targetYear, targetMonth);
-    
-    let alertLevel: OvertimeAlertLevel = 'NONE';
-    if (totalHours >= OVERTIME_THRESHOLDS.LEGAL_LIMIT) {
-      alertLevel = 'CRITICAL';
+  for (const status of statuses) {
+    if (status.alertLevel === 'CRITICAL') {
       result.criticalCount++;
-    } else if (totalHours >= OVERTIME_THRESHOLDS.WARNING) {
-      alertLevel = 'WARNING';
+    } else if (status.alertLevel === 'WARNING') {
       result.warningCount++;
     }
 
-    if (alertLevel !== 'NONE') {
-      result.details.push({
-        employeeId: employee.id,
-        employeeCode: employee.employeeId,
-        name: employee.name,
-        department: employee.department,
-        totalHours,
-        alertLevel
-      });
+    if (status.alertLevel !== 'NONE') {
+      result.details.push(status);
     }
   }
 
@@ -320,59 +345,9 @@ export async function getOvertimeSummaryWithAlerts(
     averageHours: number;
   };
 }> {
-  const result = await scanAllEmployeesOvertime(year, month);
-  
-  // 取得所有有加班記錄的員工
-  const startDate = new Date(year, month - 1, 1);
-  const endDate = new Date(year, month, 0, 23, 59, 59);
-
-  const overtimeByEmployee = await prisma.overtimeRequest.groupBy({
-    by: ['employeeId'],
-    where: {
-      status: 'APPROVED',
-      overtimeDate: {
-        gte: startDate,
-        lte: endDate
-      }
-    },
-    _sum: {
-      totalHours: true
-    }
-  });
-
-  const employeeIds = overtimeByEmployee.map(o => o.employeeId);
-  const employees = await prisma.employee.findMany({
-    where: { id: { in: employeeIds } },
-    select: {
-      id: true,
-      employeeId: true,
-      name: true,
-      department: true
-    }
-  });
-
-  const employeeMap = new Map(employees.map(e => [e.id, e]));
-  
-  const allStatuses: EmployeeOvertimeStatus[] = overtimeByEmployee.map(o => {
-    const employee = employeeMap.get(o.employeeId);
-    const totalHours = o._sum.totalHours || 0;
-    let alertLevel: OvertimeAlertLevel = 'NONE';
-    
-    if (totalHours >= OVERTIME_THRESHOLDS.LEGAL_LIMIT) {
-      alertLevel = 'CRITICAL';
-    } else if (totalHours >= OVERTIME_THRESHOLDS.WARNING) {
-      alertLevel = 'WARNING';
-    }
-
-    return {
-      employeeId: o.employeeId,
-      employeeCode: employee?.employeeId || '',
-      name: employee?.name || 'Unknown',
-      department: employee?.department || null,
-      totalHours,
-      alertLevel
-    };
-  }).sort((a, b) => b.totalHours - a.totalHours);
+  const allStatuses = (await getActiveEmployeeOvertimeStatuses(year, month))
+    .filter(status => status.totalHours > 0)
+    .sort((a, b) => b.totalHours - a.totalHours);
 
   const totalHours = allStatuses.reduce((sum, s) => sum + s.totalHours, 0);
 
@@ -380,8 +355,8 @@ export async function getOvertimeSummaryWithAlerts(
     employees: allStatuses,
     summary: {
       totalEmployees: allStatuses.length,
-      warningCount: result.warningCount,
-      criticalCount: result.criticalCount,
+      warningCount: allStatuses.filter(status => status.alertLevel === 'WARNING').length,
+      criticalCount: allStatuses.filter(status => status.alertLevel === 'CRITICAL').length,
       averageHours: allStatuses.length > 0 ? totalHours / allStatuses.length : 0
     }
   };

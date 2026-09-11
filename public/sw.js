@@ -1,9 +1,10 @@
-const CACHE_NAME = 'changfu-attendance-v2';
+const CACHE_NAME = 'changfu-attendance-v3';
 const OFFLINE_URL = '/offline.html';
 
 // 需要快取的靜態資源（只快取確定存在的檔案）
 const STATIC_CACHE = [
-  '/manifest.json'
+  '/manifest.json',
+  OFFLINE_URL
 ];
 
 // 安裝事件 - 快取靜態資源
@@ -47,52 +48,16 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // API 請求使用 Network First 策略
-  if (event.request.url.includes('/api/')) {
-    event.respondWith(
-      fetch(event.request)
-        .catch(() => {
-          return new Response(
-            JSON.stringify({ error: '離線模式，無法連接伺服器' }),
-            { headers: { 'Content-Type': 'application/json' } }
-          );
-        })
-    );
+  const url = new URL(event.request.url);
+  if (url.origin !== self.location.origin) return;
+  // Only explicitly public static assets are cached. Pages and APIs always use the network.
+  if (event.request.mode === 'navigate') {
+    event.respondWith(fetch(event.request).catch(() => caches.match(OFFLINE_URL)));
     return;
   }
+  if (!STATIC_CACHE.includes(url.pathname)) return;
+  event.respondWith(caches.match(event.request).then(cached => cached || fetch(event.request)));
 
-  // 其他請求使用 Cache First 策略
-  event.respondWith(
-    caches.match(event.request)
-      .then((response) => {
-        if (response) {
-          return response;
-        }
-        
-        return fetch(event.request)
-          .then((response) => {
-            // 不快取非成功響應
-            if (!response || response.status !== 200) {
-              return response;
-            }
-
-            // 快取新資源
-            const responseToCache = response.clone();
-            caches.open(CACHE_NAME)
-              .then((cache) => {
-                cache.put(event.request, responseToCache);
-              });
-
-            return response;
-          })
-          .catch(() => {
-            // 離線時返回快取的離線頁面
-            if (event.request.mode === 'navigate') {
-              return caches.match(OFFLINE_URL);
-            }
-          });
-      })
-  );
 });
 
 // 推播通知處理
@@ -183,4 +148,3 @@ self.addEventListener('notificationclick', (event) => {
       })
   );
 });
-

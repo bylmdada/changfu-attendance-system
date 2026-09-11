@@ -11,7 +11,11 @@ import {
   getPayrollHolidayDates,
   summarizePayrollDisputeAdjustments,
 } from '@/lib/payroll-processing';
+import { getStoredIncomeTaxManagementSettings } from '@/lib/income-tax-settings';
+import { getStoredOvertimeCalculationSettings } from '@/lib/overtime-settings';
 import { getStoredSupplementaryPremiumSettings } from '@/lib/supplementary-premium-settings';
+import { getStoredHealthInsuranceFormulaConfig } from '@/lib/health-insurance-config';
+import { getStoredAttendanceSalaryDeductionSettings } from '@/lib/attendance-salary-deduction-settings';
 import { safeParseJSON } from '@/lib/validation';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -99,10 +103,22 @@ export async function POST(request: NextRequest) {
     }
 
     // 取得國定假日
-    const [holidayDates, supplementaryPremiumSettings, laborLawConfig] = await Promise.all([
+    const [
+      holidayDates,
+      supplementaryPremiumSettings,
+      laborLawConfig,
+      healthInsuranceConfig,
+      overtimeSettings,
+      incomeTaxSettings,
+      attendanceSalaryDeductionSettings,
+    ] = await Promise.all([
       getPayrollHolidayDates(year, month),
       getStoredSupplementaryPremiumSettings(),
       getStoredLaborLawConfig(),
+      getStoredHealthInsuranceFormulaConfig(),
+      getStoredOvertimeCalculationSettings(),
+      getStoredIncomeTaxManagementSettings(),
+      getStoredAttendanceSalaryDeductionSettings(),
     ]);
 
     // 建立員工查詢條件
@@ -157,12 +173,17 @@ export async function POST(request: NextRequest) {
         validation,
         bonuses,
         totals,
+        attendancePenaltySummary,
       } = await computePayrollForEmployee(employee, year, month, {
         holidayDates,
-        includeBonus,
-        supplementaryPremiumSettings,
-        laborLawConfig,
-      });
+          includeBonus,
+          supplementaryPremiumSettings,
+          laborLawConfig,
+          healthInsuranceConfig,
+          overtimeSettings,
+          incomeTaxSettings,
+          attendanceSalaryDeductionSettings,
+        });
       const disputeAdjustments = await getPendingApprovedPayrollDisputeAdjustments(employee.id, year, month);
       const disputeAdjustmentSummary = summarizePayrollDisputeAdjustments(disputeAdjustments);
 
@@ -183,6 +204,7 @@ export async function POST(request: NextRequest) {
         deductions: totals.deductions,
         totalDeductions: totals.totalDeductions + disputeAdjustmentSummary.deductionTotal,
         netPay: totals.netPay + disputeAdjustmentSummary.netAdjustment,
+        attendancePenalty: attendancePenaltySummary,
         disputeAdjustmentTotal: disputeAdjustmentSummary.netAdjustment,
         disputeAdjustments: disputeAdjustments.map(adjustment => ({
           type: adjustment.type,

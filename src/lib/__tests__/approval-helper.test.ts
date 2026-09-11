@@ -48,12 +48,46 @@ describe('createApprovalForRequest', () => {
     });
 
     expect(result.success).toBe(true);
+    expect(mockGetApprovalWorkflow).toHaveBeenCalledWith('ANNOUNCEMENT', { department: null });
     expect(mockPrisma.approvalInstance.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         currentLevel: 1,
         maxLevel: 1,
         requireManager: false,
         status: 'LEVEL1_REVIEWING'
+      })
+    });
+  });
+
+  it('loads the workflow using the applicant department', async () => {
+    mockGetApprovalWorkflow.mockResolvedValue({
+      workflowType: 'LEAVE',
+      workflowName: '請假審核',
+      department: '溪北輔具中心',
+      approvalLevel: 1,
+      requireManager: false,
+      finalApprover: 'ADMIN',
+      deadlineMode: 'FIXED',
+      deadlineHours: 12,
+      enableForward: false,
+      enableCC: false
+    });
+    mockPrisma.approvalInstance.create.mockResolvedValue({ id: 16 } as never);
+
+    await createApprovalForRequest({
+      requestType: 'LEAVE',
+      requestId: 88,
+      applicantId: 7,
+      applicantName: '申請人',
+      department: '溪北輔具中心'
+    });
+
+    expect(mockGetApprovalWorkflow).toHaveBeenCalledWith('LEAVE', { department: '溪北輔具中心' });
+    expect(mockPrisma.approvalInstance.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        department: '溪北輔具中心',
+        maxLevel: 1,
+        requireManager: false
       })
     });
   });

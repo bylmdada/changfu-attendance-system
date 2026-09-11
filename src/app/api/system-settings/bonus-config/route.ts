@@ -9,59 +9,17 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { safeParseJSON } from '@/lib/validation';
-import { safeParseSystemSettingsValue } from '@/lib/system-settings-json';
-
-type BonusConfigPayload = {
-  bonusTypeName?: string;
-  isActive?: boolean;
-  eligibilityRules?: Record<string, unknown>;
-  paymentSchedule?: Record<string, unknown>;
-};
-
-type StoredBonusConfig = {
-  bonusTypeName: string;
-  isActive: boolean;
-  eligibilityRules: Record<string, unknown>;
-  paymentSchedule: Record<string, unknown>;
-};
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function parseBonusConfigField(
-  rawValue: unknown,
-  fallback: Record<string, unknown>,
-  key: string
-): Record<string, unknown> {
-  if (typeof rawValue === 'string') {
-    return safeParseSystemSettingsValue(rawValue, fallback, key);
-  }
-
-  if (rawValue && typeof rawValue === 'object' && !Array.isArray(rawValue)) {
-    return rawValue as Record<string, unknown>;
-  }
-
-  return fallback;
-}
-
-function normalizeStoredConfig(
-  config: {
-    bonusTypeName?: string | null;
-    isActive?: boolean | null;
-    eligibilityRules?: unknown;
-    paymentSchedule?: unknown;
-  } | null,
-  defaultName: string,
-  bonusType: 'YEAR_END' | 'FESTIVAL'
-): StoredBonusConfig {
-  return {
-    bonusTypeName: config?.bonusTypeName || defaultName,
-    isActive: config?.isActive !== false,
-    eligibilityRules: parseBonusConfigField(config?.eligibilityRules, {}, `${bonusType}.eligibilityRules`),
-    paymentSchedule: parseBonusConfigField(config?.paymentSchedule, {}, `${bonusType}.paymentSchedule`),
-  };
-}
+import {
+  BONUS_DEPARTMENT_CONFIGS_KEY,
+  getStoredDepartmentBonusConfigs,
+  isPlainObject,
+  normalizeStoredBonusConfig,
+  parseBonusConfigField,
+  type BonusConfigPayload,
+  type DepartmentBonusConfigStore,
+  type ResolvedBonusConfiguration,
+} from '@/lib/bonus-config';
+import { logSystemSettingsChange } from '@/lib/system-settings-audit';
 
 function validateIncomingConfig(
   config: unknown,
@@ -75,7 +33,7 @@ function validateIncomingConfig(
     return { error: `${label}設定格式無效` };
   }
 
-  const { bonusTypeName, eligibilityRules, paymentSchedule } = config;
+  const { bonusTypeName, defaultAmount, eligibilityRules, paymentSchedule } = config;
   const isActive = (config as Record<string, unknown>).isActive;
 
   if (bonusTypeName !== undefined && typeof bonusTypeName !== 'string') {
@@ -84,6 +42,10 @@ function validateIncomingConfig(
 
   if (isActive !== undefined && typeof isActive !== 'boolean') {
     return { error: `${label}啟用狀態必須為布林值` };
+  }
+
+  if (defaultAmount !== undefined && defaultAmount !== null && (typeof defaultAmount !== 'number' || !Number.isFinite(defaultAmount))) {
+    return { error: `${label}預設金額必須為有效數字` };
   }
 
   if (eligibilityRules !== undefined && !isPlainObject(eligibilityRules)) {
@@ -98,9 +60,27 @@ function validateIncomingConfig(
     value: {
       bonusTypeName,
       isActive: isActive as boolean | undefined,
+      defaultAmount: defaultAmount as number | null | undefined,
       eligibilityRules: eligibilityRules as Record<string, unknown> | undefined,
       paymentSchedule: paymentSchedule as Record<string, unknown> | undefined,
     },
+  };
+}
+
+function buildMergedConfig(
+  existingConfig: ResolvedBonusConfiguration,
+  incomingConfig?: BonusConfigPayload
+): ResolvedBonusConfiguration {
+  return {
+    bonusType: existingConfig.bonusType,
+    bonusTypeName: incomingConfig?.bonusTypeName ?? existingConfig.bonusTypeName,
+    isActive: incomingConfig?.isActive ?? existingConfig.isActive,
+    defaultAmount:
+      incomingConfig?.defaultAmount === undefined
+        ? existingConfig.defaultAmount
+        : incomingConfig.defaultAmount,
+    eligibilityRules: incomingConfig?.eligibilityRules ?? existingConfig.eligibilityRules,
+    paymentSchedule: incomingConfig?.paymentSchedule ?? existingConfig.paymentSchedule,
   };
 }
 
@@ -114,35 +94,95 @@ async function upsertBonusConfig(
     return;
   }
 
-  const existingConfig = normalizeStoredConfig(
-    await db.bonusConfiguration.findUnique({ where: { bonusType } }),
+  const existingRecord = await db.bonusConfiguration.findFirst({
+    where: { bonusType },
+    orderBy: { id: 'asc' },
+  }) as {
+    id: number;
+    bonusType: string;
+    bonusTypeName?: string | null;
+    isActive?: boolean | null;
+    defaultAmount?: number | null;
+    eligibilityRules?: unknown;
+    paymentSchedule?: unknown;
+  } | null;
+
+  const existingConfig = normalizeStoredBonusConfig(
+    existingRecord,
     defaultName,
     bonusType
   );
 
-  const mergedConfig: StoredBonusConfig = {
-    bonusTypeName: incomingConfig.bonusTypeName ?? existingConfig.bonusTypeName,
-    isActive: incomingConfig.isActive ?? existingConfig.isActive,
-    eligibilityRules: incomingConfig.eligibilityRules ?? existingConfig.eligibilityRules,
-    paymentSchedule: incomingConfig.paymentSchedule ?? existingConfig.paymentSchedule,
-  };
+  const mergedConfig = buildMergedConfig(existingConfig, incomingConfig);
 
-  await db.bonusConfiguration.upsert({
-    where: { bonusType },
-    update: {
-      bonusTypeName: mergedConfig.bonusTypeName,
-      eligibilityRules: JSON.stringify(mergedConfig.eligibilityRules),
-      paymentSchedule: JSON.stringify(mergedConfig.paymentSchedule),
-      isActive: mergedConfig.isActive,
-    },
-    create: {
+  if (existingRecord) {
+    await db.bonusConfiguration.update({
+      where: { id: existingRecord.id },
+      data: {
+        bonusTypeName: mergedConfig.bonusTypeName,
+        defaultAmount: mergedConfig.defaultAmount,
+        eligibilityRules: JSON.stringify(mergedConfig.eligibilityRules),
+        paymentSchedule: JSON.stringify(mergedConfig.paymentSchedule),
+        isActive: mergedConfig.isActive,
+      } as never,
+    });
+    return;
+  }
+
+  await db.bonusConfiguration.create({
+    data: {
       bonusType,
       bonusTypeName: mergedConfig.bonusTypeName,
+      defaultAmount: mergedConfig.defaultAmount,
       eligibilityRules: JSON.stringify(mergedConfig.eligibilityRules),
       paymentSchedule: JSON.stringify(mergedConfig.paymentSchedule),
       isActive: mergedConfig.isActive,
-    },
+    } as never,
   });
+}
+
+function validateDepartmentConfigs(
+  input: unknown
+): { value?: DepartmentBonusConfigStore; error?: string } {
+  if (input === undefined) {
+    return {};
+  }
+
+  if (!isPlainObject(input)) {
+    return { error: '部門獎金設定格式無效' };
+  }
+
+  const validatedConfigs: DepartmentBonusConfigStore = {};
+
+  for (const [department, rawConfigs] of Object.entries(input)) {
+    if (!isPlainObject(rawConfigs)) {
+      return { error: `${department} 部門獎金設定格式無效` };
+    }
+
+    const departmentConfigs: Partial<Record<string, BonusConfigPayload>> = {};
+
+    for (const [bonusType, rawConfig] of Object.entries(rawConfigs)) {
+      const label =
+        bonusType === 'YEAR_END'
+          ? `${department}部門年終獎金`
+          : bonusType === 'FESTIVAL'
+            ? `${department}部門三節獎金`
+            : `${department}部門${bonusType}`;
+
+      const validated = validateIncomingConfig(rawConfig, label);
+      if (validated.error) {
+        return { error: validated.error };
+      }
+
+      if (validated.value) {
+        departmentConfigs[bonusType] = validated.value;
+      }
+    }
+
+    validatedConfigs[department] = departmentConfigs;
+  }
+
+  return { value: validatedConfigs };
 }
 
 export async function GET(request: NextRequest) {
@@ -155,6 +195,7 @@ export async function GET(request: NextRequest) {
     const configs = await prisma.bonusConfiguration.findMany({
       orderBy: { bonusType: 'asc' }
     });
+    const departmentConfigs = await getStoredDepartmentBonusConfigs();
 
     // 解析 JSON 欄位
     const parsedConfigs = configs.map(config => ({
@@ -173,7 +214,8 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      configs: parsedConfigs
+      configs: parsedConfigs,
+      departmentConfigs
     });
 
   } catch (error) {
@@ -211,9 +253,11 @@ export async function POST(request: NextRequest) {
     const {
       yearEndConfig,
       festivalConfig,
+      departmentConfigs,
     } = data as {
       yearEndConfig?: BonusConfigPayload;
       festivalConfig?: BonusConfigPayload;
+      departmentConfigs?: DepartmentBonusConfigStore;
     };
 
     const validatedYearEndConfig = validateIncomingConfig(yearEndConfig, '年終獎金');
@@ -226,9 +270,48 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: validatedFestivalConfig.error }, { status: 400 });
     }
 
+    const validatedDepartmentConfigs = validateDepartmentConfigs(departmentConfigs);
+    if (validatedDepartmentConfigs.error) {
+      return NextResponse.json({ error: validatedDepartmentConfigs.error }, { status: 400 });
+    }
+
+    const [oldBonusConfigs, oldDepartmentConfigs] = await Promise.all([
+      prisma.bonusConfiguration.findMany({ orderBy: { bonusType: 'asc' } }),
+      getStoredDepartmentBonusConfigs(),
+    ]);
+
     await prisma.$transaction(async (tx) => {
       await upsertBonusConfig(tx, 'YEAR_END', '年終獎金', validatedYearEndConfig.value);
       await upsertBonusConfig(tx, 'FESTIVAL', '三節獎金', validatedFestivalConfig.value);
+
+      if (validatedDepartmentConfigs.value !== undefined) {
+        await tx.systemSettings.upsert({
+          where: { key: BONUS_DEPARTMENT_CONFIGS_KEY },
+          update: {
+            value: JSON.stringify(validatedDepartmentConfigs.value),
+            description: '部門別獎金配置',
+          } as never,
+          create: {
+            key: BONUS_DEPARTMENT_CONFIGS_KEY,
+            value: JSON.stringify(validatedDepartmentConfigs.value),
+            description: '部門別獎金配置',
+          } as never,
+        });
+      }
+    });
+
+    const [newBonusConfigs, newDepartmentConfigs] = await Promise.all([
+      prisma.bonusConfiguration.findMany({ orderBy: { bonusType: 'asc' } }),
+      getStoredDepartmentBonusConfigs(),
+    ]);
+
+    await logSystemSettingsChange({
+      request,
+      user,
+      settingKey: 'bonus-config',
+      description: '獎金配置設定變更',
+      oldValue: { configs: oldBonusConfigs, departmentConfigs: oldDepartmentConfigs },
+      newValue: { configs: newBonusConfigs, departmentConfigs: newDepartmentConfigs },
     });
 
     return NextResponse.json({

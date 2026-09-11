@@ -1,10 +1,12 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { Clock, Upload, Download, Search, Users, RefreshCw, X, Plus, Minus, AlertCircle, CheckCircle } from 'lucide-react';
+import { Clock, Upload, Download, Users, RefreshCw, X, Plus, Minus, AlertCircle, CheckCircle } from 'lucide-react';
 import { buildAuthMeRequest, buildCookieSessionRequest } from '@/lib/admin-session-client';
 import fetchWithCSRF, { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import EmployeeListSelect, { useActiveEmployeeDepartments } from '@/components/EmployeeListSelect';
+import { SimpleToast, useLocalToast } from '@/components/Toast';
 
 interface User {
   id: number;
@@ -42,12 +44,13 @@ interface ImportResult {
 }
 
 export default function CompLeaveManagementPage() {
+  const { toast, showToast, clearToast } = useLocalToast();
   const [user, setUser] = useState<User | null>(null);
   const [balances, setBalances] = useState<CompLeaveBalance[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [departmentFilter, setDepartmentFilter] = useState('');
-  const [departments, setDepartments] = useState<string[]>([]);
+  const { departments } = useActiveEmployeeDepartments();
   
   // 匯入相關
   const [showImportModal, setShowImportModal] = useState(false);
@@ -85,10 +88,6 @@ export default function CompLeaveManagementPage() {
       if (response.ok) {
         const data = await response.json();
         setBalances(data.balances || []);
-        
-        // 提取部門列表
-        const depts = [...new Set(data.balances.map((b: CompLeaveBalance) => b.employee.department))] as string[];
-        setDepartments(depts.sort());
       }
     } catch (error) {
       console.error('獲取資料失敗:', error);
@@ -105,11 +104,7 @@ export default function CompLeaveManagementPage() {
   const filteredBalances = balances.filter(b => {
     if (departmentFilter && b.employee.department !== departmentFilter) return false;
     if (searchTerm) {
-      const term = searchTerm.toLowerCase();
-      return (
-        b.employee.name.toLowerCase().includes(term) ||
-        b.employee.employeeId.toLowerCase().includes(term)
-      );
+      return b.employee.employeeId === searchTerm;
     }
     return true;
   });
@@ -133,14 +128,14 @@ export default function CompLeaveManagementPage() {
       }
     } catch (error) {
       console.error('下載範本失敗:', error);
-      alert('下載範本失敗');
+      showToast('error', '下載範本失敗');
     }
   };
 
   // 處理匯入
   const handleImport = async () => {
     if (!importFile) {
-      alert('請選擇檔案');
+      showToast('warning', '請選擇檔案');
       return;
     }
 
@@ -166,11 +161,11 @@ export default function CompLeaveManagementPage() {
           fetchData(); // 重新載入資料
         }
       } else {
-        alert(data.error || '匯入失敗');
+        showToast('error', data.error || '匯入失敗');
       }
     } catch (error) {
       console.error('匯入失敗:', error);
-      alert('匯入失敗');
+      showToast('error', '匯入失敗');
     } finally {
       setImporting(false);
     }
@@ -179,13 +174,13 @@ export default function CompLeaveManagementPage() {
   // 處理調整
   const handleAdjust = async () => {
     if (!selectedEmployee || !adjustHours || !adjustReason) {
-      alert('請填寫完整資料');
+      showToast('warning', '請填寫完整資料');
       return;
     }
 
     const hours = parseFloat(adjustHours);
     if (isNaN(hours) || hours <= 0) {
-      alert('請輸入有效的時數');
+      showToast('warning', '請輸入有效的時數');
       return;
     }
 
@@ -203,7 +198,7 @@ export default function CompLeaveManagementPage() {
       });
 
       if (response.ok) {
-        alert('調整成功');
+        showToast('success', '調整成功');
         setShowAdjustModal(false);
         setSelectedEmployee(null);
         setAdjustHours('');
@@ -211,11 +206,11 @@ export default function CompLeaveManagementPage() {
         fetchData();
       } else {
         const data = await response.json();
-        alert(data.error || '調整失敗');
+        showToast('error', data.error || '調整失敗');
       }
     } catch (error) {
       console.error('調整失敗:', error);
-      alert('調整失敗');
+      showToast('error', '調整失敗');
     } finally {
       setAdjusting(false);
     }
@@ -238,7 +233,7 @@ export default function CompLeaveManagementPage() {
 
   return (
     <AuthenticatedLayout>
-      <div className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
+      <div className="w-full max-w-none py-6 sm:px-6 lg:px-8">
         <div className="px-4 py-6 sm:px-0">
           {/* 頁面標題 */}
           <div className="mb-8">
@@ -306,24 +301,22 @@ export default function CompLeaveManagementPage() {
           {/* 篩選區域 */}
           <div className="bg-white rounded-lg shadow-sm p-6 mb-6">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">搜尋</label>
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
-                  <input
-                    type="text"
-                    placeholder="員工姓名或編號"
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                    className="pl-10 w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900"
-                  />
-                </div>
-              </div>
+              <EmployeeListSelect
+                label="員工"
+                value={searchTerm}
+                onChange={(value) => setSearchTerm(value)}
+                emptyLabel="全部員工"
+                departmentFilter={departmentFilter}
+                selectClassName="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 disabled:bg-gray-100"
+              />
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">部門</label>
                 <select
                   value={departmentFilter}
-                  onChange={(e) => setDepartmentFilter(e.target.value)}
+                  onChange={(e) => {
+                    setDepartmentFilter(e.target.value);
+                    setSearchTerm('');
+                  }}
                   className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900"
                 >
                   <option value="">全部部門</option>
@@ -627,6 +620,7 @@ export default function CompLeaveManagementPage() {
           </div>
         )}
       </div>
+      <SimpleToast toast={toast} onClose={clearToast} />
     </AuthenticatedLayout>
   );
 }

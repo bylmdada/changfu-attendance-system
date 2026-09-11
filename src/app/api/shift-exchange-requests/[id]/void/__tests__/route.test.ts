@@ -4,6 +4,8 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { checkRateLimit } from '@/lib/rate-limit';
+import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
+import { findActiveScheduleFieldsForShift } from '@/lib/shift-definition-service';
 
 jest.mock('@/lib/database', () => ({
   prisma: {
@@ -14,6 +16,9 @@ jest.mock('@/lib/database', () => ({
     schedule: {
       findFirst: jest.fn(),
       update: jest.fn(),
+    },
+    attendanceRecord: {
+      findFirst: jest.fn(),
     },
     $transaction: jest.fn(),
   },
@@ -31,16 +36,44 @@ jest.mock('@/lib/rate-limit', () => ({
   checkRateLimit: jest.fn(),
 }));
 
+jest.mock('@/lib/attendance-freeze', () => ({
+  checkAttendanceFreeze: jest.fn(),
+}));
+
+jest.mock('@/lib/shift-definition-service', () => ({
+  findActiveScheduleFieldsForShift: jest.fn(),
+}));
+
+jest.mock('@/lib/schedule-confirm-service', () => ({
+  invalidateConfirmation: jest.fn().mockResolvedValue({ invalidated: false }),
+}));
+
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
 const mockValidateCSRF = validateCSRF as jest.MockedFunction<typeof validateCSRF>;
 const mockCheckRateLimit = checkRateLimit as jest.MockedFunction<typeof checkRateLimit>;
+const mockCheckAttendanceFreeze = checkAttendanceFreeze as jest.MockedFunction<typeof checkAttendanceFreeze>;
+const mockFindActiveScheduleFieldsForShift = findActiveScheduleFieldsForShift as jest.MockedFunction<typeof findActiveScheduleFieldsForShift>;
+
+const shiftAFields = {
+  shiftType: 'A',
+  startTime: '07:30',
+  endTime: '16:30',
+  breakTime: 60,
+  workHours: 8,
+  specialLeaveHours: 0,
+  compLeaveHours: 0,
+  overtimeHours: 0,
+};
 
 describe('shift exchange void authorization guards', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockCheckRateLimit.mockResolvedValue({ allowed: true } as never);
     mockValidateCSRF.mockResolvedValue({ valid: true } as never);
+    mockCheckAttendanceFreeze.mockResolvedValue({ isFrozen: false } as never);
+    mockFindActiveScheduleFieldsForShift.mockResolvedValue(shiftAFields as never);
+    mockPrisma.attendanceRecord.findFirst.mockResolvedValue(null as never);
     mockPrisma.$transaction.mockImplementation(async (callback: (tx: typeof mockPrisma) => Promise<unknown>) => callback(mockPrisma));
   });
 
@@ -174,7 +207,7 @@ describe('shift exchange void authorization guards', () => {
     expect(mockPrisma.$transaction).toHaveBeenCalled();
     expect(mockPrisma.schedule.update).toHaveBeenNthCalledWith(1, {
       where: { id: 101 },
-      data: { shiftType: 'A', startTime: '07:30', endTime: '16:30' },
+      data: shiftAFields,
     });
   });
 });

@@ -67,9 +67,10 @@ describe('property maintenance audit route', () => {
       recordId: 'M-1',
       siteId: 1,
       assetCode: 'A-001',
-      auditStatus: '待主管稽核',
+      auditStatus: 'PENDING',
       maintainerEmployeeId: 9,
     });
+    mockedPrisma.employee.findUnique.mockResolvedValue({ name: '維護主管' });
 
     const response = await POST(buildRequest(), {
       params: Promise.resolve({ recordId: 'M-1' }),
@@ -79,6 +80,24 @@ describe('property maintenance audit route', () => {
     expect(response.status).toBe(403);
     expect(payload.error).toContain('不可審核自己的紀錄');
     expect(mockedPrisma.$transaction).not.toHaveBeenCalled();
-    expect(mockedPrisma.employee.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('rejects self-audit when only the maintainer name can be resolved', async () => {
+    mockedPrisma.maintenanceRecord.findUnique.mockResolvedValue({
+      recordId: 'M-1',
+      siteId: 1,
+      assetCode: 'A-001',
+      auditStatus: 'PENDING',
+      maintainerEmployeeId: null,
+      maintainerRaw: '維護主管',
+    });
+    mockedPrisma.employee.findUnique.mockResolvedValue({ name: '維護主管' });
+
+    const response = await POST(buildRequest(), {
+      params: Promise.resolve({ recordId: 'M-1' }),
+    });
+
+    expect(response.status).toBe(403);
+    expect(mockedPrisma.$transaction).not.toHaveBeenCalled();
   });
 });

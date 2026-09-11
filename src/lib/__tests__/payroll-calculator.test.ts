@@ -24,6 +24,36 @@ describe('月薪資計算整合測試', () => {
   };
 
   describe('基本薪資計算', () => {
+    test('月薪 40,000 與投保級距 40,100 不混為同一欄位', () => {
+      const employee: EmployeePayrollInfo = {
+        ...mockEmployee,
+        id: 36,
+        employeeId: '2026990001',
+        name: '測試甲',
+        baseSalary: 40000,
+        hourlyRate: 167,
+        insuredBase: 40000,
+        employeeType: 'MONTHLY',
+      };
+
+      const payroll = calculateMonthlyPayroll(employee, [], 2026, 7);
+      const totals = calculatePayrollTotals(
+        employee,
+        payroll.grossPay,
+        0,
+        undefined,
+        undefined,
+        { incomeTaxEnabled: false }
+      );
+
+      expect(payroll.hourlyWage).toBe(167);
+      expect(payroll.basePay).toBe(40000);
+      expect(payroll.grossPay).toBe(40000);
+      expect(totals.deductions.laborInsurance).toBe(1002);
+      expect(totals.deductions.healthInsurance).toBe(622);
+      expect(totals.netPay).toBe(38376);
+    });
+
     test('無加班 → 只有基本薪', () => {
       const attendanceRecords: AttendanceForPayroll[] = Array.from({ length: 22 }, (_, i) => ({
         workDate: new Date(2024, 0, i + 1),
@@ -63,6 +93,53 @@ describe('月薪資計算整合測試', () => {
       expect(result.grossPay).toBeGreaterThan(result.basePay);
     });
 
+    test('加班費使用薪資檔時薪，不重新用月薪除以240', () => {
+      const attendanceRecords: AttendanceForPayroll[] = [
+        {
+          workDate: new Date(2024, 0, 15),
+          regularHours: 8,
+          overtimeHours: 2,
+          overtimeType: OvertimeType.WEEKDAY,
+          isHoliday: false,
+          isRestDay: false,
+          isMandatoryRest: false
+        }
+      ];
+
+      const result = calculateMonthlyPayroll(
+        { ...mockEmployee, hourlyRate: 200 },
+        attendanceRecords,
+        2024,
+        1
+      );
+
+      expect(result.hourlyWage).toBe(200);
+      expect(result.totalOvertimePay).toBeCloseTo(200 * 2 * (4 / 3));
+    });
+
+    test('僅補休模式 → 保留加班時數但不計入加班費', () => {
+      const attendanceRecords: AttendanceForPayroll[] = [
+        {
+          workDate: new Date(2024, 0, 15),
+          regularHours: 8,
+          overtimeHours: 2,
+          overtimeType: OvertimeType.WEEKDAY,
+          isHoliday: false,
+          isRestDay: false,
+          isMandatoryRest: false
+        }
+      ];
+
+      const result = calculateMonthlyPayroll(mockEmployee, attendanceRecords, 2024, 1, {
+        overtimeCompensationMode: 'COMP_LEAVE_ONLY',
+      });
+
+      expect(result.totalOvertimeHours).toBe(2);
+      expect(result.totalOvertimePay).toBe(0);
+      expect(result.grossPay).toBe(result.basePay);
+      expect(result.calculationNotes).toContain('本月加班補償模式為僅給予補休時數，本次薪資不另計加班費。');
+    });
+
     test('國定假日加班 → 2倍工資', () => {
       const attendanceRecords: AttendanceForPayroll[] = [
         {
@@ -81,6 +158,31 @@ describe('月薪資計算整合測試', () => {
       expect(result.overtimeBreakdown.holidayHours).toBe(8);
       expect(result.totalOvertimePay).toBeGreaterThan(0);
     });
+  });
+
+  test.each([2, 3, 10])('applies weekday tiers separately to %i work dates', days => {
+    const records = Array.from({ length: days }, (_, i) => ({
+      workDate: new Date(`2026-09-${String(i + 1).padStart(2, '0')}T00:00:00+08:00`),
+      regularHours: 8, overtimeHours: 2, overtimeType: OvertimeType.WEEKDAY,
+      isHoliday: false, isRestDay: false, isMandatoryRest: false,
+    }));
+    const result = calculateMonthlyPayroll({ ...mockEmployee, hourlyRate: 150 }, records, 2026, 9);
+    expect(result.totalOvertimePay).toBe(days * 400);
+    expect(result.overtimeDetails[0].overtimePay).toBe(days * 400);
+    expect(calculateMonthlyPayroll(mockEmployee, records, 2026, 9, { overtimeCompensationMode: 'COMP_LEAVE_ONLY' }).totalOvertimePay).toBe(0);
+  });
+
+  test('combines duplicate rows within one work date before applying tiers', () => {
+    const record = { workDate: new Date('2026-09-01T00:00:00+08:00'), regularHours: 0,
+      overtimeHours: 2, overtimeType: OvertimeType.WEEKDAY, isHoliday: false, isRestDay: false, isMandatoryRest: false };
+    expect(calculateMonthlyPayroll({ ...mockEmployee, hourlyRate: 150 }, [record, record], 2026, 9).totalOvertimePay).toBe(900);
+  });
+
+  test.each([[OvertimeType.REST_DAY, 3800], [OvertimeType.HOLIDAY, 2400]])('keeps two %s work dates separate', (type, expected) => {
+    const records = [1, 2].map(day => ({ workDate: new Date(`2026-09-0${day}T00:00:00+08:00`),
+      regularHours: 0, overtimeHours: 8, overtimeType: type as OvertimeType,
+      isHoliday: type === OvertimeType.HOLIDAY, isRestDay: type === OvertimeType.REST_DAY, isMandatoryRest: false }));
+    expect(calculateMonthlyPayroll({...mockEmployee,hourlyRate:150}, records, 2026, 9).totalOvertimePay).toBe(expected);
   });
 
   describe('獎金調整後扣款', () => {
@@ -122,6 +224,15 @@ describe('月薪資計算整合測試', () => {
       expect(totals.deductions.supplementaryInsurance).toBe(0);
     });
 
+    test('停用所得稅扣除時不計入所得稅', () => {
+      const totals = calculatePayrollTotals(mockEmployee, 40000, 0, undefined, undefined, {
+        incomeTaxEnabled: false,
+      });
+
+      expect(totals.deductions.incomeTax).toBe(0);
+      expect(totals.netPay).toBe(40000 - totals.totalDeductions);
+    });
+
     test('未參加健保時不應扣健保費', () => {
       const employeeWithoutHealthInsurance: EmployeePayrollInfo = {
         ...mockEmployee,
@@ -154,12 +265,37 @@ describe('月薪資計算整合測試', () => {
         {
           basicWage: 29500,
           laborInsuranceRate: 0.1,
+          employmentInsuranceRate: 0.01,
           laborInsuranceMax: 40000,
           laborEmployeeRate: 0.5,
         }
       );
 
-      expect(totals.deductions.laborInsurance).toBe(2000);
+      expect(totals.deductions.laborInsurance).toBe(2200);
+    });
+
+    test('套用健保公式設定中的費率、負擔比例與投保級距', () => {
+      const totals = calculatePayrollTotals(
+        { ...mockEmployee, insuredBase: 40000, dependents: 1 },
+        40000,
+        0,
+        undefined,
+        undefined,
+        {
+          healthInsuranceConfig: {
+            premiumRate: 0.05,
+            employeeContributionRatio: 0.25,
+            companyContributionRatio: 0.65,
+            governmentSubsidyRatio: 0.1,
+            maxDependents: 3,
+            salaryLevels: [
+              { level: 1, minSalary: 0, maxSalary: 50000, insuredAmount: 50000 },
+            ],
+          },
+        }
+      );
+
+      expect(totals.deductions.healthInsurance).toBe(1250);
     });
   });
 

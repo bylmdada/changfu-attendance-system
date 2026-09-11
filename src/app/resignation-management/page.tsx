@@ -5,6 +5,7 @@ import { UserMinus, Search, Check, X, Clock, FileText, ChevronDown, ChevronUp, C
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import ApprovalProgress, { ApprovalReviewRecord } from '@/components/ApprovalProgress';
+import { useActiveEmployeeDepartments } from '@/components/EmployeeListSelect';
 
 
 interface HandoverItem {
@@ -85,6 +86,7 @@ export default function ResignationManagementPage() {
     reasonType: 'VOLUNTARY',
     reason: ''
   });
+  const { departments } = useActiveEmployeeDepartments();
 
   // 審核歷程
   const [approvalHistoryId, setApprovalHistoryId] = useState<number | null>(null);
@@ -173,9 +175,6 @@ export default function ResignationManagementPage() {
       setActionLoading(false);
     }
   };
-
-  // 取得部門列表
-  const departments = [...new Set(records.map(r => r.employee.department).filter(Boolean))].sort();
 
   // 篩選後的記錄
   const filteredRecords = records.filter(r => {

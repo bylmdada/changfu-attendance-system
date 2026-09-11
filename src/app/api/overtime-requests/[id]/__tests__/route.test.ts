@@ -7,6 +7,10 @@ import { validateCSRF } from '@/lib/csrf';
 import { notifyOvertimeApproval } from '@/lib/email';
 import { calculateOvertimePayForRequest } from '@/lib/salary-utils';
 import { getTaiwanYearMonth, toTaiwanDateStr } from '@/lib/timezone';
+import {
+  calculateOvertimeRequestEligibility,
+  getOvertimeEligibilityError,
+} from '@/lib/overtime-eligibility';
 
 jest.mock('@/lib/database', () => ({
   prisma: {
@@ -63,6 +67,20 @@ jest.mock('@/lib/approval-workflow', () => ({
   getApprovalWorkflow: jest.fn(),
 }));
 
+jest.mock('@/lib/approval-service', () => ({
+  isReviewerFor: jest.fn(),
+}));
+
+jest.mock('@/lib/attendance-freeze', () => ({
+  checkAttendanceFreeze: jest.fn().mockResolvedValue({ isFrozen: false }),
+  getAttendanceFreezeError: jest.fn().mockReturnValue(null),
+}));
+
+jest.mock('@/lib/overtime-eligibility', () => ({
+  calculateOvertimeRequestEligibility: jest.fn(),
+  getOvertimeEligibilityError: jest.fn(),
+}));
+
 const mockedGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
 const mockedCheckRateLimit = checkRateLimit as jest.MockedFunction<typeof checkRateLimit>;
 const mockedValidateCSRF = validateCSRF as jest.MockedFunction<typeof validateCSRF>;
@@ -70,6 +88,8 @@ const mockedNotifyOvertimeApproval = notifyOvertimeApproval as jest.MockedFuncti
 const mockedCalculateOvertimePayForRequest = calculateOvertimePayForRequest as jest.MockedFunction<typeof calculateOvertimePayForRequest>;
 const mockedGetTaiwanYearMonth = getTaiwanYearMonth as jest.MockedFunction<typeof getTaiwanYearMonth>;
 const mockedToTaiwanDateStr = toTaiwanDateStr as jest.MockedFunction<typeof toTaiwanDateStr>;
+const mockedCalculateOvertimeRequestEligibility = calculateOvertimeRequestEligibility as jest.MockedFunction<typeof calculateOvertimeRequestEligibility>;
+const mockedGetOvertimeEligibilityError = getOvertimeEligibilityError as jest.MockedFunction<typeof getOvertimeEligibilityError>;
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 
 const transactionClient = {
@@ -194,6 +214,57 @@ describe('overtime request item csrf guards', () => {
     expect(response.status).toBe(400);
     expect(data.error).toBe('無效的 JSON 格式');
   });
+
+  it('recalculates full minutes when either endpoint of a pending request is edited', async () => {
+    mockedValidateCSRF.mockResolvedValue({ valid: true } as never);
+    mockedGetUserFromRequest.mockResolvedValue({
+      role: 'EMPLOYEE',
+      employeeId: 10,
+      userId: 110,
+    } as never);
+    mockPrisma.overtimeRequest.findUnique.mockResolvedValue({
+      id: 5,
+      employeeId: 10,
+      status: 'PENDING',
+      totalHours: 3,
+      startTime: '17:00',
+      endTime: '19:00',
+      overtimeDate: new Date('2026-07-01T00:00:00.000Z'),
+      reason: '活動支援',
+      employee: {
+        id: 10,
+        employeeId: 'E010',
+        name: '王小明',
+        department: '門市',
+        position: '店員',
+      },
+    } as never);
+    mockPrisma.overtimeRequest.update.mockResolvedValue({ id: 5, totalHours: 2.52 } as never);
+
+    const request = new NextRequest('http://localhost:3000/api/overtime-requests/5', {
+      method: 'PATCH',
+      headers: {
+        cookie: 'auth-token=legacy-auth-token',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        endTime: '19:31',
+      }),
+    });
+
+    const response = await PATCH(request, { params: Promise.resolve({ id: '5' }) });
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.success).toBe(true);
+    expect(mockPrisma.overtimeRequest.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          totalHours: 2.52,
+        }),
+      })
+    );
+  });
 });
 
 describe('overtime request item approval consistency', () => {
@@ -210,6 +281,20 @@ describe('overtime request item approval consistency', () => {
     mockedCalculateOvertimePayForRequest.mockResolvedValue({ success: true, overtimePay: 600, hourlyRate: 200 } as never);
     mockedGetTaiwanYearMonth.mockReturnValue('2026-04' as never);
     mockedToTaiwanDateStr.mockReturnValue('2026/04/01' as never);
+    mockedCalculateOvertimeRequestEligibility.mockResolvedValue({
+      hasCompleteAttendance: true,
+      overtimeType: 'WEEKDAY',
+      hasApprovedRequest: true,
+      approvedRequestIds: [5],
+      rawAttendanceHours: 2,
+      approvedRequestHours: 2,
+      approvedWorkedHours: 2,
+      regularHours: 8,
+      effectiveHours: 2,
+      payableHours: 0,
+      compLeaveHours: 2,
+    });
+    mockedGetOvertimeEligibilityError.mockReturnValue(null);
     mockPrisma.overtimeRequest.findUnique.mockResolvedValue({
       id: 5,
       employeeId: 10,
@@ -303,7 +388,7 @@ describe('overtime request item approval consistency', () => {
       10,
       new Date('2026-04-01T00:00:00.000Z'),
       2,
-      'REST_DAY'
+      'WEEKDAY'
     );
     expect(mockPrisma.overtimeRequest.update).not.toHaveBeenCalled();
     expect(mockPrisma.$transaction).not.toHaveBeenCalled();
@@ -311,6 +396,40 @@ describe('overtime request item approval consistency', () => {
     expect(consoleErrorSpy).toHaveBeenCalledWith('計算加班費失敗:', 'rate unavailable');
 
     consoleErrorSpy.mockRestore();
+  });
+
+  it('rejects final approval when actual daily work does not exceed eight hours', async () => {
+    mockedCalculateOvertimeRequestEligibility.mockResolvedValue({
+      hasCompleteAttendance: true,
+      overtimeType: 'WEEKDAY',
+      hasApprovedRequest: true,
+      approvedRequestIds: [5],
+      rawAttendanceHours: 0,
+      approvedRequestHours: 2,
+      approvedWorkedHours: 1,
+      regularHours: 8,
+      effectiveHours: 0,
+      payableHours: 0,
+      compLeaveHours: 0,
+    });
+    mockedGetOvertimeEligibilityError.mockReturnValue('當日實際淨工時未達法定加班門檻，無可核准的加班時數');
+
+    const request = new NextRequest('http://localhost:3000/api/overtime-requests/5', {
+      method: 'PATCH',
+      headers: {
+        cookie: 'auth-token=legacy-auth-token',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ status: 'APPROVED' }),
+    });
+
+    const response = await PATCH(request, { params: Promise.resolve({ id: '5' }) });
+    const data = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(data.error).toContain('未達法定加班門檻');
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+    expect(mockPrisma.overtimeRequest.update).not.toHaveBeenCalled();
   });
 
   it('allows HR to finalize overtime requests', async () => {

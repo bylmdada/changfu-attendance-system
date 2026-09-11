@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getUserFromRequest } from '@/lib/auth';
 import { prisma } from '@/lib/database';
 import bcrypt from 'bcryptjs';
+import { Prisma } from '@prisma/client';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { parseIntegerQueryParam } from '@/lib/query-params';
@@ -9,6 +10,8 @@ import { safeParseJSON } from '@/lib/validation';
 import { evaluatePasswordStrength } from '@/lib/password-policy';
 import { getStoredPasswordPolicy } from '@/lib/password-policy-store';
 import { getPasswordReuseViolation } from '@/lib/password-reuse';
+import { calculateMonthlySalaryHourlyRate } from '@/lib/hourly-rate';
+import { getPayrollImpactWarning } from '@/lib/payroll-impact-warning';
 
 function parseEmployeeIdParam(rawValue: string) {
   return parseIntegerQueryParam(rawValue, { min: 1 });
@@ -30,6 +33,128 @@ function parsePayrollNumber(value: unknown): number | null {
 
 function isValidDateInput(value: unknown): value is string {
   return isNonEmptyString(value) && !Number.isNaN(Date.parse(value));
+}
+
+const EMPLOYEE_DELETION_RELATION_LABELS = {
+  annualLeaves: '年假資料',
+  leaveRequests: '請假申請',
+  overtimeRequests: '加班申請',
+  attendanceRecords: '考勤記錄',
+  payrollRecords: '薪資記錄',
+  announcements: '公告資料',
+  schedules: '班表資料',
+  passwordExceptions: '密碼例外設定',
+  shiftExchangeRequestsMade: '發起的調班申請',
+  shiftExchangeRequestsTarget: '被調班申請',
+  shiftExchangeRequestsApproved: '審核過的調班申請',
+  gpsPermissions: 'GPS 打卡權限',
+  approvedLeaveRequests: '審核過的請假申請',
+  approvedOvertimeRequests: '審核過的加班申請',
+  attendanceFreezes: '考勤凍結紀錄',
+  annualBonusRecords: '年終獎金資料',
+  bonusRecords: '獎金資料',
+  createdBonusRecords: '建立過的獎金資料',
+  healthInsuranceDependents: '健保眷屬資料',
+  missedClockRequests: '忘打卡申請',
+  auditLogs: '操作紀錄',
+  compLeaveTransactions: '補休異動紀錄',
+  processedSettlements: '處理過的離職結算',
+  resignationRecords: '離職申請',
+  overtimeClockRecords: '加班打卡紀錄',
+  delegatedFrom: '委派出去的代理審核',
+  delegatedTo: '被委派的代理審核',
+  notifications: '通知資料',
+  purchaseRequests: '請購單',
+  approvedPurchaseRequests: '審核過的請購單',
+  leaveBalanceHistory: '年假餘額歷史',
+  inAppNotifications: '系統內通知',
+  holidayCompensations: '國定假日補休',
+  payrollDisputes: '薪資異議',
+  reviewedDisputes: '審核過的薪資異議',
+  createdAdjustments: '薪資調整紀錄',
+  createdDisasterDayOffs: '天災假紀錄',
+  departmentManagers: '部門主管設定',
+  managerDeputies: '主管代理設定',
+  approvalReviews: '審核流程紀錄',
+  ccsSent: '發起的知會紀錄',
+  ccsReceived: '收到的知會紀錄',
+  salaryHistories: '薪資歷史',
+  approvedSalaryChanges: '核准過的薪資異動',
+  scheduleReleases: '班表發布紀錄',
+  scheduleConfirmations: '班表確認紀錄',
+  pensionApplications: '勞退申請',
+  reviewedPensionApps: '人資審核過的勞退申請',
+  approvedPensionApps: '管理員核准過的勞退申請',
+} as const;
+
+const EMPLOYEE_DELETION_RELATION_SELECT = Object.fromEntries(
+  Object.keys(EMPLOYEE_DELETION_RELATION_LABELS).map((field) => [field, true])
+) as Record<keyof typeof EMPLOYEE_DELETION_RELATION_LABELS, true>;
+
+const EMPLOYEE_SINGLE_RELATION_LABELS = {
+  attendancePermission: '考勤權限設定',
+  compLeaveBalance: '補休餘額',
+  resignationSettlement: '離職結算',
+  notificationSettings: '通知設定',
+} as const;
+
+const USER_DELETION_RELATION_LABELS = {
+  createdGPSPermissions: '建立過的 GPS 權限',
+  approvedMissedClockRequests: '審核過的忘打卡申請',
+  createdPasswordExceptions: '建立過的密碼例外',
+  auditLogs: '帳號操作紀錄',
+  loginLogs: '登入紀錄',
+} as const;
+
+const USER_DELETION_RELATION_SELECT = Object.fromEntries(
+  Object.keys(USER_DELETION_RELATION_LABELS).map((field) => [field, true])
+) as Record<keyof typeof USER_DELETION_RELATION_LABELS, true>;
+
+async function getPermanentDeletionBlockers(employeeId: number) {
+  const employee = await prisma.employee.findUnique({
+    where: { id: employeeId },
+    select: {
+      attendancePermission: { select: { id: true } },
+      compLeaveBalance: { select: { id: true } },
+      resignationSettlement: { select: { id: true } },
+      notificationSettings: { select: { id: true } },
+      user: {
+        select: {
+          id: true,
+          _count: {
+            select: USER_DELETION_RELATION_SELECT,
+          },
+        },
+      },
+      _count: {
+        select: EMPLOYEE_DELETION_RELATION_SELECT,
+      },
+    },
+  });
+
+  if (!employee) return null;
+
+  const blockers: string[] = [];
+
+  Object.entries(EMPLOYEE_DELETION_RELATION_LABELS).forEach(([field, label]) => {
+    const count = employee._count[field as keyof typeof EMPLOYEE_DELETION_RELATION_LABELS];
+    if (count > 0) blockers.push(`${label} ${count} 筆`);
+  });
+
+  Object.entries(EMPLOYEE_SINGLE_RELATION_LABELS).forEach(([field, label]) => {
+    if (employee[field as keyof typeof EMPLOYEE_SINGLE_RELATION_LABELS]) {
+      blockers.push(label);
+    }
+  });
+
+  if (employee.user) {
+    Object.entries(USER_DELETION_RELATION_LABELS).forEach(([field, label]) => {
+      const count = employee.user?._count[field as keyof typeof USER_DELETION_RELATION_LABELS] ?? 0;
+      if (count > 0) blockers.push(`${label} ${count} 筆`);
+    });
+  }
+
+  return blockers;
 }
 
 // PUT - 更新員工
@@ -206,6 +331,13 @@ export async function PUT(
       }
     }
 
+    const effectiveHourlyRate = normalizedEmployeeType === 'MONTHLY'
+      ? calculateMonthlySalaryHourlyRate(normalizedBaseSalary)
+      : normalizedHourlyRate;
+    const salaryChanged = existingEmployee.baseSalary !== normalizedBaseSalary
+      || existingEmployee.hourlyRate !== effectiveHourlyRate;
+    const salaryEffectiveDate = new Date();
+
     // 檢查員工編號是否重複（排除當前員工）
     if (normalizedEmpId !== existingEmployee.employeeId) {
       const duplicateEmpId = await prisma.employee.findFirst({
@@ -236,13 +368,48 @@ export async function PUT(
           emergencyPhone: isNonEmptyString(emergencyPhone) ? emergencyPhone.trim() : '',
           hireDate: new Date(hireDate),
           baseSalary: normalizedBaseSalary,
-          hourlyRate: normalizedHourlyRate,
+          hourlyRate: effectiveHourlyRate,
           department: normalizedDepartment,
           position: normalizedPosition,
           employeeType: normalizedEmployeeType,
           laborInsuranceActive: laborInsuranceActive !== false,
         }
       });
+
+      if (salaryChanged) {
+        const existingSalaryHistory = await tx.salaryHistory.findFirst({
+          where: { employeeId },
+          select: { id: true },
+        });
+
+        if (!existingSalaryHistory) {
+          await tx.salaryHistory.create({
+            data: {
+              employeeId,
+              effectiveDate: existingEmployee.hireDate,
+              baseSalary: existingEmployee.baseSalary,
+              hourlyRate: existingEmployee.hourlyRate,
+              adjustmentType: 'INITIAL',
+              reason: '入職薪資',
+              approvedById: user.employeeId,
+            },
+          });
+        }
+
+        await tx.salaryHistory.create({
+          data: {
+            employeeId,
+            effectiveDate: salaryEffectiveDate,
+            baseSalary: normalizedBaseSalary,
+            hourlyRate: effectiveHourlyRate,
+            previousSalary: existingEmployee.baseSalary,
+            adjustmentAmount: normalizedBaseSalary - existingEmployee.baseSalary,
+            adjustmentType: 'ADJUSTMENT',
+            reason: '員工資料維護',
+            approvedById: user.employeeId,
+          },
+        });
+      }
 
       // 處理帳號資訊
       if (createAccount) {
@@ -324,10 +491,19 @@ export async function PUT(
       return updatedEmployee;
     });
 
+    const payrollWarning = salaryChanged
+      ? await getPayrollImpactWarning(prisma, {
+          employeeId,
+          startDate: salaryEffectiveDate,
+          endDate: salaryEffectiveDate,
+        })
+      : null;
+
     console.log('✅ 員工更新成功:', result);
     return NextResponse.json({ 
       message: '員工資料已更新',
-      employee: result
+      employee: result,
+      payrollWarning,
     });
 
   } catch (error) {
@@ -338,7 +514,7 @@ export async function PUT(
   }
 }
 
-// DELETE - 停用員工
+// DELETE - 預設停用員工；mode=permanent 時才永久刪除未被歷史資料引用的員工
 export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -371,6 +547,8 @@ export async function DELETE(
     }
 
     const employeeId = employeeIdResult.value;
+    const deleteMode = new URL(request.url).searchParams.get('mode');
+    const isPermanentDelete = deleteMode === 'permanent';
 
     // 檢查員工是否存在
     const existingEmployee = await prisma.employee.findUnique({
@@ -380,6 +558,55 @@ export async function DELETE(
 
     if (!existingEmployee) {
       return NextResponse.json({ error: '員工不存在' }, { status: 404 });
+    }
+
+    if (isPermanentDelete) {
+      if (employeeId === user.employeeId) {
+        return NextResponse.json({ error: '不可刪除目前登入帳號所屬員工資料' }, { status: 400 });
+      }
+
+      const parsedBody = await safeParseJSON(request);
+      if (!parsedBody.success || !parsedBody.data) {
+        return NextResponse.json({ error: '請提供刪除確認資訊' }, { status: 400 });
+      }
+
+      const confirmationEmployeeId = typeof parsedBody.data.confirmationEmployeeId === 'string'
+        ? parsedBody.data.confirmationEmployeeId.trim()
+        : '';
+      const confirmationName = typeof parsedBody.data.confirmationName === 'string'
+        ? parsedBody.data.confirmationName.trim()
+        : '';
+
+      if (
+        confirmationEmployeeId !== existingEmployee.employeeId ||
+        confirmationName !== existingEmployee.name
+      ) {
+        return NextResponse.json({ error: '刪除確認資訊不一致，已取消操作' }, { status: 400 });
+      }
+
+      const blockers = await getPermanentDeletionBlockers(employeeId);
+      if (blockers === null) {
+        return NextResponse.json({ error: '員工不存在' }, { status: 404 });
+      }
+
+      if (blockers.length > 0) {
+        return NextResponse.json({
+          error: '此員工已有系統歷史資料，為確保薪資、考勤與稽核資料真實性，請改用停用功能。',
+          blockers: blockers.slice(0, 12),
+          totalBlockers: blockers.length,
+        }, { status: 409 });
+      }
+
+      await prisma.$transaction(async (tx) => {
+        if (existingEmployee.user) {
+          await tx.user.delete({ where: { id: existingEmployee.user.id } });
+        }
+
+        await tx.employee.delete({ where: { id: employeeId } });
+      });
+
+      console.log('✅ 員工永久刪除成功:', employeeId);
+      return NextResponse.json({ message: '員工已永久刪除' });
     }
 
     // 開始事務處理
@@ -403,7 +630,13 @@ export async function DELETE(
     return NextResponse.json({ message: '員工已停用' });
 
   } catch (error) {
-    console.error('💥 停用員工失敗:', error);
+    console.error('💥 員工刪除/停用失敗:', error);
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003') {
+      return NextResponse.json({
+        error: '此員工仍有關聯資料，無法永久刪除；請改用停用功能以保留歷史資料正確性。',
+      }, { status: 409 });
+    }
+
     return NextResponse.json({ 
       error: '系統錯誤' 
     }, { status: 500 });

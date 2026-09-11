@@ -41,6 +41,7 @@ export default function NotificationConfigPage() {
     annualLeaveExpiryNotify: true,
     annualLeaveExpiryDays: 30,
   });
+  const [savedSettings, setSavedSettings] = useState<NotificationSettings | null>(null);
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   const showToast = (type: 'success' | 'error', message: string) => {
@@ -77,6 +78,7 @@ export default function NotificationConfigPage() {
         const data = await settingsRes.json();
         if (data.settings) {
           setSettings(data.settings);
+          setSavedSettings(data.settings);
         }
       }
     } catch (error) {
@@ -96,6 +98,7 @@ export default function NotificationConfigPage() {
 
       const data = await response.json();
       if (response.ok) {
+        setSavedSettings(settings);
         showToast('success', '設定已儲存');
       } else {
         showToast('error', data.error || '儲存失敗');
@@ -115,6 +118,10 @@ export default function NotificationConfigPage() {
       </div>
     );
   }
+
+  const hasUnsavedChanges = savedSettings
+    ? JSON.stringify(settings) !== JSON.stringify(savedSettings)
+    : false;
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -300,9 +307,13 @@ export default function NotificationConfigPage() {
         </div>
 
         {/* 儲存按鈕 */}
-        <div className="flex justify-end space-x-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
+          <div className="text-sm text-gray-600">
+            {saving ? '儲存中...' : hasUnsavedChanges ? '有未儲存變更' : '已儲存'}
+          </div>
           <button
             onClick={loadData}
+            disabled={saving}
             className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors flex items-center"
           >
             <RefreshCw className="w-4 h-4 mr-2" />
@@ -310,7 +321,7 @@ export default function NotificationConfigPage() {
           </button>
           <button
             onClick={handleSave}
-            disabled={saving}
+            disabled={saving || !hasUnsavedChanges}
             className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center disabled:opacity-50"
           >
             <Save className="w-4 h-4 mr-2" />

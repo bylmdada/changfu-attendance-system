@@ -10,13 +10,13 @@ describe('property due task service', () => {
     ).toBe(TAIPEI_TODAY);
   });
 
-  it('creates an immediate task when next maintenance date is farther than the frequency window', () => {
+  it('respects a manually scheduled future maintenance date', () => {
     expect(
       getImmediateMaintenanceDueDate(
         { frequencyDays: 7, nextMaintenanceDate: new Date('2026-06-15T00:00:00.000Z') },
         NOW
-      )?.toISOString()
-    ).toBe(TAIPEI_TODAY);
+      )
+    ).toBeNull();
   });
 
   it('keeps near-future assets out of the immediate maintenance list', () => {
@@ -35,6 +35,15 @@ describe('property due task service', () => {
         NOW
       )?.toISOString()
     ).toBe(TAIPEI_TODAY);
+  });
+
+  it('preserves the real overdue date even when it is older than one cycle', () => {
+    expect(
+      getImmediateMaintenanceDueDate(
+        { frequencyDays: 7, nextMaintenanceDate: new Date('2026-04-01T00:00:00.000Z') },
+        NOW
+      )?.toISOString()
+    ).toBe('2026-03-31T16:00:00.000Z');
   });
 
   it('does not create automatic tasks when frequency is unavailable', () => {

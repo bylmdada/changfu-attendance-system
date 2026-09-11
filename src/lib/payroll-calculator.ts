@@ -4,10 +4,12 @@
 
 import { 
   OvertimeType, 
-  calculateOvertime, 
   calculateHourlyWage,
+  calculateOvertimeFromHourlyWage,
   OvertimeCalculationResult 
 } from './overtime-calculator';
+import { MONTHLY_BASE_HOURS } from './hourly-rate';
+import { toTaiwanDateStr } from './timezone';
 import {
   getDefaultSupplementaryPremiumSettings,
   getSupplementaryPremiumExemptThreshold,
@@ -18,6 +20,15 @@ import {
   DEFAULT_LABOR_LAW_CONFIG,
   type LaborLawConfigValues,
 } from './labor-law-config-defaults';
+import { type OvertimeCompensationMode } from './overtime-settings';
+import {
+  calculateHealthInsurancePremium,
+  calculateLaborInsurancePremium,
+} from './insurance-calculator';
+import {
+  DEFAULT_HEALTH_INSURANCE_FORMULA,
+  type HealthInsuranceFormulaValues,
+} from './health-insurance-config';
 
 // 薪資計算結果接口
 export interface PayrollCalculationResult {
@@ -74,6 +85,13 @@ export interface PayrollTotals {
   netPay: number;
 }
 
+export interface PayrollCalculationOptions {
+  overtimeCompensationMode?: OvertimeCompensationMode;
+  incomeTaxEnabled?: boolean;
+  bonusSupplementaryInsurance?: number;
+  healthInsuranceConfig?: HealthInsuranceFormulaValues;
+}
+
 export function normalizeDependentsCount(dependents: unknown, maxDependents = 10): number {
   if (typeof dependents !== 'number' || !Number.isFinite(dependents)) {
     return 0;
@@ -104,6 +122,7 @@ export interface AttendanceForPayroll {
   workDate: Date;
   regularHours: number;
   overtimeHours: number;
+  payableOvertimeHours?: number;
   overtimeType: OvertimeType;
   isHoliday: boolean;
   isRestDay: boolean;
@@ -123,7 +142,8 @@ export function calculateMonthlyPayroll(
   employee: EmployeePayrollInfo,
   attendanceRecords: AttendanceForPayroll[],
   year: number,
-  month: number
+  month: number,
+  options: PayrollCalculationOptions = {}
 ): PayrollCalculationResult {
   // 計算平日每小時工資額
   const hourlyWage = employee.hourlyRate || calculateHourlyWage(employee.baseSalary);
@@ -136,12 +156,18 @@ export function calculateMonthlyPayroll(
     holidayHours: 0,
     mandatoryRestHours: 0
   };
+  const dailyOvertime = new Map<string, { type: OvertimeType; hours: number }>();
 
   // 分類加班時數
   attendanceRecords.forEach(record => {
     regularHours += record.regularHours;
-    
+    const payableOvertimeHours = Math.max(0, record.payableOvertimeHours ?? record.overtimeHours);
+
     if (record.overtimeHours > 0) {
+      const key = `${toTaiwanDateStr(record.workDate)}:${record.overtimeType}`;
+      const daily = dailyOvertime.get(key) ?? { type: record.overtimeType, hours: 0 };
+      daily.hours += payableOvertimeHours;
+      dailyOvertime.set(key, daily);
       switch (record.overtimeType) {
         case OvertimeType.WEEKDAY:
           overtimeBreakdown.weekdayHours += record.overtimeHours;
@@ -162,29 +188,33 @@ export function calculateMonthlyPayroll(
   // 計算各類加班費
   const overtimeDetails: OvertimeCalculationResult[] = [];
   let totalOvertimePay = 0;
+  const shouldPayOvertime = options.overtimeCompensationMode !== 'COMP_LEAVE_ONLY';
+  const applyOvertimeCompensation = (result: OvertimeCalculationResult): OvertimeCalculationResult =>
+    shouldPayOvertime
+      ? result
+      : {
+          ...result,
+          overtimePay: 0,
+          details: result.details.map(detail => ({
+            ...detail,
+            amount: 0,
+          })),
+        };
 
-  if (overtimeBreakdown.weekdayHours > 0) {
-    const result = calculateOvertime(OvertimeType.WEEKDAY, overtimeBreakdown.weekdayHours, employee.baseSalary);
-    overtimeDetails.push(result);
+  for (const daily of dailyOvertime.values()) {
+    if (daily.hours <= 0) continue;
+    const result = applyOvertimeCompensation(
+      calculateOvertimeFromHourlyWage(daily.type, daily.hours, hourlyWage)
+    );
     totalOvertimePay += result.overtimePay;
-  }
-
-  if (overtimeBreakdown.restDayHours > 0) {
-    const result = calculateOvertime(OvertimeType.REST_DAY, overtimeBreakdown.restDayHours, employee.baseSalary);
-    overtimeDetails.push(result);
-    totalOvertimePay += result.overtimePay;
-  }
-
-  if (overtimeBreakdown.holidayHours > 0) {
-    const result = calculateOvertime(OvertimeType.HOLIDAY, overtimeBreakdown.holidayHours, employee.baseSalary);
-    overtimeDetails.push(result);
-    totalOvertimePay += result.overtimePay;
-  }
-
-  if (overtimeBreakdown.mandatoryRestHours > 0) {
-    const result = calculateOvertime(OvertimeType.MANDATORY_REST, overtimeBreakdown.mandatoryRestHours, employee.baseSalary);
-    overtimeDetails.push(result);
-    totalOvertimePay += result.overtimePay;
+    const monthly = overtimeDetails.find(detail => detail.type === result.type);
+    if (monthly) {
+      monthly.hours += result.hours;
+      monthly.overtimePay += result.overtimePay;
+      monthly.details.push(...result.details);
+    } else {
+      overtimeDetails.push(result);
+    }
   }
 
   // 計算總工時
@@ -205,10 +235,18 @@ export function calculateMonthlyPayroll(
   const grossPay = basePay + totalOvertimePay;
 
   // 計算扣除項目
-  const totals = calculatePayrollTotals(employee, grossPay);
+  const totals = calculatePayrollTotals(employee, grossPay, 0, undefined, undefined, {
+    incomeTaxEnabled: options.incomeTaxEnabled,
+    healthInsuranceConfig: options.healthInsuranceConfig,
+  });
 
   // 生成計算備註
-  const calculationNotes = generateCalculationNotes(employee, overtimeBreakdown, overtimeDetails);
+  const calculationNotes = generateCalculationNotes(
+    employee,
+    overtimeBreakdown,
+    overtimeDetails,
+    options.overtimeCompensationMode
+  );
 
   return {
     employeeId: employee.id,
@@ -240,7 +278,8 @@ export function calculatePayrollDeductions(
   employee: EmployeePayrollInfo,
   grossPay: number,
   supplementarySettings: SupplementaryPremiumSettings = getDefaultSupplementaryPremiumSettings(),
-  laborLawConfig: LaborLawConfigValues = DEFAULT_LABOR_LAW_CONFIG
+  laborLawConfig: LaborLawConfigValues = DEFAULT_LABOR_LAW_CONFIG,
+  options: Pick<PayrollCalculationOptions, 'incomeTaxEnabled' | 'healthInsuranceConfig'> = {}
 ): PayrollDeductions {
   // 使用投保薪資或實際薪資計算勞健保
   const insuredSalary = employee.insuredBase || grossPay;
@@ -249,20 +288,31 @@ export function calculatePayrollDeductions(
   // 如果員工不參加勞保，則不扣除
   let laborInsurance = 0;
   if (employee.laborInsuranceActive !== false) {
-    const laborInsuredSalary = Math.min(insuredSalary, laborLawConfig.laborInsuranceMax);
-    laborInsurance = Math.round(
-      laborInsuredSalary * laborLawConfig.laborInsuranceRate * laborLawConfig.laborEmployeeRate
-    );
+    const laborCalculation = calculateLaborInsurancePremium({
+      salary: Math.min(insuredSalary, laborLawConfig.laborInsuranceMax),
+      ordinaryRate: laborLawConfig.laborInsuranceRate,
+      employmentRate: laborLawConfig.employmentInsuranceRate,
+      employeeRate: laborLawConfig.laborEmployeeRate,
+      maxInsuredAmount: laborLawConfig.laborInsuranceMax,
+    });
+    laborInsurance = laborCalculation.employeePremium;
   }
 
   // 健保費計算（員工負擔30%，眷屬加計）
   let healthInsurance = 0;
   if (employee.healthInsuranceActive !== false) {
-    const healthInsuranceRate = 0.0517; // 5.17%
-    const employeeHealthRate = 0.3; // 員工負擔30%
-    const dependents = normalizeDependentsCount(employee.dependents);
-    const healthInsuranceUnit = Math.round(insuredSalary * healthInsuranceRate);
-    healthInsurance = Math.round(healthInsuranceUnit * employeeHealthRate * (1 + dependents));
+    const healthConfig = options.healthInsuranceConfig ?? DEFAULT_HEALTH_INSURANCE_FORMULA;
+    const healthCalculation = calculateHealthInsurancePremium({
+      salary: insuredSalary,
+      premiumRate: healthConfig.premiumRate,
+      employeeRate: healthConfig.employeeContributionRatio,
+      employerRate: healthConfig.companyContributionRatio,
+      governmentRate: healthConfig.governmentSubsidyRatio,
+      dependents: normalizeDependentsCount(employee.dependents, healthConfig.maxDependents),
+      maxDependents: healthConfig.maxDependents,
+      levels: healthConfig.salaryLevels,
+    });
+    healthInsurance = healthCalculation.employeePremium;
   }
 
   const supplementaryInsurance = calculatePayrollSupplementaryInsurance(
@@ -277,7 +327,7 @@ export function calculatePayrollDeductions(
 
   // 所得稅計算（簡化版本，勞退自提可從所得扣除）
   const taxableGross = grossPay - laborPensionSelf; // 勞退自提免稅
-  const incomeTax = calculateSimpleIncomeTax(taxableGross);
+  const incomeTax = options.incomeTaxEnabled === false ? 0 : calculateSimpleIncomeTax(taxableGross);
 
   return {
     laborInsurance,
@@ -294,24 +344,32 @@ export function calculatePayrollTotals(
   grossPay: number,
   totalBonus = 0,
   supplementarySettings: SupplementaryPremiumSettings = getDefaultSupplementaryPremiumSettings(),
-  laborLawConfig: LaborLawConfigValues = DEFAULT_LABOR_LAW_CONFIG
+  laborLawConfig: LaborLawConfigValues = DEFAULT_LABOR_LAW_CONFIG,
+  options: Pick<PayrollCalculationOptions, 'incomeTaxEnabled' | 'bonusSupplementaryInsurance' | 'healthInsuranceConfig'> = {}
 ): PayrollTotals {
   const baseDeductions = calculatePayrollDeductions(
     employee,
     grossPay,
     supplementarySettings,
-    laborLawConfig
+    laborLawConfig,
+    options
   );
   const adjustedGrossPay = grossPay + totalBonus;
   const deductions = totalBonus > 0
     ? {
         ...baseDeductions,
-        supplementaryInsurance: calculatePayrollSupplementaryInsurance(
-          adjustedGrossPay,
-          employee.insuredBase || grossPay,
-          supplementarySettings
-        ),
-        incomeTax: calculateSimpleIncomeTax(adjustedGrossPay - baseDeductions.laborPensionSelf),
+        supplementaryInsurance:
+          typeof options.bonusSupplementaryInsurance === 'number'
+            ? baseDeductions.supplementaryInsurance + options.bonusSupplementaryInsurance
+            : calculatePayrollSupplementaryInsurance(
+                adjustedGrossPay,
+                employee.insuredBase || grossPay,
+                supplementarySettings
+              ),
+        incomeTax:
+          options.incomeTaxEnabled === false
+            ? 0
+            : calculateSimpleIncomeTax(adjustedGrossPay - baseDeductions.laborPensionSelf),
       }
     : baseDeductions;
   const totalDeductions = Object.values(deductions).reduce((sum, amount) => sum + amount, 0);
@@ -368,13 +426,15 @@ function calculateSimpleIncomeTax(grossPay: number): number {
 function generateCalculationNotes(
   employee: EmployeePayrollInfo,
   overtimeBreakdown: OvertimeBreakdown,
-  overtimeDetails: OvertimeCalculationResult[]
+  overtimeDetails: OvertimeCalculationResult[],
+  overtimeCompensationMode?: OvertimeCompensationMode
 ): string[] {
   const notes: string[] = [];
 
   // 基本資訊備註
-  notes.push(`平日每小時工資額：NT$ ${calculateHourlyWage(employee.baseSalary).toLocaleString()}`);
-  notes.push(`計算基準：月薪 NT$ ${employee.baseSalary.toLocaleString()} ÷ 240 小時`);
+  const hourlyWage = employee.hourlyRate || calculateHourlyWage(employee.baseSalary);
+  notes.push(`平日每小時工資額：NT$ ${hourlyWage.toLocaleString()}`);
+  notes.push(`計算基準：薪資檔時薪優先；未設定時月薪 NT$ ${employee.baseSalary.toLocaleString()} ÷ ${MONTHLY_BASE_HOURS} 小時`);
 
   // 加班時數備註
   if (overtimeBreakdown.weekdayHours > 0) {
@@ -388,6 +448,13 @@ function generateCalculationNotes(
   }
   if (overtimeBreakdown.mandatoryRestHours > 0) {
     notes.push(`例假日加班：${overtimeBreakdown.mandatoryRestHours} 小時（需補假）`);
+  }
+
+  if (
+    overtimeCompensationMode === 'COMP_LEAVE_ONLY' &&
+    Object.values(overtimeBreakdown).some(hours => hours > 0)
+  ) {
+    notes.push('本月加班補償模式為僅給予補休時數，本次薪資不另計加班費。');
   }
 
   // 加班費計算詳細備註

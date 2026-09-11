@@ -12,8 +12,13 @@ import {
   getPendingApprovedPayrollDisputeAdjustments,
   getPayrollHolidayDates,
 } from '@/lib/payroll-processing';
+import { getStoredIncomeTaxManagementSettings } from '@/lib/income-tax-settings';
+import { getStoredOvertimeCalculationSettings } from '@/lib/overtime-settings';
 import { getStoredSupplementaryPremiumSettings } from '@/lib/supplementary-premium-settings';
+import { getStoredHealthInsuranceFormulaConfig } from '@/lib/health-insurance-config';
+import { getStoredAttendanceSalaryDeductionSettings } from '@/lib/attendance-salary-deduction-settings';
 import { safeParseJSON } from '@/lib/validation';
+import { sendNotification } from '@/lib/realtime-notifications';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -40,6 +45,41 @@ function parseEmployeeIds(values: unknown[] | undefined): number[] | null {
   );
 
   return parsedIds.every((value): value is number => value !== null) ? parsedIds : null;
+}
+
+async function notifyPayrollReady(params: {
+  employeeId: number;
+  payrollId: number;
+  payYear: number;
+  payMonth: number;
+}) {
+  const { employeeId, payrollId, payYear, payMonth } = params;
+
+  try {
+    await sendNotification({
+      type: 'PAYROLL_READY',
+      priority: 'NORMAL',
+      channels: ['IN_APP'],
+      title: '薪資單已產生',
+      message: `您的 ${payYear}年${payMonth}月 薪資單已產生，可至員工薪資頁查看。`,
+      data: {
+        payrollId,
+        payYear,
+        payMonth,
+        path: '/employee-payroll',
+      },
+      targetUsers: [String(employeeId)],
+      createdBy: 'SYSTEM',
+    });
+  } catch (error) {
+    console.warn('薪資單產生通知發送失敗:', {
+      employeeId,
+      payrollId,
+      payYear,
+      payMonth,
+      error: error instanceof Error ? error.message : 'unknown',
+    });
+  }
 }
 
 export async function POST(request: NextRequest) {
@@ -99,10 +139,22 @@ export async function POST(request: NextRequest) {
     }
 
     // 取得國定假日
-    const [holidayDates, supplementaryPremiumSettings, laborLawConfig] = await Promise.all([
+    const [
+      holidayDates,
+      supplementaryPremiumSettings,
+      laborLawConfig,
+      healthInsuranceConfig,
+      overtimeSettings,
+      incomeTaxSettings,
+      attendanceSalaryDeductionSettings,
+    ] = await Promise.all([
       getPayrollHolidayDates(year, month),
       getStoredSupplementaryPremiumSettings(),
       getStoredLaborLawConfig(),
+      getStoredHealthInsuranceFormulaConfig(),
+      getStoredOvertimeCalculationSettings(),
+      getStoredIncomeTaxManagementSettings(),
+      getStoredAttendanceSalaryDeductionSettings(),
     ]);
 
     // 建立員工查詢條件（支援部門篩選）
@@ -149,15 +201,21 @@ export async function POST(request: NextRequest) {
         }
 
         const {
+          employeeInfo,
           payrollResult,
           validation,
           bonuses,
           totals,
+          attendancePenaltySummary,
         } = await computePayrollForEmployee(employee, year, month, {
           holidayDates,
           includeBonus,
           supplementaryPremiumSettings,
           laborLawConfig,
+          healthInsuranceConfig,
+          overtimeSettings,
+          incomeTaxSettings,
+          attendanceSalaryDeductionSettings,
         });
 
         if (!validation.isValid) {
@@ -181,7 +239,9 @@ export async function POST(request: NextRequest) {
               payrollResult,
               totals,
               bonuses,
-              disputeAdjustments
+              disputeAdjustments,
+              employeeInfo.dependents,
+              attendancePenaltySummary
             ) as unknown as Prisma.PayrollRecordUncheckedCreateInput,
             include: {
               employee: {
@@ -216,6 +276,12 @@ export async function POST(request: NextRequest) {
         });
 
         results.push(payrollRecord);
+        await notifyPayrollReady({
+          employeeId: employee.id,
+          payrollId: payrollRecord.id,
+          payYear: year,
+          payMonth: month,
+        });
       } catch (error) {
         console.error(`為員工 ${employee.name} 生成薪資記錄失敗:`, error);
         errors.push(`員工 ${employee.name} (${employee.employeeId}) 薪資記錄生成失敗`);

@@ -9,6 +9,7 @@ import {
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { safeParseJSON } from '@/lib/validation';
+import { logSystemSettingsChange } from '@/lib/system-settings-audit';
 
 function normalizeStringArray(value: unknown) {
   if (!Array.isArray(value)) {
@@ -121,6 +122,15 @@ export async function POST(request: NextRequest) {
     };
 
     await savePerfectAttendanceConfig(config);
+
+    await logSystemSettingsChange({
+      request,
+      user,
+      settingKey: 'perfect_attendance_config',
+      description: '全勤獎金設定變更',
+      oldValue: existingConfig,
+      newValue: config,
+    });
 
     return NextResponse.json({
       success: true,

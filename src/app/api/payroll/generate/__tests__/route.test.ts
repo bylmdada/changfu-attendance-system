@@ -6,6 +6,9 @@ jest.mock('@/lib/database', () => ({
     employee: {
       findMany: jest.fn(),
     },
+    salaryHistory: {
+      findFirst: jest.fn(),
+    },
     pensionContributionApplication: {
       findFirst: jest.fn(),
     },
@@ -22,11 +25,23 @@ jest.mock('@/lib/database', () => ({
     attendanceRecord: {
       findMany: jest.fn(),
     },
+    overtimeRequest: {
+      findMany: jest.fn(),
+    },
+    leaveRequest: {
+      findMany: jest.fn(),
+    },
     schedule: {
       findMany: jest.fn(),
     },
     bonusConfiguration: {
       findMany: jest.fn(),
+    },
+    bonusRecord: {
+      findMany: jest.fn(),
+    },
+    systemSettings: {
+      findUnique: jest.fn(),
     },
     $transaction: jest.fn(),
   },
@@ -42,6 +57,10 @@ jest.mock('@/lib/csrf', () => ({
 
 jest.mock('@/lib/rate-limit', () => ({
   checkRateLimit: jest.fn(),
+}));
+
+jest.mock('@/lib/realtime-notifications', () => ({
+  sendNotification: jest.fn(),
 }));
 
 jest.mock('@/lib/payroll-calculator', () => ({
@@ -60,6 +79,7 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { checkRateLimit } from '@/lib/rate-limit';
+import { sendNotification } from '@/lib/realtime-notifications';
 import {
   calculateMonthlyPayroll,
   calculatePayrollTotals,
@@ -71,6 +91,7 @@ const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
 const mockValidateCSRF = validateCSRF as jest.MockedFunction<typeof validateCSRF>;
 const mockCheckRateLimit = checkRateLimit as jest.MockedFunction<typeof checkRateLimit>;
+const mockSendNotification = sendNotification as jest.MockedFunction<typeof sendNotification>;
 const mockCalculateMonthlyPayroll = calculateMonthlyPayroll as jest.MockedFunction<typeof calculateMonthlyPayroll>;
 const mockCalculatePayrollTotals = calculatePayrollTotals as jest.MockedFunction<typeof calculatePayrollTotals>;
 const mockValidatePayrollCalculation = validatePayrollCalculation as jest.MockedFunction<typeof validatePayrollCalculation>;
@@ -90,12 +111,34 @@ describe('payroll generate route', () => {
 
     mockPrisma.holiday.findMany.mockResolvedValue([] as never);
     mockPrisma.attendanceRecord.findMany.mockResolvedValue([] as never);
+    mockPrisma.overtimeRequest.findMany.mockResolvedValue([] as never);
+    mockPrisma.leaveRequest.findMany.mockResolvedValue([] as never);
     mockPrisma.schedule.findMany.mockResolvedValue([] as never);
     mockPrisma.bonusConfiguration.findMany.mockResolvedValue([] as never);
+    mockPrisma.bonusRecord.findMany.mockResolvedValue([] as never);
     mockPrisma.pensionContributionApplication.findFirst.mockResolvedValue(null as never);
+    mockPrisma.salaryHistory.findFirst.mockResolvedValue(null as never);
     mockPrisma.payrollDispute.findMany.mockResolvedValue([] as never);
     mockPrisma.payrollAdjustment.create.mockResolvedValue({ id: 91 } as never);
+    mockSendNotification.mockResolvedValue('notification-1');
     mockPrisma.$transaction.mockImplementation(async (callback) => callback(mockPrisma as never) as never);
+    mockPrisma.systemSettings.findUnique.mockImplementation(async ({ where }) => {
+      if (where.key === 'overtime_calculation_settings') {
+        return {
+          key: 'overtime_calculation_settings',
+          value: JSON.stringify({ compensationMode: 'COMP_LEAVE_ONLY' }),
+        } as never;
+      }
+
+      if (where.key === 'income_tax_management_settings') {
+        return {
+          key: 'income_tax_management_settings',
+          value: JSON.stringify({ withholdingEnabled: true }),
+        } as never;
+      }
+
+      return null as never;
+    });
     mockCalculatePayrollTotals.mockReturnValue({
       grossPay: 40000,
       deductions: {
@@ -267,7 +310,17 @@ describe('payroll generate route', () => {
       }),
       expect.any(Array),
       2024,
-      8
+      8,
+      {
+        overtimeCompensationMode: 'COMP_LEAVE_ONLY',
+        incomeTaxEnabled: true,
+        healthInsuranceConfig: expect.objectContaining({
+          premiumRate: 0.0517,
+          employeeContributionRatio: 0.3,
+          companyContributionRatio: 0.6,
+          governmentSubsidyRatio: 0.1,
+        }),
+      }
     );
   });
 
@@ -380,6 +433,102 @@ describe('payroll generate route', () => {
         originalMonth: 7,
         createdBy: 9001,
       },
+    });
+  });
+
+  it('notifies employees when payroll records are generated', async () => {
+    mockPrisma.employee.findMany.mockResolvedValue([
+      {
+        id: 101,
+        employeeId: 'EMP001',
+        name: '王小明',
+        department: '行政部',
+        position: '專員',
+        baseSalary: 40000,
+        hourlyRate: 250,
+        dependents: 0,
+        insuredBase: 40000,
+        laborPensionSelfRate: 0,
+        employeeType: 'MONTHLY',
+        laborInsuranceActive: true,
+        healthInsuranceActive: true,
+        hireDate: new Date('2020-01-01T00:00:00.000Z'),
+        isActive: true,
+      },
+    ] as never);
+    mockPrisma.payrollRecord.findFirst.mockResolvedValue(null as never);
+    mockCalculateMonthlyPayroll.mockReturnValue({
+      employeeId: 101,
+      payYear: 2024,
+      payMonth: 8,
+      regularHours: 160,
+      totalOvertimeHours: 0,
+      overtimeBreakdown: {
+        weekdayHours: 0,
+        restDayHours: 0,
+        holidayHours: 0,
+        mandatoryRestHours: 0,
+      },
+      basePay: 40000,
+      hourlyWage: 250,
+      totalOvertimePay: 0,
+      grossPay: 40000,
+      deductions: {
+        laborInsurance: 0,
+        healthInsurance: 0,
+        supplementaryInsurance: 0,
+        laborPensionSelf: 1200,
+        incomeTax: 0,
+        other: 0,
+      },
+      totalDeductions: 1200,
+      netPay: 38800,
+      overtimeDetails: [],
+      calculationNotes: [],
+    });
+    mockPrisma.payrollRecord.create.mockResolvedValue({
+      id: 5004,
+      employee: {
+        id: 101,
+        employeeId: 'EMP001',
+        name: '王小明',
+        department: '行政部',
+        position: '專員',
+      },
+    } as never);
+
+    const request = new NextRequest('http://localhost/api/payroll/generate', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: 'auth-token=session-token',
+      },
+      body: JSON.stringify({
+        payYear: 2024,
+        payMonth: 8,
+        employeeIds: [101],
+      }),
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.success).toBe(true);
+    expect(mockSendNotification).toHaveBeenCalledWith({
+      type: 'PAYROLL_READY',
+      priority: 'NORMAL',
+      channels: ['IN_APP'],
+      title: '薪資單已產生',
+      message: '您的 2024年8月 薪資單已產生，可至員工薪資頁查看。',
+      data: {
+        payrollId: 5004,
+        payYear: 2024,
+        payMonth: 8,
+        path: '/employee-payroll',
+      },
+      targetUsers: ['101'],
+      createdBy: 'SYSTEM',
     });
   });
 });

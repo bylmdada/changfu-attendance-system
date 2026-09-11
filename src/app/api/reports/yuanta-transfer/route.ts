@@ -1,27 +1,40 @@
 /**
  * 元大銀行薪轉檔匯出 API
- * 支援 Excel 格式，依部門分頁
+ * 支援 JSON 預覽與 Excel 匯出，格式對齊銀行帳戶管理中的匯入範本
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
-import { decrypt } from '@/lib/encryption';
+import { decrypt, validateTaiwanIdNumber } from '@/lib/encryption';
 import * as XLSX from 'xlsx';
 import { isValidCompactDate, parseIntegerQueryParam } from '@/lib/query-params';
 
 interface ExportRecord {
+  employeeId: string;
   transferDate: string;
   idNumber: string;
   bankAccount: string;
-  amount: number;
+  amount: number | null;
   name: string;
   department: string;
 }
 
-/**
- * GET - 匯出元大銀行薪轉 Excel
- */
+interface ValidationErrorDetail {
+  employeeId: string;
+  name: string;
+  department: string;
+  reasons: string[];
+}
+
+function normalizeBankAccount(bankAccount: string | null | undefined) {
+  return String(bankAccount ?? '').replace(/\D/g, '');
+}
+
+function isValidBankAccount(bankAccount: string) {
+  return bankAccount.length >= 10 && bankAccount.length <= 16;
+}
+
 export async function GET(request: NextRequest) {
   try {
     const user = await getUserFromRequest(request);
@@ -29,7 +42,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: '未授權' }, { status: 401 });
     }
 
-    if (!user || (user.role !== 'ADMIN' && user.role !== 'HR')) {
+    if (user.role !== 'ADMIN' && user.role !== 'HR') {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
 
@@ -54,10 +67,15 @@ export async function GET(request: NextRequest) {
 
     const year = yearResult.value!;
     const month = monthResult.value!;
-    const type = searchParams.get('type') || 'salary';  // salary 或 bonus
+    const type = searchParams.get('type') || 'salary';
+    const format = searchParams.get('format') || 'xls';
 
     if (!['salary', 'bonus'].includes(type)) {
       return NextResponse.json({ error: '無效的匯出類型參數' }, { status: 400 });
+    }
+
+    if (!['json', 'xls'].includes(format)) {
+      return NextResponse.json({ error: '無效的格式參數' }, { status: 400 });
     }
 
     const transferDateParam = searchParams.get('date');
@@ -67,150 +85,209 @@ export async function GET(request: NextRequest) {
 
     const transferDate = transferDateParam || `${year}${month.toString().padStart(2, '0')}25`;
 
-    // 取得員工資料（含銀行帳號）
-    const employees = await prisma.employee.findMany({
-      where: { isActive: true },
-      select: {
-        id: true,
-        employeeId: true,
-        name: true,
-        department: true,
-        idNumber: true,
-        bankAccount: true
-      }
-    });
-
-    // 建立員工 Map
-    const employeeMap = new Map(employees.map(e => [e.id, e]));
-
-    let records: ExportRecord[] = [];
+    let payrollLikeRecords: Array<{
+      employeeId: number;
+      amount: number;
+      employee: {
+        id: number;
+        employeeId: string;
+        name: string;
+        department: string | null;
+        idNumber: string | null;
+        bankAccount: string | null;
+      } | null;
+    }> = [];
 
     if (type === 'salary') {
-      // 取得薪資記錄
       const payrollRecords = await prisma.payrollRecord.findMany({
         where: {
           payYear: year,
-          payMonth: month
+          payMonth: month,
         },
-        select: {
-          employeeId: true,
-          netPay: true
-        }
+        include: {
+          employee: {
+            select: {
+              id: true,
+              employeeId: true,
+              name: true,
+              department: true,
+              idNumber: true,
+              bankAccount: true,
+            },
+          },
+        },
+        orderBy: { employeeId: 'asc' },
       });
 
-      records = payrollRecords.map(pr => {
-        const emp = employeeMap.get(pr.employeeId);
-        if (!emp) return null;
-        
-        return {
-          transferDate,
-          idNumber: emp.idNumber ? decrypt(emp.idNumber) : '',
-          bankAccount: emp.bankAccount || '',
-          amount: Math.round(pr.netPay),
-          name: emp.name,
-          department: emp.department || '未分類'
-        };
-      }).filter((r): r is ExportRecord => r !== null && r.amount > 0);
-
-    } else if (type === 'bonus') {
-      // 取得年終獎金記錄
+      payrollLikeRecords = payrollRecords.map((record) => ({
+        employeeId: record.employeeId,
+        amount: record.netPay,
+        employee: record.employee,
+      }));
+    } else {
       const bonusRecords = await prisma.bonusRecord.findMany({
         where: {
           payrollYear: year,
-          bonusType: 'YEAR_END'
+          payrollMonth: month,
+          bonusType: 'YEAR_END',
         },
-        select: {
-          employeeId: true,
-          amount: true
-        }
+        include: {
+          employee: {
+            select: {
+              id: true,
+              employeeId: true,
+              name: true,
+              department: true,
+              idNumber: true,
+              bankAccount: true,
+            },
+          },
+        },
+        orderBy: { employeeId: 'asc' },
       });
 
-      records = bonusRecords.map(br => {
-        const emp = employeeMap.get(br.employeeId);
-        if (!emp) return null;
-        
-        return {
-          transferDate,
-          idNumber: emp.idNumber ? decrypt(emp.idNumber) : '',
-          bankAccount: emp.bankAccount || '',
-          amount: Math.round(br.amount),
-          name: emp.name,
-          department: emp.department || '未分類'
-        };
-      }).filter((r): r is ExportRecord => r !== null && r.amount > 0);
+      payrollLikeRecords = bonusRecords.map((record) => ({
+        employeeId: record.employeeId,
+        amount: record.amount,
+        employee: record.employee,
+      }));
     }
 
-    if (records.length === 0) {
-      return NextResponse.json({ 
-        error: `${year}年${month}月沒有${type === 'salary' ? '薪資' : '獎金'}記錄` 
+    if (payrollLikeRecords.length === 0) {
+      return NextResponse.json({
+        error: `${year}年${month}月沒有${type === 'salary' ? '薪資' : '獎金'}記錄`
       }, { status: 404 });
     }
 
-    // 依部門分組
-    const departmentGroups = new Map<string, ExportRecord[]>();
-    for (const record of records) {
-      const dept = record.department;
-      if (!departmentGroups.has(dept)) {
-        departmentGroups.set(dept, []);
+    const records: ExportRecord[] = [];
+    const validationErrors: ValidationErrorDetail[] = [];
+
+    for (const record of payrollLikeRecords) {
+      const employee = record.employee;
+      if (!employee) {
+        validationErrors.push({
+          employeeId: String(record.employeeId),
+          name: '未知員工',
+          department: '未分類',
+          reasons: ['找不到對應員工資料'],
+        });
+        continue;
       }
-      departmentGroups.get(dept)!.push(record);
+
+      const reasons: string[] = [];
+      const decryptedIdNumber = employee.idNumber ? decrypt(employee.idNumber).trim().toUpperCase() : '';
+      const normalizedBankAccount = normalizeBankAccount(employee.bankAccount);
+      const roundedAmount = Math.round(record.amount);
+      const hasValidAmount = Number.isFinite(record.amount) && roundedAmount > 0;
+
+      if (!decryptedIdNumber) {
+        reasons.push('缺少身分證字號');
+      } else if (!/^[A-Z]\d{9}$/.test(decryptedIdNumber) || !validateTaiwanIdNumber(decryptedIdNumber)) {
+        reasons.push('身分證字號格式不正確');
+      }
+
+      if (!normalizedBankAccount) {
+        reasons.push('缺少薪轉元大銀行帳號');
+      } else if (!isValidBankAccount(normalizedBankAccount)) {
+        reasons.push('薪轉元大銀行帳號格式不正確');
+      }
+
+      if (!hasValidAmount) {
+        reasons.push('實領薪資必須大於 0');
+      }
+
+      if (reasons.length > 0) {
+        validationErrors.push({
+          employeeId: employee.employeeId,
+          name: employee.name,
+          department: employee.department || '未分類',
+          reasons,
+        });
+      }
+
+      records.push({
+        employeeId: employee.employeeId,
+        transferDate,
+        idNumber: !decryptedIdNumber || reasons.includes('身分證字號格式不正確') ? '' : decryptedIdNumber,
+        bankAccount: !normalizedBankAccount || reasons.includes('薪轉元大銀行帳號格式不正確') ? '' : normalizedBankAccount,
+        amount: hasValidAmount ? roundedAmount : null,
+        name: employee.name,
+        department: employee.department || '未分類',
+      });
     }
 
-    // 建立 Excel 工作簿
-    const workbook = XLSX.utils.book_new();
+    records.sort((left, right) => {
+      const departmentCompare = left.department.localeCompare(right.department, 'zh-Hant');
+      if (departmentCompare !== 0) return departmentCompare;
+      const employeeIdCompare = left.employeeId.localeCompare(right.employeeId, 'zh-Hant', { numeric: true });
+      if (employeeIdCompare !== 0) return employeeIdCompare;
+      return left.name.localeCompare(right.name, 'zh-Hant');
+    });
 
-    // 元大銀行格式的標題行
+    const summary = {
+      year,
+      month,
+      type,
+      transferDate,
+      totalRecords: records.length,
+      totalAmount: records.reduce((sum, item) => sum + (item.amount ?? 0), 0),
+      incompleteRecords: validationErrors.length,
+      generatedAt: new Date().toISOString(),
+    };
+
+    if (format === 'json') {
+      return NextResponse.json({
+        success: true,
+        records,
+        warnings: validationErrors,
+        summary,
+      });
+    }
+
+    const departmentGroups = new Map<string, ExportRecord[]>();
+    for (const record of records) {
+      if (!departmentGroups.has(record.department)) {
+        departmentGroups.set(record.department, []);
+      }
+      departmentGroups.get(record.department)!.push(record);
+    }
+
+    const workbook = XLSX.utils.book_new();
     const headers = [
-      '轉帳日期\n(yyyymmdd)',
+      '轉帳日期(yyyymmdd)',
       '受款人身分證字號',
       '受款人帳號',
       '金額',
-      ''  // 姓名（備註用）
+      '姓名',
     ];
-
-    // 警告訊息行
     const warningRow = ['所有欄位請勿自行新增或刪除', '', '', '', ''];
 
-    // 為每個部門建立工作表
-    const sortedDepartments = Array.from(departmentGroups.keys()).sort();
-    
-    for (const dept of sortedDepartments) {
-      const deptRecords = departmentGroups.get(dept)!;
-      
-      // 準備資料
+    for (const department of Array.from(departmentGroups.keys()).sort((a, b) => a.localeCompare(b, 'zh-Hant'))) {
       const data: (string | number)[][] = [
         warningRow,
         headers,
-        ...deptRecords.map(r => [
-          r.transferDate,
-          r.idNumber,
-          r.bankAccount,
-          r.amount,
-          r.name
-        ])
+        ...departmentGroups.get(department)!.map((item) => [
+          item.transferDate,
+          item.idNumber,
+          item.bankAccount,
+          item.amount ?? '',
+          item.name,
+        ]),
       ];
 
-      // 建立工作表
       const worksheet = XLSX.utils.aoa_to_sheet(data);
-
-      // 設定欄寬
       worksheet['!cols'] = [
-        { wch: 15 },  // 轉帳日期
-        { wch: 15 },  // 身分證字號
-        { wch: 18 },  // 銀行帳號
-        { wch: 12 },  // 金額
-        { wch: 10 }   // 姓名
+        { wch: 18 },
+        { wch: 16 },
+        { wch: 18 },
+        { wch: 12 },
+        { wch: 12 },
       ];
 
-      // 工作表名稱（部門）
-      const sheetName = dept.slice(0, 31);  // Excel 工作表名稱最多31字元
-      XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
+      XLSX.utils.book_append_sheet(workbook, worksheet, department.slice(0, 31));
     }
 
-    // 產生 Excel 檔案（使用 xls 格式以符合元大銀行需求）
     const excelBuffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xls' });
-
-    // 產生檔名
     const typeLabel = type === 'salary' ? '薪水' : '年終';
     const filename = `元大薪轉_${typeLabel}_${year}${month.toString().padStart(2, '0')}.xls`;
 
@@ -218,10 +295,9 @@ export async function GET(request: NextRequest) {
       headers: {
         'Content-Type': 'application/vnd.ms-excel',
         'Content-Disposition': `attachment; filename="${encodeURIComponent(filename)}"`,
-        'Content-Length': excelBuffer.length.toString()
-      }
+        'Content-Length': excelBuffer.length.toString(),
+      },
     });
-
   } catch (error) {
     console.error('匯出元大薪轉檔失敗:', error);
     return NextResponse.json({ error: '系統錯誤' }, { status: 500 });

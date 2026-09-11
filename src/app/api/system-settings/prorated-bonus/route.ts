@@ -5,6 +5,7 @@ import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { safeParseSystemSettingsValue } from '@/lib/system-settings-json';
 import { safeParseJSON } from '@/lib/validation';
+import { logSystemSettingsChange } from '@/lib/system-settings-audit';
 
 interface ProratedBonusSettings {
   isEnabled: boolean;
@@ -167,6 +168,7 @@ export async function POST(request: NextRequest) {
     if (authError) {
       return authError;
     }
+    const user = await getUserFromRequest(request);
 
     const csrfResult = await validateCSRF(request);
     if (!csrfResult.valid) {
@@ -298,6 +300,15 @@ export async function POST(request: NextRequest) {
         value: JSON.stringify(settings),
         description: '獎金按比例計算設定',
       },
+    });
+
+    await logSystemSettingsChange({
+      request,
+      user: user!,
+      settingKey: SETTINGS_KEY,
+      description: '按比例獎金設定變更',
+      oldValue: existingSettings,
+      newValue: settings,
     });
 
     return NextResponse.json({

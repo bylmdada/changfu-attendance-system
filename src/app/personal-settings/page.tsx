@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { User, Fingerprint, Smartphone, Trash2, Plus, Shield, Clock, Eye, EyeOff } from 'lucide-react';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import ConfirmDialog from '@/components/ConfirmDialog';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import { base64UrlToArrayBuffer, serializeRegistrationCredential } from '@/lib/webauthn-browser';
 
@@ -36,6 +37,7 @@ export default function PersonalSettingsPage() {
   const [registerData, setRegisterData] = useState({ password: '', deviceName: '' });
   const [biometricSupported, setBiometricSupported] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const [deleteConfirmCredential, setDeleteConfirmCredential] = useState<WebAuthnCredential | null>(null);
 
   useEffect(() => {
     checkBiometricSupport();
@@ -81,21 +83,24 @@ export default function PersonalSettingsPage() {
     }
   };
 
-  const deleteCredential = async (credentialId: number) => {
-    if (!confirm('確定要刪除此 Face ID / 指紋設備嗎？刪除後需要重新設定才能使用。')) {
-      return;
-    }
+  const deleteCredential = (credential: WebAuthnCredential) => {
+    setDeleteConfirmCredential(credential);
+  };
+
+  const performDeleteCredential = async () => {
+    if (!deleteConfirmCredential) return;
 
     setActionLoading(true);
     try {
       const response = await fetchJSONWithCSRF('/api/user/webauthn-credentials', {
         method: 'DELETE',
-        body: { credentialId }
+        body: { credentialId: deleteConfirmCredential.id }
       });
 
       const data = await response.json();
       if (response.ok) {
         setMessage({ type: 'success', text: data.message });
+        setDeleteConfirmCredential(null);
         loadCredentials();
       } else {
         setMessage({ type: 'error', text: data.error || '刪除失敗' });
@@ -415,7 +420,7 @@ export default function PersonalSettingsPage() {
                     </div>
                   </div>
                   <button
-                    onClick={() => deleteCredential(credential.id)}
+                    onClick={() => deleteCredential(credential)}
                     disabled={actionLoading}
                     className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
                     title="刪除此設備"
@@ -440,6 +445,18 @@ export default function PersonalSettingsPage() {
           </div>
         </div>
       </div>
+      <ConfirmDialog
+        open={Boolean(deleteConfirmCredential)}
+        title="刪除生物辨識設備"
+        message={deleteConfirmCredential ? `確定要刪除「${deleteConfirmCredential.deviceName}」嗎？\n\n刪除後需要重新設定 Face ID / 指紋才能再次使用。` : ''}
+        tone="danger"
+        confirmLabel="刪除設備"
+        loading={actionLoading}
+        onCancel={() => {
+          if (!actionLoading) setDeleteConfirmCredential(null);
+        }}
+        onConfirm={performDeleteCredential}
+      />
     </AuthenticatedLayout>
   );
 }

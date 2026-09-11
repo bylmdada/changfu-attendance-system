@@ -233,7 +233,7 @@ async function notifyReviewersAboutDeadline(
  * 發送凍結前提醒
  * 提醒有待審核項目且即將凍結的情況
  */
-export async function notifyBeforeFreeze(daysBeforeFreeze: number) {
+export async function notifyBeforeFreeze(daysBeforeFreeze: number, reminderKey?: string) {
   try {
     // 取得配合凍結時間的待審核項目
     const pendingInstances = await prisma.approvalInstance.findMany({
@@ -243,6 +243,17 @@ export async function notifyBeforeFreeze(daysBeforeFreeze: number) {
     });
 
     if (pendingInstances.length === 0) return { success: true, sentCount: 0 };
+
+    if (reminderKey) {
+      const existingReminder = await prisma.inAppNotification.findFirst({
+        where: {
+          type: 'FREEZE_REMINDER',
+          data: { contains: `"reminderKey":"${reminderKey}"` },
+        },
+        select: { id: true },
+      });
+      if (existingReminder) return { success: true, sentCount: 0, skipped: true };
+    }
 
     // 找到所有管理員
     const admins = await prisma.user.findMany({
@@ -262,7 +273,8 @@ export async function notifyBeforeFreeze(daysBeforeFreeze: number) {
         message: `距離考勤凍結還有 ${daysBeforeFreeze} 天，目前有 ${pendingInstances.length} 件待審核項目`,
         data: {
           pendingCount: pendingInstances.length,
-          daysBeforeFreeze
+          daysBeforeFreeze,
+          reminderKey,
         },
         targetUsers: [String(employeeId)],
         createdBy: 'SYSTEM'

@@ -4,6 +4,7 @@ import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { safeParseJSON } from '@/lib/validation';
+import { logSystemSettingsChange } from '@/lib/system-settings-audit';
 
 /**
  * 班表確認機制設定 API
@@ -124,63 +125,65 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '提醒功能設定必須是布林值' }, { status: 400 });
     }
 
-    const updates = [];
+    const existingRecords = await prisma.systemSettings.findMany({
+      where: {
+        key: { in: Object.values(SETTING_KEYS) }
+      }
+    });
+    const oldSettings: Record<string, boolean> = { ...DEFAULT_SETTINGS };
+    existingRecords.forEach(s => {
+      try {
+        oldSettings[s.key] = JSON.parse(s.value);
+      } catch {
+        oldSettings[s.key] = DEFAULT_SETTINGS[s.key] ?? false;
+      }
+    });
 
-    if (typeof enabled === 'boolean') {
-      updates.push(
-        prisma.systemSettings.upsert({
-          where: { key: SETTING_KEYS.ENABLED },
-          create: {
-            key: SETTING_KEYS.ENABLED,
-            value: JSON.stringify(enabled),
-            description: '班表確認機制開關'
-          },
-          update: {
-            value: JSON.stringify(enabled)
-          }
-        })
-      );
-    }
+    const requestedSettings = {
+      enabled: typeof enabled === 'boolean' ? enabled : oldSettings[SETTING_KEYS.ENABLED],
+      blockClock: typeof blockClock === 'boolean' ? blockClock : oldSettings[SETTING_KEYS.BLOCK_CLOCK],
+      enableReminder: typeof enableReminder === 'boolean' ? enableReminder : oldSettings[SETTING_KEYS.ENABLE_REMINDER],
+    };
+    const newSettings = {
+      ...requestedSettings,
+      enableReminder: requestedSettings.blockClock ? true : requestedSettings.enableReminder,
+    };
 
-    if (typeof blockClock === 'boolean') {
-      updates.push(
-        prisma.systemSettings.upsert({
-          where: { key: SETTING_KEYS.BLOCK_CLOCK },
-          create: {
-            key: SETTING_KEYS.BLOCK_CLOCK,
-            value: JSON.stringify(blockClock),
-            description: '未確認班表阻止打卡'
-          },
-          update: {
-            value: JSON.stringify(blockClock)
-          }
-        })
-      );
-    }
+    await prisma.$transaction([
+      prisma.systemSettings.upsert({
+        where: { key: SETTING_KEYS.ENABLED },
+        create: { key: SETTING_KEYS.ENABLED, value: JSON.stringify(newSettings.enabled), description: '班表確認機制開關' },
+        update: { value: JSON.stringify(newSettings.enabled) }
+      }),
+      prisma.systemSettings.upsert({
+        where: { key: SETTING_KEYS.BLOCK_CLOCK },
+        create: { key: SETTING_KEYS.BLOCK_CLOCK, value: JSON.stringify(newSettings.blockClock), description: '未確認班表阻止打卡' },
+        update: { value: JSON.stringify(newSettings.blockClock) }
+      }),
+      prisma.systemSettings.upsert({
+        where: { key: SETTING_KEYS.ENABLE_REMINDER },
+        create: { key: SETTING_KEYS.ENABLE_REMINDER, value: JSON.stringify(newSettings.enableReminder), description: '班表確認提醒功能' },
+        update: { value: JSON.stringify(newSettings.enableReminder) }
+      }),
+    ]);
 
-    if (typeof enableReminder === 'boolean') {
-      updates.push(
-        prisma.systemSettings.upsert({
-          where: { key: SETTING_KEYS.ENABLE_REMINDER },
-          create: {
-            key: SETTING_KEYS.ENABLE_REMINDER,
-            value: JSON.stringify(enableReminder),
-            description: '班表確認提醒功能'
-          },
-          update: {
-            value: JSON.stringify(enableReminder)
-          }
-        })
-      );
-    }
-
-    if (updates.length > 0) {
-      await prisma.$transaction(updates);
-    }
+    await logSystemSettingsChange({
+      request,
+      user,
+      settingKey: 'schedule-confirm',
+      description: '班表確認設定變更',
+      oldValue: {
+        enabled: oldSettings[SETTING_KEYS.ENABLED],
+        blockClock: oldSettings[SETTING_KEYS.BLOCK_CLOCK],
+        enableReminder: oldSettings[SETTING_KEYS.ENABLE_REMINDER],
+      },
+      newValue: newSettings,
+    });
 
     return NextResponse.json({
       success: true,
-      message: '設定已儲存'
+      message: '設定已儲存',
+      settings: newSettings,
     });
 
   } catch (error) {

@@ -7,11 +7,19 @@ export interface AttendanceFreezeSettings {
   description: string;
 }
 
+export function getAttendanceFreezeDescription(freezeDay: number, freezeTime: string): string {
+  const { hours, minutes } = parseFreezeTime(freezeTime);
+  const period = hours < 12 ? '上午' : '下午';
+  const displayHour = hours % 12 || 12;
+  const minuteText = minutes > 0 ? `${minutes}分` : '';
+  return `每月${freezeDay}日${period}${displayHour}點${minuteText}後，前一個月的考勤記錄將被凍結，無法修改。`;
+}
+
 export const DEFAULT_ATTENDANCE_FREEZE_SETTINGS: AttendanceFreezeSettings = {
   freezeDay: 5,
   freezeTime: '18:00',
   isEnabled: true,
-  description: '每月5日下午6點後，前一個月的考勤記錄將被凍結，無法修改。',
+  description: getAttendanceFreezeDescription(5, '18:00'),
 };
 
 function getClampedDay(year: number, monthIndex: number, freezeDay: number): number {
@@ -20,6 +28,12 @@ function getClampedDay(year: number, monthIndex: number, freezeDay: number): num
 }
 
 function parseFreezeTime(freezeTime: string): { hours: number; minutes: number } {
+  const match = /^(?:[01]\d|2[0-3]):[0-5]\d$/.exec(freezeTime);
+  if (!match) {
+    console.error(`考勤凍結時間格式錯誤：${freezeTime}，改用預設 18:00`);
+    return { hours: 18, minutes: 0 };
+  }
+
   const [hours, minutes] = freezeTime.split(':').map(Number);
   return { hours, minutes };
 }

@@ -23,6 +23,15 @@ interface Rec {
   asset?: { name: string };
 }
 
+interface PaginationState {
+  total: number;
+  page: number;
+  pageSize: number;
+  pages: number;
+}
+
+const REVIEW_PAGE_SIZE = 25;
+
 export default function ReviewPage() {
   const { showToast, toast, clearToast } = useLocalToast();
   const [rows, setRows] = useState<Rec[]>([]);
@@ -30,17 +39,24 @@ export default function ReviewPage() {
   const [rejecting, setRejecting] = useState<Rec | null>(null);
   const [reason, setReason] = useState('');
   const [currentEmployeeId, setCurrentEmployeeId] = useState<number | null>(null);
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState<PaginationState>({
+    total: 0,
+    page: 1,
+    pageSize: REVIEW_PAGE_SIZE,
+    pages: 1,
+  });
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
+      const params = new URLSearchParams({
+        audit: 'PENDING',
+        page: String(page),
+        pageSize: String(REVIEW_PAGE_SIZE),
+      });
       const [recordsRes, meRes] = await Promise.all([
-        fetch(
-          '/api/property-maintenance/records?audit=' +
-            encodeURIComponent('待主管稽核') +
-            '&pageSize=200',
-          { credentials: 'include' }
-        ),
+        fetch(`/api/property-maintenance/records?${params.toString()}`, { credentials: 'include' }),
         fetch('/api/auth/me', { credentials: 'include' }),
       ]);
       const recordsJson = await recordsRes.json();
@@ -48,14 +64,30 @@ export default function ReviewPage() {
       if (meRes.ok) {
         setCurrentEmployeeId((meJson.user || meJson).employeeId ?? null);
       }
-      if (recordsRes.ok) setRows(recordsJson.data.items);
-      else showToast('error', recordsJson.error || '載入失敗');
+      if (recordsRes.ok) {
+        setRows(recordsJson.data.items);
+        const nextPagination = recordsJson.data || {
+          total: recordsJson.data.items.length,
+          page,
+          pageSize: REVIEW_PAGE_SIZE,
+          pages: 1,
+        };
+        setPagination({
+          total: nextPagination.total,
+          page: nextPagination.page,
+          pageSize: nextPagination.pageSize,
+          pages: Math.max(1, Math.ceil(nextPagination.total / nextPagination.pageSize)),
+        });
+        if (page > 1 && recordsJson.data.items.length === 0) {
+          setPage((currentPage) => Math.max(1, currentPage - 1));
+        }
+      } else showToast('error', recordsJson.error || '載入失敗');
     } catch {
       showToast('error', '載入失敗');
     } finally {
       setLoading(false);
     }
-  }, [showToast]);
+  }, [page, showToast]);
 
   useEffect(() => {
     load();
@@ -81,11 +113,19 @@ export default function ReviewPage() {
     }
   };
 
+  const reviewStart = pagination.total === 0
+    ? 0
+    : (pagination.page - 1) * pagination.pageSize + 1;
+  const reviewEnd = Math.min(pagination.total, pagination.page * pagination.pageSize);
+
   return (
     <AuthenticatedLayout backUrl="/property-management" backLabel="返回首頁">
       <div className="max-w-4xl mx-auto p-4 sm:p-6">
         <h1 className="text-2xl font-bold text-gray-900 mb-1">維護審核</h1>
-        <p className="text-sm text-gray-600 mb-4">待主管稽核的已提交維護紀錄</p>
+        <p className="text-sm text-gray-600 mb-4">
+          待主管稽核的已提交維護紀錄，每頁 {REVIEW_PAGE_SIZE} 筆
+          {pagination.total > 0 ? `，目前顯示 ${reviewStart}-${reviewEnd} / ${pagination.total}` : ''}
+        </p>
 
         <div className="bg-white rounded-xl border border-gray-200">
           {loading ? (
@@ -93,81 +133,104 @@ export default function ReviewPage() {
           ) : rows.length === 0 ? (
             <div className="p-8 text-center text-gray-600">沒有待審核紀錄 🎉</div>
           ) : (
-            <ul className="divide-y divide-gray-100">
-              {rows.map((r) => {
-                const isSelfSubmitted =
-                  !!currentEmployeeId && r.maintainerEmployeeId === currentEmployeeId;
-                return (
-                <li key={r.recordId} className="px-4 py-3">
-                  <div className="flex items-start gap-3">
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium text-gray-900">
-                        {r.assetCode}　{r.asset?.name}
-                      </p>
-                      <p className="text-xs text-gray-600 mt-0.5">
-                        維護人員 {r.maintainerRaw || '—'}・完成 {fmtDate(r.completedDate)}・應維護{' '}
-                        {fmtDate(r.dueDate)}
-                      </p>
-                      <p className="text-xs text-gray-600 mt-1">
-                        盤點：{r.inventoryResult || '—'}　財產狀態：{r.assetCondition || '—'}
-                        項目：{r.maintenanceItem || '—'}
-                      </p>
-                      {r.otherNote && (
-                        <p className="text-xs text-gray-600 mt-0.5">說明：{r.otherNote}</p>
-                      )}
-                      {isSelfSubmitted && (
-                        <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                          此紀錄由你提交，須由其他主管/稽核人員審核。
+            <>
+              <ul className="divide-y divide-gray-100">
+                {rows.map((r) => {
+                  const isSelfSubmitted =
+                    !!currentEmployeeId && r.maintainerEmployeeId === currentEmployeeId;
+                  return (
+                  <li key={r.recordId} className="px-4 py-3">
+                    <div className="flex items-start gap-3">
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-gray-900">
+                          {r.assetCode}　{r.asset?.name}
                         </p>
-                      )}
-                      <div className="flex gap-3 mt-0.5">
-                        {r.photoPath && (
-                          <a
-                            href={`/api/property-maintenance/records/${encodeURIComponent(
-                              r.recordId
-                            )}/attachment?field=photo`}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="text-xs text-blue-600 hover:underline"
-                          >
-                            檢視維護照片
-                          </a>
+                        <p className="text-xs text-gray-600 mt-0.5">
+                          維護人員 {r.maintainerRaw || '—'}・完成 {fmtDate(r.completedDate)}・應維護{' '}
+                          {fmtDate(r.dueDate)}
+                        </p>
+                        <p className="text-xs text-gray-600 mt-1">
+                          盤點：{r.inventoryResult || '—'}　財產狀態：{r.assetCondition || '—'}
+                          項目：{r.maintenanceItem || '—'}
+                        </p>
+                        {r.otherNote && (
+                          <p className="text-xs text-gray-600 mt-0.5">說明：{r.otherNote}</p>
                         )}
-                        {r.signaturePath && (
-                          <a
-                            href={`/api/property-maintenance/records/${encodeURIComponent(
-                              r.recordId
-                            )}/attachment?field=signature`}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="text-xs text-blue-600 hover:underline"
-                          >
-                            檢視維護人簽章
-                          </a>
+                        {isSelfSubmitted && (
+                          <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                            此紀錄由你提交，須由其他主管/稽核人員審核。
+                          </p>
                         )}
+                        <div className="flex gap-3 mt-0.5">
+                          {r.photoPath && (
+                            <a
+                              href={`/api/property-maintenance/records/${encodeURIComponent(
+                                r.recordId
+                              )}/attachment?field=photo`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-xs text-blue-600 hover:underline"
+                            >
+                              檢視維護照片
+                            </a>
+                          )}
+                          {r.signaturePath && (
+                            <a
+                              href={`/api/property-maintenance/records/${encodeURIComponent(
+                                r.recordId
+                              )}/attachment?field=signature`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-xs text-blue-600 hover:underline"
+                            >
+                              檢視維護人簽章
+                            </a>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex flex-col gap-2 shrink-0">
+                        <button
+                          onClick={() => decide(r, 'APPROVE')}
+                          disabled={isSelfSubmitted}
+                          className="inline-flex items-center gap-1 px-3 py-1.5 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          <Check className="w-4 h-4" /> 核准
+                        </button>
+                        <button
+                          onClick={() => setRejecting(r)}
+                          disabled={isSelfSubmitted}
+                          className="inline-flex items-center gap-1 px-3 py-1.5 bg-red-600 text-white rounded-lg hover:bg-red-700 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          <RotateCcw className="w-4 h-4" /> 退回
+                        </button>
                       </div>
                     </div>
-                    <div className="flex flex-col gap-2 shrink-0">
-                      <button
-                        onClick={() => decide(r, 'APPROVE')}
-                        disabled={isSelfSubmitted}
-                        className="inline-flex items-center gap-1 px-3 py-1.5 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                      >
-                        <Check className="w-4 h-4" /> 核准
-                      </button>
-                      <button
-                        onClick={() => setRejecting(r)}
-                        disabled={isSelfSubmitted}
-                        className="inline-flex items-center gap-1 px-3 py-1.5 bg-red-600 text-white rounded-lg hover:bg-red-700 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                      >
-                        <RotateCcw className="w-4 h-4" /> 退回
-                      </button>
-                    </div>
-                  </div>
-                </li>
-                );
-              })}
-            </ul>
+                  </li>
+                  );
+                })}
+              </ul>
+              {pagination.pages > 1 && (
+                <div className="flex items-center justify-between gap-3 border-t border-gray-200 px-4 py-3 text-sm">
+                  <button
+                    onClick={() => setPage((currentPage) => Math.max(1, currentPage - 1))}
+                    disabled={pagination.page <= 1 || loading}
+                    className="rounded-lg border border-gray-300 px-3 py-1.5 text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    上一頁
+                  </button>
+                  <span className="text-gray-600">
+                    第 {pagination.page} / {pagination.pages} 頁
+                  </span>
+                  <button
+                    onClick={() => setPage((currentPage) => Math.min(pagination.pages, currentPage + 1))}
+                    disabled={pagination.page >= pagination.pages || loading}
+                    className="rounded-lg border border-gray-300 px-3 py-1.5 text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    下一頁
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>

@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
+import { calculateOvertimeRequestsEligibility } from '@/lib/overtime-eligibility';
+
+function roundHours(hours: number) {
+  return Math.round(hours * 100) / 100;
+}
 
 // GET - 取得即時加班狀態
 export async function GET(request: NextRequest) {
@@ -49,7 +54,7 @@ export async function GET(request: NextRequest) {
         startTimeFormatted: lastStart.clockTime.toTimeString().slice(0, 5),
         duration: `${hours}h ${minutes}m`,
         durationMinutes,
-        estimatedHours: Math.round(durationMinutes / 60 * 2) / 2  // 以 0.5 小時為單位四捨五入
+        estimatedHours: roundHours(durationMinutes / 60)
       };
     } else {
       currentSession = {
@@ -83,8 +88,9 @@ export async function GET(request: NextRequest) {
       }
     });
 
-    const totalApprovedHours = monthlyApproved.reduce((sum, r) => sum + r.totalHours, 0);
-    const totalPendingHours = monthlyPending.reduce((sum, r) => sum + r.totalHours, 0);
+    const approvedEligibility = await calculateOvertimeRequestsEligibility(monthlyApproved);
+    const totalApprovedHours = approvedEligibility.totalEffectiveHours;
+    const totalPendingHours = roundHours(monthlyPending.reduce((sum, r) => sum + r.totalHours, 0));
 
     // 取得加班上限設定
     const limitSettings = await prisma.systemSettings.findUnique({
@@ -95,7 +101,7 @@ export async function GET(request: NextRequest) {
       ? JSON.parse(limitSettings.value)
       : { monthlyLimit: 46, warningThreshold: 36, enabled: true };
 
-    const remainingHours = limits.monthlyLimit - totalApprovedHours;
+    const remainingHours = roundHours(limits.monthlyLimit - totalApprovedHours);
     let warningLevel: 'NORMAL' | 'WARNING' | 'EXCEEDED' = 'NORMAL';
     if (totalApprovedHours >= limits.monthlyLimit) {
       warningLevel = 'EXCEEDED';
@@ -109,7 +115,7 @@ export async function GET(request: NextRequest) {
       monthlyStats: {
         approvedHours: totalApprovedHours,
         pendingHours: totalPendingHours,
-        totalHours: totalApprovedHours + totalPendingHours,
+        totalHours: roundHours(totalApprovedHours + totalPendingHours),
         monthlyLimit: limits.monthlyLimit,
         remainingHours: Math.max(0, remainingHours),
         usagePercentage: Math.round(totalApprovedHours / limits.monthlyLimit * 100),

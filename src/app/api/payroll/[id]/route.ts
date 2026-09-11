@@ -3,12 +3,14 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { buildSuccessPayload } from '@/lib/api-response';
 import { validateCSRF } from '@/lib/csrf';
+import { getStoredIncomeTaxManagementSettings } from '@/lib/income-tax-settings';
 import { getStoredLaborLawConfig } from '@/lib/labor-law-config';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { calculatePayrollTotals } from '@/lib/payroll-calculator';
 import { buildEmployeePayrollInfo } from '@/lib/payroll-processing';
 import { getStoredSupplementaryPremiumSettings } from '@/lib/supplementary-premium-settings';
+import { getStoredHealthInsuranceFormulaConfig } from '@/lib/health-insurance-config';
 import { safeParseJSON } from '@/lib/validation';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -183,16 +185,22 @@ export async function PATCH(
       payrollRecord.payYear,
       payrollRecord.payMonth
     );
-    const [supplementaryPremiumSettings, laborLawConfig] = await Promise.all([
+    const [supplementaryPremiumSettings, laborLawConfig, healthInsuranceConfig, incomeTaxSettings] = await Promise.all([
       getStoredSupplementaryPremiumSettings(),
       getStoredLaborLawConfig(),
+      getStoredHealthInsuranceFormulaConfig(),
+      getStoredIncomeTaxManagementSettings(),
     ]);
     const totals = calculatePayrollTotals(
       employeeInfo,
       resolvedBasePay + resolvedOvertimePay,
       existingTotalBonus,
       supplementaryPremiumSettings,
-      laborLawConfig
+      laborLawConfig,
+      {
+        incomeTaxEnabled: incomeTaxSettings.withholdingEnabled,
+        healthInsuranceConfig,
+      }
     );
 
     const updatedPayrollRecord = await prisma.payrollRecord.update({

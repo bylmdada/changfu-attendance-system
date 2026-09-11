@@ -5,6 +5,7 @@ import { validateCSRF } from '@/lib/csrf';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { DEFAULT_LABOR_LAW_CONFIG } from '@/lib/labor-law-config-defaults';
 import { safeParseJSON } from '@/lib/validation';
+import { logSystemSettingsChange } from '@/lib/system-settings-audit';
 
 function parseDateOnly(value: unknown): Date | null {
   if (typeof value !== 'string') {
@@ -154,6 +155,7 @@ export async function POST(request: NextRequest) {
     const bodyRecord = body as Record<string, unknown>;
     const basicWage = bodyRecord.basicWage;
     const laborInsuranceRate = bodyRecord.laborInsuranceRate;
+    const employmentInsuranceRate = bodyRecord.employmentInsuranceRate;
     const laborInsuranceMax = bodyRecord.laborInsuranceMax;
     const laborEmployeeRate = bodyRecord.laborEmployeeRate;
     const effectiveDate = bodyRecord.effectiveDate;
@@ -179,6 +181,11 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '勞保費率必須為 0 到 1 之間的數值' }, { status: 400 });
     }
 
+    const parsedEmploymentInsuranceRate = parseRate(employmentInsuranceRate);
+    if (parsedEmploymentInsuranceRate === null) {
+      return NextResponse.json({ error: '就業保險費率必須為 0 到 1 之間的數值' }, { status: 400 });
+    }
+
     const parsedLaborInsuranceMax = parsePositiveInteger(laborInsuranceMax);
     if (parsedLaborInsuranceMax === null) {
       return NextResponse.json({ error: '投保薪資上限必須為正整數' }, { status: 400 });
@@ -200,12 +207,18 @@ export async function POST(request: NextRequest) {
     const newConfigData = {
       basicWage: parsedBasicWage,
       laborInsuranceRate: parsedLaborInsuranceRate,
+      employmentInsuranceRate: parsedEmploymentInsuranceRate,
       laborInsuranceMax: parsedLaborInsuranceMax,
       laborEmployeeRate: parsedLaborEmployeeRate,
       effectiveDate: parsedEffectiveDate,
       description: typeof description === 'string' && description.trim() ? description : null,
       isActive: true
     };
+
+    const existingConfig = await prisma.laborLawConfig.findFirst({
+      where: { isActive: true },
+      orderBy: { effectiveDate: 'desc' }
+    });
 
     // 使用交易避免舊設定先失效、但新設定建立失敗時留下空白狀態。
     const [, config] = await prisma.$transaction([
@@ -217,6 +230,16 @@ export async function POST(request: NextRequest) {
         data: newConfigData
       })
     ]);
+
+    await logSystemSettingsChange({
+      request,
+      user,
+      settingKey: 'labor-law-config',
+      description: '法規參數設定變更',
+      oldValue: existingConfig,
+      newValue: config,
+      targetId: config.id,
+    });
 
     return NextResponse.json({
       success: true,

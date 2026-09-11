@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import {
+  Download,
   Edit2,
   Loader2,
   Plus,
@@ -14,6 +15,7 @@ import {
   X,
 } from 'lucide-react';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import ConfirmDialog from '@/components/ConfirmDialog';
 import fetchWithCSRF, { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import { useLocalToast, SimpleToast } from '@/components/Toast';
 import { fmtDate, taiwanDateInputValue } from '@/lib/property-status-ui';
@@ -102,6 +104,7 @@ export default function AssetsPage() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [assetDeleteConfirm, setAssetDeleteConfirm] = useState<Asset | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState<AssetForm>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
@@ -248,6 +251,12 @@ export default function AssetsPage() {
     setQuery(searchText.trim());
   };
 
+  const allHistoryExportHref = (format: 'csv' | 'xlsx') => {
+    const params = new URLSearchParams({ format });
+    if (siteFilter) params.set('siteId', siteFilter);
+    return `/api/property-maintenance/reports/history?${params.toString()}`;
+  };
+
   const openCreateForm = () => {
     const selectedManageableSite = manageableSites.some((site) => String(site.id) === siteFilter)
       ? siteFilter
@@ -333,7 +342,12 @@ export default function AssetsPage() {
   };
 
   const deleteAsset = async (asset: Asset) => {
-    if (!window.confirm(`確定停用財產 ${asset.assetCode}？既有維護紀錄會保留。`)) return;
+    setAssetDeleteConfirm(asset);
+  };
+
+  const performDeleteAsset = async () => {
+    if (!assetDeleteConfirm) return;
+    const asset = assetDeleteConfirm;
     setDeletingId(asset.id);
     try {
       const res = await fetchWithCSRF(`/api/property-maintenance/assets/${asset.id}`, {
@@ -345,6 +359,7 @@ export default function AssetsPage() {
         return;
       }
       showToast('success', '已停用財產');
+      setAssetDeleteConfirm(null);
       await load();
     } catch {
       showToast('error', '停用失敗');
@@ -439,6 +454,18 @@ export default function AssetsPage() {
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
+            <a
+              href={allHistoryExportHref('xlsx')}
+              className="inline-flex items-center gap-2 px-3 py-2 border border-blue-200 bg-blue-50 text-blue-700 rounded-lg hover:bg-blue-100 text-sm font-medium"
+            >
+              <Download className="w-4 h-4" /> 匯出所有維護歷程 .xlsx
+            </a>
+            <a
+              href={allHistoryExportHref('csv')}
+              className="inline-flex items-center gap-2 px-3 py-2 border border-gray-300 bg-white text-gray-900 rounded-lg hover:bg-gray-50 text-sm font-medium"
+            >
+              <Download className="w-4 h-4" /> 匯出所有維護歷程 .csv
+            </a>
             {canManageAssets && (
               <>
                 <button
@@ -836,6 +863,18 @@ export default function AssetsPage() {
           </div>
         </div>
       </div>
+      <ConfirmDialog
+        open={Boolean(assetDeleteConfirm)}
+        title="停用財產"
+        message={assetDeleteConfirm ? `確定停用財產 ${assetDeleteConfirm.assetCode}？\n\n既有維護紀錄會保留，但此財產將不再列為啟用。` : ''}
+        tone="danger"
+        confirmLabel="停用財產"
+        loading={deletingId === assetDeleteConfirm?.id}
+        onCancel={() => {
+          if (!deletingId) setAssetDeleteConfirm(null);
+        }}
+        onConfirm={performDeleteAsset}
+      />
       <SimpleToast toast={toast} onClose={clearToast} />
     </AuthenticatedLayout>
   );

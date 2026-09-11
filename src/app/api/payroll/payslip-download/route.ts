@@ -7,9 +7,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
+import {
+  getStoredIncomeTaxManagementSettings,
+  resolvePayrollIncomeTaxDisplayAmounts,
+} from '@/lib/income-tax-settings';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import { getEmployeePDFPassword, PDFSecurityConfig, getDefaultSecurityConfig } from '@/lib/pdf-security';
 import { parseIntegerQueryParam } from '@/lib/query-params';
+import { buildPayslipHourSummary, type PayslipHourSummary } from '@/lib/payroll-payslip-hours';
 
 interface PayslipData {
   employee: {
@@ -23,6 +28,11 @@ interface PayslipData {
     month: number;
     monthName: string;
   };
+  workHours: {
+    regular: number;
+    overtime: number;
+    total: number;
+  } & PayslipHourSummary;
   salary: {
     basePay: number;
     overtimePay: number;
@@ -32,10 +42,60 @@ interface PayslipData {
     laborInsurance: number;
     healthInsurance: number;
     supplementaryInsurance: number;
+    attendancePenalty: {
+      totalAmount: number;
+      details: Array<{
+        workDate: string;
+        status: string;
+        formula: string;
+      }>;
+    };
     incomeTax: number;
     total: number;
   };
   netPay: number;
+}
+
+function parsePayrollJsonField<T>(value: unknown, fallback: T): T {
+  if (!value) {
+    return fallback;
+  }
+
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value) as T;
+    } catch {
+      return fallback;
+    }
+  }
+
+  return value as T;
+}
+
+function getStoredAttendancePenalty(payrollRecord: { deductionDetails?: unknown }) {
+  const deductionDetails = parsePayrollJsonField<Record<string, unknown>>(payrollRecord.deductionDetails, {});
+  const rawPenalty = deductionDetails.attendancePenalty;
+
+  if (typeof rawPenalty !== 'object' || rawPenalty === null) {
+    return { totalAmount: 0, details: [] };
+  }
+
+  const penalty = rawPenalty as { totalAmount?: unknown; details?: unknown };
+  const details = Array.isArray(penalty.details)
+    ? penalty.details
+        .filter((detail): detail is Record<string, unknown> =>
+          typeof detail === 'object' && detail !== null
+        )
+        .map(detail => ({
+          workDate: typeof detail.workDate === 'string' ? detail.workDate : '',
+          status: typeof detail.status === 'string' ? detail.status : 'Attendance',
+          formula: typeof detail.formula === 'string' ? detail.formula : '',
+        }))
+        .filter(detail => detail.formula)
+    : [];
+
+  const totalAmount = typeof penalty.totalAmount === 'number' ? penalty.totalAmount : 0;
+  return { totalAmount, details };
 }
 
 function parsePayrollId(payrollId: string) {
@@ -52,6 +112,13 @@ function formatPdfAmount(amount: number) {
 
 function formatPdfTimestamp(date: Date) {
   return date.toISOString().replace('T', ' ').slice(0, 19);
+}
+
+function formatPdfHours(hours: number) {
+  return `${hours.toLocaleString('en-US', {
+    maximumFractionDigits: 2,
+    minimumFractionDigits: 0,
+  })} h`;
 }
 
 async function encryptPdfWithPassword(pdfBytes: Uint8Array, password: string): Promise<Buffer> {
@@ -147,6 +214,16 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: '無權限查看此薪資條' }, { status: 403 });
     }
 
+    const incomeTaxSettings = await getStoredIncomeTaxManagementSettings();
+    const displayAmounts = resolvePayrollIncomeTaxDisplayAmounts(
+      {
+        incomeTax: payrollRecord.incomeTax,
+        totalDeductions: payrollRecord.totalDeductions,
+        netPay: payrollRecord.netPay,
+      },
+      incomeTaxSettings
+    );
+
     // 查詢安全設定
     let securityConfig: PDFSecurityConfig = getDefaultSecurityConfig();
     try {
@@ -174,6 +251,9 @@ export async function GET(request: NextRequest) {
       password = await getEmployeePDFPassword(payrollRecord.employeeId, securityConfig);
     }
 
+    const hourSummary = await buildPayslipHourSummary(payrollRecord);
+    const attendancePenalty = getStoredAttendancePenalty(payrollRecord);
+
     // 生成薪資條數據
     const payslipData: PayslipData = {
       employee: {
@@ -187,6 +267,12 @@ export async function GET(request: NextRequest) {
         month: payrollRecord.payMonth,
         monthName: `${payrollRecord.payYear}年${payrollRecord.payMonth}月`
       },
+      workHours: {
+        regular: payrollRecord.regularHours,
+        overtime: payrollRecord.overtimeHours,
+        total: payrollRecord.regularHours + payrollRecord.overtimeHours,
+        ...hourSummary,
+      },
       salary: {
         basePay: payrollRecord.basePay,
         overtimePay: payrollRecord.overtimePay,
@@ -196,10 +282,11 @@ export async function GET(request: NextRequest) {
         laborInsurance: payrollRecord.laborInsurance,
         healthInsurance: payrollRecord.healthInsurance,
         supplementaryInsurance: payrollRecord.supplementaryInsurance,
-        incomeTax: payrollRecord.incomeTax,
-        total: payrollRecord.totalDeductions
+        attendancePenalty,
+        incomeTax: displayAmounts.incomeTax,
+        total: displayAmounts.totalDeductions
       },
-      netPay: payrollRecord.netPay
+      netPay: displayAmounts.netPay
     };
 
     // 生成 PDF
@@ -329,6 +416,26 @@ async function generateEncryptedPDF(payslip: PayslipData, password: string | nul
   drawRow('Position:', payslip.employee.position || 'N/A');
   y -= lineHeight * 0.5;
 
+  page.drawText('Work Hours', {
+    x: leftMargin,
+    y,
+    size: 14,
+    font: boldFont,
+    color: rgb(0.3, 0.3, 0.3)
+  });
+  y -= lineHeight;
+
+  drawRow('Expected Hours:', formatPdfHours(payslip.workHours.expectedWorkHours));
+  drawRow('Actual Hours:', formatPdfHours(payslip.workHours.actualWorkHours));
+  drawRow('Special Leave:', formatPdfHours(payslip.workHours.specialLeaveHours));
+  drawRow('Comp Leave:', formatPdfHours(payslip.workHours.compLeaveHours));
+  drawRow('National Holiday Hours:', formatPdfHours(payslip.workHours.nationalHolidayHours));
+  drawRow('Scheduled Overtime:', formatPdfHours(payslip.workHours.scheduledOvertimeHours));
+  drawRow('Payroll Regular Hours:', formatPdfHours(payslip.workHours.payrollRegularHours));
+  drawRow('Payroll Overtime Hours:', formatPdfHours(payslip.workHours.payrollOvertimeHours));
+  drawRow('Payroll Total Hours:', formatPdfHours(payslip.workHours.payrollTotalHours));
+  y -= lineHeight * 0.5;
+
   // 薪資組成
   page.drawText('Salary Breakdown', {
     x: leftMargin,
@@ -354,7 +461,9 @@ async function generateEncryptedPDF(payslip: PayslipData, password: string | nul
   };
 
   drawAmountRow('Base Salary:', payslip.salary.basePay);
-  drawAmountRow('Overtime Pay:', payslip.salary.overtimePay);
+  if (payslip.salary.overtimePay > 0) {
+    drawAmountRow('Overtime Pay:', payslip.salary.overtimePay);
+  }
   y -= lineHeight * 0.3;
   
   page.drawLine({
@@ -381,7 +490,15 @@ async function generateEncryptedPDF(payslip: PayslipData, password: string | nul
   drawAmountRow('Labor Insurance:', payslip.deductions.laborInsurance, true);
   drawAmountRow('Health Insurance:', payslip.deductions.healthInsurance, true);
   drawAmountRow('Supplementary Insurance:', payslip.deductions.supplementaryInsurance, true);
-  drawAmountRow('Income Tax:', payslip.deductions.incomeTax, true);
+  if (payslip.deductions.attendancePenalty.totalAmount > 0) {
+    drawAmountRow('Attendance Deduction:', payslip.deductions.attendancePenalty.totalAmount, true);
+    for (const detail of payslip.deductions.attendancePenalty.details.slice(0, 4)) {
+      drawRow(`${detail.workDate} ${detail.status}:`, detail.formula.replace(/NT\$ /g, 'NT$'));
+    }
+  }
+  if (payslip.deductions.incomeTax > 0) {
+    drawAmountRow('Income Tax:', payslip.deductions.incomeTax, true);
+  }
   y -= lineHeight * 0.3;
   
   page.drawLine({

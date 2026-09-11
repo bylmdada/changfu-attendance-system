@@ -3,6 +3,7 @@
 import { useRouter, usePathname } from 'next/navigation';
 import Image from 'next/image';
 import { Home, LogOut, ArrowLeft, Settings } from 'lucide-react';
+import NotificationBell from '@/components/NotificationBell';
 
 interface User {
   id: number;
@@ -125,6 +126,8 @@ export default function SystemNavbar({ user, backUrl, backLabel }: SystemNavbarP
                 <span className="hidden sm:inline">{backLabel || '返回'}</span>
               </a>
             )}
+
+            <NotificationBell />
             
             {/* 回首頁按鈕 */}
             <a

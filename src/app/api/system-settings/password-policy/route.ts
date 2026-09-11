@@ -12,6 +12,7 @@ import {
   getStoredPasswordPolicy,
   PASSWORD_POLICY_SETTINGS_KEY,
 } from '@/lib/password-policy-store';
+import { logSystemSettingsChange } from '@/lib/system-settings-audit';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -223,6 +224,15 @@ export async function POST(request: NextRequest) {
         value: JSON.stringify(normalizedPolicy),
         description: '密碼安全政策設定'
       }
+    });
+
+    await logSystemSettingsChange({
+      request,
+      user: userAuth,
+      settingKey: PASSWORD_POLICY_SETTINGS_KEY,
+      description: '密碼政策設定變更',
+      oldValue: existingPolicy,
+      newValue: normalizedPolicy,
     });
 
     return NextResponse.json({ 

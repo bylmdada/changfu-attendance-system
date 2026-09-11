@@ -44,6 +44,7 @@ const transactionClient = {
     update: jest.fn(),
   },
   schedule: {
+    findMany: jest.fn(),
     updateMany: jest.fn(),
   },
   annualLeave: {
@@ -51,9 +52,20 @@ const transactionClient = {
   },
 };
 
+
+function accountingSchedules(args: { where: { workDate: { gte: string; lte: string } } }) {
+  const rows = [];
+  for (const day = new Date(args.where.workDate.gte); day <= new Date(args.where.workDate.lte); day.setUTCDate(day.getUTCDate() + 1)) {
+    rows.push({workDate: day.toISOString().slice(0,10), startTime:'09:00', endTime:'17:00', workHours:8, breakTime:0});
+  }
+  return Promise.resolve(rows);
+}
+
 describe('leave batch-approve route guards', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    transactionClient.schedule.findMany.mockImplementation(accountingSchedules);
+    transactionClient.annualLeave.updateMany.mockResolvedValue({ count: 1 });
     mockedCheckRateLimit.mockResolvedValue({ allowed: true } as never);
     mockedValidateCSRF.mockResolvedValue({ valid: true } as never);
     mockedGetUserFromRequest.mockResolvedValue({
@@ -117,8 +129,8 @@ describe('leave batch-approve route guards', () => {
       employeeId: 9,
       status: 'PENDING',
       leaveType: 'ANNUAL',
-      startDate: new Date('2026-04-01T00:00:00.000Z'),
-      endDate: new Date('2026-04-02T00:00:00.000Z'),
+      startDate: new Date('2026-04-01T01:00:00.000Z'),
+      endDate: new Date('2026-04-02T09:00:00.000Z'),
       employee: { id: 9 },
     } as never);
     transactionClient.leaveRequest.update.mockResolvedValue({ id: 41 } as never);
@@ -146,7 +158,7 @@ describe('leave batch-approve route guards', () => {
     expect(mockPrisma.annualLeave.updateMany).not.toHaveBeenCalled();
     expect(transactionClient.leaveRequest.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 41 },
+        where: expect.objectContaining({ id: 41 }),
         data: expect.objectContaining({
           status: 'APPROVED',
           approvedBy: 88,
@@ -157,6 +169,7 @@ describe('leave batch-approve route guards', () => {
       where: {
         employeeId: 9,
         year: 2026,
+        remainingDays: { gte: 2 },
       },
       data: {
         usedDays: { increment: 2 },
@@ -171,8 +184,8 @@ describe('leave batch-approve route guards', () => {
       employeeId: 9,
       status: 'PENDING',
       leaveType: 'ANNUAL_LEAVE',
-      startDate: new Date('2026-12-31T00:00:00.000Z'),
-      endDate: new Date('2027-01-02T00:00:00.000Z'),
+      startDate: new Date('2026-12-31T01:00:00.000Z'),
+      endDate: new Date('2027-01-02T09:00:00.000Z'),
       employee: { id: 9 },
     } as never);
     transactionClient.leaveRequest.update.mockResolvedValue({ id: 42 } as never);
@@ -199,6 +212,7 @@ describe('leave batch-approve route guards', () => {
       where: {
         employeeId: 9,
         year: 2026,
+        remainingDays: { gte: 1 },
       },
       data: {
         usedDays: { increment: 1 },
@@ -209,6 +223,7 @@ describe('leave batch-approve route guards', () => {
       where: {
         employeeId: 9,
         year: 2027,
+        remainingDays: { gte: 2 },
       },
       data: {
         usedDays: { increment: 2 },
@@ -223,8 +238,8 @@ describe('leave batch-approve route guards', () => {
       employeeId: 9,
       status: 'PENDING_ADMIN',
       leaveType: 'SICK_LEAVE',
-      startDate: new Date('2026-04-03T00:00:00.000Z'),
-      endDate: new Date('2026-04-03T00:00:00.000Z'),
+      startDate: new Date('2026-04-03T01:00:00.000Z'),
+      endDate: new Date('2026-04-03T09:00:00.000Z'),
       employee: { id: 9 },
     } as never);
     transactionClient.leaveRequest.update.mockResolvedValue({ id: 52 } as never);
@@ -248,7 +263,7 @@ describe('leave batch-approve route guards', () => {
     expect(payload.count).toBe(1);
     expect(transactionClient.leaveRequest.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 52 },
+        where: expect.objectContaining({ id: 52 }),
         data: expect.objectContaining({
           status: 'APPROVED',
           approvedBy: 88,
@@ -263,8 +278,8 @@ describe('leave batch-approve route guards', () => {
       employeeId: 9,
       status: 'APPROVED',
       leaveType: 'SICK_LEAVE',
-      startDate: new Date('2026-04-05T00:00:00.000Z'),
-      endDate: new Date('2026-04-05T00:00:00.000Z'),
+      startDate: new Date('2026-04-05T01:00:00.000Z'),
+      endDate: new Date('2026-04-05T09:00:00.000Z'),
       employee: { id: 9 },
     } as never);
 
@@ -294,8 +309,8 @@ describe('leave batch-approve route guards', () => {
       employeeId: 9,
       status: 'PENDING',
       leaveType: 'SICK_LEAVE',
-      startDate: new Date('2026-04-03T00:00:00.000Z'),
-      endDate: new Date('2026-04-04T00:00:00.000Z'),
+      startDate: new Date('2026-04-03T01:00:00.000Z'),
+      endDate: new Date('2026-04-04T09:00:00.000Z'),
       employee: { id: 9 },
     } as never);
     transactionClient.leaveRequest.update.mockResolvedValue({ id: 53 } as never);
@@ -320,27 +335,6 @@ describe('leave batch-approve route guards', () => {
     expect(payload.count).toBe(1);
     expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
     expect(transactionClient.annualLeave.updateMany).not.toHaveBeenCalled();
-    expect(transactionClient.schedule.updateMany).toHaveBeenNthCalledWith(1, {
-      where: {
-        employeeId: 9,
-        workDate: '2026-04-03',
-      },
-      data: {
-        shiftType: 'FDL',
-        startTime: '',
-        endTime: '',
-      },
-    });
-    expect(transactionClient.schedule.updateMany).toHaveBeenNthCalledWith(2, {
-      where: {
-        employeeId: 9,
-        workDate: '2026-04-04',
-      },
-      data: {
-        shiftType: 'FDL',
-        startTime: '',
-        endTime: '',
-      },
-    });
+    expect(transactionClient.schedule.updateMany).not.toHaveBeenCalled();
   });
 });

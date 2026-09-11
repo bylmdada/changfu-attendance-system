@@ -9,6 +9,7 @@ import {
   buildBonusManagementRequest,
 } from '@/lib/bonus-management-client';
 import SystemNavbar from '@/components/SystemNavbar';
+import ConfirmDialog from '@/components/ConfirmDialog';
 
 interface BonusType {
   id?: number;
@@ -50,6 +51,7 @@ export default function BonusManagementPage() {
   const [editingBonus, setEditingBonus] = useState<BonusType | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [deleteConfirmBonus, setDeleteConfirmBonus] = useState<BonusType | null>(null);
 
   useEffect(() => {
     const fetchUser = async () => {
@@ -125,18 +127,20 @@ export default function BonusManagementPage() {
     }
   };
 
-  const handleDeleteBonus = async (id: number) => {
-    if (!confirm('確定要刪除此獎金類型嗎？此操作無法復原。')) {
-      return;
-    }
+  const handleDeleteBonus = async (bonus: BonusType) => {
+    setDeleteConfirmBonus(bonus);
+  };
 
+  const performDeleteBonus = async () => {
+    if (!deleteConfirmBonus?.id) return;
     try {
-      const response = await fetchJSONWithCSRF(`/api/system-settings/bonus-management?id=${id}`, {
+      const response = await fetchJSONWithCSRF(`/api/system-settings/bonus-management?id=${deleteConfirmBonus.id}`, {
         method: 'DELETE'
       });
 
       if (response.ok) {
         await loadBonusTypes();
+        setDeleteConfirmBonus(null);
         setMessage({ type: 'success', text: '獎金類型已刪除' });
       } else {
         const errorData = await response.json();
@@ -279,7 +283,7 @@ export default function BonusManagementPage() {
                         <Edit2 className="h-4 w-4" />
                       </button>
                       <button
-                        onClick={() => bonus.id && handleDeleteBonus(bonus.id)}
+                        onClick={() => bonus.id && handleDeleteBonus(bonus)}
                         className="text-red-600 hover:text-red-900 p-1"
                       >
                         <Trash2 className="h-4 w-4" />
@@ -318,6 +322,15 @@ export default function BonusManagementPage() {
           />
         )}
       </main>
+      <ConfirmDialog
+        open={Boolean(deleteConfirmBonus)}
+        title="刪除獎金類型"
+        message={deleteConfirmBonus ? `確定要刪除「${deleteConfirmBonus.bonusTypeName}」嗎？\n\n此操作無法復原。` : ''}
+        tone="danger"
+        confirmLabel="刪除類型"
+        onCancel={() => setDeleteConfirmBonus(null)}
+        onConfirm={performDeleteBonus}
+      />
     </div>
   );
 }

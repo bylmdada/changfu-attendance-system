@@ -18,6 +18,41 @@ async function ensureActiveManagedSite(siteId: number) {
   return null;
 }
 
+async function findAssignableUser(input: { userId?: number; username?: string }) {
+  const query =
+    input.userId != null
+      ? { id: input.userId }
+      : input.username
+        ? { username: input.username.trim() }
+        : null;
+  if (!query) return { error: fail('請提供 userId 或 username') };
+
+  const user = await prisma.user.findUnique({
+    where: query,
+    select: {
+      id: true,
+      username: true,
+      isActive: true,
+      employee: {
+        select: {
+          id: true,
+          name: true,
+          employeeId: true,
+          isActive: true,
+        },
+      },
+    },
+  });
+
+  if (!user) return { error: fail('查無此使用者帳號', 404) };
+  if (!user.isActive) return { error: fail('此帳號已停用，無法指派', 400) };
+  if (!user.employee || !user.employee.isActive) {
+    return { error: fail('此帳號未綁定在職員工，無法指派', 400) };
+  }
+
+  return { user };
+}
+
 // GET：列出該據點人員指派
 export async function GET(
   request: NextRequest,
@@ -101,7 +136,7 @@ export async function GET(
   }
 
   const rows = await prisma.userSiteAssignment.findMany({
-    where: { siteId },
+    where: { siteId, isActive: true },
     include: {
       user: { include: { employee: { select: { id: true, name: true, email: true, department: true, position: true, employeeId: true } } } },
     },
@@ -141,16 +176,12 @@ export async function POST(
   const role = String(body?.maintenanceRole ?? 'MAINTAINER');
   if (!ROLES.includes(role)) return fail('角色參數錯誤');
 
-  let userId = parsePositiveInt(body?.userId);
-  if (!userId && body?.username) {
-    const u = await prisma.user.findUnique({
-      where: { username: String(body.username).trim() },
-      select: { id: true },
-    });
-    if (!u) return fail('查無此使用者帳號', 404);
-    userId = u.id;
-  }
-  if (!userId) return fail('請提供 userId 或 username');
+  const resolved = await findAssignableUser({
+    userId: parsePositiveInt(body?.userId) ?? undefined,
+    username: typeof body?.username === 'string' ? body.username : undefined,
+  });
+  if ('error' in resolved) return resolved.error;
+  const userId = resolved.user.id;
 
   const row = await prisma.userSiteAssignment.upsert({
     where: { userId_siteId: { userId, siteId } },

@@ -3,6 +3,7 @@ import { GET } from '../route';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest, getUserFromToken } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
+import { calculateOvertimeRequestsEligibility } from '@/lib/overtime-eligibility';
 
 jest.mock('@/lib/database', () => ({
   prisma: {
@@ -21,10 +22,17 @@ jest.mock('@/lib/rate-limit', () => ({
   checkRateLimit: jest.fn(),
 }));
 
+jest.mock('@/lib/overtime-eligibility', () => ({
+  calculateOvertimeRequestsEligibility: jest.fn(),
+}));
+
 const mockedPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockedGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
 const mockedGetUserFromToken = getUserFromToken as jest.MockedFunction<typeof getUserFromToken>;
 const mockedCheckRateLimit = checkRateLimit as jest.MockedFunction<typeof checkRateLimit>;
+const mockedCalculateEligibility = calculateOvertimeRequestsEligibility as jest.MockedFunction<
+  typeof calculateOvertimeRequestsEligibility
+>;
 
 describe('overtime statistics route auth guards', () => {
   beforeEach(() => {
@@ -62,6 +70,16 @@ describe('overtime statistics route auth guards', () => {
         },
       },
     ] as never);
+    mockedCalculateEligibility.mockResolvedValue({
+      byRequestId: new Map(),
+      byEmployeeDate: new Map([['1-2026-03-05', {
+        employeeId: 1,
+        workDate: '2026-03-05',
+        requestIds: [1],
+        effectiveHours: 0.19,
+      }]]),
+      totalEffectiveHours: 0.19,
+    } as never);
   });
 
   it('accepts shared token cookie extraction on GET requests', async () => {
@@ -77,6 +95,7 @@ describe('overtime statistics route auth guards', () => {
     expect(response.status).toBe(200);
     expect(data.success).toBe(true);
     expect(data.summary.totalRequests).toBe(1);
+    expect(data.summary.totalHours).toBe(0.19);
   });
 
   it.each([

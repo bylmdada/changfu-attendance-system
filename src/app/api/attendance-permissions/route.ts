@@ -70,7 +70,8 @@ export async function GET(request: NextRequest) {
             employeeId: true,
             name: true,
             department: true,
-            position: true
+            position: true,
+            isActive: true
           }
         }
       },
@@ -145,6 +146,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '員工不存在' }, { status: 404 });
     }
 
+    if (employee.isActive === false) {
+      return NextResponse.json({ error: '只能替狀態為活躍的有效員工新增考勤權限' }, { status: 400 });
+    }
+
     // 檢查是否已有權限設定
     const existingPermission = await prisma.attendancePermission.findUnique({
       where: { employeeId }
@@ -193,7 +198,8 @@ export async function POST(request: NextRequest) {
             employeeId: true,
             name: true,
             department: true,
-            position: true
+            position: true,
+            isActive: true
           }
         }
       }

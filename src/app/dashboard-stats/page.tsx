@@ -7,6 +7,7 @@ import {
   AlertCircle, CheckCircle, XCircle, RefreshCw
 } from 'lucide-react';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import { getLeaveTypeLabel } from '@/lib/leave-types';
 
 interface DashboardStats {
   period: { year: number; month: number; workDays: number };
@@ -43,17 +44,6 @@ interface DashboardStats {
     rate: number;
   }>;
 }
-
-const leaveTypeNames: Record<string, string> = {
-  ANNUAL: '特休假',
-  SICK: '病假',
-  PERSONAL: '事假',
-  MARRIAGE: '婚假',
-  MATERNITY: '產假',
-  BEREAVEMENT: '喪假',
-  COMP_LEAVE: '補休',
-  OTHER: '其他'
-};
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -203,7 +193,7 @@ export default function DashboardPage() {
                 <div className="grid grid-cols-3 gap-4">
                   <div className="text-center p-4 bg-orange-50 rounded-lg">
                     <p className="text-2xl font-bold text-orange-600">{stats.overtime.totalHours}</p>
-                    <p className="text-sm text-gray-500">總時數</p>
+                    <p className="text-sm text-gray-500">核准申請時數</p>
                   </div>
                   <div className="text-center p-4 bg-orange-50 rounded-lg">
                     <p className="text-2xl font-bold text-orange-600">{stats.overtime.requestCount}</p>
@@ -211,7 +201,7 @@ export default function DashboardPage() {
                   </div>
                   <div className="text-center p-4 bg-orange-50 rounded-lg">
                     <p className="text-2xl font-bold text-orange-600">{stats.overtime.avgPerEmployee}</p>
-                    <p className="text-sm text-gray-500">人均時數</p>
+                    <p className="text-sm text-gray-500">人均申請時數</p>
                   </div>
                 </div>
               </div>
@@ -227,7 +217,7 @@ export default function DashboardPage() {
                     Object.entries(stats.leave.byType).map(([type, count]) => (
                       <div key={type} className="flex justify-between items-center p-2 bg-gray-50 rounded">
                         <span className="text-sm text-gray-700">
-                          {leaveTypeNames[type] || type}
+                          {getLeaveTypeLabel(type)}
                         </span>
                         <span className="font-semibold text-gray-900">{count} 件</span>
                       </div>

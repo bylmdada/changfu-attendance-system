@@ -5,6 +5,7 @@ import { validateCSRF } from '@/lib/csrf';
 import { getUserFromRequest } from '@/lib/auth';
 import { safeParseJSON } from '@/lib/validation';
 import { DEPARTMENT_OPTIONS, DEPARTMENT_POSITIONS } from '@/constants/departments';
+import { logSystemSettingsChange } from '@/lib/system-settings-audit';
 
 function parsePositiveInteger(value: unknown) {
   if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
@@ -234,6 +235,16 @@ export async function POST(request: NextRequest) {
         include: { positions: true }
       });
 
+      await logSystemSettingsChange({
+        request,
+        user: userAuth,
+        settingKey: 'department-positions',
+        description: '部門新增',
+        oldValue: null,
+        newValue: newDepartment,
+        targetId: newDepartment.id,
+      });
+
       return NextResponse.json({ 
         success: true, 
         message: '部門新增成功',
@@ -274,6 +285,16 @@ export async function POST(request: NextRequest) {
           name: parsedName.value,
           sortOrder: (maxOrder._max.sortOrder || 0) + 1
         }
+      });
+
+      await logSystemSettingsChange({
+        request,
+        user: userAuth,
+        settingKey: 'department-positions',
+        description: '職位新增',
+        oldValue: null,
+        newValue: newPosition,
+        targetId: newPosition.id,
       });
 
       return NextResponse.json({ 
@@ -391,6 +412,16 @@ export async function PUT(request: NextRequest) {
         return updatedDepartment;
       });
 
+      await logSystemSettingsChange({
+        request,
+        user: userAuth,
+        settingKey: 'department-positions',
+        description: '部門設定變更',
+        oldValue: existingDepartment,
+        newValue: updated,
+        targetId: updated.id,
+      });
+
       return NextResponse.json({ success: true, department: updated });
     }
 
@@ -466,6 +497,16 @@ export async function PUT(request: NextRequest) {
         return updatedPosition;
       });
 
+      await logSystemSettingsChange({
+        request,
+        user: userAuth,
+        settingKey: 'department-positions',
+        description: '職位設定變更',
+        oldValue: existingPosition,
+        newValue: updated,
+        targetId: updated.id,
+      });
+
       return NextResponse.json({ success: true, position: updated });
     }
 
@@ -498,6 +539,15 @@ export async function PUT(request: NextRequest) {
           })
         )
       );
+
+      await logSystemSettingsChange({
+        request,
+        user: userAuth,
+        settingKey: 'department-positions',
+        description: '職位排序變更',
+        oldValue: null,
+        newValue: { positions: normalizedPositions },
+      });
 
       return NextResponse.json({ success: true, message: '排序更新成功' });
     }
@@ -572,6 +622,15 @@ export async function DELETE(request: NextRequest) {
 
       // 刪除部門（會連帶刪除所有職位）
       await prisma.department.delete({ where: { id: parsedId } });
+      await logSystemSettingsChange({
+        request,
+        user: userAuth,
+        settingKey: 'department-positions',
+        description: '部門刪除',
+        oldValue: existingDepartment,
+        newValue: null,
+        targetId: parsedId,
+      });
       return NextResponse.json({ success: true, message: '部門刪除成功' });
     }
 
@@ -605,6 +664,15 @@ export async function DELETE(request: NextRequest) {
       }
 
       await prisma.position.delete({ where: { id: parsedId } });
+      await logSystemSettingsChange({
+        request,
+        user: userAuth,
+        settingKey: 'department-positions',
+        description: '職位刪除',
+        oldValue: existingPosition,
+        newValue: null,
+        targetId: parsedId,
+      });
       return NextResponse.json({ success: true, message: '職位刪除成功' });
     }
 
@@ -656,6 +724,15 @@ export async function DELETE(request: NextRequest) {
       if (deleteResult.count === 0) {
         return NextResponse.json({ error: '找不到可刪除的職位' }, { status: 400 });
       }
+
+      await logSystemSettingsChange({
+        request,
+        user: userAuth,
+        settingKey: 'department-positions',
+        description: '職位批量刪除',
+        oldValue: existingPositions.filter(position => deletableIds.includes(position.id)),
+        newValue: { deletedIds: deletableIds, failedIds },
+      });
 
       return NextResponse.json({
         success: true,

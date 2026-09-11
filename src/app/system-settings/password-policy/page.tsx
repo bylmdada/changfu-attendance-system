@@ -6,6 +6,8 @@ import { Shield, Settings, Save, Plus, Trash2, AlertTriangle, Lock, Key, Eye, Ey
 import { buildAuthMeRequest, buildCookieSessionRequest } from '@/lib/admin-session-client';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import SystemNavbar from '@/components/SystemNavbar';
+import ConfirmDialog from '@/components/ConfirmDialog';
+import { SimpleToast, useLocalToast } from '@/components/Toast';
 
 interface PasswordPolicy {
   // 密碼長度
@@ -88,6 +90,7 @@ interface TestResults {
 
 export default function PasswordPolicySettings() {
   const router = useRouter();
+  const { toast, showToast, clearToast } = useLocalToast();
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -125,6 +128,7 @@ export default function PasswordPolicySettings() {
   const [passwordExceptions, setPasswordExceptions] = useState<PasswordException[]>([]);
   const [showExceptionForm, setShowExceptionForm] = useState(false);
   const [employees, setEmployees] = useState<{ id: string; name: string; code: string }[]>([]);
+  const [deleteExceptionTarget, setDeleteExceptionTarget] = useState<PasswordException | null>(null);
   const [exceptionForm, setExceptionForm] = useState({
     employeeId: '',
     employeeName: '',
@@ -208,14 +212,14 @@ export default function PasswordPolicySettings() {
       });
 
       if (response.ok) {
-        alert('密碼政策已儲存！');
+        showToast('success', '密碼政策已儲存');
       } else {
         const error = await response.json();
-        alert(`儲存失敗: ${error.message || '未知錯誤'}`);
+        showToast('error', `儲存失敗: ${error.message || '未知錯誤'}`);
       }
     } catch (error) {
       console.error('儲存政策失敗:', error);
-      alert('儲存失敗，請重試');
+      showToast('error', '儲存失敗，請重試');
     } finally {
       setSaving(false);
     }
@@ -234,37 +238,38 @@ export default function PasswordPolicySettings() {
         setPasswordExceptions(prev => [...prev, result.exception]);
         setShowExceptionForm(false);
         resetExceptionForm();
-        alert('例外新增成功');
+        showToast('success', '例外新增成功');
       } else {
         const error = await response.json();
-        alert(`新增失敗: ${error.error || '未知錯誤'}`);
+        showToast('error', `新增失敗: ${error.error || '未知錯誤'}`);
       }
     } catch (error) {
       console.error('新增例外失敗:', error);
-      alert('新增失敗，請重試');
+      showToast('error', '新增失敗，請重試');
     }
   };
 
   // 刪除例外
-  const handleDeleteException = async (exceptionId: number) => {
-    if (!confirm('確定要刪除這個例外嗎？')) return;
+  const handleDeleteException = async () => {
+    if (!deleteExceptionTarget) return;
 
     try {
       const response = await fetchJSONWithCSRF('/api/system-settings/password-exceptions', {
         method: 'DELETE',
-        body: { id: exceptionId }
+        body: { id: deleteExceptionTarget.id }
       });
 
       if (response.ok) {
-        setPasswordExceptions(prev => prev.filter(exc => exc.id !== exceptionId));
-        alert('例外刪除成功');
+        setPasswordExceptions(prev => prev.filter(exc => exc.id !== deleteExceptionTarget.id));
+        setDeleteExceptionTarget(null);
+        showToast('success', '例外刪除成功');
       } else {
         const error = await response.json();
-        alert(`刪除失敗: ${error.error || '未知錯誤'}`);
+        showToast('error', `刪除失敗: ${error.error || '未知錯誤'}`);
       }
     } catch (error) {
       console.error('刪除例外失敗:', error);
-      alert('刪除失敗，請重試');
+      showToast('error', '刪除失敗，請重試');
     }
   };
 
@@ -875,7 +880,7 @@ export default function PasswordPolicySettings() {
                           </td>
                           <td className="py-3 px-4">
                             <button 
-                              onClick={() => handleDeleteException(exception.id)}
+                              onClick={() => setDeleteExceptionTarget(exception)}
                               className="text-red-600 hover:text-red-700"
                             >
                               <Trash2 className="h-4 w-4" />
@@ -1075,6 +1080,21 @@ export default function PasswordPolicySettings() {
           </div>
         </div>
       )}
+      <ConfirmDialog
+        open={!!deleteExceptionTarget}
+        title="刪除密碼例外"
+        message={
+          deleteExceptionTarget
+            ? `確定要刪除「${deleteExceptionTarget.employeeName}」的密碼政策例外嗎？`
+            : ''
+        }
+        confirmLabel="刪除"
+        cancelLabel="取消"
+        tone="danger"
+        onConfirm={handleDeleteException}
+        onCancel={() => setDeleteExceptionTarget(null)}
+      />
+      <SimpleToast toast={toast} onClose={clearToast} />
     </div>
   );
 }

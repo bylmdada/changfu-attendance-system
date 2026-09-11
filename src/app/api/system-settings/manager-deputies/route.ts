@@ -12,6 +12,7 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { safeParseJSON } from '@/lib/validation';
+import { logSystemSettingsChange } from '@/lib/system-settings-audit';
 
 function parsePositiveInteger(value: unknown) {
   if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
@@ -153,6 +154,16 @@ export async function POST(request: NextRequest) {
       }
     });
 
+    await logSystemSettingsChange({
+      request,
+      user,
+      settingKey: 'manager-deputies',
+      description: '代理人設定新增',
+      oldValue: null,
+      newValue: deputy,
+      targetId: deputy.id,
+    });
+
     return NextResponse.json({
       success: true,
       deputy
@@ -233,6 +244,10 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: '啟用狀態必須為布林值' }, { status: 400 });
     }
 
+    const oldDeputy = await prisma.managerDeputy.findUnique({
+      where: { id: normalizedId }
+    });
+
     const updateData: Prisma.ManagerDeputyUncheckedUpdateInput = {};
 
     if (normalizedDeputyEmployeeId !== undefined && normalizedDeputyEmployeeId !== null) {
@@ -254,6 +269,16 @@ export async function PUT(request: NextRequest) {
     const deputy = await prisma.managerDeputy.update({
       where: { id: normalizedId },
       data: updateData
+    });
+
+    await logSystemSettingsChange({
+      request,
+      user,
+      settingKey: 'manager-deputies',
+      description: '代理人設定變更',
+      oldValue: oldDeputy,
+      newValue: deputy,
+      targetId: deputy.id,
     });
 
     return NextResponse.json({
@@ -292,8 +317,22 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: '缺少 ID' }, { status: 400 });
     }
 
+    const oldDeputy = await prisma.managerDeputy.findUnique({
+      where: { id }
+    });
+
     await prisma.managerDeputy.delete({
       where: { id }
+    });
+
+    await logSystemSettingsChange({
+      request,
+      user,
+      settingKey: 'manager-deputies',
+      description: '代理人設定刪除',
+      oldValue: oldDeputy,
+      newValue: null,
+      targetId: id,
     });
 
     return NextResponse.json({

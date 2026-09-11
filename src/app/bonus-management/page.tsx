@@ -9,6 +9,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge';
 import { Plus, Edit, Trash2 } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
+import ConfirmDialog from '@/components/ConfirmDialog';
+import { SimpleToast, useLocalToast } from '@/components/Toast';
 
 interface Employee {
   id: number;
@@ -79,8 +81,10 @@ export default function BonusManagementPage() {
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editingRecord, setEditingRecord] = useState<BonusRecord | null>(null);
+  const [deleteConfirmRecord, setDeleteConfirmRecord] = useState<BonusRecord | null>(null);
   const [annualSummary, setAnnualSummary] = useState<AnnualSummary | null>(null);
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
+  const { toast, showToast, clearToast } = useLocalToast();
 
   // 獲取當前用戶
   useEffect(() => {
@@ -173,7 +177,7 @@ export default function BonusManagementPage() {
     e.preventDefault();
     
     if (!formData.employeeId || !formData.amount || !formData.bonusType) {
-      alert('請填寫必要欄位');
+      showToast('error', '請填寫必要欄位');
       return;
     }
 
@@ -216,11 +220,11 @@ export default function BonusManagementPage() {
         fetchBonusRecords();
       } else {
         const error = await response.json();
-        alert(`操作失敗: ${error.error}`);
+        showToast('error', `操作失敗: ${error.error}`);
       }
     } catch (error) {
       console.error('提交失敗:', error);
-      alert('操作失敗，請稍後重試');
+      showToast('error', '操作失敗，請稍後重試');
     }
   };
 
@@ -238,23 +242,28 @@ export default function BonusManagementPage() {
     setShowForm(true);
   };
 
-  const handleDelete = async (id: number) => {
-    if (!confirm('確定要刪除這筆獎金記錄嗎？')) return;
+  const handleDelete = async (record: BonusRecord) => {
+    setDeleteConfirmRecord(record);
+  };
 
+  const performDelete = async () => {
+    if (!deleteConfirmRecord) return;
     try {
-      const response = await fetchJSONWithCSRF(`/api/bonuses?id=${id}`, {
+      const response = await fetchJSONWithCSRF(`/api/bonuses?id=${deleteConfirmRecord.id}`, {
         method: 'DELETE'
       });
 
       if (response.ok) {
+        showToast('success', '獎金記錄已刪除');
+        setDeleteConfirmRecord(null);
         fetchBonusRecords();
       } else {
         const error = await response.json();
-        alert(`刪除失敗: ${error.error}`);
+        showToast('error', `刪除失敗: ${error.error}`);
       }
     } catch (error) {
       console.error('刪除失敗:', error);
-      alert('刪除失敗，請稍後重試');
+      showToast('error', '刪除失敗，請稍後重試');
     }
   };
 
@@ -458,7 +467,7 @@ export default function BonusManagementPage() {
                         <Button
                           variant="outline"
                           size="sm"
-                          onClick={() => handleDelete(record.id)}
+                          onClick={() => handleDelete(record)}
                         >
                           <Trash2 className="h-4 w-4" />
                         </Button>
@@ -598,6 +607,16 @@ export default function BonusManagementPage() {
           </CardContent>
         </Card>
       )}
+      <ConfirmDialog
+        open={Boolean(deleteConfirmRecord)}
+        title="刪除獎金記錄"
+        message={deleteConfirmRecord ? `確定要刪除 ${deleteConfirmRecord.employee.name} 的「${deleteConfirmRecord.bonusTypeName}」獎金記錄嗎？\n\n此操作無法復原。` : ''}
+        tone="danger"
+        confirmLabel="刪除記錄"
+        onCancel={() => setDeleteConfirmRecord(null)}
+        onConfirm={performDelete}
+      />
+      <SimpleToast toast={toast} onClose={clearToast} />
     </div>
   );
 }

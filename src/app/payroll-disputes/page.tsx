@@ -18,6 +18,8 @@ import {
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import ApprovalProgress, { ApprovalReviewRecord } from '@/components/ApprovalProgress';
+import EmployeeListSelect, { useActiveEmployeeDepartments } from '@/components/EmployeeListSelect';
+import ConfirmDialog from '@/components/ConfirmDialog';
 
 function getNextPayrollPeriod() {
   const now = new Date();
@@ -101,6 +103,7 @@ export default function PayrollDisputesPage() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [statusFilter, setStatusFilter] = useState('');
   const [departmentFilter, setDepartmentFilter] = useState('');
+  const [employeeFilter, setEmployeeFilter] = useState('');
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   
@@ -146,8 +149,15 @@ export default function PayrollDisputesPage() {
     reviews: ApprovalReviewRecord[];
     labels?: Record<number, { name: string; role: string }>;
   } | null>(null);
+  const [withdrawConfirmId, setWithdrawConfirmId] = useState<number | null>(null);
 
   const isAdmin = currentUser?.role === 'ADMIN' || currentUser?.role === 'HR';
+  const { departments } = useActiveEmployeeDepartments();
+  const filteredDisputes = disputes.filter((dispute) => {
+    if (departmentFilter && dispute.employee.department !== departmentFilter) return false;
+    if (employeeFilter && String(dispute.employee.id) !== employeeFilter) return false;
+    return true;
+  });
 
   const showToast = (type: 'success' | 'error', message: string) => {
     setToast({ type, message });
@@ -303,15 +313,20 @@ export default function PayrollDisputesPage() {
 
   // 撤回申請
   const handleWithdraw = async (disputeId: number) => {
-    if (!confirm('確定要撤回此異議申請嗎？')) return;
+    setWithdrawConfirmId(disputeId);
+  };
+
+  const performWithdraw = async () => {
+    if (!withdrawConfirmId) return;
 
     try {
-      const response = await fetchJSONWithCSRF(`/api/payroll-disputes/${disputeId}`, {
+      const response = await fetchJSONWithCSRF(`/api/payroll-disputes/${withdrawConfirmId}`, {
         method: 'DELETE'
       });
 
       if (response.ok) {
         showToast('success', '已撤回異議申請');
+        setWithdrawConfirmId(null);
         fetchDisputes();
       } else {
         const error = await response.json();
@@ -424,7 +439,7 @@ export default function PayrollDisputesPage() {
         {/* 篩選與操作 */}
         <div className="bg-white rounded-lg p-4 border border-gray-200 mb-6">
           <div className="flex flex-wrap items-center justify-between gap-4">
-            <div className="flex items-center gap-4">
+            <div className="flex flex-wrap items-center gap-4">
               <Search className="h-5 w-5 text-gray-400" />
               <select
                 value={statusFilter}
@@ -439,16 +454,30 @@ export default function PayrollDisputesPage() {
               
               {/* 部門篩選器 - 僅管理員可見 */}
               {isAdmin && (
-                <select
-                  value={departmentFilter}
-                  onChange={(e) => setDepartmentFilter(e.target.value)}
-                  className="border border-gray-300 rounded-lg px-3 py-2 text-gray-900"
-                >
-                  <option value="">全部部門</option>
-                  {Array.from(new Set(disputes.map(d => d.employee.department).filter(Boolean))).map(dept => (
-                    <option key={dept} value={dept}>{dept}</option>
-                  ))}
-                </select>
+                <>
+                  <select
+                    value={departmentFilter}
+                    onChange={(e) => {
+                      setDepartmentFilter(e.target.value);
+                      setEmployeeFilter('');
+                    }}
+                    className="border border-gray-300 rounded-lg px-3 py-2 text-gray-900"
+                  >
+                    <option value="">全部部門</option>
+                    {departments.map(dept => (
+                      <option key={dept} value={dept}>{dept}</option>
+                    ))}
+                  </select>
+                  <EmployeeListSelect
+                    value={employeeFilter}
+                    onChange={(value) => setEmployeeFilter(value)}
+                    emptyLabel="全部員工"
+                    valueField="id"
+                    departmentFilter={departmentFilter}
+                    className="min-w-[260px]"
+                    selectClassName="w-full border border-gray-300 rounded-lg px-3 py-2 text-gray-900 disabled:bg-gray-100"
+                  />
+                </>
               )}
             </div>
             
@@ -464,18 +493,14 @@ export default function PayrollDisputesPage() {
         </div>
 
         {/* 列表 */}
-        {disputes
-          .filter(d => !departmentFilter || d.employee.department === departmentFilter)
-          .length === 0 ? (
+        {filteredDisputes.length === 0 ? (
           <div className="text-center py-12 text-gray-500">
             <AlertCircle className="h-12 w-12 mx-auto mb-4 text-gray-400" />
             <p>暫無薪資異議申請</p>
           </div>
         ) : (
           <div className="space-y-4">
-            {disputes
-              .filter(d => !departmentFilter || d.employee.department === departmentFilter)
-              .map(dispute => (
+            {filteredDisputes.map(dispute => (
               <div key={dispute.id} className="bg-white rounded-lg border border-gray-200 overflow-hidden">
                 {/* 主要資訊 */}
                 <div className="p-4">
@@ -831,6 +856,16 @@ export default function PayrollDisputesPage() {
         )}
 
         {/* Toast */}
+        <ConfirmDialog
+          open={Boolean(withdrawConfirmId)}
+          title="撤回薪資異議"
+          message="確定要撤回此異議申請嗎？撤回後需重新送出才會再進入審核。"
+          tone="danger"
+          confirmLabel="撤回申請"
+          onCancel={() => setWithdrawConfirmId(null)}
+          onConfirm={performWithdraw}
+        />
+
         {toast && (
           <div className={`fixed bottom-4 right-4 px-6 py-3 rounded-lg shadow-lg z-50 ${toast.type === 'success' ? 'bg-green-600' : 'bg-red-600'} text-white`}>
             {toast.message}

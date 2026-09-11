@@ -1,10 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
-import { getTaiwanTodayEnd, getTaiwanTodayStart, toTaiwanDate, toTaiwanDateStr } from '@/lib/timezone';
-import { calculateAttendanceHours } from '@/lib/work-hours';
+import { getTaiwanTodayEnd, getTaiwanTodayStart, toTaiwanDateStr } from '@/lib/timezone';
+import { calculateAttendanceHours, getScheduledAttendanceTiming } from '@/lib/work-hours';
+import {
+  indexApprovedOvertimeRequests,
+  resolveAttendanceOvertimeType,
+  resolveApprovedAttendanceOvertime,
+} from '@/lib/approved-overtime';
+import { getStoredOvertimeCalculationSettings } from '@/lib/overtime-settings';
+import { getAttendanceRegularTimeExclusions } from '@/lib/attendance-leave-hours';
 
 const NON_WORKING_SHIFT_TYPES = new Set(['NH', 'RD', 'rd', 'FDL', 'OFF', 'TD']);
+const ABSENT_GRACE_MINUTES = 15;
 
 function parseTimeToMinutes(time?: string | null) {
   if (!time) {
@@ -23,11 +31,6 @@ function parseTimeToMinutes(time?: string | null) {
   }
 
   return hours * 60 + minutes;
-}
-
-function getTaiwanTimeMinutes(date: Date) {
-  const taiwanDate = toTaiwanDate(date);
-  return taiwanDate.getHours() * 60 + taiwanDate.getMinutes();
 }
 
 function isWorkingSchedule(schedule: { shiftType: string; startTime: string; endTime: string }) {
@@ -76,15 +79,85 @@ export async function GET(request: NextRequest) {
       }
     });
 
+    const attendanceLeaves = todayRecord
+      ? await prisma.leaveRequest.findMany({
+          where: {
+            employeeId: user.employee.id,
+            voidedAt: null,
+            OR: [
+              { status: 'APPROVED' },
+              { status: 'PENDING_ADMIN', managerOpinion: 'AGREE' },
+            ],
+            startDate: { lt: todayEnd },
+            endDate: { gt: todayStart },
+          },
+          select: {
+            startDate: true,
+            endDate: true,
+            status: true,
+            managerOpinion: true,
+            voidedAt: true,
+          },
+        })
+      : [];
+
     // 計算工作時數
     const hours = calculateAttendanceHours(
       todayRecord?.clockInTime,
       todayRecord?.clockOutTime,
-      undefined,
-      todaySchedule?.breakTime || 0
+      todaySchedule?.workHours ?? undefined,
+      todaySchedule?.breakTime || 0,
+      {
+        startTime: todaySchedule?.startTime,
+        endTime: todaySchedule?.endTime,
+        workDate: todayStart,
+        regularTimeExclusions: getAttendanceRegularTimeExclusions(attendanceLeaves),
+      }
     );
-    const workHours = hours.regularHours;
-    const overtimeHours = hours.overtimeHours;
+    let workHours = hours.regularHours;
+    let overtimeHours = hours.overtimeHours;
+
+    if (todayRecord) {
+      const [overtimeSettings, approvedOvertimeRequests] = await Promise.all([
+        getStoredOvertimeCalculationSettings(),
+        prisma.overtimeRequest.findMany({
+          where: {
+            employeeId: user.employee.id,
+            status: 'APPROVED',
+            overtimeDate: {
+              gte: todayStart,
+              lt: todayEnd,
+            },
+          },
+          select: {
+            id: true,
+            employeeId: true,
+            overtimeDate: true,
+            totalHours: true,
+            compensationType: true,
+          },
+        }),
+      ]);
+      const resolvedOvertime = resolveApprovedAttendanceOvertime(
+        {
+          employeeId: user.employee.id,
+          workDate: todayRecord.workDate,
+          regularHours: hours.regularHours,
+          actualWorkHours: hours.totalHours,
+          overtimeHours: hours.overtimeHours,
+          clockInOvertimeId: todayRecord.clockInOvertimeId,
+          clockOutOvertimeId: todayRecord.clockOutOvertimeId,
+          overtimeType: resolveAttendanceOvertimeType({
+            shiftType: todaySchedule?.shiftType,
+            workDate: todayRecord.workDate,
+          }),
+        },
+        indexApprovedOvertimeRequests(approvedOvertimeRequests),
+        overtimeSettings.overtimeMinUnit
+      );
+      workHours = resolvedOvertime.regularHours;
+      overtimeHours = resolvedOvertime.effectiveHours;
+    }
 
     // 只有具備管理權限的角色才能取得全公司今日出勤統計
     if (user.role === 'ADMIN' || user.role === 'HR') {
@@ -109,12 +182,18 @@ export async function GET(request: NextRequest) {
         },
       });
       const scheduledEmployeeIds = [...new Set(todaySchedules.map(schedule => schedule.employeeId))];
-      const [todayAttendanceCount, todayAttendanceRecords] = await Promise.all([
-        prisma.attendanceRecord.count({
+      const [todayClockedInRecords, todayAttendanceRecords] = await Promise.all([
+        prisma.attendanceRecord.findMany({
           where: {
             ...todayAttendanceWhere,
-            status: 'PRESENT'
-          }
+            clockInTime: { not: null },
+            employee: {
+              isActive: true,
+            },
+          },
+          select: {
+            employeeId: true,
+          },
         }),
         scheduledEmployeeIds.length > 0
           ? prisma.attendanceRecord.findMany({
@@ -130,8 +209,12 @@ export async function GET(request: NextRequest) {
             })
           : Promise.resolve([]),
       ]);
+      const todayAttendanceCount = new Set(todayClockedInRecords.map(record => record.employeeId)).size;
       const attendanceByEmployeeId = new Map(todayAttendanceRecords.map(record => [record.employeeId, record]));
-      const currentTaiwanMinutes = getTaiwanTimeMinutes(now);
+      const currentTaiwanMinutes = getScheduledAttendanceTiming({
+        clockInTime: now,
+        schedule: { workDate: todayStr, startTime: '00:00', endTime: '23:59' },
+      }).lateMinutes;
       let lateCount = 0;
       let absentCount = 0;
 
@@ -147,13 +230,22 @@ export async function GET(request: NextRequest) {
 
         const attendanceRecord = attendanceByEmployeeId.get(schedule.employeeId);
         if (attendanceRecord?.clockInTime) {
-          if (getTaiwanTimeMinutes(attendanceRecord.clockInTime) > scheduleStartMinutes) {
+          const timing = getScheduledAttendanceTiming({
+            clockInTime: attendanceRecord.clockInTime,
+            clockOutTime: attendanceRecord.clockOutTime,
+            schedule: {
+              workDate: todayStr,
+              startTime: schedule.startTime,
+              endTime: schedule.endTime,
+            },
+          });
+          if (timing.isLate) {
             lateCount++;
           }
           continue;
         }
 
-        if (!attendanceRecord?.clockOutTime && currentTaiwanMinutes >= scheduleStartMinutes) {
+        if (!attendanceRecord?.clockOutTime && currentTaiwanMinutes >= scheduleStartMinutes + ABSENT_GRACE_MINUTES) {
           absentCount++;
         }
       }

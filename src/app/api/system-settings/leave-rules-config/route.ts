@@ -5,6 +5,7 @@ import { validateCSRF } from '@/lib/csrf';
 import { DEFAULT_LEAVE_RULES_SETTINGS } from '@/lib/leave-rules-config-defaults';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { safeParseJSON } from '@/lib/validation';
+import { logSystemSettingsChange } from '@/lib/system-settings-audit';
 
 function parseDateOnly(value: unknown): Date | null {
   if (typeof value !== 'string') {
@@ -291,6 +292,11 @@ export async function POST(request: NextRequest) {
       isActive: true
     };
 
+    const existingConfig = await prisma.leaveRulesConfig.findFirst({
+      where: { isActive: true },
+      orderBy: { effectiveDate: 'desc' }
+    });
+
     // 使用交易避免舊設定先失效、但新設定建立失敗時留下空白狀態。
     const [, config] = await prisma.$transaction([
       prisma.leaveRulesConfig.updateMany({
@@ -301,6 +307,16 @@ export async function POST(request: NextRequest) {
         data: newConfigData
       })
     ]);
+
+    await logSystemSettingsChange({
+      request,
+      user,
+      settingKey: 'leave-rules-config',
+      description: '假別規則設定變更',
+      oldValue: existingConfig,
+      newValue: config,
+      targetId: config.id,
+    });
 
     return NextResponse.json({
       success: true,

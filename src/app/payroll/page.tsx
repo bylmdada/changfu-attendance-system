@@ -1,9 +1,12 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { DollarSign, Plus, Search, Users, Calculator, TrendingUp, BarChart3, Download, FileText, Eye, Loader2, X } from 'lucide-react';
+import { DollarSign, Plus, Users, Calculator, TrendingUp, BarChart3, Download, FileText, Eye, Loader2, X } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import EmployeeListSelect from '@/components/EmployeeListSelect';
+import PageSkeleton from '@/components/PageSkeleton';
+import ConfirmDialog from '@/components/ConfirmDialog';
 import { escapeHtml } from '@/lib/html';
 import { LOGO_BASE64 } from '@/lib/logoBase64';
 
@@ -88,6 +91,9 @@ export default function PayrollManagementPage() {
 
   // 刪除確認對話框狀態
   const [deleteConfirm, setDeleteConfirm] = useState<{ id: number; employeeName: string; period: string } | null>(null);
+  const [batchDeleteConfirmOpen, setBatchDeleteConfirmOpen] = useState(false);
+  const [batchDeleting, setBatchDeleting] = useState(false);
+  const [pendingPayslipPrint, setPendingPayslipPrint] = useState<{ message: string; htmlContent: string } | null>(null);
 
   // 批量選擇狀態
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
@@ -167,16 +173,16 @@ export default function PayrollManagementPage() {
         // 只有 ADMIN/HR 才載入員工列表和部門列表（用於批量生成薪資）
         if (currentUser && (currentUser.role === 'ADMIN' || currentUser.role === 'HR')) {
           try {
-            const employeesResponse = await fetch('/api/employees', {
+            const employeesResponse = await fetch('/api/employees?status=active&limit=1000', {
               credentials: 'include'
             });
             if (employeesResponse.ok) {
               const employeesData = await employeesResponse.json();
-              console.log('✅ 員工數據載入成功:', employeesData.employees?.length || 0, '名員工');
+              console.log('✅ 活躍員工數據載入成功:', employeesData.employees?.length || 0, '名員工');
               setEmployees(employeesData.employees || []);
             }
           } catch (empError) {
-            console.error('獲取員工列表失敗:', empError);
+            console.error('獲取活躍員工列表失敗:', empError);
           }
 
           // 獲取部門列表
@@ -312,7 +318,7 @@ export default function PayrollManagementPage() {
       if (response.ok) {
         const data = await response.json();
         console.log('✅ 創建成功:', data);
-        alert(data.message);
+        showToast('success', data.message);
         setShowCreateForm(false);
         setCreateForm({
           employeeId: '',
@@ -323,11 +329,11 @@ export default function PayrollManagementPage() {
       } else {
         const error = await response.json();
         console.error('❌ 創建失敗:', error);
-        alert(error.error);
+        showToast('error', error.error);
       }
     } catch (err) {
       console.error('💥 創建薪資記錄異常:', err);
-      alert('創建失敗，請稍後再試');
+      showToast('error', '創建失敗，請稍後再試');
     }
   };
 
@@ -337,12 +343,11 @@ export default function PayrollManagementPage() {
     if (filters.department && record.employee.department !== filters.department) {
       return false;
     }
-    // 搜尋篩選
+    // 員工篩選
     if (filters.search) {
       return (
         record.employee.name.toLowerCase().includes(filters.search.toLowerCase()) ||
-        record.employee.employeeId.toLowerCase().includes(filters.search.toLowerCase()) ||
-        record.employee.department.toLowerCase().includes(filters.search.toLowerCase())
+        record.employee.employeeId.toLowerCase().includes(filters.search.toLowerCase())
       );
     }
     return true;
@@ -417,7 +422,21 @@ export default function PayrollManagementPage() {
       console.log('報表匯出成功');
     } catch (error) {
       console.error('匯出報表失敗:', error);
-      alert('匯出報表失敗: ' + (error instanceof Error ? error.message : '未知錯誤'));
+      showToast('error', '匯出報表失敗: ' + (error instanceof Error ? error.message : '未知錯誤'));
+    }
+  };
+
+  const printPayslipHtml = (htmlContent: string) => {
+    const printWindow = window.open('', '_blank');
+    if (printWindow) {
+      printWindow.document.write(htmlContent);
+      printWindow.document.close();
+      
+      // 等待內容載入完成後觸發列印
+      printWindow.onload = () => {
+        printWindow.print();
+        printWindow.close();
+      };
     }
   };
 
@@ -433,32 +452,20 @@ export default function PayrollManagementPage() {
         // 檢查是否有密碼保護
         if (data.security?.hasPassword) {
           // 顯示密碼提示
-          const confirmMsg = `此薪資條有密碼保護：\n\n📌 ${data.security.hint}\n\n${data.security.password ? `密碼：${data.security.password}` : ''}\n\n是否繼續列印？`;
-          if (!confirm(confirmMsg)) {
-            setPayslipLoading(false);
-            return;
-          }
+          const message = `此薪資條有密碼保護：\n\n${data.security.hint}\n\n${data.security.password ? `密碼：${data.security.password}` : ''}\n\n是否繼續列印？`;
+          setPendingPayslipPrint({ message, htmlContent: data.htmlContent });
+          setPayslipLoading(false);
+          return;
         }
         
-        // 創建新視窗並顯示薪資條HTML
-        const printWindow = window.open('', '_blank');
-        if (printWindow) {
-          printWindow.document.write(data.htmlContent);
-          printWindow.document.close();
-          
-          // 等待內容載入完成後觸發列印
-          printWindow.onload = () => {
-            printWindow.print();
-            printWindow.close();
-          };
-        }
+        printPayslipHtml(data.htmlContent);
       } else {
         const errorData = await response.json();
-        alert('生成薪資條失敗: ' + (errorData.error || '未知錯誤'));
+        showToast('error', '生成薪資條失敗: ' + (errorData.error || '未知錯誤'));
       }
     } catch (error) {
       console.error('生成薪資條失敗:', error);
-      alert('生成薪資條失敗: ' + (error instanceof Error ? error.message : '未知錯誤'));
+      showToast('error', '生成薪資條失敗: ' + (error instanceof Error ? error.message : '未知錯誤'));
     }
     setPayslipLoading(false);
   };
@@ -602,16 +609,19 @@ export default function PayrollManagementPage() {
     }
   };
 
-  // 批量刪除
-  const handleBatchDelete = async () => {
+  const requestBatchDelete = () => {
     if (selectedIds.size === 0) {
       showToast('error', '請先選擇記錄');
       return;
     }
 
-    if (!window.confirm(`確定要刪除 ${selectedIds.size} 筆薪資記錄嗎？此操作無法復原。`)) return;
+    setBatchDeleteConfirmOpen(true);
+  };
 
+  // 批量刪除
+  const handleBatchDelete = async () => {
     try {
+      setBatchDeleting(true);
       const selectedIdList = Array.from(selectedIds);
       const promises = selectedIdList.map(id =>
         fetchJSONWithCSRF(`/api/payroll/${id}`, {
@@ -638,6 +648,9 @@ export default function PayrollManagementPage() {
       }
     } catch {
       showToast('error', '批量刪除失敗');
+    } finally {
+      setBatchDeleting(false);
+      setBatchDeleteConfirmOpen(false);
     }
   };
 
@@ -688,6 +701,27 @@ export default function PayrollManagementPage() {
       </tr>
     `;
     }).join('') || '';
+
+    const workHours = payslip.workHours || {};
+    const overtimeBreakdown = workHours.overtimeBreakdown || {};
+    const payrollRegularHours = workHours.payrollRegularHours ?? workHours.regular ?? 0;
+    const payrollOvertimeHours = workHours.payrollOvertimeHours ?? workHours.overtime ?? 0;
+    const payrollTotalHours = workHours.payrollTotalHours ?? workHours.total ?? (payrollRegularHours + payrollOvertimeHours);
+    const formatHours = (value: unknown) => {
+      const numericValue = typeof value === 'number' ? value : Number(value ?? 0);
+      return `${escapeHtml(Number.isFinite(numericValue) ? numericValue.toLocaleString('zh-TW', { maximumFractionDigits: 2 }) : '0')} 小時`;
+    };
+    const overtimeBreakdownRows = [
+      { label: '平日加班', value: overtimeBreakdown.weekday },
+      { label: '休息日加班', value: overtimeBreakdown.restDay },
+      { label: '國定假日加班', value: overtimeBreakdown.holiday },
+      { label: '例假日加班', value: overtimeBreakdown.mandatoryRest },
+    ]
+      .filter(item => Number(item.value ?? 0) > 0)
+      .map(item => `
+                <div class="info-item sub-item"><span class="info-label">${escapeHtml(item.label)}</span><span class="info-value">${formatHours(item.value)}</span></div>
+      `)
+      .join('');
 
     return `
     <!DOCTYPE html>
@@ -792,6 +826,15 @@ export default function PayrollManagementPage() {
           justify-content: space-between;
           padding: 6px 0;
           font-size: 14px;
+        }
+        .sub-item { padding-left: 12px; font-size: 13px; }
+        .hours-note {
+          margin-top: 8px;
+          padding-top: 8px;
+          border-top: 1px dashed #d1d5db;
+          font-size: 12px;
+          color: #6b7280;
+          line-height: 1.5;
         }
         .info-label { color: #6b7280; }
         .info-value { font-weight: 500; color: #111827; }
@@ -905,9 +948,17 @@ export default function PayrollManagementPage() {
             </div>
             <div class="info-card">
               <h3>⏰ 工時統計</h3>
-              <div class="info-item"><span class="info-label">正常工時</span><span class="info-value">${payslip.workHours.regular} 小時</span></div>
-              <div class="info-item"><span class="info-label">加班工時</span><span class="info-value">${payslip.workHours.overtime} 小時</span></div>
-              <div class="info-item"><span class="info-label">總工時</span><span class="info-value">${payslip.workHours.total} 小時</span></div>
+              <div class="info-item"><span class="info-label">應上工時</span><span class="info-value">${formatHours(workHours.expectedWorkHours ?? payrollRegularHours)}</span></div>
+              <div class="info-item"><span class="info-label">實際工時</span><span class="info-value">${formatHours(workHours.actualWorkHours ?? workHours.regular)}</span></div>
+              <div class="info-item"><span class="info-label">特休時數</span><span class="info-value">${formatHours(workHours.specialLeaveHours)}</span></div>
+              <div class="info-item"><span class="info-label">補休時數</span><span class="info-value">${formatHours(workHours.compLeaveHours)}</span></div>
+              <div class="info-item"><span class="info-label">國定假日時數</span><span class="info-value">${formatHours(workHours.nationalHolidayHours)}</span></div>
+              <div class="info-item"><span class="info-label">排班加班</span><span class="info-value">${formatHours(workHours.scheduledOvertimeHours ?? workHours.overtime)}</span></div>
+              <div class="info-item"><span class="info-label">薪資計算正常工時</span><span class="info-value">${formatHours(payrollRegularHours)}</span></div>
+              <div class="info-item"><span class="info-label">薪資計算加班工時</span><span class="info-value">${formatHours(payrollOvertimeHours)}</span></div>
+              ${overtimeBreakdownRows}
+              <div class="info-item"><span class="info-label">計薪總工時</span><span class="info-value">${formatHours(payrollTotalHours)}</span></div>
+              <div class="hours-note">國定假日時數為實際工時分類，不會重複加總；特休、補休已納入應上工時與薪資計算正常工時。</div>
             </div>
           </div>
           <div class="salary-section">
@@ -951,11 +1002,7 @@ export default function PayrollManagementPage() {
   const avgGrossPay = filteredRecords.length > 0 ? totalGrossPay / filteredRecords.length : 0;
 
   if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-      </div>
-    );
+    return <PageSkeleton title="薪資管理載入中" />;
   }
 
   return (
@@ -1101,19 +1148,13 @@ export default function PayrollManagementPage() {
             </div>
 
             {(user?.role === 'ADMIN' || user?.role === 'HR') && (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">搜尋</label>
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
-                  <input
-                    type="text"
-                    placeholder="員工姓名、員編"
-                    value={filters.search}
-                    onChange={(e) => setFilters({ ...filters, search: e.target.value })}
-                    className="pl-10 w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900"
-                  />
-                </div>
-              </div>
+              <EmployeeListSelect
+                label="員工"
+                value={filters.search}
+                onChange={(value) => setFilters({ ...filters, search: value })}
+                emptyLabel="全部員工"
+                selectClassName="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 disabled:bg-gray-100"
+              />
             )}
 
             <div className="flex items-end">
@@ -1172,7 +1213,7 @@ export default function PayrollManagementPage() {
               <div className="flex items-center gap-2">
                 <span className="text-sm text-gray-600">已選 {selectedIds.size} 項：</span>
                 <button
-                  onClick={handleBatchDelete}
+                  onClick={requestBatchDelete}
                   className="px-3 py-1.5 text-sm bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors"
                 >
                   批量刪除
@@ -1406,7 +1447,7 @@ export default function PayrollManagementPage() {
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  選擇員工（留空則為{generateForm.department ? `「${generateForm.department}」部門` : '所有'}員工生成）
+                  選擇員工（僅顯示活躍員工；留空則為{generateForm.department ? `「${generateForm.department}」部門的全部活躍員工` : '全部活躍員工'}生成）
                 </label>
                 <div className="max-h-40 overflow-y-auto border border-gray-300 rounded-lg p-2">
                   {employees
@@ -1438,12 +1479,12 @@ export default function PayrollManagementPage() {
                     </label>
                   ))}
                   {employees.filter(emp => !generateForm.department || emp.department === generateForm.department).length === 0 && (
-                    <div className="text-sm text-gray-500 text-center py-2">無符合條件的員工</div>
+                    <div className="text-sm text-gray-500 text-center py-2">無符合條件的活躍員工</div>
                   )}
                 </div>
                 {generateForm.department && (
                   <div className="mt-2 text-xs text-blue-600">
-                    已篩選「{generateForm.department}」部門，共 {employees.filter(emp => emp.department === generateForm.department).length} 人
+                    已篩選「{generateForm.department}」部門，共 {employees.filter(emp => emp.department === generateForm.department).length} 位活躍員工
                   </div>
                 )}
               </div>
@@ -1561,7 +1602,7 @@ export default function PayrollManagementPage() {
             <form onSubmit={handleCreatePayroll} className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  員工 *
+                  員工（僅顯示活躍員工）*
                 </label>
                 <select
                   value={createForm.employeeId}
@@ -1571,7 +1612,7 @@ export default function PayrollManagementPage() {
                   disabled={loading || employees.length === 0}
                 >
                   <option value="">
-                    {loading ? '載入員工資料中...' : employees.length === 0 ? '無可用員工資料' : '請選擇員工'}
+                    {loading ? '載入活躍員工資料中...' : employees.length === 0 ? '無可用活躍員工資料' : '請選擇活躍員工'}
                   </option>
                   {employees.map((employee) => (
                     <option key={employee.id} value={employee.id}>
@@ -1581,7 +1622,7 @@ export default function PayrollManagementPage() {
                 </select>
                 {employees.length === 0 && !loading && (
                   <p className="mt-1 text-sm text-red-600">
-                    找不到員工資料，請檢查您的權限或聯繫管理員
+                    找不到活躍員工資料，請檢查員工狀態或聯繫管理員
                   </p>
                 )}
               </div>
@@ -1666,39 +1707,42 @@ export default function PayrollManagementPage() {
         </div>
       )}
 
-      {/* 刪除確認對話框 */}
-      {deleteConfirm && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4 p-6">
-            <div className="flex items-center text-red-600 mb-4">
-              <svg className="w-8 h-8 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-              </svg>
-              <h3 className="text-xl font-semibold">確認刪除</h3>
-            </div>
-            <p className="text-gray-600 mb-6">
-              確定要刪除 {deleteConfirm.employeeName} 的 {deleteConfirm.period} 薪資記錄嗎？此操作無法復原。
-            </p>
-            <div className="flex justify-end space-x-3">
-              <button
-                onClick={() => setDeleteConfirm(null)}
-                className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
-              >
-                取消
-              </button>
-              <button
-                onClick={handleDeletePayroll}
-                className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors flex items-center"
-              >
-                <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                </svg>
-                確認刪除
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ConfirmDialog
+        open={Boolean(deleteConfirm)}
+        title="確認刪除薪資記錄"
+        message={deleteConfirm ? `確定要刪除 ${deleteConfirm.employeeName} 的 ${deleteConfirm.period} 薪資記錄嗎？此操作無法復原。` : ''}
+        tone="danger"
+        confirmLabel="確認刪除"
+        onCancel={() => setDeleteConfirm(null)}
+        onConfirm={handleDeletePayroll}
+      />
+
+      <ConfirmDialog
+        open={batchDeleteConfirmOpen}
+        title="確認批量刪除薪資記錄"
+        message={`確定要刪除 ${selectedIds.size} 筆薪資記錄嗎？此操作無法復原。`}
+        tone="danger"
+        confirmLabel="批量刪除"
+        loading={batchDeleting}
+        onCancel={() => {
+          if (!batchDeleting) setBatchDeleteConfirmOpen(false);
+        }}
+        onConfirm={handleBatchDelete}
+      />
+
+      <ConfirmDialog
+        open={!!pendingPayslipPrint}
+        title="列印受密碼保護的薪資條"
+        message={pendingPayslipPrint?.message || ''}
+        confirmLabel="繼續列印"
+        cancelLabel="取消"
+        onConfirm={() => {
+          if (!pendingPayslipPrint) return;
+          printPayslipHtml(pendingPayslipPrint.htmlContent);
+          setPendingPayslipPrint(null);
+        }}
+        onCancel={() => setPendingPayslipPrint(null)}
+      />
     </AuthenticatedLayout>
   );
 }

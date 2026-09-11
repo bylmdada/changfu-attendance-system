@@ -3,6 +3,14 @@ import { prisma } from '@/lib/database';
 import { verifyPassword } from '@/lib/auth';
 import { checkClockRateLimit } from '@/lib/rate-limit';
 import { safeParseJSON } from '@/lib/validation';
+import { getStoredOrCalculatedAttendanceHours } from '@/lib/work-hours';
+import { getStoredOvertimeCalculationSettings } from '@/lib/overtime-settings';
+import {
+  indexApprovedOvertimeRequests,
+  resolveAttendanceOvertimeType,
+  resolveApprovedAttendanceOvertime,
+} from '@/lib/approved-overtime';
+import { getAttendanceRegularTimeExclusions } from '@/lib/attendance-leave-hours';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -246,13 +254,67 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // 計算工作時間
-    let workHours = 0;
-    if (todayAttendance.clockInTime && todayAttendance.clockOutTime) {
-      const clockIn = new Date(todayAttendance.clockInTime);
-      const clockOut = new Date(todayAttendance.clockOutTime);
-      workHours = (clockOut.getTime() - clockIn.getTime()) / (1000 * 60 * 60);
-    }
+    const attendanceLeaves = await prisma.leaveRequest.findMany({
+      where: {
+        employeeId: user.employee.id,
+        voidedAt: null,
+        OR: [
+          { status: 'APPROVED' },
+          { status: 'PENDING_ADMIN', managerOpinion: 'AGREE' },
+        ],
+        startDate: { lt: todayEnd },
+        endDate: { gt: todayStart },
+      },
+      select: {
+        startDate: true,
+        endDate: true,
+        status: true,
+        managerOpinion: true,
+        voidedAt: true,
+      },
+    });
+    const hours = getStoredOrCalculatedAttendanceHours({
+      ...todayAttendance,
+      breakTime: todaySchedule?.breakTime,
+      scheduledWorkHours: todaySchedule?.workHours,
+      scheduledStart: todaySchedule?.startTime,
+      scheduledEnd: todaySchedule?.endTime,
+      regularTimeExclusions: getAttendanceRegularTimeExclusions(attendanceLeaves),
+    });
+    const [approvedOvertimeRequests, overtimeSettings] = await Promise.all([
+      prisma.overtimeRequest.findMany({
+        where: {
+          employeeId: user.employee.id,
+          status: 'APPROVED',
+          overtimeDate: { gte: todayStart, lt: todayEnd },
+        },
+        select: {
+          id: true,
+          employeeId: true,
+          overtimeDate: true,
+          totalHours: true,
+          compensationType: true,
+        },
+      }),
+      getStoredOvertimeCalculationSettings(),
+    ]);
+    const resolvedOvertime = resolveApprovedAttendanceOvertime(
+      {
+        employeeId: user.employee.id,
+        workDate: todayAttendance.workDate,
+        regularHours: hours.regularHours,
+        actualWorkHours: hours.totalHours,
+        overtimeHours: hours.overtimeHours,
+        clockInOvertimeId: todayAttendance.clockInOvertimeId,
+        clockOutOvertimeId: todayAttendance.clockOutOvertimeId,
+        overtimeType: resolveAttendanceOvertimeType({
+          shiftType: todaySchedule?.shiftType,
+          workDate: todayAttendance.workDate,
+        }),
+      },
+      indexApprovedOvertimeRequests(approvedOvertimeRequests),
+      overtimeSettings.overtimeMinUnit
+    );
 
     return NextResponse.json({
       employee: employeeInfo,
@@ -260,9 +322,9 @@ export async function POST(request: NextRequest) {
       hasClockOut: !!todayAttendance.clockOutTime,
       clockInTime: todayAttendance.clockInTime,
       clockOutTime: todayAttendance.clockOutTime,
-      workHours: parseFloat(workHours.toFixed(2)),
-      regularHours: todayAttendance.regularHours || 0,
-      overtimeHours: todayAttendance.overtimeHours || 0,
+      workHours: hours.totalHours,
+      regularHours: resolvedOvertime.regularHours,
+      overtimeHours: resolvedOvertime.effectiveHours,
       attendance: todayAttendance,
       // 新增：今日排班
       todaySchedule: todaySchedule ? {
@@ -279,4 +341,3 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: '系統錯誤' }, { status: 500 });
   }
 }
-

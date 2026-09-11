@@ -6,7 +6,7 @@
 import { prisma } from '@/lib/database';
 import { Prisma } from '@prisma/client';
 import { buildActiveDeputyAssignmentWhere } from '@/lib/schedule-management-permissions';
-import { getEffectiveApprovalLevel } from '@/lib/approval-workflow';
+import { getApprovalWorkflow } from '@/lib/approval-workflow';
 
 // 審核流程類型
 export type WorkflowType = 
@@ -288,10 +288,8 @@ interface ReviewParams {
 /**
  * 取得審核流程設定
  */
-export async function getWorkflowConfig(workflowType: WorkflowType) {
-  const workflow = await prisma.approvalWorkflow.findUnique({
-    where: { workflowType }
-  });
+export async function getWorkflowConfig(workflowType: WorkflowType, department?: string | null) {
+  const workflow = await getApprovalWorkflow(workflowType, { department });
   
   if (!workflow) {
     // 預設設定：三階審核
@@ -305,9 +303,7 @@ export async function getWorkflowConfig(workflowType: WorkflowType) {
   }
   
   return {
-    ...workflow,
-    approvalLevel: getEffectiveApprovalLevel(workflow.approvalLevel, workflow.requireManager),
-    finalApprover: workflow.requireManager ? workflow.finalApprover : 'ADMIN'
+    ...workflow
   };
 }
 
@@ -317,7 +313,7 @@ export async function getWorkflowConfig(workflowType: WorkflowType) {
 export async function createApprovalInstance(params: CreateApprovalParams) {
   const { requestType, requestId, applicantId, applicantName, department } = params;
   
-  const workflow = await getWorkflowConfig(requestType);
+  const workflow = await getWorkflowConfig(requestType, department);
   
   // 計算截止時間
   let deadlineAt: Date | null = null;

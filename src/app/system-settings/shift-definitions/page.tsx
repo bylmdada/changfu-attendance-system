@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Clock, Edit2, Loader2, Plus, Save, X } from 'lucide-react';
 import SystemNavbar from '@/components/SystemNavbar';
+import ConfirmDialog from '@/components/ConfirmDialog';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import { calculateNetWorkHours, formatShiftHourSummary, type ShiftDefinitionDTO } from '@/lib/shift-definition-utils';
 
@@ -62,6 +63,7 @@ export default function ShiftDefinitionsPage() {
   const [editingShift, setEditingShift] = useState<ShiftDefinitionDTO | null>(null);
   const [form, setForm] = useState<ShiftForm>(EMPTY_FORM);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [deactivateTarget, setDeactivateTarget] = useState<ShiftDefinitionDTO | null>(null);
 
   const showMessage = (type: 'success' | 'error', text: string) => {
     setMessage({ type, text });
@@ -196,14 +198,12 @@ export default function ShiftDefinitionsPage() {
     }
   };
 
-  const deactivateShift = async (shift: ShiftDefinitionDTO) => {
-    if (!confirm(`確定要停用「${shift.label}」？既有班表會保留，但新增班表將無法選用。`)) {
-      return;
-    }
+  const deactivateShift = async () => {
+    if (!deactivateTarget) return;
 
     setSaving(true);
     try {
-      const response = await fetchJSONWithCSRF(`/api/system-settings/shift-definitions?id=${shift.id}`, {
+      const response = await fetchJSONWithCSRF(`/api/system-settings/shift-definitions?id=${deactivateTarget.id}`, {
         method: 'DELETE',
       });
       const result = await response.json();
@@ -213,6 +213,7 @@ export default function ShiftDefinitionsPage() {
       }
 
       showMessage('success', '班別已停用');
+      setDeactivateTarget(null);
       await loadShifts();
     } catch (error) {
       console.error('停用班別失敗:', error);
@@ -369,7 +370,7 @@ export default function ShiftDefinitionsPage() {
                         <button
                           type="button"
                           disabled={saving}
-                          onClick={() => deactivateShift(shift)}
+                          onClick={() => setDeactivateTarget(shift)}
                           className="text-red-600 hover:text-red-900 disabled:opacity-50"
                         >
                           停用
@@ -607,6 +608,21 @@ export default function ShiftDefinitionsPage() {
           </div>
         )}
       </main>
+
+      <ConfirmDialog
+        open={!!deactivateTarget}
+        title="停用班別"
+        message={
+          deactivateTarget
+            ? `確定要停用「${deactivateTarget.label}」？既有班表會保留，但新增班表將無法選用。`
+            : ''
+        }
+        confirmLabel="停用"
+        cancelLabel="取消"
+        tone="danger"
+        onConfirm={deactivateShift}
+        onCancel={() => setDeactivateTarget(null)}
+      />
     </div>
   );
 }

@@ -35,8 +35,8 @@ describe('property-maintenance-utils date handling', () => {
   it('builds stable month ranges and month shifts', () => {
     const range = monthRange(2026, 5);
 
-    expect(range.start.toISOString()).toBe('2026-05-01T00:00:00.000Z');
-    expect(range.end.toISOString()).toBe('2026-06-01T00:00:00.000Z');
+    expect(range.start.toISOString()).toBe('2026-04-30T16:00:00.000Z');
+    expect(range.end.toISOString()).toBe('2026-05-31T16:00:00.000Z');
     expect(taipeiYearMonth(new Date('2026-05-31T16:30:00.000Z'))).toEqual({
       year: 2026,
       month: 6,

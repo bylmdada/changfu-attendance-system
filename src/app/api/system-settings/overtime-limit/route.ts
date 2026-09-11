@@ -5,6 +5,7 @@ import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { safeParseSystemSettingsValue } from '@/lib/system-settings-json';
 import { safeParseJSON } from '@/lib/validation';
+import { logSystemSettingsChange } from '@/lib/system-settings-audit';
 
 const DEFAULT_SETTINGS = {
   monthlyLimit: 46,           // 勞基法每月上限 46 小時
@@ -196,6 +197,15 @@ export async function POST(request: NextRequest) {
         value: JSON.stringify(newSettings),
         description: '加班時數上限設定'
       }
+    });
+
+    await logSystemSettingsChange({
+      request,
+      user: authResult.user,
+      settingKey: 'overtime_limit_settings',
+      description: '加班上限設定變更',
+      oldValue: baseSettings,
+      newValue: newSettings,
     });
 
     return NextResponse.json({

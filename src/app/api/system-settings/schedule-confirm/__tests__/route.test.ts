@@ -20,6 +20,10 @@ jest.mock('@/lib/rate-limit', () => ({
   checkRateLimit: jest.fn(),
 }));
 
+jest.mock('@/lib/system-settings-audit', () => ({
+  logSystemSettingsChange: jest.fn(),
+}));
+
 import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
@@ -146,5 +150,28 @@ describe('schedule confirm route csrf guard', () => {
     expect(response.status).toBe(429);
     expect(payload).toEqual({ error: 'Too many requests' });
     expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('forces reminders on when clock blocking is enabled', async () => {
+    mockPrisma.systemSettings.findMany.mockResolvedValue([
+      { key: 'scheduleConfirm.enabled', value: 'true' },
+      { key: 'scheduleConfirm.blockClock', value: 'false' },
+      { key: 'scheduleConfirm.enableReminder', value: 'false' },
+    ] as never);
+    mockPrisma.$transaction.mockResolvedValue([] as never);
+
+    const response = await POST(new NextRequest('http://localhost/api/system-settings/schedule-confirm', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ blockClock: true, enableReminder: false }),
+    }));
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.settings).toEqual({ enabled: true, blockClock: true, enableReminder: true });
+    expect(mockPrisma.systemSettings.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      where: { key: 'scheduleConfirm.enableReminder' },
+      update: { value: 'true' },
+    }));
   });
 });

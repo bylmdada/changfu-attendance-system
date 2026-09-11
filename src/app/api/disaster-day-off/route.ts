@@ -5,6 +5,9 @@ import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
+import { invalidateConfirmation } from '@/lib/schedule-confirm-service';
+import { listShiftDefinitions } from '@/lib/shift-definition-service';
+import { checkMultipleDatesFreeze, checkAttendanceFreeze, getAttendanceFreezeError } from '@/lib/attendance-freeze';
 
 // 天災類型標籤
 const DISASTER_TYPES = {
@@ -70,6 +73,8 @@ interface OriginalScheduleSnapshot {
   shiftType: string | null;
   startTime: string | null;
   endTime: string | null;
+  breakTime: number | null;
+  workHours: number | null;
 }
 
 function parseDateOnly(value: unknown): Date | null {
@@ -112,10 +117,44 @@ function buildDateRange(startDate: Date, days: number) {
   });
 }
 
-function getStopWorkScheduleTimes(stopWorkType: string) {
+function parseTimeToMinutes(value: string) {
+  const match = /^(\d{2}):(\d{2})$/.exec(value);
+  if (!match) return null;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (hour > 23 || minute > 59) return null;
+  return hour * 60 + minute;
+}
+
+function formatMinutes(value: number) {
+  const normalized = ((value % 1440) + 1440) % 1440;
+  return `${String(Math.floor(normalized / 60)).padStart(2, '0')}:${String(normalized % 60).padStart(2, '0')}`;
+}
+
+function getDisasterScheduleFields(
+  stopWorkType: string,
+  snapshot?: OriginalScheduleSnapshot
+): { startTime: string; endTime: string; breakTime: number; workHours: number } {
+  if (stopWorkType === 'FULL') {
+    return { startTime: '', endTime: '', breakTime: 0, workHours: 0 };
+  }
+
+  const originalStartTime = snapshot?.startTime;
+  const originalEndTime = snapshot?.endTime;
+  const originalWorkHours = snapshot?.workHours;
+  const start = originalStartTime ? parseTimeToMinutes(originalStartTime) : null;
+  const end = originalEndTime ? parseTimeToMinutes(originalEndTime) : null;
+  if (start === null || end === null || originalWorkHours === null || originalWorkHours === undefined || !originalStartTime || !originalEndTime) {
+    throw new Error('DISASTER_PARTIAL_NO_SCHEDULE');
+  }
+
+  const halfWorkMinutes = Math.round(originalWorkHours * 30);
+  const normalizedEnd = end <= start ? end + 1440 : end;
   return {
-    startTime: stopWorkType === 'FULL' ? '00:00' : (stopWorkType === 'AM' ? '00:00' : '12:00'),
-    endTime: stopWorkType === 'FULL' ? '23:59' : (stopWorkType === 'AM' ? '12:00' : '23:59')
+    startTime: stopWorkType === 'AM' ? formatMinutes(normalizedEnd - halfWorkMinutes) : originalStartTime,
+    endTime: stopWorkType === 'AM' ? originalEndTime : formatMinutes(start + halfWorkMinutes),
+    breakTime: 0,
+    workHours: Math.round((originalWorkHours / 2) * 100) / 100,
   };
 }
 
@@ -141,12 +180,14 @@ function parseOriginalSchedules(value: string | null): OriginalScheduleSnapshot[
       const shiftType = typeof item.shiftType === 'string' ? item.shiftType : null;
       const startTime = typeof item.startTime === 'string' ? item.startTime : null;
       const endTime = typeof item.endTime === 'string' ? item.endTime : null;
+      const breakTime = typeof item.breakTime === 'number' && Number.isFinite(item.breakTime) ? item.breakTime : null;
+      const workHours = typeof item.workHours === 'number' && Number.isFinite(item.workHours) ? item.workHours : null;
 
       if (!Number.isSafeInteger(employeeId) || employeeId <= 0) {
         return null;
       }
 
-      if (existed && (!shiftType || !startTime || !endTime)) {
+      if (existed && (shiftType === null || startTime === null || endTime === null)) {
         return null;
       }
 
@@ -155,7 +196,9 @@ function parseOriginalSchedules(value: string | null): OriginalScheduleSnapshot[
         existed,
         shiftType,
         startTime,
-        endTime
+        endTime,
+        breakTime,
+        workHours,
       });
     }
 
@@ -163,6 +206,23 @@ function parseOriginalSchedules(value: string | null): OriginalScheduleSnapshot[
   } catch {
     return null;
   }
+}
+
+async function hydrateLegacySnapshots(snapshots: OriginalScheduleSnapshot[]) {
+  if (!snapshots.some((snapshot) => snapshot.existed && (snapshot.breakTime === null || snapshot.workHours === null))) {
+    return snapshots;
+  }
+
+  const definitions = await listShiftDefinitions({ includeInactive: true });
+  const definitionByCode = new Map(definitions.map((definition) => [definition.code, definition]));
+  return snapshots.map((snapshot) => {
+    const definition = snapshot.shiftType ? definitionByCode.get(snapshot.shiftType) : undefined;
+    return {
+      ...snapshot,
+      breakTime: snapshot.breakTime ?? definition?.breakTime ?? null,
+      workHours: snapshot.workHours ?? definition?.workHours ?? null,
+    };
+  });
 }
 
 // GET - 取得天災假記錄列表
@@ -340,6 +400,13 @@ export async function POST(request: NextRequest) {
 
     const dates = buildDateRange(parsedStartDate, days);
 
+    const freezeError = getAttendanceFreezeError(
+      await checkMultipleDatesFreeze(dates.map((date) => new Date(`${date}T00:00:00+08:00`)))
+    );
+    if (freezeError) {
+      return NextResponse.json({ error: freezeError }, { status: 409 });
+    }
+
     const existingRecords = await prisma.disasterDayOff.findMany({
       where: {
         disasterDate: { in: dates }
@@ -391,8 +458,6 @@ export async function POST(request: NextRequest) {
       const records = [];
       let createdCount = 0;
       let updatedCount = 0;
-      const disasterShiftTimes = getStopWorkScheduleTimes(stopWorkType);
-
       for (const date of dates) {
         const originalSchedulesData: (OriginalScheduleSnapshot & { scheduleId?: number })[] = [];
 
@@ -413,6 +478,8 @@ export async function POST(request: NextRequest) {
               shiftType: existingSchedule.shiftType,
               startTime: existingSchedule.startTime,
               endTime: existingSchedule.endTime,
+              breakTime: existingSchedule.breakTime,
+              workHours: existingSchedule.workHours,
               scheduleId: existingSchedule.id
             });
             continue;
@@ -423,7 +490,9 @@ export async function POST(request: NextRequest) {
             existed: false,
             shiftType: null,
             startTime: null,
-            endTime: null
+            endTime: null,
+            breakTime: null,
+            workHours: null,
           });
         }
 
@@ -442,7 +511,9 @@ export async function POST(request: NextRequest) {
               existed: snapshot.existed,
               shiftType: snapshot.shiftType,
               startTime: snapshot.startTime,
-              endTime: snapshot.endTime
+              endTime: snapshot.endTime,
+              breakTime: snapshot.breakTime,
+              workHours: snapshot.workHours,
             }))),
             createdBy: user.employeeId
           },
@@ -460,21 +531,23 @@ export async function POST(request: NextRequest) {
 
         for (const scheduleSnapshot of originalSchedulesData) {
           if (scheduleSnapshot.existed && scheduleSnapshot.scheduleId) {
+            const disasterScheduleFields = getDisasterScheduleFields(stopWorkType, scheduleSnapshot);
             await tx.schedule.update({
               where: { id: scheduleSnapshot.scheduleId },
               data: {
                 shiftType: 'TD',
-                ...disasterShiftTimes
+                ...disasterScheduleFields
               }
             });
             updatedCount++;
           } else {
+            const disasterScheduleFields = getDisasterScheduleFields(stopWorkType);
             await tx.schedule.create({
               data: {
                 employeeId: scheduleSnapshot.employeeId,
                 workDate: date,
                 shiftType: 'TD',
-                ...disasterShiftTimes
+                ...disasterScheduleFields
               }
             });
             createdCount++;
@@ -489,6 +562,13 @@ export async function POST(request: NextRequest) {
       };
     });
 
+    await Promise.all(Array.from(new Set(
+      dates.flatMap((date) => affectedEmployees.map((employee) => `${employee.id}:${date.slice(0, 7)}`))
+    )).map((key) => {
+      const [employeeId, yearMonth] = key.split(':');
+      return invalidateConfirmation(Number(employeeId), yearMonth);
+    }));
+
     const dateRange = days > 1 
       ? `${dates[0]} 至 ${dates[dates.length - 1]}（共 ${days} 天）` 
       : disasterDate;
@@ -500,6 +580,9 @@ export async function POST(request: NextRequest) {
     });
 
   } catch (error) {
+    if (error instanceof Error && error.message === 'DISASTER_PARTIAL_NO_SCHEDULE') {
+      return NextResponse.json({ error: '半日停班需要先有原始班表，請先完成排班後再設定' }, { status: 400 });
+    }
     console.error('設定天災假失敗:', error);
     return NextResponse.json({ error: '系統錯誤' }, { status: 500 });
   }
@@ -571,33 +654,23 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: '找不到記錄' }, { status: 404 });
     }
 
-    const updatedStopWorkType = stopWorkType || record.stopWorkType;
-    const originalSchedules = parseOriginalSchedules(record.originalSchedules);
-    if (originalSchedules === null) {
-      return NextResponse.json({ error: '原始班表資料格式錯誤，無法編輯' }, { status: 500 });
+    const freezeError = getAttendanceFreezeError(
+      await checkAttendanceFreeze(new Date(`${record.disasterDate}T00:00:00+08:00`))
+    );
+    if (freezeError) {
+      return NextResponse.json({ error: freezeError }, { status: 409 });
     }
 
-    const updatedRecord = await prisma.$transaction(async (tx) => {
-      const nextRecord = await tx.disasterDayOff.update({
-        where: { id: recordId },
-        data: {
-          disasterType: disasterType || record.disasterType,
-          stopWorkType: updatedStopWorkType,
-          description: description !== undefined ? description : record.description
-        },
-        include: {
-          creator: {
-            select: {
-              id: true,
-              name: true,
-              department: true
-            }
-          }
-        }
-      });
+    const updatedStopWorkType = stopWorkType || record.stopWorkType;
+    const parsedOriginalSchedules = parseOriginalSchedules(record.originalSchedules);
+    if (parsedOriginalSchedules === null) {
+      return NextResponse.json({ error: '原始班表資料格式錯誤，無法編輯' }, { status: 500 });
+    }
+    const originalSchedules = await hydrateLegacySnapshots(parsedOriginalSchedules);
 
+    const updatedRecord = await prisma.$transaction(async (tx) => {
+      const normalizedSnapshots: OriginalScheduleSnapshot[] = [];
       if (stopWorkType !== undefined && stopWorkType !== record.stopWorkType) {
-        const disasterShiftTimes = getStopWorkScheduleTimes(updatedStopWorkType);
         for (const snapshot of originalSchedules) {
           const schedule = await tx.schedule.findUnique({
             where: {
@@ -609,16 +682,43 @@ export async function PUT(request: NextRequest) {
           });
 
           if (schedule && schedule.shiftType === 'TD') {
+            const normalizedSnapshot = {
+              ...snapshot,
+              breakTime: snapshot.breakTime ?? schedule.breakTime,
+              workHours: snapshot.workHours ?? schedule.workHours,
+            };
+            normalizedSnapshots.push(normalizedSnapshot);
             await tx.schedule.update({
               where: { id: schedule.id },
-              data: disasterShiftTimes
+              data: getDisasterScheduleFields(updatedStopWorkType, normalizedSnapshot)
             });
+          } else {
+            normalizedSnapshots.push(snapshot);
           }
         }
       }
 
-      return nextRecord;
+      return tx.disasterDayOff.update({
+        where: { id: recordId },
+        data: {
+          disasterType: disasterType || record.disasterType,
+          stopWorkType: updatedStopWorkType,
+          description: description !== undefined ? description : record.description,
+          ...(normalizedSnapshots.length > 0 && { originalSchedules: JSON.stringify(normalizedSnapshots) }),
+        },
+        include: {
+          creator: {
+            select: { id: true, name: true, department: true }
+          }
+        }
+      });
     });
+
+    if (stopWorkType !== undefined && stopWorkType !== record.stopWorkType) {
+      await Promise.all(originalSchedules.map((snapshot) => (
+        invalidateConfirmation(snapshot.employeeId, record.disasterDate.slice(0, 7))
+      )));
+    }
 
     return NextResponse.json({
       success: true,
@@ -672,10 +772,18 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: '找不到記錄' }, { status: 404 });
     }
 
-    const originalSchedules = parseOriginalSchedules(record.originalSchedules);
-    if (originalSchedules === null) {
+    const freezeError = getAttendanceFreezeError(
+      await checkAttendanceFreeze(new Date(`${record.disasterDate}T00:00:00+08:00`))
+    );
+    if (freezeError) {
+      return NextResponse.json({ error: freezeError }, { status: 409 });
+    }
+
+    const parsedOriginalSchedules = parseOriginalSchedules(record.originalSchedules);
+    if (parsedOriginalSchedules === null) {
       return NextResponse.json({ error: '原始班表資料格式錯誤，無法刪除' }, { status: 500 });
     }
+    const originalSchedules = await hydrateLegacySnapshots(parsedOriginalSchedules);
 
     const restoredCount = await prisma.$transaction(async (tx) => {
       let restored = 0;
@@ -704,7 +812,9 @@ export async function DELETE(request: NextRequest) {
             data: {
               shiftType: snapshot.shiftType,
               startTime: snapshot.startTime,
-              endTime: snapshot.endTime
+              endTime: snapshot.endTime,
+              breakTime: snapshot.breakTime ?? schedule.breakTime,
+              workHours: snapshot.workHours ?? schedule.workHours,
             }
           });
         } else {
@@ -726,6 +836,10 @@ export async function DELETE(request: NextRequest) {
 
       return restored;
     });
+
+    await Promise.all(originalSchedules.map((snapshot) => (
+      invalidateConfirmation(snapshot.employeeId, record.disasterDate.slice(0, 7))
+    )));
 
     return NextResponse.json({
       success: true,

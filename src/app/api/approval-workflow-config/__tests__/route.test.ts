@@ -31,6 +31,28 @@ describe('approval workflow config route', () => {
     expect(mockGetApprovalWorkflow).not.toHaveBeenCalled();
   });
 
+  it('passes the requested department when resolving workflow config', async () => {
+    mockGetUserFromRequest.mockResolvedValue({ id: 1, role: 'ADMIN' } as never);
+    mockGetApprovalWorkflow.mockResolvedValue({
+      workflowType: 'LEAVE',
+      workflowName: '請假審核',
+      department: '溪北輔具中心',
+      approvalLevel: 1,
+      requireManager: false,
+      finalApprover: 'ADMIN',
+      enableForward: false,
+      enableCC: false
+    } as never);
+
+    const request = new NextRequest('http://localhost/api/approval-workflow-config?type=LEAVE&department=%E6%BA%AA%E5%8C%97%E8%BC%94%E5%85%B7%E4%B8%AD%E5%BF%83');
+    const response = await GET(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.department).toBe('溪北輔具中心');
+    expect(mockGetApprovalWorkflow).toHaveBeenCalledWith('LEAVE', { department: '溪北輔具中心' });
+  });
+
   it('returns 404 when workflow type cannot be resolved', async () => {
     mockGetUserFromRequest.mockResolvedValue({ id: 1, role: 'ADMIN' } as never);
     mockGetApprovalWorkflow.mockResolvedValue(null);
@@ -68,7 +90,7 @@ describe('approval workflow config route', () => {
     });
   });
 
-  it('preserves third-level metadata for three-step manager workflows', async () => {
+  it('downgrades unsupported third-level metadata to the implemented two-step flow', async () => {
     mockGetUserFromRequest.mockResolvedValue({ id: 1, role: 'ADMIN' } as never);
     mockGetApprovalWorkflow.mockResolvedValue({
       workflowType: 'LEAVE',
@@ -86,11 +108,11 @@ describe('approval workflow config route', () => {
 
     expect(response.status).toBe(200);
     expect(payload.success).toBe(true);
-    expect(payload.maxLevel).toBe(3);
+    expect(payload.approvalLevel).toBe(2);
+    expect(payload.maxLevel).toBe(2);
     expect(payload.labels).toEqual({
       1: { name: '一階', role: '部門主管' },
-      2: { name: '二階', role: 'HR會簽' },
-      3: { name: '三階', role: '管理員決核' }
+      2: { name: '二階', role: '管理員決核' }
     });
   });
 });

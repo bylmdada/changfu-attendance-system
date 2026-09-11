@@ -5,6 +5,9 @@ jest.mock('@/lib/database', () => ({
       create: jest.fn(),
       update: jest.fn(),
     },
+    auditLog: {
+      create: jest.fn(),
+    },
   },
 }));
 
@@ -219,6 +222,19 @@ describe('smtp settings route', () => {
       fromEmail: 'noreply@example.com',
       fromName: '長福考勤系統',
     });
+
+    expect(mockPrisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        action: 'SETTINGS_UPDATE',
+        targetType: 'SystemSettings',
+        targetId: 7,
+        description: 'SMTP 設定變更',
+        success: true,
+      }),
+    });
+    const auditPayload = mockPrisma.auditLog.create.mock.calls[0][0].data;
+    expect(JSON.parse(auditPayload.oldValue as string).value.smtpPassword).toBe('********');
+    expect(JSON.parse(auditPayload.newValue as string).value.smtpPassword).toBe('********');
   });
 
   it('rejects POST when the required SMTP fields are blank', async () => {

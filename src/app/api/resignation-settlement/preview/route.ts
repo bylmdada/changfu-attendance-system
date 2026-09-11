@@ -3,6 +3,7 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { parseIntegerQueryParam } from '@/lib/query-params';
+import { calculateMonthlySalaryHourlyRate } from '@/lib/hourly-rate';
 
 // GET - 預覽離職結算（不實際執行）
 export async function GET(request: NextRequest) {
@@ -45,6 +46,7 @@ export async function GET(request: NextRequest) {
         department: true,
         position: true,
         baseSalary: true,
+        hourlyRate: true,
         hireDate: true,
         isActive: true
       }
@@ -94,18 +96,7 @@ export async function GET(request: NextRequest) {
     const totalAnnualLeaveDays = annualLeaves.reduce((sum, leave) => sum + (leave.remainingDays || 0), 0);
 
     // ==================== 3. 計算結算金額 ====================
-    const overtimeSettings = await prisma.systemSettings.findUnique({
-      where: { key: 'overtime_calculation_settings' }
-    });
-
-    let monthlyBasicHours = 240;
-    if (overtimeSettings) {
-      const parsed = JSON.parse(overtimeSettings.value);
-      monthlyBasicHours = parsed.monthlyBasicHours || 240;
-    }
-
-    // 計算費率（時薪 = 月薪 / 每月基本工時）
-    const hourlyRate = employee.baseSalary / monthlyBasicHours;
+    const hourlyRate = employee.hourlyRate || calculateMonthlySalaryHourlyRate(employee.baseSalary);
     
     // 各項結算金額
     const compLeaveAmount = Math.round(totalCompLeaveHours * hourlyRate);
@@ -140,8 +131,7 @@ export async function GET(request: NextRequest) {
           amount: annualLeaveAmount
         },
         calculation: {
-          formula: '月薪 ÷ 每月基本工時 = 時薪',
-          monthlyBasicHours,
+          formula: '薪資檔時薪優先；未設定時以月薪 ÷ 240 小時計算',
           baseSalary: employee.baseSalary,
           hourlyRate: Math.round(hourlyRate * 100) / 100
         },

@@ -23,6 +23,13 @@ import {
   buildInfectionControlClockData,
   parseInfectionControlInput,
 } from '@/lib/attendance-infection-control';
+import { calculateAttendanceHours } from '@/lib/work-hours';
+import { getAttendanceRegularTimeExclusions } from '@/lib/attendance-leave-hours';
+import {
+  indexApprovedOvertimeRequests,
+  resolveAttendanceOvertimeType,
+  resolveApprovedAttendanceOvertime,
+} from '@/lib/approved-overtime';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -399,11 +406,78 @@ export async function POST(request: Request) {
           }, { status: 400 });
         }
 
+        const [attendanceLeaves, approvedOvertimeRequests] = await Promise.all([
+          prisma.leaveRequest.findMany({
+            where: {
+              employeeId,
+              voidedAt: null,
+              OR: [
+                { status: 'APPROVED' },
+                { status: 'PENDING_ADMIN', managerOpinion: 'AGREE' },
+              ],
+              startDate: { lt: todayEnd },
+              endDate: { gt: todayStart },
+            },
+            select: {
+              startDate: true,
+              endDate: true,
+              status: true,
+              managerOpinion: true,
+              voidedAt: true,
+            },
+          }),
+          prisma.overtimeRequest.findMany({
+            where: {
+              employeeId,
+              status: 'APPROVED',
+              overtimeDate: { gte: todayStart, lt: todayEnd },
+            },
+            select: {
+              id: true,
+              employeeId: true,
+              overtimeDate: true,
+              totalHours: true,
+              compensationType: true,
+            },
+          }),
+        ]);
+        const hours = calculateAttendanceHours(
+          attendance.clockInTime,
+          today,
+          todaySchedule?.workHours ?? undefined,
+          todaySchedule?.breakTime || 0,
+          {
+            startTime: todaySchedule?.startTime,
+            endTime: todaySchedule?.endTime,
+            workDate: todayStart,
+            regularTimeExclusions: getAttendanceRegularTimeExclusions(attendanceLeaves),
+          }
+        );
+        const resolvedOvertime = resolveApprovedAttendanceOvertime(
+          {
+            employeeId,
+            workDate: todayStart,
+            regularHours: hours.regularHours,
+            actualWorkHours: hours.totalHours,
+            overtimeHours: hours.overtimeHours,
+            clockInOvertimeId: attendance.clockInOvertimeId,
+            clockOutOvertimeId: attendance.clockOutOvertimeId,
+            overtimeType: resolveAttendanceOvertimeType({
+              shiftType: todaySchedule?.shiftType,
+              workDate: todayStart,
+            }),
+          },
+          indexApprovedOvertimeRequests(approvedOvertimeRequests),
+          0
+        );
+
         attendance = await prisma.attendanceRecord.update({
           where: { id: attendance.id },
           data: { 
             clockOutTime: today,
             status: 'COMPLETE',
+            regularHours: resolvedOvertime.regularHours,
+            overtimeHours: resolvedOvertime.effectiveHours,
             ...infectionControlFields,
             ...clockOutLocationData
           }

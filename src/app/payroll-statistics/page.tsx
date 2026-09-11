@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { BarChart3, TrendingUp, DollarSign, Users, PieChart } from 'lucide-react';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import { SimpleToast, useLocalToast } from '@/components/Toast';
 import { buildPayrollStatisticsRequest } from '@/lib/payroll-statistics-client';
 import {
   calculateAverageMonthlyGrossPay,
@@ -68,6 +69,7 @@ const MONTHS = [
 ];
 
 export default function PayrollStatisticsPage() {
+  const { toast, showToast, clearToast } = useLocalToast();
   const [statistics, setStatistics] = useState<PayrollStatistics | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [user, setUser] = useState<User | null>(null);
@@ -159,7 +161,7 @@ export default function PayrollStatisticsPage() {
       }
     } catch (error) {
       console.error('匯出報表失敗:', error);
-      alert('匯出報表失敗');
+      showToast('error', '匯出報表失敗');
     } finally {
       setExporting(false);
     }
@@ -297,6 +299,7 @@ export default function PayrollStatisticsPage() {
                 onClick={() => {
                   const params = new URLSearchParams();
                   params.append('year', filters.year);
+                  if (filters.month) params.append('month', filters.month);
                   params.append('type', 'bonus');
                   window.open(`/api/reports/yuanta-transfer?${params}`, '_blank');
                 }}
@@ -805,6 +808,7 @@ export default function PayrollStatisticsPage() {
 
         </div>
       </div>
+      <SimpleToast toast={toast} onClose={clearToast} />
     </AuthenticatedLayout>
   );
 }

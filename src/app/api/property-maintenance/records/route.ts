@@ -11,13 +11,14 @@ import {
   type MaintenanceStatus,
 } from '@/lib/property-maintenance-utils';
 import { parseBoundedPositiveInt, parsePositiveInt } from '@/lib/property-query';
+import { normalizePropertyAuditStatus } from '@/lib/property-audit-status';
 
 const MAX_RECORD_PAGE = 1000000;
 
 /**
  * GET：維護紀錄清單（site-scoped）。
  * ?status=PENDING|DONE|ABNORMAL ?display=OVERDUE|TODAY ?assetId= ?mine=1
- * ?audit=待主管稽核 ?siteId= ?page ?pageSize
+ * ?audit=PENDING|APPROVED|REJECTED ?siteId= ?page ?pageSize
  */
 export async function GET(request: NextRequest) {
   const g = await guard(request);
@@ -50,7 +51,9 @@ export async function GET(request: NextRequest) {
   }
   const audit = sp.get('audit');
   if (audit) {
-    where.auditStatus = audit;
+    const normalizedAudit = normalizePropertyAuditStatus(audit);
+    if (!normalizedAudit) return fail('audit 參數錯誤');
+    where.auditStatus = normalizedAudit;
     const requestedSiteId = typeof where.siteId === 'number' ? where.siteId : null;
     if (requestedSiteId) {
       if (!canSuperviseSite(g.ctx.access, requestedSiteId)) {

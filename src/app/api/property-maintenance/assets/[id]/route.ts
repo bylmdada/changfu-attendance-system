@@ -46,8 +46,7 @@ export async function GET(
 
   const records = await prisma.maintenanceRecord.findMany({
     where: { assetId: asset.id },
-    orderBy: { dueDate: 'desc' },
-    take: 200,
+    orderBy: [{ dueDate: 'desc' }, { recordId: 'desc' }],
   });
   const history = records.map((r) => ({
     ...r,

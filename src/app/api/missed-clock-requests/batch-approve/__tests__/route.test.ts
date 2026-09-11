@@ -4,6 +4,7 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { checkRateLimit } from '@/lib/rate-limit';
+import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
 
 jest.mock('@/lib/database', () => ({
   prisma: {
@@ -35,10 +36,15 @@ jest.mock('@/lib/rate-limit', () => ({
   checkRateLimit: jest.fn(),
 }));
 
+jest.mock('@/lib/attendance-freeze', () => ({
+  checkAttendanceFreeze: jest.fn(),
+}));
+
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
 const mockValidateCSRF = validateCSRF as jest.MockedFunction<typeof validateCSRF>;
 const mockCheckRateLimit = checkRateLimit as jest.MockedFunction<typeof checkRateLimit>;
+const mockCheckAttendanceFreeze = checkAttendanceFreeze as jest.MockedFunction<typeof checkAttendanceFreeze>;
 
 const transactionClient = {
   missedClockRequest: {
@@ -49,6 +55,15 @@ const transactionClient = {
     update: jest.fn(),
     create: jest.fn(),
   },
+  schedule: {
+    findFirst: jest.fn(),
+  },
+  leaveRequest: {
+    findMany: jest.fn(),
+  },
+  overtimeRequest: {
+    findMany: jest.fn(),
+  },
 };
 
 describe('missed clock batch approval authorization guards', () => {
@@ -56,6 +71,7 @@ describe('missed clock batch approval authorization guards', () => {
     jest.clearAllMocks();
     mockCheckRateLimit.mockResolvedValue({ allowed: true } as never);
     mockValidateCSRF.mockResolvedValue({ valid: true } as never);
+    mockCheckAttendanceFreeze.mockResolvedValue({ isFrozen: false } as never);
     mockGetUserFromRequest.mockResolvedValue({
       role: 'MANAGER',
       employeeId: 99,
@@ -71,6 +87,9 @@ describe('missed clock batch approval authorization guards', () => {
       },
     ] as never);
     mockPrisma.$transaction.mockImplementation(async (callback) => callback(transactionClient as never) as never);
+    transactionClient.schedule.findFirst.mockResolvedValue(null as never);
+    transactionClient.leaveRequest.findMany.mockResolvedValue([] as never);
+    transactionClient.overtimeRequest.findMany.mockResolvedValue([] as never);
   });
 
   it('rejects manager batch review when selected requests are outside managed departments', async () => {
@@ -166,9 +185,11 @@ describe('missed clock batch approval authorization guards', () => {
     expect(transactionClient.attendanceRecord.create).toHaveBeenCalledWith({
       data: {
         employeeId: 20,
-        workDate: new Date('2024-01-01T00:00:00.000Z'),
+        workDate: new Date('2023-12-31T16:00:00.000Z'),
         status: 'PRESENT',
-        clockInTime: '09:00',
+        clockInTime: new Date('2024-01-01T01:00:00.000Z'),
+        regularHours: 0,
+        overtimeHours: 0,
       },
     });
   });
@@ -214,7 +235,12 @@ describe('missed clock batch approval authorization guards', () => {
       },
     ] as never);
     transactionClient.missedClockRequest.update.mockResolvedValue({ id: 6 } as never);
-    transactionClient.attendanceRecord.findFirst.mockResolvedValue({ id: 100 } as never);
+    transactionClient.attendanceRecord.findFirst.mockResolvedValue({
+      id: 100,
+      workDate: new Date('2024-01-01T16:00:00.000Z'),
+      clockInTime: null,
+      clockOutTime: null,
+    } as never);
     transactionClient.attendanceRecord.update.mockResolvedValue({ id: 100 } as never);
 
     const request = new NextRequest('http://localhost:3000/api/missed-clock-requests/batch-approve', {
@@ -243,7 +269,9 @@ describe('missed clock batch approval authorization guards', () => {
     expect(transactionClient.attendanceRecord.update).toHaveBeenCalledWith({
       where: { id: 100 },
       data: {
-        clockOutTime: '18:00',
+        clockOutTime: new Date('2024-01-02T10:00:00.000Z'),
+        regularHours: 0,
+        overtimeHours: 0,
       },
     });
   });

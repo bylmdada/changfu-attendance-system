@@ -7,6 +7,10 @@ import { validateCSRF } from '@/lib/csrf';
 import { getManageableDepartments } from '@/lib/schedule-management-permissions';
 import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
 import { calculateOvertimePayForRequest } from '@/lib/salary-utils';
+import {
+  calculateOvertimeRequestEligibility,
+  getOvertimeEligibilityError,
+} from '@/lib/overtime-eligibility';
 
 jest.mock('@/lib/database', () => ({
   prisma: {
@@ -67,6 +71,15 @@ jest.mock('@/lib/salary-utils', () => ({
   calculateOvertimePayForRequest: jest.fn(),
 }));
 
+jest.mock('@/lib/overtime-eligibility', () => ({
+  calculateOvertimeRequestEligibility: jest.fn(),
+  getOvertimeEligibilityError: jest.fn(),
+}));
+
+jest.mock('@/lib/schedule-confirm-service', () => ({
+  invalidateConfirmation: jest.fn().mockResolvedValue({ invalidated: false }),
+}));
+
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
 const mockCheckRateLimit = checkRateLimit as jest.MockedFunction<typeof checkRateLimit>;
@@ -74,6 +87,8 @@ const mockValidateCSRF = validateCSRF as jest.MockedFunction<typeof validateCSRF
 const mockGetManageableDepartments = getManageableDepartments as jest.MockedFunction<typeof getManageableDepartments>;
 const mockCheckAttendanceFreeze = checkAttendanceFreeze as jest.MockedFunction<typeof checkAttendanceFreeze>;
 const mockCalculateOvertimePayForRequest = calculateOvertimePayForRequest as jest.MockedFunction<typeof calculateOvertimePayForRequest>;
+const mockCalculateOvertimeRequestEligibility = calculateOvertimeRequestEligibility as jest.MockedFunction<typeof calculateOvertimeRequestEligibility>;
+const mockGetOvertimeEligibilityError = getOvertimeEligibilityError as jest.MockedFunction<typeof getOvertimeEligibilityError>;
 
 const transactionClient = {
   overtimeRequest: {
@@ -95,6 +110,7 @@ const transactionClient = {
     update: jest.fn(),
   },
   schedule: {
+    findMany: jest.fn(),
     findFirst: jest.fn(),
     update: jest.fn(),
     updateMany: jest.fn(),
@@ -113,10 +129,21 @@ function resetNestedMockFunctions(record: Record<string, unknown>) {
   }
 }
 
+
+function accountingSchedules(args: { where: { workDate: { gte: string; lte: string } } }) {
+  const rows = [];
+  for (const day = new Date(args.where.workDate.gte); day <= new Date(args.where.workDate.lte); day.setUTCDate(day.getUTCDate() + 1)) {
+    rows.push({workDate: day.toISOString().slice(0,10), startTime:'09:00', endTime:'17:00', workHours:8, breakTime:0});
+  }
+  return Promise.resolve(rows);
+}
+
 describe('batch approve supervisor scope guards', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     resetNestedMockFunctions(transactionClient as unknown as Record<string, unknown>);
+    transactionClient.schedule.findMany.mockImplementation(accountingSchedules);
+    transactionClient.annualLeave.updateMany.mockResolvedValue({ count: 1 });
 
     mockCheckRateLimit.mockResolvedValue({ allowed: true } as never);
     mockValidateCSRF.mockResolvedValue({ valid: true } as never);
@@ -128,6 +155,20 @@ describe('batch approve supervisor scope guards', () => {
     } as never);
     mockGetManageableDepartments.mockResolvedValue(['製造部'] as never);
     mockCheckAttendanceFreeze.mockResolvedValue({ isFrozen: false } as never);
+    mockCalculateOvertimeRequestEligibility.mockImplementation(async (overtimeRequest, options) => ({
+      hasApprovedRequest: true,
+      approvedRequestIds: [overtimeRequest.id],
+      rawAttendanceHours: overtimeRequest.totalHours,
+      approvedRequestHours: overtimeRequest.totalHours,
+      approvedWorkedHours: overtimeRequest.totalHours,
+      regularHours: 8,
+      effectiveHours: overtimeRequest.totalHours,
+      payableHours: overtimeRequest.compensationType === 'OVERTIME_PAY' ? overtimeRequest.totalHours : 0,
+      compLeaveHours: overtimeRequest.compensationType === 'COMP_LEAVE' ? overtimeRequest.totalHours : 0,
+      hasCompleteAttendance: true,
+      overtimeType: options?.overtimeType ?? 'WEEKDAY',
+    }));
+    mockGetOvertimeEligibilityError.mockReturnValue(null);
     mockPrisma.auditLog.create.mockResolvedValue({ id: 1 } as never);
     mockPrisma.$transaction.mockImplementation(async (callback) => callback(transactionClient as never) as never);
   });
@@ -255,8 +296,8 @@ describe('batch approve supervisor scope guards', () => {
         status: 'PENDING',
         leaveType: 'SICK_LEAVE',
         employeeId: 58,
-        startDate: new Date('2026-04-07T00:00:00.000Z'),
-        endDate: new Date('2026-04-07T00:00:00.000Z'),
+        startDate: new Date('2026-04-07T01:00:00.000Z'),
+        endDate: new Date('2026-04-07T09:00:00.000Z'),
         employee: {
           department: '製造部',
         },
@@ -312,8 +353,8 @@ describe('batch approve supervisor scope guards', () => {
       status: 'PENDING',
       leaveType: 'SICK_LEAVE',
       employeeId: 58,
-      startDate: new Date('2026-04-07T00:00:00.000Z'),
-      endDate: new Date('2026-04-07T00:00:00.000Z'),
+      startDate: new Date('2026-04-07T01:00:00.000Z'),
+      endDate: new Date('2026-04-07T09:00:00.000Z'),
       employee: {
         department: '製造部',
       },
@@ -398,7 +439,7 @@ describe('batch approve supervisor scope guards', () => {
     expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
     expect(transactionClient.leaveRequest.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 101 },
+        where: expect.objectContaining({ id: 101 }),
         data: expect.objectContaining({
           status: 'APPROVED',
           approvedBy: 10,
@@ -448,7 +489,7 @@ describe('batch approve supervisor scope guards', () => {
     expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
     expect(transactionClient.leaveRequest.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 151 },
+        where: expect.objectContaining({ id: 151 }),
         data: expect.objectContaining({
           status: 'APPROVED',
           approvedBy: 10,
@@ -520,8 +561,8 @@ describe('batch approve supervisor scope guards', () => {
       status: 'PENDING',
       leaveType: 'ANNUAL',
       employeeId: 55,
-      startDate: new Date('2026-04-03T00:00:00.000Z'),
-      endDate: new Date('2026-04-04T00:00:00.000Z'),
+      startDate: new Date('2026-04-03T01:00:00.000Z'),
+      endDate: new Date('2026-04-04T09:00:00.000Z'),
       employee: {
         department: '製造部',
       },
@@ -574,8 +615,8 @@ describe('batch approve supervisor scope guards', () => {
       status: 'PENDING_ADMIN',
       leaveType: 'ANNUAL_LEAVE',
       employeeId: 55,
-      startDate: new Date('2026-04-10T00:00:00.000Z'),
-      endDate: new Date('2026-04-10T00:00:00.000Z'),
+      startDate: new Date('2026-04-10T01:00:00.000Z'),
+      endDate: new Date('2026-04-10T09:00:00.000Z'),
       employee: {
         department: '製造部',
       },
@@ -711,7 +752,7 @@ describe('batch approve supervisor scope guards', () => {
     expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
     expect(transactionClient.leaveRequest.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 101 },
+        where: expect.objectContaining({ id: 101 }),
         data: expect.objectContaining({
           status: 'APPROVED',
           approvedBy: 10,
@@ -747,6 +788,11 @@ describe('batch approve supervisor scope guards', () => {
     transactionClient.overtimeRequest.update.mockResolvedValue({ id: 202 } as never);
     transactionClient.compLeaveTransaction.create.mockResolvedValue({ id: 1 } as never);
     transactionClient.compLeaveBalance.upsert.mockResolvedValue({ id: 1 } as never);
+    mockCalculateOvertimeRequestEligibility.mockResolvedValueOnce({
+      effectiveHours: 1.5,
+      overtimeType: 'WEEKDAY',
+      hasCompleteAttendance: true,
+    } as never);
 
     const request = new NextRequest('http://localhost:3000/api/batch-approve', {
       method: 'POST',
@@ -778,17 +824,70 @@ describe('batch approve supervisor scope guards', () => {
         data: expect.objectContaining({
           status: 'APPROVED',
           approvedBy: 10,
+          overtimeType: 'WEEKDAY',
         }),
       })
     );
     expect(transactionClient.compLeaveTransaction.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
+          hours: 1.5,
           yearMonth: '2026-04',
         }),
       })
     );
-    expect(transactionClient.compLeaveBalance.upsert).toHaveBeenCalled();
+    expect(transactionClient.compLeaveBalance.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: { pendingEarn: { increment: 1.5 } },
+        create: expect.objectContaining({ pendingEarn: 1.5 }),
+      })
+    );
+  });
+
+  it('rejects final overtime approval when actual attendance has no eligible overtime', async () => {
+    mockGetUserFromRequest.mockResolvedValue({
+      userId: 1,
+      employeeId: 10,
+      role: 'ADMIN',
+      username: 'admin',
+    } as never);
+    mockPrisma.overtimeRequest.findUnique.mockResolvedValue({
+      id: 207,
+      status: 'PENDING_ADMIN',
+      employeeId: 88,
+      totalHours: 1,
+      compensationType: 'COMP_LEAVE',
+      overtimeDate: new Date('2026-03-18T00:00:00.000Z'),
+      employee: { department: '製造部' },
+    } as never);
+    mockCalculateOvertimeRequestEligibility.mockResolvedValueOnce({
+      effectiveHours: 0,
+      overtimeType: 'WEEKDAY',
+      hasCompleteAttendance: true,
+    } as never);
+    mockGetOvertimeEligibilityError.mockReturnValueOnce(
+      '當日實際淨工時未達法定加班門檻，無可核准的加班時數'
+    );
+
+    const response = await POST(new NextRequest('http://localhost:3000/api/batch-approve', {
+      method: 'POST',
+      headers: {
+        cookie: 'auth-token=test-token',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        resourceType: 'OVERTIME',
+        ids: [207],
+        action: 'APPROVE',
+      }),
+    }));
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload.error).toBe('當日實際淨工時未達法定加班門檻，無可核准的加班時數');
+    expect(mockPrisma.overtimeRequest.update).not.toHaveBeenCalled();
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+    expect(transactionClient.compLeaveTransaction.create).not.toHaveBeenCalled();
   });
 
   it('keeps supervisor overtime approvals at pending admin before comp-leave accrual', async () => {
@@ -840,6 +939,7 @@ describe('batch approve supervisor scope guards', () => {
       })
     );
     expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+    expect(mockCalculateOvertimeRequestEligibility).not.toHaveBeenCalled();
     expect(transactionClient.overtimeRequest.update).not.toHaveBeenCalled();
     expect(transactionClient.compLeaveTransaction.create).not.toHaveBeenCalled();
     expect(transactionClient.compLeaveBalance.upsert).not.toHaveBeenCalled();
@@ -904,8 +1004,8 @@ describe('batch approve supervisor scope guards', () => {
       status: 'PENDING',
       employeeId: 55,
       leaveType: 'ANNUAL_LEAVE',
-      startDate: new Date('2026-03-10T00:00:00.000Z'),
-      endDate: new Date('2026-03-12T00:00:00.000Z'),
+      startDate: new Date('2026-03-10T01:00:00.000Z'),
+      endDate: new Date('2026-03-12T09:00:00.000Z'),
       employee: {
         department: '製造部',
       },
@@ -941,7 +1041,7 @@ describe('batch approve supervisor scope guards', () => {
     expect(mockPrisma.annualLeave.updateMany).not.toHaveBeenCalled();
     expect(transactionClient.leaveRequest.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 303 },
+        where: expect.objectContaining({ id: 303 }),
         data: expect.objectContaining({
           status: 'APPROVED',
           approvedBy: 10,
@@ -952,24 +1052,14 @@ describe('batch approve supervisor scope guards', () => {
       where: {
         employeeId: 55,
         year: 2026,
+        remainingDays: { gte: 3 },
       },
       data: {
         usedDays: { increment: 3 },
         remainingDays: { decrement: 3 },
       },
     });
-    expect(transactionClient.schedule.updateMany).toHaveBeenNthCalledWith(1, {
-      where: { employeeId: 55, workDate: '2026-03-10' },
-      data: { shiftType: 'FDL', startTime: '', endTime: '' },
-    });
-    expect(transactionClient.schedule.updateMany).toHaveBeenNthCalledWith(2, {
-      where: { employeeId: 55, workDate: '2026-03-11' },
-      data: { shiftType: 'FDL', startTime: '', endTime: '' },
-    });
-    expect(transactionClient.schedule.updateMany).toHaveBeenNthCalledWith(3, {
-      where: { employeeId: 55, workDate: '2026-03-12' },
-      data: { shiftType: 'FDL', startTime: '', endTime: '' },
-    });
+    expect(transactionClient.schedule.updateMany).toHaveBeenCalledWith(expect.objectContaining({ data: { specialLeaveHours: { increment: 8 } } }));
   });
 
   it('splits annual leave deductions across yearly balances when batch approval crosses a year boundary', async () => {
@@ -984,8 +1074,8 @@ describe('batch approve supervisor scope guards', () => {
       status: 'PENDING',
       employeeId: 55,
       leaveType: 'ANNUAL_LEAVE',
-      startDate: new Date('2026-12-31T00:00:00.000Z'),
-      endDate: new Date('2027-01-02T00:00:00.000Z'),
+      startDate: new Date('2026-12-31T01:00:00.000Z'),
+      endDate: new Date('2027-01-02T09:00:00.000Z'),
       employee: {
         department: '製造部',
       },
@@ -1020,6 +1110,7 @@ describe('batch approve supervisor scope guards', () => {
       where: {
         employeeId: 55,
         year: 2026,
+        remainingDays: { gte: 1 },
       },
       data: {
         usedDays: { increment: 1 },
@@ -1030,6 +1121,7 @@ describe('batch approve supervisor scope guards', () => {
       where: {
         employeeId: 55,
         year: 2027,
+        remainingDays: { gte: 2 },
       },
       data: {
         usedDays: { increment: 2 },
@@ -1050,8 +1142,8 @@ describe('batch approve supervisor scope guards', () => {
       status: 'PENDING',
       employeeId: 55,
       leaveType: 'SICK_LEAVE',
-      startDate: new Date('2026-04-08T00:00:00.000Z'),
-      endDate: new Date('2026-04-09T00:00:00.000Z'),
+      startDate: new Date('2026-04-08T01:00:00.000Z'),
+      endDate: new Date('2026-04-09T09:00:00.000Z'),
       employee: {
         department: '製造部',
       },
@@ -1084,7 +1176,7 @@ describe('batch approve supervisor scope guards', () => {
     expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
     expect(transactionClient.leaveRequest.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 305 },
+        where: expect.objectContaining({ id: 305 }),
         data: expect.objectContaining({
           status: 'APPROVED',
           approvedBy: 10,
@@ -1092,14 +1184,7 @@ describe('batch approve supervisor scope guards', () => {
       })
     );
     expect(transactionClient.annualLeave.updateMany).not.toHaveBeenCalled();
-    expect(transactionClient.schedule.updateMany).toHaveBeenNthCalledWith(1, {
-      where: { employeeId: 55, workDate: '2026-04-08' },
-      data: { shiftType: 'FDL', startTime: '', endTime: '' },
-    });
-    expect(transactionClient.schedule.updateMany).toHaveBeenNthCalledWith(2, {
-      where: { employeeId: 55, workDate: '2026-04-09' },
-      data: { shiftType: 'FDL', startTime: '', endTime: '' },
-    });
+    expect(transactionClient.schedule.updateMany).not.toHaveBeenCalled();
   });
 
   it('updates schedules transactionally when batch-approving self-change requests', async () => {
@@ -1166,7 +1251,16 @@ describe('batch approve supervisor scope guards', () => {
     });
     expect(transactionClient.schedule.update).toHaveBeenNthCalledWith(1, {
       where: { id: 9001 },
-      data: { shiftType: 'B', startTime: '08:00', endTime: '17:00' },
+      data: {
+        shiftType: 'B',
+        startTime: '08:00',
+        endTime: '17:00',
+        breakTime: 60,
+        workHours: 8,
+        specialLeaveHours: 0,
+        compLeaveHours: 0,
+        overtimeHours: 0,
+      },
     });
   });
 
@@ -1349,6 +1443,11 @@ describe('batch approve supervisor scope guards', () => {
       overtimePay: 1200,
       hourlyRate: 240,
     } as never);
+    mockCalculateOvertimeRequestEligibility.mockResolvedValueOnce({
+      effectiveHours: 1.5,
+      overtimeType: 'REST_DAY',
+      hasCompleteAttendance: true,
+    } as never);
 
     const request = new NextRequest('http://localhost:3000/api/batch-approve', {
       method: 'POST',
@@ -1376,7 +1475,7 @@ describe('batch approve supervisor scope guards', () => {
     expect(mockCalculateOvertimePayForRequest).toHaveBeenCalledWith(
       66,
       new Date('2026-03-16T00:00:00.000Z'),
-      3,
+      1.5,
       'REST_DAY'
     );
     expect(mockPrisma.$transaction).not.toHaveBeenCalled();
@@ -1576,7 +1675,16 @@ describe('batch approve supervisor scope guards', () => {
     expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
     expect(transactionClient.schedule.update).toHaveBeenCalledWith({
       where: { id: 9001 },
-      data: { shiftType: 'B', startTime: '08:00', endTime: '17:00' },
+      data: {
+        shiftType: 'B',
+        startTime: '08:00',
+        endTime: '17:00',
+        breakTime: 60,
+        workHours: 8,
+        specialLeaveHours: 0,
+        compLeaveHours: 0,
+        overtimeHours: 0,
+      },
     });
   });
 });

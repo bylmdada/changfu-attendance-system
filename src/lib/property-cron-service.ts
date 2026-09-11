@@ -9,6 +9,7 @@ import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/database';
 import { sendNotification } from '@/lib/email';
 import { resolveSiteConfig, APP_CONFIG } from '@/lib/app-config';
+import { systemLogger } from '@/lib/logger';
 import {
   addDays,
   buildRecordId,
@@ -85,8 +86,13 @@ async function markSent(
     await prisma.propertyMaintenanceReminderLog.create({
       data: { recordId, reminderType, dedupeKey, channel },
     });
-  } catch {
-    /* P2002 競態：視為已寄 */
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) {
+      systemLogger.error('財產維護提醒去重紀錄寫入失敗', {
+        error: error instanceof Error ? error : new Error(String(error)),
+        context: { recordId, reminderType, dedupeKey, channel },
+      });
+    }
   }
 }
 
@@ -109,7 +115,10 @@ async function notifyAdminsError(context: string, err: unknown): Promise<void> {
     }
 
   } catch (e) {
-    console.error('notifyAdminsError 失敗:', e);
+    systemLogger.error('財產維護錯誤通知寄送失敗', {
+      error: e instanceof Error ? e : new Error(String(e)),
+      context: { source: 'property-maintenance' },
+    });
   }
 }
 
@@ -180,7 +189,7 @@ export async function generateMaintenanceTasks(now: Date = new Date()) {
                 maintenanceCycle: a.maintenanceFrequency,
                 dueDate: due,
                 status: 'PENDING',
-                auditStatus: '待主管稽核',
+                auditStatus: 'PENDING',
                 maintainerRaw: a.managerName,
                 generatedByCron: true,
                 note: `系統自動產生任務（頻率：${a.maintenanceFrequency ?? ''}）`,
@@ -201,7 +210,10 @@ export async function generateMaintenanceTasks(now: Date = new Date()) {
       }
     } catch (err) {
       stat.errors++;
-      console.error(`[generateMaintenanceTasks] site=${site.name} 失敗:`, err);
+      systemLogger.error('財產維護任務產生失敗', {
+        error: err instanceof Error ? err : new Error(String(err)),
+        context: { siteId: site.id, siteName: site.name },
+      });
       await notifyAdminsError(`產生維護任務失敗（據點：${site.name}）`, err);
     }
   }
@@ -317,7 +329,10 @@ export async function notifySupervisorsOfSubmission(
       await notifyOne(r, cfg.subjects.submitAudit, message, cfg.emailEnabled);
     }
   } catch (e) {
-    console.error('notifySupervisorsOfSubmission 失敗:', e);
+    systemLogger.error('財產維護送審通知失敗', {
+      error: e instanceof Error ? e : new Error(String(e)),
+      context: { siteId },
+    });
   }
 }
 
@@ -394,7 +409,10 @@ export async function sendSupervisorDigest(now: Date = new Date()) {
       await markSent(0, 'THURSDAY_DIGEST', dedupeKey, cfg.emailEnabled ? 'BOTH' : 'IN_APP');
       summary[site.name] = `已寄 ${recipients.length} 位（完成 ${completed.length}／待辦 ${outstanding.length}）`;
     } catch (err) {
-      console.error(`[sendSupervisorDigest] site=${site.name} 失敗:`, err);
+      systemLogger.error('財產維護主管彙整寄送失敗', {
+        error: err instanceof Error ? err : new Error(String(err)),
+        context: { siteId: site.id, siteName: site.name },
+      });
       summary[site.name] = '錯誤';
       await notifyAdminsError(`週四彙整失敗（據點：${site.name}）`, err);
     }
@@ -481,7 +499,10 @@ export async function sendDailyReminders(now: Date = new Date()) {
       });
       summary[site.name] = `已寄 ${recipients.length} 位（提醒 ${toSend.length} 筆）`;
     } catch (err) {
-      console.error(`[sendDailyReminders] site=${site.name} 失敗:`, err);
+      systemLogger.error('財產維護每日提醒寄送失敗', {
+        error: err instanceof Error ? err : new Error(String(err)),
+        context: { siteId: site.id, siteName: site.name },
+      });
       summary[site.name] = '錯誤';
       await notifyAdminsError(`每日提醒失敗（據點：${site.name}）`, err);
     }

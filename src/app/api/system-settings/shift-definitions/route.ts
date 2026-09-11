@@ -10,6 +10,7 @@ import {
   toShiftDefinitionDTO,
 } from '@/lib/shift-definition-service';
 import { calculateNetWorkHours } from '@/lib/shift-definition-utils';
+import { logSystemSettingsChange } from '@/lib/system-settings-audit';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -296,6 +297,16 @@ export async function POST(request: NextRequest) {
       },
     });
 
+    await logSystemSettingsChange({
+      request,
+      user: auth.user,
+      settingKey: 'shift-definitions',
+      description: '班別定義新增',
+      oldValue: null,
+      newValue: shift,
+      targetId: shift.id,
+    });
+
     return NextResponse.json({
       success: true,
       message: '班別已新增',
@@ -364,6 +375,16 @@ export async function PUT(request: NextRequest) {
       data: updateData,
     });
 
+    await logSystemSettingsChange({
+      request,
+      user: auth.user,
+      settingKey: 'shift-definitions',
+      description: '班別定義變更',
+      oldValue: existingShift,
+      newValue: shift,
+      targetId: shift.id,
+    });
+
     return NextResponse.json({
       success: true,
       message: '班別已更新',
@@ -412,6 +433,16 @@ export async function DELETE(request: NextRequest) {
     const shift = await prisma.shiftDefinition.update({
       where: { id },
       data: { isActive: false },
+    });
+
+    await logSystemSettingsChange({
+      request,
+      user: auth.user,
+      settingKey: 'shift-definitions',
+      description: '班別定義停用',
+      oldValue: existingShift,
+      newValue: shift,
+      targetId: shift.id,
     });
 
     return NextResponse.json({

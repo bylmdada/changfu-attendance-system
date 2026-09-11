@@ -4,6 +4,8 @@
  * 根據勞基法第24條、第39條、第40條規定計算各類加班費
  */
 
+import { calculateMonthlySalaryHourlyRate } from '@/lib/hourly-rate';
+
 // 加班類型枚舉
 export enum OvertimeType {
   WEEKDAY = 'WEEKDAY',           // 平日加班（延長工作時間）
@@ -31,13 +33,13 @@ export interface OvertimePayDetail {
 
 /**
  * 計算平日每小時工資額
- * 公式：月薪總額 ÷ 240
+ * 公式：月薪總額 ÷ 240，四捨五入至整數
  * 
  * @param monthlySalary 月薪總額（包含所有經常性給與）
  * @returns 平日每小時工資額
  */
 export function calculateHourlyWage(monthlySalary: number): number {
-  return monthlySalary / 240;
+  return calculateMonthlySalaryHourlyRate(monthlySalary);
 }
 
 /**
@@ -120,24 +122,13 @@ export function calculateRestDayOvertime(hours: number, hourlyWage: number): Ove
     };
   }
 
-  // 休息日特殊規則：
-  // - 4小時內以4小時計
-  // - 超過4小時、8小時內以8小時計  
-  // - 超過8小時、12小時內以12小時計
-  let billableHours: number;
-  if (hours <= 4) {
-    billableHours = 4;
-  } else if (hours <= 8) {
-    billableHours = 8;
-  } else {
-    billableHours = Math.min(hours, 12);
-  }
+  const actualHours = Math.min(hours, 12);
 
   const details: OvertimePayDetail[] = [];
   let totalPay = 0;
 
   // 前2小時：平日每小時工資額 × (4/3)
-  const firstTwoHours = Math.min(billableHours, 2);
+  const firstTwoHours = Math.min(actualHours, 2);
   if (firstTwoHours > 0) {
     const rate = 4/3;
     const amount = firstTwoHours * hourlyWage * rate;
@@ -151,7 +142,7 @@ export function calculateRestDayOvertime(hours: number, hourlyWage: number): Ove
   }
 
   // 第3-8小時：平日每小時工資額 × (5/3)
-  const nextSixHours = Math.min(Math.max(0, billableHours - 2), 6);
+  const nextSixHours = Math.min(Math.max(0, actualHours - 2), 6);
   if (nextSixHours > 0) {
     const rate = 5/3;
     const amount = nextSixHours * hourlyWage * rate;
@@ -165,7 +156,7 @@ export function calculateRestDayOvertime(hours: number, hourlyWage: number): Ove
   }
 
   // 第9-12小時：平日每小時工資額 × (8/3)
-  const finalFourHours = Math.max(0, billableHours - 8);
+  const finalFourHours = Math.max(0, actualHours - 8);
   if (finalFourHours > 0) {
     const rate = 8/3;
     const amount = finalFourHours * hourlyWage * rate;
@@ -180,7 +171,7 @@ export function calculateRestDayOvertime(hours: number, hourlyWage: number): Ove
 
   return {
     type: OvertimeType.REST_DAY,
-    hours: billableHours,
+    hours: actualHours,
     hourlyWage,
     overtimePay: totalPay,
     details
@@ -292,8 +283,18 @@ export function calculateOvertime(
   hours: number,
   monthlySalary: number
 ): OvertimeCalculationResult {
-  const hourlyWage = calculateHourlyWage(monthlySalary);
+  return calculateOvertimeFromHourlyWage(
+    overtimeType,
+    hours,
+    calculateHourlyWage(monthlySalary)
+  );
+}
 
+export function calculateOvertimeFromHourlyWage(
+  overtimeType: OvertimeType,
+  hours: number,
+  hourlyWage: number
+): OvertimeCalculationResult {
   switch (overtimeType) {
     case OvertimeType.WEEKDAY:
       return calculateWeekdayOvertime(hours, hourlyWage);

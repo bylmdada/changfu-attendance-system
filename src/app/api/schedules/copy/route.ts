@@ -4,10 +4,36 @@ import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { parseIntegerQueryParam } from '@/lib/query-params';
+import { listShiftDefinitions } from '@/lib/shift-definition-service';
+import { resolveScheduleHourFields } from '@/lib/shift-definition-utils';
 import { safeParseJSON } from '@/lib/validation';
+import { invalidateConfirmation } from '@/lib/schedule-confirm-service';
+import {
+  getManageableDepartments,
+  hasFullScheduleManagementAccess,
+} from '@/lib/schedule-management-permissions';
+import { checkMultipleDatesFreeze, getAttendanceFreezeError } from '@/lib/attendance-freeze';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function buildScheduleScopeWhere(isFullAdmin: boolean, manageableDepartments: string[]) {
+  if (isFullAdmin) return {};
+  return {
+    employee: {
+      is: {
+        department: { in: manageableDepartments },
+      },
+    },
+  };
+}
+
+function formatDate(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 // POST - 快速複製班表（複製上週/上月班表到指定週/月）
@@ -28,9 +54,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    if (!decoded || (decoded.role !== 'ADMIN' && decoded.role !== 'HR')) {
+    const isFullAdmin = hasFullScheduleManagementAccess(decoded);
+    const manageableDepartments = await getManageableDepartments(decoded);
+    if (!isFullAdmin && manageableDepartments.length === 0) {
       return NextResponse.json({ error: '權限不足' }, { status: 403 });
     }
+    const scheduleScopeWhere = buildScheduleScopeWhere(isFullAdmin, manageableDepartments);
 
     const parseResult = await safeParseJSON(request);
     if (!parseResult.success) {
@@ -72,12 +101,20 @@ export async function POST(request: NextRequest) {
       const sourceStart = new Date(fromYear, fromMonth - 1, 1);
       const sourceEnd = new Date(fromYear, fromMonth, 0);
       const targetStart = new Date(toYear, toMonth - 1, 1);
+      const targetEnd = new Date(toYear, toMonth, 0);
+
+      const freezeError = getAttendanceFreezeError(
+        await checkMultipleDatesFreeze([targetStart, targetEnd])
+      );
+      if (freezeError) {
+        return NextResponse.json({ error: freezeError }, { status: 409 });
+      }
       
-      const formatDate = (date: Date) => date.toISOString().split('T')[0];
       const daysDiff = Math.round((targetStart.getTime() - sourceStart.getTime()) / (1000 * 60 * 60 * 24));
 
       const sourceSchedules = await prisma.schedule.findMany({
         where: {
+          ...scheduleScopeWhere,
           workDate: {
             gte: formatDate(sourceStart),
             lte: formatDate(sourceEnd)
@@ -89,9 +126,21 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: '來源月份沒有班表記錄' }, { status: 400 });
       }
 
+      const shiftDefinitions = await listShiftDefinitions({ includeInactive: true });
       let createdCount = 0;
+      const affectedConfirmations = new Set<string>();
 
       for (const schedule of sourceSchedules) {
+        const resolvedSchedule = resolveScheduleHourFields({
+          shiftType: schedule.shiftType,
+          startTime: schedule.startTime,
+          endTime: schedule.endTime,
+          breakTime: schedule.breakTime,
+          workHours: schedule.workHours,
+          specialLeaveHours: schedule.specialLeaveHours,
+          compLeaveHours: schedule.compLeaveHours,
+          overtimeHours: schedule.overtimeHours,
+        }, shiftDefinitions);
         const sourceWorkDate = new Date(schedule.workDate);
         const targetWorkDate = new Date(sourceWorkDate);
         targetWorkDate.setDate(targetWorkDate.getDate() + daysDiff);
@@ -109,19 +158,25 @@ export async function POST(request: NextRequest) {
             data: {
               employeeId: schedule.employeeId,
               workDate: targetWorkDateStr,
-              shiftType: schedule.shiftType,
-              startTime: schedule.startTime,
-              endTime: schedule.endTime,
-              breakTime: schedule.breakTime,
-              workHours: schedule.workHours,
-              specialLeaveHours: schedule.specialLeaveHours,
-              compLeaveHours: schedule.compLeaveHours,
-              overtimeHours: schedule.overtimeHours
+              shiftType: resolvedSchedule.shiftType,
+              startTime: resolvedSchedule.startTime,
+              endTime: resolvedSchedule.endTime,
+              breakTime: resolvedSchedule.breakTime,
+              workHours: resolvedSchedule.workHours,
+              specialLeaveHours: resolvedSchedule.specialLeaveHours,
+              compLeaveHours: resolvedSchedule.compLeaveHours,
+              overtimeHours: resolvedSchedule.overtimeHours
             }
           });
           createdCount++;
+          affectedConfirmations.add(`${schedule.employeeId}:${targetWorkDateStr.slice(0, 7)}`);
         }
       }
+
+      await Promise.all(Array.from(affectedConfirmations).map((key) => {
+        const [employeeId, yearMonth] = key.split(':');
+        return invalidateConfirmation(Number(employeeId), yearMonth);
+      }));
 
       return NextResponse.json({ 
         message: '班表複製成功',
@@ -168,7 +223,14 @@ export async function POST(request: NextRequest) {
       daysDiff = Math.round((targetStart.getTime() - sourceStart.getTime()) / (1000 * 60 * 60 * 24));
     }
 
-    const formatDate = (date: Date) => date.toISOString().split('T')[0];
+    const targetEnd = new Date(targetStart);
+    targetEnd.setDate(targetEnd.getDate() + Math.round((sourceEnd.getTime() - sourceStart.getTime()) / (1000 * 60 * 60 * 24)));
+    const freezeError = getAttendanceFreezeError(
+      await checkMultipleDatesFreeze([targetStart, targetEnd])
+    );
+    if (freezeError) {
+      return NextResponse.json({ error: freezeError }, { status: 409 });
+    }
 
     let normalizedEmployeeIds: number[] | undefined;
     if (employeeIds && Array.isArray(employeeIds) && employeeIds.length > 0) {
@@ -185,7 +247,9 @@ export async function POST(request: NextRequest) {
     const whereClause: {
       workDate: { gte: string; lte: string };
       employeeId?: { in: number[] };
+      employee?: { is: { department: { in: string[] } } };
     } = {
+      ...scheduleScopeWhere,
       workDate: {
         gte: formatDate(sourceStart),
         lte: formatDate(sourceEnd)
@@ -204,10 +268,22 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '來源期間沒有班表記錄' }, { status: 400 });
     }
 
+    const shiftDefinitions = await listShiftDefinitions({ includeInactive: true });
     let createdCount = 0;
     let skippedCount = 0;
+    const affectedConfirmations = new Set<string>();
 
     for (const schedule of sourceSchedules) {
+      const resolvedSchedule = resolveScheduleHourFields({
+        shiftType: schedule.shiftType,
+        startTime: schedule.startTime,
+        endTime: schedule.endTime,
+        breakTime: schedule.breakTime,
+        workHours: schedule.workHours,
+        specialLeaveHours: schedule.specialLeaveHours,
+        compLeaveHours: schedule.compLeaveHours,
+        overtimeHours: schedule.overtimeHours,
+      }, shiftDefinitions);
       const sourceWorkDate = new Date(schedule.workDate);
       const targetWorkDate = new Date(sourceWorkDate);
       targetWorkDate.setDate(targetWorkDate.getDate() + daysDiff);
@@ -225,17 +301,18 @@ export async function POST(request: NextRequest) {
           await prisma.schedule.update({
             where: { id: existing.id },
             data: {
-              shiftType: schedule.shiftType,
-              startTime: schedule.startTime,
-              endTime: schedule.endTime,
-              breakTime: schedule.breakTime,
-              workHours: schedule.workHours,
-              specialLeaveHours: schedule.specialLeaveHours,
-              compLeaveHours: schedule.compLeaveHours,
-              overtimeHours: schedule.overtimeHours
+              shiftType: resolvedSchedule.shiftType,
+              startTime: resolvedSchedule.startTime,
+              endTime: resolvedSchedule.endTime,
+              breakTime: resolvedSchedule.breakTime,
+              workHours: resolvedSchedule.workHours,
+              specialLeaveHours: resolvedSchedule.specialLeaveHours,
+              compLeaveHours: resolvedSchedule.compLeaveHours,
+              overtimeHours: resolvedSchedule.overtimeHours
             }
           });
           createdCount++;
+          affectedConfirmations.add(`${schedule.employeeId}:${targetWorkDateStr.slice(0, 7)}`);
         } else {
           skippedCount++;
         }
@@ -244,19 +321,25 @@ export async function POST(request: NextRequest) {
           data: {
             employeeId: schedule.employeeId,
             workDate: targetWorkDateStr,
-            shiftType: schedule.shiftType,
-            startTime: schedule.startTime,
-            endTime: schedule.endTime,
-            breakTime: schedule.breakTime,
-            workHours: schedule.workHours,
-            specialLeaveHours: schedule.specialLeaveHours,
-            compLeaveHours: schedule.compLeaveHours,
-            overtimeHours: schedule.overtimeHours
+            shiftType: resolvedSchedule.shiftType,
+            startTime: resolvedSchedule.startTime,
+            endTime: resolvedSchedule.endTime,
+            breakTime: resolvedSchedule.breakTime,
+            workHours: resolvedSchedule.workHours,
+            specialLeaveHours: resolvedSchedule.specialLeaveHours,
+            compLeaveHours: resolvedSchedule.compLeaveHours,
+            overtimeHours: resolvedSchedule.overtimeHours
           }
         });
         createdCount++;
+        affectedConfirmations.add(`${schedule.employeeId}:${targetWorkDateStr.slice(0, 7)}`);
       }
     }
+
+    await Promise.all(Array.from(affectedConfirmations).map((key) => {
+      const [employeeId, yearMonth] = key.split(':');
+      return invalidateConfirmation(Number(employeeId), yearMonth);
+    }));
 
     return NextResponse.json({
       success: true,

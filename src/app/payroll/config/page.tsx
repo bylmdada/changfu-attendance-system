@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { Plus, Edit, Trash2, Settings, X } from 'lucide-react';
 import { fetchJSONWithCSRF, fetchWithCSRF } from '@/lib/fetchWithCSRF';
+import ConfirmDialog from '@/components/ConfirmDialog';
 
 interface PayrollItemConfig {
   id: number;
@@ -20,6 +21,7 @@ export default function PayrollConfigPage() {
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editingConfig, setEditingConfig] = useState<PayrollItemConfig | null>(null);
+  const [deleteConfirmConfig, setDeleteConfirmConfig] = useState<PayrollItemConfig | null>(null);
   const [formData, setFormData] = useState({
     code: '',
     name: '',
@@ -89,15 +91,19 @@ export default function PayrollConfigPage() {
     setShowForm(true);
   };
 
-  const handleDelete = async (id: number) => {
-    if (!confirm('確定要停用此配置嗎？')) return;
+  const handleDelete = async (config: PayrollItemConfig) => {
+    setDeleteConfirmConfig(config);
+  };
 
+  const performDelete = async () => {
+    if (!deleteConfirmConfig) return;
     try {
-      const response = await fetchJSONWithCSRF(`/api/payroll/config/${id}`, {
+      const response = await fetchJSONWithCSRF(`/api/payroll/config/${deleteConfirmConfig.id}`, {
         method: 'DELETE'
       });
 
       if (response.ok) {
+        setDeleteConfirmConfig(null);
         await fetchConfigs();
       } else {
         const errorData = await response.json().catch(() => null);
@@ -218,7 +224,7 @@ export default function PayrollConfigPage() {
                         <Edit className="w-4 h-4" />
                       </button>
                       <button
-                        onClick={() => handleDelete(config.id)}
+                        onClick={() => handleDelete(config)}
                         className="text-red-600 hover:text-red-900"
                       >
                         <Trash2 className="w-4 h-4" />
@@ -360,6 +366,15 @@ export default function PayrollConfigPage() {
           </div>
         )}
       </div>
+      <ConfirmDialog
+        open={Boolean(deleteConfirmConfig)}
+        title="停用薪資配置"
+        message={deleteConfirmConfig ? `確定要停用「${deleteConfirmConfig.name}（${deleteConfirmConfig.code}）」嗎？` : ''}
+        tone="danger"
+        confirmLabel="停用配置"
+        onCancel={() => setDeleteConfirmConfig(null)}
+        onConfirm={performDelete}
+      />
     </div>
   );
 }

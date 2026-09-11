@@ -114,7 +114,7 @@ export const LeaveRequestSchemas = {
   create: z.object({
     startDate: BaseSchemas.datetime,
     endDate: BaseSchemas.datetime,
-    leaveType: z.enum(['SICK', 'PERSONAL', 'ANNUAL', 'MATERNITY', 'PATERNITY', 'BEREAVEMENT', 'COMPENSATORY', 'MENSTRUAL', 'OFFICIAL', 'FAMILY_CARE']),
+    leaveType: z.enum(['SICK', 'PERSONAL', 'ANNUAL', 'MATERNITY', 'PATERNITY', 'BEREAVEMENT', 'COMPENSATORY', 'MENSTRUAL', 'BUSINESS_TRIP', 'OFFICIAL', 'FAMILY_CARE']),
     reason: z.string().min(1).max(500),
     totalHours: BaseSchemas.hours
   }).refine(

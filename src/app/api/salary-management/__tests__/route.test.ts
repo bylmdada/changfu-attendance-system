@@ -58,7 +58,7 @@ describe('salary-management route guards', () => {
       previousSalary: 40000,
       newBaseSalary: 45000,
       adjustmentAmount: 5000,
-      newHourlyRate: 187.5,
+      newHourlyRate: 188,
     } as never);
 
     mockedPrisma.employee.findUnique.mockResolvedValue({
@@ -68,7 +68,7 @@ describe('salary-management route guards', () => {
       department: '行政部',
       position: '專員',
       baseSalary: 45000,
-      hourlyRate: 187.5,
+      hourlyRate: 188,
       hireDate: new Date('2020-01-01'),
     } as never);
     mockedPrisma.employee.findMany.mockResolvedValue([] as never);

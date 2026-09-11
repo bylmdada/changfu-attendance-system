@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { getUserFromRequest } from '@/lib/auth';
+import { prisma } from '@/lib/database';
 
 export async function POST(request: NextRequest) {
   try {
@@ -19,6 +21,13 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'CSRF驗證失敗' }, { status: 403 });
     }
 
+    const user = await getUserFromRequest(request);
+    if (user?.sessionId) {
+      await prisma.user.updateMany({
+        where: { id: user.userId, currentSessionId: user.sessionId },
+        data: { currentSessionId: null },
+      });
+    }
     const response = NextResponse.json({ success: true, message: '登出成功' });
     
     // 清除 Cookie

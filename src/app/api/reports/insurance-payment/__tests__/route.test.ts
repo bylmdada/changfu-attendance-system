@@ -67,6 +67,7 @@ describe('insurance payment report route auth guards', () => {
         baseSalary: 40000,
         insuredBase: 40000,
         dependents: 1,
+        laborInsuranceActive: true,
         healthInsuranceActive: true,
       },
     ] as never);
@@ -97,6 +98,7 @@ describe('insurance payment report route auth guards', () => {
         baseSalary: 40000,
         insuredBase: 40000,
         dependents: 1,
+        laborInsuranceActive: true,
         healthInsuranceActive: true,
       },
     ] as never);
@@ -125,6 +127,7 @@ describe('insurance payment report route auth guards', () => {
         baseSalary: 40000,
         insuredBase: 40000,
         dependents: 2,
+        laborInsuranceActive: true,
         healthInsuranceActive: false,
       },
     ] as never);
@@ -146,14 +149,17 @@ describe('insurance payment report route auth guards', () => {
       totalPersons: 0,
       healthEmployee: 0,
       healthEmployer: 0,
+      healthGovernment: 0,
       healthTotal: 0,
     });
   });
 
-  it('uses configured health insurance salary levels when an active formula exists', async () => {
+  it('replaces incomplete health insurance salary levels with the 2026 first 30 levels', async () => {
     mockedPrisma.healthInsuranceConfig.findFirst.mockResolvedValueOnce({
       premiumRate: 0.0517,
       employeeContributionRatio: 0.3,
+      companyContributionRatio: 0.6,
+      governmentSubsidyRatio: 0.1,
       maxDependents: 3,
       salaryLevels: [
         { level: 1, minSalary: 0, maxSalary: 50000, insuredAmount: 40100 },
@@ -176,22 +182,17 @@ describe('insurance payment report route auth guards', () => {
     });
   });
 
-  it('caps labor insured amount with the configured labor insurance maximum', async () => {
-    mockedPrisma.laborLawConfig.findFirst.mockResolvedValueOnce({
-      laborInsuranceRate: 0.115,
-      laborInsuranceMax: 30000,
-      laborEmployeeRate: 0.2,
-    } as never);
-
+  it('calculates 2026 labor and health employee premiums from official split formulas', async () => {
     mockedPrisma.employee.findMany.mockResolvedValueOnce([
       {
         id: 1,
         employeeId: 'EMP001',
         name: '王小明',
         department: 'HR',
-        baseSalary: 50000,
-        insuredBase: 50000,
-        dependents: 1,
+        baseSalary: 29500,
+        insuredBase: 29500,
+        dependents: 0,
+        laborInsuranceActive: true,
         healthInsuranceActive: true,
       },
     ] as never);
@@ -207,7 +208,50 @@ describe('insurance payment report route auth guards', () => {
 
     expect(response.status).toBe(200);
     expect(data.records[0]).toMatchObject({
-      laborInsuredAmount: 30300,
+      laborInsuredAmount: 29500,
+      laborEmployee: 738,
+      healthInsuredAmount: 29500,
+      healthEmployee: 458,
+      healthEmployer: 915,
+      healthGovernment: 153,
+      healthTotal: 1526,
+    });
+  });
+
+  it('caps labor insured amount with the configured labor insurance maximum', async () => {
+    mockedPrisma.laborLawConfig.findFirst.mockResolvedValueOnce({
+      laborInsuranceRate: 0.115,
+      employmentInsuranceRate: 0.01,
+      laborInsuranceMax: 30000,
+      laborEmployeeRate: 0.2,
+    } as never);
+
+    mockedPrisma.employee.findMany.mockResolvedValueOnce([
+      {
+        id: 1,
+        employeeId: 'EMP001',
+        name: '王小明',
+        department: 'HR',
+        baseSalary: 50000,
+        insuredBase: 50000,
+        dependents: 1,
+        laborInsuranceActive: true,
+        healthInsuranceActive: true,
+      },
+    ] as never);
+
+    const request = new NextRequest('http://localhost/api/reports/insurance-payment?year=2026&month=3', {
+      headers: {
+        cookie: 'token=shared-session-token',
+      },
+    });
+
+    const response = await GET(request);
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.records[0]).toMatchObject({
+      laborInsuredAmount: 30000,
     });
   });
 

@@ -5,6 +5,7 @@ import { validateCSRF } from '@/lib/csrf';
 import { getUserFromRequest } from '@/lib/auth';
 import { safeParseSystemSettingsValue } from '@/lib/system-settings-json';
 import { safeParseJSON } from '@/lib/validation';
+import { logSystemSettingsChange } from '@/lib/system-settings-audit';
 
 interface GPSSettings {
   enabled: boolean;
@@ -272,6 +273,15 @@ export async function POST(request: NextRequest) {
     // 更新設定到資料庫
     await saveGPSSettingsToDB(validatedSettings);
 
+    await logSystemSettingsChange({
+      request,
+      user: userAuth,
+      settingKey: GPS_SETTINGS_KEY,
+      description: 'GPS 考勤設定變更',
+      oldValue: existingSettings,
+      newValue: validatedSettings,
+    });
+
     return NextResponse.json({
       success: true,
       message: 'GPS設定更新成功',
@@ -313,8 +323,19 @@ export async function PUT(request: NextRequest) {
       );
     }
 
+    const existingSettings = await getGPSSettingsFromDB();
+
     // 重置為預設值並保存到資料庫
     await saveGPSSettingsToDB({ ...defaultGPSSettings });
+
+    await logSystemSettingsChange({
+      request,
+      user: userAuth,
+      settingKey: GPS_SETTINGS_KEY,
+      description: 'GPS 考勤設定重置',
+      oldValue: existingSettings,
+      newValue: defaultGPSSettings,
+    });
 
     return NextResponse.json({
       success: true,
@@ -449,6 +470,15 @@ export async function PATCH(request: NextRequest) {
 
     // 保存更新後的設定
     await saveGPSSettingsToDB(updatedSettings);
+
+    await logSystemSettingsChange({
+      request,
+      user: userAuth,
+      settingKey: GPS_SETTINGS_KEY,
+      description: 'GPS 考勤設定部分變更',
+      oldValue: currentSettings,
+      newValue: updatedSettings,
+    });
 
     return NextResponse.json({
       success: true,

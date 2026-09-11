@@ -6,6 +6,7 @@ import {
   AlertTriangle, CheckCircle, Download, Pin
 } from 'lucide-react';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import { SimpleToast, useLocalToast } from '@/components/Toast';
 
 interface Announcement {
   id: number;
@@ -104,6 +105,7 @@ const CATEGORY_COLORS: Record<string, string> = {
 };
 
 export default function AnnouncementViewPage() {
+  const { toast, showToast, clearToast } = useLocalToast();
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [filteredAnnouncements, setFilteredAnnouncements] = useState<Announcement[]>([]);
   const [loading, setLoading] = useState(true);
@@ -224,10 +226,10 @@ export default function AnnouncementViewPage() {
         window.URL.revokeObjectURL(url);
         document.body.removeChild(a);
       } else {
-        alert('下載失敗');
+        showToast('error', '下載失敗');
       }
     } catch {
-      alert('下載失敗，請稍後再試');
+      showToast('error', '下載失敗，請稍後再試');
     }
   };
 
@@ -512,6 +514,7 @@ export default function AnnouncementViewPage() {
           </div>
         </div>
       </div>
+      <SimpleToast toast={toast} onClose={clearToast} />
     </AuthenticatedLayout>
   );
 }

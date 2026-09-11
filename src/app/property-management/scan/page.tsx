@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
 import Image from 'next/image';
-import { Camera, CameraOff, Search } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Camera, CameraOff, Search, X } from 'lucide-react';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import { STATUS_UI, fmtDate, taiwanDateInputValue, type DisplayStatus } from '@/lib/property-status-ui';
 import fetchWithCSRF, { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
@@ -16,8 +16,12 @@ import {
 } from '@/lib/property-condition-assessment';
 import {
   PROPERTY_ASSESSMENT_MAX_FILES,
-  PROPERTY_ASSESSMENT_MAX_FILE_SIZE,
+  PROPERTY_ASSESSMENT_UPLOAD_CHUNK_SIZE,
 } from '@/lib/property-maintenance-attachment-constants';
+import {
+  getPropertyAssessmentClientFileError,
+  PROPERTY_ASSESSMENT_ACCEPT_ATTRIBUTE,
+} from '@/lib/property-assessment-file-validation';
 
 interface LookupResult {
   asset: {
@@ -77,11 +81,15 @@ interface AssessmentForm {
 }
 
 const FREQUENCY_OPTIONS = ['每週一次', '兩週一次', '每月一次', '每季一次', '每半年一次', '每年一次'];
-const ACCEPTED_ASSESSMENT_FILES = '.pdf,.doc,.docx,.png,.jpg,.jpeg,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/png,image/jpeg';
+const ASSESSMENT_DIRECT_UPLOAD_LIMIT_BYTES = 700 * 1024;
+const ASSESSMENT_UPLOAD_TIMEOUT_MS = 180_000;
 const SCAN_FAILURE_HINT_INTERVAL_MS = 5000;
 const SCANNER_VIDEO_READY_TIMEOUT_MS = 4000;
 const SCANNER_RETRY_DELAY_MS = 300;
-const ABNORMAL_EXAMPLE_IMAGE = '/icons/property-abnormal-example.png';
+const SCANNER_ZOOM_LEVELS = [2, 2.5, 3] as const;
+const DEFAULT_SCANNER_ZOOM_PRESET = 'optical-2';
+
+type ScannerMode = 'code128' | 'qr';
 
 interface ScannerConfig {
   fps: number;
@@ -95,6 +103,26 @@ type CameraStartSelector =
   | string
   | { facingMode: 'environment' | 'user' | { exact: 'environment' | 'user' } }
   | { deviceId: string | { exact: string } };
+
+type ScannerZoomPreset = 'none' | 'optical-2' | 'optical-2.5' | 'optical-3' | 'digital-2' | 'digital-2.5' | 'digital-3';
+
+type ZoomMode = 'optical' | 'digital';
+
+interface ParsedZoomPreset {
+  mode: ZoomMode;
+  level: number;
+}
+
+interface ZoomRange {
+  min: number;
+  max: number;
+  step?: number;
+}
+
+const SCANNER_MODE_OPTIONS: Array<{ value: ScannerMode; label: string; description: string }> = [
+  { value: 'code128', label: 'Code 128 條碼', description: '預設模式，優先掃描現場財產條碼' },
+  { value: 'qr', label: 'QR Code', description: '適合掃描方形 QR Code 標籤或連結' },
+];
 
 interface Html5QrcodeInstance {
   isScanning?: boolean;
@@ -138,7 +166,98 @@ function formatFileSize(size: number): string {
   return `${Math.max(1, Math.round(size / 1024))} KB`;
 }
 
-function buildScannerConfig() {
+async function readApiPayload(response: Response): Promise<{ error?: string; data?: unknown }> {
+  const contentType = response.headers.get('content-type') || '';
+  if (contentType.includes('application/json')) {
+    return response.json().catch(() => ({}));
+  }
+
+  const text = await response.text().catch(() => '');
+  return {
+    error: text.trim()
+      ? `伺服器回應格式異常（HTTP ${response.status}）`
+      : `伺服器無回應內容（HTTP ${response.status}）`,
+  };
+}
+
+function getUploadErrorMessage(error: unknown): string {
+  if (error instanceof DOMException && error.name === 'AbortError') {
+    return '附件上傳逾時，請確認手機網路穩定後重新上傳';
+  }
+
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+
+  return '附件上傳失敗，請重新上傳';
+}
+
+function getDefaultZoomPreset(mode: ScannerMode): ScannerZoomPreset {
+  return mode === 'qr' ? 'none' : DEFAULT_SCANNER_ZOOM_PRESET;
+}
+
+function getScannerStartHint(mode: ScannerMode) {
+  return mode === 'qr'
+    ? '正在啟用相機（QR Code 模式），若瀏覽器詢問權限請點選允許。'
+    : '正在啟用相機（Code 128 條碼模式），若瀏覽器詢問權限請點選允許。';
+}
+
+function getScannerActiveHint(mode: ScannerMode) {
+  return mode === 'qr'
+    ? '掃描中：請讓 QR Code 完整落在方框內並保持正面；若太小可先靠近鏡頭再微調距離。'
+    : '掃描中：請將條碼橫向置中並填滿框線；條碼太小時可切換下方變焦模式。';
+}
+
+function getScannerFailureHint(mode: ScannerMode) {
+  return mode === 'qr'
+    ? '請讓 QR Code 完整落在方框內、保持正面並避免反光；若太近或太遠都可能影響辨識。'
+    : '請讓條碼橫向填滿掃描框、保持 15–25 公分距離；條碼太小時可切換 2x、2.5x 或 3x 變焦。';
+}
+
+function getScannerAdvice(mode: ScannerMode) {
+  return mode === 'qr'
+    ? 'QR Code 建議完整置中、保持方形不裁切；若標籤反光或太暗，請開啟補光、稍微後退或改用手動輸入。'
+    : '條碼建議保持水平並填滿掃描框，鏡頭距離條碼約 15–25 公分；若反光或太暗，請開啟補光或改用手動輸入。';
+}
+
+function normalizeScannedCode(decoded: string) {
+  const trimmed = decoded.trim();
+  if (!trimmed) return '';
+
+  try {
+    const url = new URL(trimmed);
+    const codeFromQuery = url.searchParams.get('code') || url.searchParams.get('assetCode');
+    if (codeFromQuery?.trim()) {
+      return codeFromQuery.trim();
+    }
+
+    const lastSegment = url.pathname.split('/').filter(Boolean).pop();
+    if (lastSegment?.trim()) {
+      return lastSegment.trim();
+    }
+  } catch {
+    // 非 URL 內容直接使用原始掃描值
+  }
+
+  return trimmed;
+}
+
+function buildScannerConfig(mode: ScannerMode) {
+  if (mode === 'qr') {
+    return {
+      fps: 12,
+      disableFlip: true,
+      experimentalFeatures: {
+        useBarCodeDetectorIfSupported: true,
+      },
+      qrbox: (vw: number, vh: number) => {
+        const size = Math.floor(Math.max(180, Math.min(vw * 0.72, vh * 0.72, 300)));
+        return { width: size, height: size };
+      },
+      aspectRatio: 1,
+    } satisfies ScannerConfig;
+  }
+
   return {
     fps: 15,
     disableFlip: true,
@@ -165,6 +284,43 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function parseZoomPreset(preset: ScannerZoomPreset): ParsedZoomPreset | null {
+  if (preset === 'none') return null;
+  const [mode, rawLevel] = preset.split('-') as [ZoomMode, string];
+  const level = Number(rawLevel);
+  return Number.isFinite(level) ? { mode, level } : null;
+}
+
+function formatZoomLevel(level: number) {
+  return Number.isInteger(level) ? `${level}x` : `${level.toFixed(1)}x`;
+}
+
+function formatZoomPresetLabel(preset: ScannerZoomPreset) {
+  const parsed = parseZoomPreset(preset);
+  if (!parsed) return '原始 1x';
+  return `${parsed.mode === 'optical' ? '光學' : '數位'} ${formatZoomLevel(parsed.level)}`;
+}
+
+function normalizeZoomRange(range?: { min?: number; max?: number; step?: number }): ZoomRange | null {
+  if (!range?.max || range.max <= 1) return null;
+  return {
+    min: range.min ?? 1,
+    max: range.max,
+    step: range.step,
+  };
+}
+
+function getScannerVideoElement() {
+  return document.querySelector<HTMLVideoElement>('#qr-reader video');
+}
+
+function applyDigitalZoomToVideo(level: number) {
+  const video = getScannerVideoElement();
+  if (!video) return;
+  video.style.transform = level > 1 ? `scale(${level})` : '';
+  video.style.transformOrigin = 'center center';
+}
+
 async function clearScanner(scanner: Html5QrcodeInstance | null) {
   if (!scanner) return;
   try {
@@ -175,10 +331,13 @@ async function clearScanner(scanner: Html5QrcodeInstance | null) {
 }
 
 function releaseQrReaderVideoStream() {
-  const video = document.querySelector<HTMLVideoElement>('#qr-reader video');
+  const video = getScannerVideoElement();
   const stream = video?.srcObject instanceof MediaStream ? video.srcObject : null;
   stream?.getTracks().forEach((track) => track.stop());
-  if (video) video.srcObject = null;
+  if (video) {
+    video.style.transform = '';
+    video.srcObject = null;
+  }
 }
 
 async function stopScannerInstance(scanner: Html5QrcodeInstance | null) {
@@ -229,12 +388,13 @@ function styleScannerVideo(video: HTMLVideoElement) {
   video.style.objectFit = 'cover';
   video.style.borderRadius = '0.5rem';
   video.style.display = 'block';
+  video.style.transformOrigin = 'center center';
 }
 
 async function waitForScannerVideo() {
   const expiresAt = Date.now() + SCANNER_VIDEO_READY_TIMEOUT_MS;
   while (Date.now() < expiresAt) {
-    const video = document.querySelector<HTMLVideoElement>('#qr-reader video');
+    const video = getScannerVideoElement();
     const stream = video?.srcObject instanceof MediaStream ? video.srcObject : null;
     const track = stream?.getVideoTracks()[0];
     if (video && track?.readyState === 'live') {
@@ -293,22 +453,30 @@ export default function ScanPage() {
   const [assessmentSaving, setAssessmentSaving] = useState(false);
   const [assessmentLoading, setAssessmentLoading] = useState(false);
   const [assessmentUploading, setAssessmentUploading] = useState(false);
+  const [assessmentUploadMessage, setAssessmentUploadMessage] = useState('');
   const [assessmentRecord, setAssessmentRecord] = useState<MaintenanceRecordDetail | null>(null);
   const [assessmentForm, setAssessmentForm] = useState<AssessmentForm>(createDefaultAssessmentForm);
   const [scanHint, setScanHint] = useState('');
+  const [scannerMode, setScannerMode] = useState<ScannerMode>('code128');
   const [torchSupported, setTorchSupported] = useState(false);
   const [torchOn, setTorchOn] = useState(false);
+  const [zoomPreset, setZoomPreset] = useState<ScannerZoomPreset>(DEFAULT_SCANNER_ZOOM_PRESET);
+  const [opticalZoomRange, setOpticalZoomRange] = useState<ZoomRange | null>(null);
+  const [opticalZoomSupported, setOpticalZoomSupported] = useState<boolean | null>(null);
+  const [appliedZoomLabel, setAppliedZoomLabel] = useState(formatZoomPresetLabel(DEFAULT_SCANNER_ZOOM_PRESET));
   const [scannerStarting, setScannerStarting] = useState(false);
   const scannerRef = useRef<Html5QrcodeInstance | null>(null);
   const scannerModulePromiseRef = useRef<Promise<typeof import('html5-qrcode')> | null>(null);
   const scannerStartingRef = useRef(false);
+  const scannerModeRef = useRef<ScannerMode>('code128');
   const videoTrackRef = useRef<MediaStreamTrack | null>(null);
   const lastScanFailureHintAtRef = useRef(0);
+  const manualInputRef = useRef<HTMLInputElement | null>(null);
 
-  const loadScannerModule = () => {
+  const loadScannerModule = useCallback(() => {
     scannerModulePromiseRef.current ??= import('html5-qrcode');
     return scannerModulePromiseRef.current;
-  };
+  }, []);
 
   const lookup = async (code: string) => {
     setError('');
@@ -332,20 +500,89 @@ export default function ScanPage() {
     }
   };
 
-  const stopScanner = async () => {
+  const stopScanner = useCallback(async () => {
     scannerStartingRef.current = false;
     setScannerStarting(false);
     await stopScannerInstance(scannerRef.current);
     scannerRef.current = null;
     videoTrackRef.current = null;
+    applyDigitalZoomToVideo(1);
     setScanning(false);
     setTorchSupported(false);
     setTorchOn(false);
+    setOpticalZoomRange(null);
+    setOpticalZoomSupported(null);
+    setAppliedZoomLabel(formatZoomPresetLabel(getDefaultZoomPreset(scannerModeRef.current)));
     setScanHint('');
+  }, []);
+
+  const applyZoomPreset = async (
+    preset: ScannerZoomPreset,
+    options: { showUnsupportedMessage?: boolean } = {}
+  ) => {
+    const track = videoTrackRef.current;
+    const parsed = parseZoomPreset(preset);
+
+    if (!parsed) {
+      applyDigitalZoomToVideo(1);
+      const capabilities = track?.getCapabilities?.() as ({ zoom?: { min?: number } } | undefined);
+      const minZoom = capabilities?.zoom?.min ?? 1;
+      if (track) {
+        await track.applyConstraints({ advanced: toMediaTrackConstraintSets([{ zoom: minZoom }]) }).catch(() => undefined);
+      }
+      setAppliedZoomLabel('原始 1x');
+      return;
+    }
+
+    if (parsed.mode === 'digital') {
+      applyDigitalZoomToVideo(parsed.level);
+      const capabilities = track?.getCapabilities?.() as ({ zoom?: { min?: number } } | undefined);
+      const minZoom = capabilities?.zoom?.min ?? 1;
+      if (track) {
+        await track.applyConstraints({ advanced: toMediaTrackConstraintSets([{ zoom: minZoom }]) }).catch(() => undefined);
+      }
+      setAppliedZoomLabel(`數位 ${formatZoomLevel(parsed.level)}`);
+      return;
+    }
+
+    if (!track) return;
+
+    const capabilities = track.getCapabilities?.() as ({ zoom?: { min?: number; max?: number; step?: number } } | undefined);
+    const zoomRange = normalizeZoomRange(capabilities?.zoom);
+    if (!zoomRange) {
+      applyDigitalZoomToVideo(1);
+      setOpticalZoomSupported(false);
+      setOpticalZoomRange(null);
+      setAppliedZoomLabel('原始 1x');
+      if (options.showUnsupportedMessage) {
+        setError('此裝置或瀏覽器不支援光學變焦，可改用數位變焦或手動輸入');
+      }
+      return;
+    }
+
+    const targetZoom = Math.min(zoomRange.max, Math.max(zoomRange.min, parsed.level));
+    try {
+      applyDigitalZoomToVideo(1);
+      await track.applyConstraints({ advanced: toMediaTrackConstraintSets([{ zoom: targetZoom }]) });
+      setOpticalZoomSupported(true);
+      setOpticalZoomRange(zoomRange);
+      setAppliedZoomLabel(`光學 ${formatZoomLevel(targetZoom)}`);
+      if (targetZoom < parsed.level && options.showUnsupportedMessage) {
+        setError(`此相機最高支援光學 ${formatZoomLevel(zoomRange.max)}，已套用可用的最大變焦`);
+      }
+    } catch {
+      applyDigitalZoomToVideo(1);
+      setOpticalZoomSupported(false);
+      setOpticalZoomRange(null);
+      setAppliedZoomLabel('原始 1x');
+      if (options.showUnsupportedMessage) {
+        setError('此裝置無法套用光學變焦，可改用數位變焦或手動輸入');
+      }
+    }
   };
 
-  const applyCameraTrackOptimizations = async () => {
-    const video = document.querySelector<HTMLVideoElement>('#qr-reader video');
+  const applyCameraTrackOptimizations = async (targetZoomPreset: ScannerZoomPreset) => {
+    const video = getScannerVideoElement();
     const stream = video?.srcObject instanceof MediaStream ? video.srcObject : null;
     const track = stream?.getVideoTracks()[0];
     if (!track) return;
@@ -359,19 +596,37 @@ export default function ScanPage() {
       }
     ) | undefined;
 
+    const zoomRange = normalizeZoomRange(capabilities?.zoom);
+    setOpticalZoomSupported(Boolean(zoomRange));
+    setOpticalZoomRange(zoomRange);
+
     const advanced: CameraConstraintSet[] = [];
     if (capabilities?.focusMode?.includes('continuous')) {
       advanced.push({ focusMode: 'continuous' });
-    }
-    if (capabilities?.zoom?.max && capabilities.zoom.max > 1) {
-      const minZoom = capabilities.zoom.min ?? 1;
-      advanced.push({ zoom: Math.min(capabilities.zoom.max, Math.max(minZoom, 1.25)) });
     }
 
     setTorchSupported(Boolean(capabilities?.torch));
     if (advanced.length > 0) {
       await track.applyConstraints({ advanced: toMediaTrackConstraintSets(advanced) }).catch(() => undefined);
     }
+    await applyZoomPreset(targetZoomPreset);
+  };
+
+  const changeZoomPreset = async (nextPreset: ScannerZoomPreset) => {
+    setZoomPreset(nextPreset);
+    setError('');
+    if (!scanning) {
+      setAppliedZoomLabel(formatZoomPresetLabel(nextPreset));
+      return;
+    }
+    await applyZoomPreset(nextPreset, { showUnsupportedMessage: true });
+  };
+
+  const isZoomPresetDisabled = (preset: ScannerZoomPreset) => {
+    const parsed = parseZoomPreset(preset);
+    if (!parsed || parsed.mode === 'digital' || !scanning) return false;
+    if (opticalZoomSupported === false) return true;
+    return opticalZoomRange ? parsed.level > opticalZoomRange.max : false;
   };
 
   const toggleTorch = async () => {
@@ -389,12 +644,34 @@ export default function ScanPage() {
     }
   };
 
-  const startScanner = async () => {
-    if (scannerStartingRef.current || scanning) return;
+  const changeScannerMode = async (nextMode: ScannerMode) => {
+    if (scannerMode === nextMode && !scanning) return;
+
+    const nextZoomPreset = getDefaultZoomPreset(nextMode);
+    scannerModeRef.current = nextMode;
+    setScannerMode(nextMode);
+    setZoomPreset(nextZoomPreset);
+    setAppliedZoomLabel(formatZoomPresetLabel(nextZoomPreset));
+    setError('');
+    setScanHint('');
+
+    if (scanning || scannerRef.current) {
+      await stopScanner();
+      await startScanner(nextMode, nextZoomPreset);
+    }
+  };
+
+  const startScanner = async (
+    modeOverride?: ScannerMode,
+    zoomPresetOverride?: ScannerZoomPreset
+  ) => {
+    if (scannerStartingRef.current || scannerRef.current) return;
+    const activeMode = modeOverride ?? scannerMode;
+    const activeZoomPreset = zoomPresetOverride ?? zoomPreset;
     scannerStartingRef.current = true;
     setScannerStarting(true);
     setError('');
-    setScanHint('正在啟用相機，若瀏覽器詢問權限請點選允許。');
+    setScanHint(getScannerStartHint(activeMode));
     setTorchSupported(false);
     setTorchOn(false);
     if (!hasSecureCameraContext()) {
@@ -418,16 +695,21 @@ export default function ScanPage() {
 
       const createScanner = () => new Html5Qrcode('qr-reader', {
         formatsToSupport: [
-          Html5QrcodeSupportedFormats.QR_CODE,
-          Html5QrcodeSupportedFormats.CODE_128, // 現場標籤實測為 Code 128
-          Html5QrcodeSupportedFormats.CODE_39, // 容錯：少數舊標籤可能為 Code 39
+          ...(activeMode === 'qr'
+            ? [
+              Html5QrcodeSupportedFormats.QR_CODE,
+            ]
+            : [
+              Html5QrcodeSupportedFormats.CODE_128, // 預設優先掃描現場財產條碼
+              Html5QrcodeSupportedFormats.CODE_39, // 容錯：少數舊標籤可能為 Code 39
+            ]),
         ],
         verbose: false,
       });
 
       const onScanSuccess = async (decoded: string) => {
         await stopScanner();
-        const code = decoded.trim();
+        const code = normalizeScannedCode(decoded);
         setManual(code);
         lookup(code);
       };
@@ -435,14 +717,14 @@ export default function ScanPage() {
         const now = Date.now();
         if (now - lastScanFailureHintAtRef.current > SCAN_FAILURE_HINT_INTERVAL_MS) {
           lastScanFailureHintAtRef.current = now;
-          setScanHint('請讓條碼橫向填滿掃描框、保持 15–25 公分距離，並移到光線較亮處。');
+          setScanHint(getScannerFailureHint(activeMode));
         }
       };
 
       const startAttempt = async (selector: CameraStartSelector) => {
         const scanner = createScanner();
         try {
-          await scanner.start(selector, buildScannerConfig(), onScanSuccess, onScanFailure);
+          await scanner.start(selector, buildScannerConfig(activeMode), onScanSuccess, onScanFailure);
           scannerRef.current = scanner;
           const track = await waitForScannerVideo();
           if (!track) throw new Error('CAMERA_VIDEO_NOT_READY');
@@ -479,8 +761,8 @@ export default function ScanPage() {
       scannerStartingRef.current = false;
       setScannerStarting(false);
       setScanning(true);
-      await applyCameraTrackOptimizations();
-      setScanHint('掃描中：請將條碼橫向置中並填滿框線，保持手機穩定。');
+      await applyCameraTrackOptimizations(activeZoomPreset);
+      setScanHint(getScannerActiveHint(activeMode));
     } catch {
       scannerStartingRef.current = false;
       setScannerStarting(false);
@@ -518,11 +800,10 @@ export default function ScanPage() {
       window.removeEventListener('unhandledrejection', suppressKnownCameraAbort);
       void stopScanner();
     };
-  }, []);
+  }, [loadScannerModule, stopScanner]);
 
   const s = result ? STATUS_UI[result.displayStatus] : null;
   const canMaintainCurrentAsset = !!result?.canMaintain;
-  const isAssessmentAbnormal = assessmentForm.status === CONDITION_ASSESSMENT_STATUS.ABNORMAL;
 
   const openAssetEditor = () => {
     if (!result || !canMaintainCurrentAsset) return;
@@ -687,38 +968,128 @@ export default function ScanPage() {
     }
   };
 
-  const uploadAssessmentFile = async (file: File) => {
-    if (!assessmentRecord || !canMaintainCurrentAsset) return;
+  const clearManualInput = () => {
+    setManual('');
+    manualInputRef.current?.focus();
+  };
+
+  const uploadAssessmentFormData = async (formData: FormData, signal: AbortSignal): Promise<{ error?: string; data?: unknown }> => {
+    if (!assessmentRecord || !canMaintainCurrentAsset) {
+      throw new Error('目前無法上傳附件，請重新查詢財產後再試');
+    }
+    const res = await fetchWithCSRF(
+      `/api/property-maintenance/records/${encodeURIComponent(assessmentRecord.recordId)}/attachments`,
+      { method: 'POST', body: formData, signal }
+    );
+    const json = await readApiPayload(res);
+    if (!res.ok) {
+      throw new Error(json.error || '附件上傳失敗');
+    }
+
+    return json;
+  };
+
+  const uploadAssessmentFile = async (
+    file: File,
+    signal: AbortSignal,
+    onProgress: (message: string) => void
+  ): Promise<AssessmentAttachment> => {
+    if (!assessmentRecord || !canMaintainCurrentAsset) {
+      throw new Error('目前無法上傳附件，請重新查詢財產後再試');
+    }
     if (assessmentRecord.attachments.length >= PROPERTY_ASSESSMENT_MAX_FILES) {
+      throw new Error(`評量附件最多 ${PROPERTY_ASSESSMENT_MAX_FILES} 個`);
+    }
+
+    let json: { error?: string; data?: unknown } | undefined;
+    if (file.size > ASSESSMENT_DIRECT_UPLOAD_LIMIT_BYTES) {
+      const uploadId = crypto.randomUUID();
+      const totalChunks = Math.ceil(file.size / PROPERTY_ASSESSMENT_UPLOAD_CHUNK_SIZE);
+      for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
+        const start = chunkIndex * PROPERTY_ASSESSMENT_UPLOAD_CHUNK_SIZE;
+        const chunk = file.slice(start, Math.min(file.size, start + PROPERTY_ASSESSMENT_UPLOAD_CHUNK_SIZE), file.type || 'application/octet-stream');
+        const fd = new FormData();
+        fd.append('file', chunk, file.name);
+        fd.append('uploadId', uploadId);
+        fd.append('chunkIndex', String(chunkIndex));
+        fd.append('chunkTotal', String(totalChunks));
+        fd.append('fileName', file.name);
+        fd.append('fileSize', String(file.size));
+        onProgress(`正在上傳：${file.name}（${chunkIndex + 1}/${totalChunks}）`);
+        json = await uploadAssessmentFormData(fd, signal);
+      }
+    } else {
+      const fd = new FormData();
+      fd.append('file', file);
+      json = await uploadAssessmentFormData(fd, signal);
+    }
+
+    const uploaded = json?.data as AssessmentAttachment | undefined;
+    if (!uploaded?.id) {
+      throw new Error('附件上傳後未取得檔案資訊，請重新整理後確認');
+    }
+
+    setAssessmentRecord((prev) => prev
+      ? { ...prev, attachments: [...prev.attachments, uploaded] }
+      : prev);
+    return uploaded;
+  };
+
+  const uploadAssessmentFiles = async (files: File[]) => {
+    if (!assessmentRecord || !canMaintainCurrentAsset || files.length === 0) return;
+
+    const availableSlots = PROPERTY_ASSESSMENT_MAX_FILES - assessmentRecord.attachments.length;
+    if (availableSlots <= 0) {
       setError(`評量附件最多 ${PROPERTY_ASSESSMENT_MAX_FILES} 個`);
       return;
     }
-    if (file.size > PROPERTY_ASSESSMENT_MAX_FILE_SIZE) {
-      setError('檔案過大（上限 10MB）');
+
+    const filesToUpload = files.slice(0, availableSlots);
+    const hasSkippedFiles = files.length > filesToUpload.length;
+    const validationError = filesToUpload
+      .map((file) => getPropertyAssessmentClientFileError(file))
+      .find((message): message is string => Boolean(message));
+    if (validationError) {
+      setError(validationError);
       return;
     }
 
     setAssessmentUploading(true);
+    setAssessmentUploadMessage('');
     setError('');
-    const fd = new FormData();
-    fd.append('file', file);
     try {
-      const res = await fetchWithCSRF(
-        `/api/property-maintenance/records/${encodeURIComponent(assessmentRecord.recordId)}/attachments`,
-        { method: 'POST', body: fd }
-      );
-      const json = await res.json();
-      if (!res.ok) {
-        setError(json.error || '附件上傳失敗');
-        return;
+      for (let index = 0; index < filesToUpload.length; index += 1) {
+        const file = filesToUpload[index];
+        const controller = new AbortController();
+        let timeoutId: number | undefined;
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          timeoutId = window.setTimeout(() => {
+            controller.abort();
+            reject(new DOMException('Upload timeout', 'AbortError'));
+          }, ASSESSMENT_UPLOAD_TIMEOUT_MS);
+        });
+        setAssessmentUploadMessage(`正在上傳 ${index + 1}/${filesToUpload.length}：${file.name}`);
+        try {
+          await Promise.race([
+            uploadAssessmentFile(file, controller.signal, (message) => {
+              setAssessmentUploadMessage(`${index + 1}/${filesToUpload.length} ${message}`);
+            }),
+            timeoutPromise,
+          ]);
+        } finally {
+          if (timeoutId !== undefined) {
+            window.clearTimeout(timeoutId);
+          }
+        }
       }
-      setAssessmentRecord((prev) => prev
-        ? { ...prev, attachments: [...prev.attachments, json.data] }
-        : prev);
-    } catch {
-      setError('附件上傳失敗');
+      if (hasSkippedFiles) {
+        setError(`評量附件最多 ${PROPERTY_ASSESSMENT_MAX_FILES} 個，已上傳前 ${filesToUpload.length} 個檔案`);
+      }
+    } catch (uploadError) {
+      setError(getUploadErrorMessage(uploadError));
     } finally {
       setAssessmentUploading(false);
+      setAssessmentUploadMessage('');
     }
   };
 
@@ -766,10 +1137,119 @@ export default function ScanPage() {
               {scanHint}
             </div>
           )}
+          <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50 p-3">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-medium text-gray-800">掃描模式</div>
+                <div className="text-xs text-gray-500">預設為 Code 128 條碼；需要掃 QR Code 時可切換模式。</div>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {SCANNER_MODE_OPTIONS.map((mode) => (
+                <button
+                  key={mode.value}
+                  type="button"
+                  onClick={() => void changeScannerMode(mode.value)}
+                  disabled={scannerStarting}
+                  aria-pressed={scannerMode === mode.value}
+                  className={`rounded-full px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                    scannerMode === mode.value
+                      ? 'bg-blue-600 text-white'
+                      : 'border border-gray-300 bg-white text-gray-700 hover:bg-gray-100'
+                  }`}
+                  title={mode.description}
+                >
+                  {mode.label}
+                </button>
+              ))}
+            </div>
+            <div className="mt-2 text-xs leading-5 text-gray-500">
+              {scannerMode === 'qr'
+                ? 'QR Code 模式會改用方形掃描框，較適合掃描方形標籤或含網址的 QR 內容。'
+                : 'Code 128 條碼模式會使用橫向掃描框與條碼優先解碼，較適合財產條碼標籤。'}
+            </div>
+          </div>
+          <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50 p-3">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-medium text-gray-800">變焦模式</div>
+                <div className="text-xs text-gray-500">
+                  預設 {formatZoomPresetLabel(getDefaultZoomPreset(scannerMode))}；目前 {appliedZoomLabel}
+                </div>
+              </div>
+              {scanning && opticalZoomSupported === false && (
+                <span className="shrink-0 rounded-full bg-amber-100 px-2 py-1 text-xs font-medium text-amber-800">
+                  光學不支援
+                </span>
+              )}
+            </div>
+            <div className="space-y-2">
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => void changeZoomPreset('none')}
+                  aria-pressed={zoomPreset === 'none'}
+                  className={`rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
+                    zoomPreset === 'none'
+                      ? 'bg-gray-700 text-white'
+                      : 'border border-gray-300 bg-white text-gray-700 hover:bg-gray-100'
+                  }`}
+                >
+                  原始 1x
+                </button>
+                {SCANNER_ZOOM_LEVELS.map((level) => {
+                  const preset = `optical-${level}` as ScannerZoomPreset;
+                  const disabled = isZoomPresetDisabled(preset);
+                  return (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => void changeZoomPreset(preset)}
+                      disabled={disabled}
+                      aria-pressed={zoomPreset === preset}
+                      className={`rounded-full px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                        zoomPreset === preset
+                          ? 'bg-blue-600 text-white'
+                          : 'border border-blue-200 bg-white text-blue-700 hover:bg-blue-50'
+                      }`}
+                      title={disabled ? '此相機不支援這個光學倍率' : undefined}
+                    >
+                      光學 {formatZoomLevel(level)}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {SCANNER_ZOOM_LEVELS.map((level) => {
+                  const preset = `digital-${level}` as ScannerZoomPreset;
+                  return (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => void changeZoomPreset(preset)}
+                      aria-pressed={zoomPreset === preset}
+                      className={`rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
+                        zoomPreset === preset
+                          ? 'bg-purple-600 text-white'
+                          : 'border border-purple-200 bg-white text-purple-700 hover:bg-purple-50'
+                      }`}
+                    >
+                      數位 {formatZoomLevel(level)}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="mt-2 text-xs leading-5 text-gray-500">
+              {scannerMode === 'qr'
+                ? 'QR Code 通常以原始 1x 最穩定；若標籤偏小可再切換光學或數位變焦輔助對準。'
+                : '光學變焦會優先使用相機硬體倍率，較適合小條碼；數位變焦主要放大畫面協助對準，若仍難辨識請靠近條碼或改用手動輸入。'}
+            </div>
+          </div>
           <div className="mt-3 flex gap-2">
             {!scanning ? (
               <button
-                onClick={startScanner}
+                onClick={() => void startScanner()}
                 disabled={scannerStarting}
                 className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300"
               >
@@ -799,7 +1279,7 @@ export default function ScanPage() {
             )}
           </div>
           <div className="mt-3 text-xs leading-5 text-gray-600">
-            掃描建議：鏡頭距離條碼約 15–25 公分、條碼保持水平並填滿掃描框；若反光或太暗，請開啟補光或改用手動輸入。
+            掃描建議：{getScannerAdvice(scannerMode)}
           </div>
         </div>
 
@@ -807,17 +1287,27 @@ export default function ScanPage() {
           <label className="block text-sm font-medium text-gray-700 mb-1">手動輸入財產編號</label>
           <div className="flex gap-2">
             <input
+              ref={manualInputRef}
               value={manual}
               onChange={(e) => setManual(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && lookup(manual)}
               placeholder="例如 0112030601-0023"
-              className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-gray-900 focus:ring-2 focus:ring-blue-500 focus:outline-none"
+              className="min-w-0 flex-1 px-3 py-2 border border-gray-300 rounded-lg text-gray-900 focus:ring-2 focus:ring-blue-500 focus:outline-none"
             />
             <button
               onClick={() => lookup(manual)}
               className="inline-flex items-center gap-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
             >
               <Search className="w-4 h-4" /> 查詢
+            </button>
+            <button
+              type="button"
+              onClick={clearManualInput}
+              disabled={!manual}
+              className="inline-flex items-center gap-1 px-4 py-2 rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:text-gray-400 disabled:bg-gray-100"
+              aria-label="清除手動輸入財產編號"
+            >
+              <X className="w-4 h-4" /> 清除
             </button>
           </div>
         </div>
@@ -976,7 +1466,7 @@ export default function ScanPage() {
                   </div>
                 </fieldset>
 
-                {!isAssessmentAbnormal ? (
+                {assessmentForm.status === CONDITION_ASSESSMENT_STATUS.NO_ABNORMALITY ? (
                   <Checklist
                     title="無異常時的財產狀態（可複選）"
                     options={NORMAL_CONDITION_OPTIONS}
@@ -1009,21 +1499,20 @@ export default function ScanPage() {
                   </>
                 )}
 
-                {isAssessmentAbnormal && (
+                {assessmentForm.status === CONDITION_ASSESSMENT_STATUS.ABNORMAL && (
                   <>
                     <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">
-                      <div className="mb-3 rounded-lg border border-red-200 bg-white p-3 text-center">
-                        <Image
-                          src={ABNORMAL_EXAMPLE_IMAGE}
-                          alt="異常處紅框標示示意圖"
-                          width={205}
-                          height={222}
-                          className="mx-auto h-auto w-full max-w-[205px]"
-                        />
-                        <p className="mt-2 text-xs text-red-700">示意：請用紅框圈出損壞或異常處</p>
-                      </div>
-                      請先用紅框圈出損壞或異常處後再上傳照片；最多 5 個檔案，
-                      支援 PDF、Word、PNG、JPG、JPEG，每個檔案上限 10MB。PNG 圖片會以保留原始品質方式最佳化上傳。
+                      <p>
+                        有異常時，如下圖所示，請先用紅框圈出損壞或異常處後再上傳照片；最多 5 個檔案，
+                        支援 PDF、Word、PNG、JPG、JPEG，每個檔案上限 10MB。PNG 圖片會以保留原始品質方式最佳化上傳。
+                      </p>
+                      <Image
+                        src="/property-management/condition-assessment-example.png"
+                        alt="以紅框圈出輪椅腳踏板異常處的範例"
+                        width={205}
+                        height={222}
+                        className="mt-3 h-auto w-48 rounded border border-red-100 bg-white object-contain sm:w-56"
+                      />
                     </div>
 
                     <div className="space-y-3">
@@ -1037,17 +1526,23 @@ export default function ScanPage() {
                           {assessmentUploading ? '上傳中…' : '上傳檔案'}
                           <input
                             type="file"
-                            accept={ACCEPTED_ASSESSMENT_FILES}
+                            multiple
+                            accept={PROPERTY_ASSESSMENT_ACCEPT_ATTRIBUTE}
                             disabled={assessmentRecord.attachments.length >= PROPERTY_ASSESSMENT_MAX_FILES || assessmentUploading}
                             className="hidden"
                             onChange={(e) => {
-                              const file = e.target.files?.[0];
+                              const files = Array.from(e.currentTarget.files ?? []);
                               e.currentTarget.value = '';
-                              if (file) void uploadAssessmentFile(file);
+                              void uploadAssessmentFiles(files);
                             }}
                           />
                         </label>
                       </div>
+                      {assessmentUploading && (
+                        <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
+                          {assessmentUploadMessage || '附件上傳中，請勿關閉此頁面'}
+                        </div>
+                      )}
                       {assessmentRecord.attachments.length === 0 ? (
                         <p className="text-sm text-gray-600">尚未上傳附件</p>
                       ) : (
