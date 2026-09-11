@@ -33,6 +33,15 @@ jest.mock('@/lib/schedule-management-permissions', () => ({
   hasFullScheduleManagementAccess: jest.fn(),
 }));
 
+jest.mock('@/lib/schedule-confirm-service', () => ({
+  invalidateConfirmation: jest.fn(),
+}));
+
+jest.mock('@/lib/attendance-freeze', () => ({
+  checkAttendanceFreeze: jest.fn().mockResolvedValue({ isFrozen: false }),
+  getAttendanceFreezeError: jest.fn().mockReturnValue(null),
+}));
+
 import { NextRequest } from 'next/server';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
@@ -150,5 +159,51 @@ describe('schedule item route guards', () => {
     expect(payload.error).toBe('無效的 JSON 格式');
     expect(mockPrisma.schedule.findUnique).not.toHaveBeenCalled();
     expect(mockPrisma.schedule.delete).not.toHaveBeenCalled();
+  });
+
+  it('preserves existing schedule hour fields when updating only the work date', async () => {
+    mockPrisma.schedule.findUnique.mockResolvedValue({
+      employeeId: 31,
+      shiftType: 'OFF',
+      workDate: '2026-05-08',
+    } as never);
+    mockPrisma.schedule.update.mockResolvedValue({
+      id: 12,
+      employeeId: 31,
+      shiftType: 'OFF',
+      workDate: '2026-05-09',
+      startTime: '',
+      endTime: '',
+      breakTime: 0,
+      workHours: 0,
+      specialLeaveHours: 0,
+      compLeaveHours: 8,
+      overtimeHours: 0,
+      employee: {
+        employeeId: 'E031',
+        name: '測試員工',
+        department: '護理部',
+      },
+    } as never);
+
+    const request = new NextRequest('http://localhost/api/schedules/12', {
+      method: 'PUT',
+      headers: {
+        'content-type': 'application/json',
+        cookie: 'token=shared-session-token',
+      },
+      body: JSON.stringify({ workDate: '2026-05-09' }),
+    });
+
+    const response = await PUT(request, { params: Promise.resolve({ id: '12' }) });
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.success).toBe(true);
+    expect(mockPrisma.schedule.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { workDate: '2026-05-09' },
+      })
+    );
   });
 });

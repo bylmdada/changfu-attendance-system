@@ -17,6 +17,12 @@ jest.mock('@/lib/database', () => ({
       findMany: jest.fn(),
       count: jest.fn(),
     },
+    overtimeRequest: {
+      findMany: jest.fn(),
+    },
+    leaveRequest: {
+      findMany: jest.fn(),
+    },
     schedule: {
       findFirst: jest.fn(),
       findMany: jest.fn(),
@@ -33,9 +39,10 @@ describe('attendance today summary authorization guards', () => {
 
     mockPrisma.attendanceRecord.findFirst.mockResolvedValue(null as never);
     mockPrisma.attendanceRecord.findMany.mockResolvedValue([] as never);
+    mockPrisma.overtimeRequest.findMany.mockResolvedValue([] as never);
+    mockPrisma.leaveRequest.findMany.mockResolvedValue([] as never);
     mockPrisma.schedule.findFirst.mockResolvedValue(null as never);
     mockPrisma.schedule.findMany.mockResolvedValue([] as never);
-    mockPrisma.attendanceRecord.count.mockResolvedValue(12 as never);
   });
 
   it('does not expose company attendance counts to users who only have a manager title', async () => {
@@ -88,6 +95,9 @@ describe('attendance today summary authorization guards', () => {
         position: 'SPECIALIST',
       },
     } as never);
+    mockPrisma.attendanceRecord.findMany.mockResolvedValueOnce(
+      Array.from({ length: 12 }, (_, index) => ({ employeeId: index + 1 })) as never
+    );
 
     const response = await GET(new NextRequest('http://localhost/api/attendance/today-summary'));
     const payload = await response.json();
@@ -97,7 +107,15 @@ describe('attendance today summary authorization guards', () => {
     expect(payload.attendanceCount).toBe(12);
     expect(payload.lateCount).toBe(0);
     expect(payload.absentCount).toBe(0);
-    expect(mockPrisma.attendanceRecord.count).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.attendanceRecord.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          clockInTime: { not: null },
+          employee: { isActive: true },
+        }),
+        select: { employeeId: true },
+      })
+    );
   });
 
   it('uses Taiwan day boundaries for personal and company attendance queries', async () => {
@@ -136,13 +154,19 @@ describe('attendance today summary authorization guards', () => {
         },
       },
     });
-    expect(mockPrisma.attendanceRecord.count).toHaveBeenCalledWith({
+    expect(mockPrisma.attendanceRecord.findMany).toHaveBeenCalledWith({
       where: {
         workDate: {
           gte: new Date('2026-04-07T16:00:00.000Z'),
           lt: new Date('2026-04-08T16:00:00.000Z'),
         },
-        status: 'PRESENT',
+        clockInTime: { not: null },
+        employee: {
+          isActive: true,
+        },
+      },
+      select: {
+        employeeId: true,
       },
     });
 
@@ -172,14 +196,13 @@ describe('attendance today summary authorization guards', () => {
         position: 'ADMIN',
       },
     } as never);
-    mockPrisma.attendanceRecord.count.mockResolvedValue(2 as never);
     mockPrisma.schedule.findMany.mockResolvedValue([
       { employeeId: 1, shiftType: 'B', startTime: '08:00', endTime: '17:00' },
       { employeeId: 2, shiftType: 'B', startTime: '08:00', endTime: '17:00' },
       { employeeId: 3, shiftType: 'B', startTime: '08:00', endTime: '17:00' },
       { employeeId: 4, shiftType: 'RD', startTime: '', endTime: '' },
     ] as never);
-    mockPrisma.attendanceRecord.findMany.mockResolvedValue([
+    const todayClockedInRecords = [
       {
         employeeId: 1,
         clockInTime: new Date('2026-05-07T00:01:00.000Z'), // 08:01 in Taiwan
@@ -190,7 +213,10 @@ describe('attendance today summary authorization guards', () => {
         clockInTime: new Date('2026-05-06T23:59:00.000Z'), // 07:59 in Taiwan
         clockOutTime: null,
       },
-    ] as never);
+    ];
+    mockPrisma.attendanceRecord.findMany
+      .mockResolvedValueOnce(todayClockedInRecords.map(record => ({ employeeId: record.employeeId })) as never)
+      .mockResolvedValueOnce(todayClockedInRecords as never);
 
     const response = await GET(new NextRequest('http://localhost/api/attendance/today-summary'));
     const payload = await response.json();
@@ -212,6 +238,119 @@ describe('attendance today summary authorization guards', () => {
         startTime: true,
         endTime: true,
       },
+    });
+
+    jest.useRealTimers();
+  });
+
+  it('shows only approved overtime hours in personal today summary', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-05-07T05:55:00.000Z'));
+
+    mockGetUserFromRequest.mockResolvedValue({
+      userId: 7,
+      employeeId: 70,
+      role: 'EMPLOYEE',
+      username: 'employee-user',
+    } as never);
+
+    mockPrisma.user.findUnique.mockResolvedValue({
+      id: 7,
+      role: 'EMPLOYEE',
+      isActive: true,
+      employee: {
+        id: 70,
+        employeeId: 'E070',
+        name: 'Employee User',
+        department: '製造部',
+        position: 'Staff',
+      },
+    } as never);
+    mockPrisma.attendanceRecord.findFirst.mockResolvedValue({
+      id: 70,
+      employeeId: 70,
+      workDate: new Date('2026-05-06T16:00:00.000Z'),
+      clockInTime: new Date('2026-05-07T01:00:00.000Z'),
+      clockOutTime: new Date('2026-05-07T11:00:00.000Z'),
+      clockInOvertimeId: null,
+      clockOutOvertimeId: null,
+      status: 'PRESENT',
+      notes: null,
+    } as never);
+
+    const response = await GET(new NextRequest('http://localhost/api/attendance/today-summary'));
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.data.workSummary.totalHours).toBe(10);
+    expect(payload.data.workSummary.regularHours).toBe(8);
+    expect(payload.data.workSummary.overtimeHours).toBe(0);
+    expect(mockPrisma.overtimeRequest.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        employeeId: 70,
+        status: 'APPROVED',
+      }),
+    }));
+
+    jest.useRealTimers();
+  });
+
+  it('excludes a manager-agreed business trip from scheduled regular hours without creating overtime', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-07-17T07:30:00.000Z'));
+
+    mockGetUserFromRequest.mockResolvedValue({
+      userId: 35,
+      employeeId: 35,
+      role: 'EMPLOYEE',
+      username: '2026990002',
+    } as never);
+    mockPrisma.user.findUnique.mockResolvedValue({
+      id: 35,
+      role: 'EMPLOYEE',
+      isActive: true,
+      employee: {
+        id: 35,
+        employeeId: '2026990002',
+        name: '測試乙',
+        department: '測試部',
+        position: 'Staff',
+      },
+    } as never);
+    mockPrisma.attendanceRecord.findFirst.mockResolvedValue({
+      id: 914,
+      employeeId: 35,
+      workDate: new Date('2026-07-16T16:00:00.000Z'),
+      clockInTime: new Date('2026-07-16T23:45:00.000Z'),
+      clockOutTime: new Date('2026-07-17T05:10:00.000Z'),
+      clockInOvertimeId: null,
+      clockOutOvertimeId: null,
+      status: 'EARLY_LEAVE',
+      notes: null,
+    } as never);
+    mockPrisma.schedule.findFirst.mockResolvedValue({
+      shiftType: 'B',
+      startTime: '08:00',
+      endTime: '17:00',
+      breakTime: 60,
+      workHours: 0,
+    } as never);
+    mockPrisma.leaveRequest.findMany.mockResolvedValue([{
+      startDate: new Date('2026-07-17T05:00:00.000Z'),
+      endDate: new Date('2026-07-17T09:00:00.000Z'),
+      status: 'PENDING_ADMIN',
+      managerOpinion: 'AGREE',
+      voidedAt: null,
+    }] as never);
+
+    const response = await GET(new NextRequest('http://localhost/api/attendance/today-summary'));
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.data.workSummary).toEqual({
+      totalHours: 4.42,
+      regularHours: 4,
+      overtimeHours: 0,
     });
 
     jest.useRealTimers();

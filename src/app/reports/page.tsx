@@ -12,6 +12,8 @@ import {
   Search
 } from 'lucide-react';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import EmployeeListSelect from '@/components/EmployeeListSelect';
+import ConfirmDialog from '@/components/ConfirmDialog';
 import { LOGO_BASE64 } from '@/lib/logoBase64';
 import { escapeCsvValue } from '@/lib/csv';
 import { escapeHtml } from '@/lib/html';
@@ -74,7 +76,24 @@ interface TaxReportRecord {
   taxableIncome: number;
 }
 
-type ReportType = 'salary' | 'labor_insurance' | 'health_insurance' | 'income_tax';
+interface TransferReportRecord {
+  employeeId: string;
+  transferDate: string;
+  idNumber: string;
+  bankAccount: string;
+  amount: number | null;
+  name: string;
+  department: string;
+}
+
+interface TransferValidationError {
+  employeeId: string;
+  name: string;
+  department: string;
+  reasons: string[];
+}
+
+type ReportType = 'salary' | 'labor_insurance' | 'health_insurance' | 'income_tax' | 'salary_transfer' | 'year_end_transfer';
 
 interface ReportStats {
   totalEmployees: number;
@@ -137,6 +156,7 @@ interface LaborLawConfig {
   // 勞保（來自 labor-law-config）
   basicWage: number;
   laborInsuranceRate: number;
+  employmentInsuranceRate: number;
   laborInsuranceMax: number;
   laborEmployeeRate: number;
   // 健保（來自 health-insurance-formula）
@@ -149,6 +169,7 @@ interface LaborLawConfig {
 const DEFAULT_CONFIG: LaborLawConfig = {
   basicWage: 29500,
   laborInsuranceRate: 0.115,
+  employmentInsuranceRate: 0.01,
   laborInsuranceMax: 45800,
   laborEmployeeRate: 0.2,
   healthInsuranceRate: 0.0517,
@@ -160,6 +181,8 @@ export default function ReportsPage() {
   const [payrollRecords, setPayrollRecords] = useState<PayrollRecord[]>([]);
   const [insuranceRecords, setInsuranceRecords] = useState<InsuranceReportRecord[]>([]);
   const [taxRecords, setTaxRecords] = useState<TaxReportRecord[]>([]);
+  const [transferRecords, setTransferRecords] = useState<TransferReportRecord[]>([]);
+  const [transferValidationErrors, setTransferValidationErrors] = useState<TransferValidationError[]>([]);
   const [stats, setStats] = useState<ReportStats | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [departments, setDepartments] = useState<{ id: number; name: string }[]>([]);
@@ -169,6 +192,7 @@ export default function ReportsPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [payslipLoading, setPayslipLoading] = useState(false);
+  const [pendingPayslipPrint, setPendingPayslipPrint] = useState<{ message: string; htmlContent: string } | null>(null);
   
   // Toast 狀態
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -184,6 +208,9 @@ export default function ReportsPage() {
 
   // 法規設定
   const [laborLawConfig, setLaborLawConfig] = useState<LaborLawConfig>(DEFAULT_CONFIG);
+  const effectiveMonth = selectedMonth ?? (new Date().getMonth() + 1);
+  const isTransferReport = reportType === 'salary_transfer' || reportType === 'year_end_transfer';
+  const transferApiType = reportType === 'year_end_transfer' ? 'bonus' : 'salary';
 
   // Toast 顯示函數
   const showToast = (type: 'success' | 'error', message: string) => {
@@ -211,6 +238,7 @@ export default function ReportsPage() {
         if (laborData.config) {
           newConfig.basicWage = laborData.config.basicWage || DEFAULT_CONFIG.basicWage;
           newConfig.laborInsuranceRate = laborData.config.laborInsuranceRate || DEFAULT_CONFIG.laborInsuranceRate;
+          newConfig.employmentInsuranceRate = laborData.config.employmentInsuranceRate || DEFAULT_CONFIG.employmentInsuranceRate;
           newConfig.laborInsuranceMax = laborData.config.laborInsuranceMax || DEFAULT_CONFIG.laborInsuranceMax;
           newConfig.laborEmployeeRate = laborData.config.laborEmployeeRate || DEFAULT_CONFIG.laborEmployeeRate;
         }
@@ -264,12 +292,20 @@ export default function ReportsPage() {
     try {
       const params = new URLSearchParams();
       if (selectedYear) params.append('year', selectedYear.toString());
-      if (selectedMonth && reportType !== 'income_tax') params.append('month', selectedMonth.toString());
+      if (isTransferReport) {
+        params.append('month', effectiveMonth.toString());
+        params.append('format', 'json');
+        params.append('type', transferApiType);
+      } else if (selectedMonth && reportType !== 'income_tax') {
+        params.append('month', selectedMonth.toString());
+      }
 
       const endpoint = reportType === 'salary'
         ? `/api/payroll?${params}`
         : reportType === 'income_tax'
           ? `/api/reports/tax-declaration?${params}`
+          : isTransferReport
+            ? `/api/reports/yuanta-transfer?${params}`
           : `/api/reports/insurance-payment?${params}`;
 
       const response = await fetch(endpoint, {
@@ -277,9 +313,20 @@ export default function ReportsPage() {
       });
 
       if (!response.ok) {
+        if (isTransferReport) {
+          const errorData = await response.json().catch(() => null);
+          setTransferRecords([]);
+          setTransferValidationErrors(errorData?.details || []);
+          if (errorData?.error) {
+            showToast('error', errorData.error);
+          }
+        } else {
+          setTransferValidationErrors([]);
+        }
         setPayrollRecords([]);
         setInsuranceRecords([]);
         setTaxRecords([]);
+        setTransferRecords([]);
         setStats({
           totalEmployees: 0,
           totalGrossPay: 0,
@@ -297,6 +344,8 @@ export default function ReportsPage() {
         setPayrollRecords(records);
         setInsuranceRecords([]);
         setTaxRecords([]);
+        setTransferRecords([]);
+        setTransferValidationErrors([]);
 
         const totalEmployees = records.length;
         const totalGrossPay = records.reduce((sum: number, record: PayrollRecord) => sum + record.grossPay, 0);
@@ -316,6 +365,8 @@ export default function ReportsPage() {
         setPayrollRecords([]);
         setInsuranceRecords([]);
         setTaxRecords(records);
+        setTransferRecords([]);
+        setTransferValidationErrors([]);
         setStats({
           totalEmployees: records.length,
           totalGrossPay: data.summary?.totalGrossPay || 0,
@@ -323,11 +374,27 @@ export default function ReportsPage() {
           totalOvertimeHours: 0,
           avgSalary: records.length > 0 ? (data.summary?.totalGrossPay || 0) / records.length : 0,
         });
+      } else if (isTransferReport) {
+        const records = data.records || [];
+        setPayrollRecords([]);
+        setInsuranceRecords([]);
+        setTaxRecords([]);
+        setTransferRecords(records);
+        setTransferValidationErrors(data.warnings || []);
+        setStats({
+          totalEmployees: records.length,
+          totalGrossPay: 0,
+          totalNetPay: data.summary?.totalAmount || 0,
+          totalOvertimeHours: 0,
+          avgSalary: records.length > 0 ? (data.summary?.totalAmount || 0) / records.length : 0,
+        });
       } else {
         const records = data.records || [];
         setPayrollRecords([]);
         setInsuranceRecords(records);
         setTaxRecords([]);
+        setTransferRecords([]);
+        setTransferValidationErrors([]);
         setStats({
           totalEmployees: records.length,
           totalGrossPay: 0,
@@ -341,6 +408,8 @@ export default function ReportsPage() {
       setPayrollRecords([]);
       setInsuranceRecords([]);
       setTaxRecords([]);
+      setTransferRecords([]);
+      setTransferValidationErrors([]);
       setStats({
         totalEmployees: 0,
         totalGrossPay: 0,
@@ -350,7 +419,7 @@ export default function ReportsPage() {
       });
     }
     setLoading(false);
-  }, [reportType, selectedMonth, selectedYear]);
+  }, [effectiveMonth, isTransferReport, reportType, selectedMonth, selectedYear, transferApiType]);
 
   const generatePayslip = async (payrollId: number) => {
     setPayslipLoading(true);
@@ -385,6 +454,20 @@ export default function ReportsPage() {
     setPayslipLoading(false);
   };
 
+  const printPayslipHtml = (htmlContent: string) => {
+    const printWindow = window.open('', '_blank');
+    if (printWindow) {
+      printWindow.document.write(htmlContent);
+      printWindow.document.close();
+      
+      // 等待內容載入完成後觸發列印
+      printWindow.onload = () => {
+        printWindow.print();
+        printWindow.close();
+      };
+    }
+  };
+
   const generatePayslipPDF = async (payrollId: number) => {
     setPayslipLoading(true);
     try {
@@ -397,25 +480,13 @@ export default function ReportsPage() {
         
         // 檢查是否有密碼保護
         if (data.security?.hasPassword) {
-          const confirmMsg = `此薪資條有密碼保護：\n\n📌 ${data.security.hint}\n\n是否繼續列印？`;
-          if (!confirm(confirmMsg)) {
-            setPayslipLoading(false);
-            return;
-          }
+          const message = `此薪資條有密碼保護：\n\n${data.security.hint}\n\n是否繼續列印？`;
+          setPendingPayslipPrint({ message, htmlContent: data.htmlContent });
+          setPayslipLoading(false);
+          return;
         }
         
-        // 創建新視窗並顯示薪資條HTML
-        const printWindow = window.open('', '_blank');
-        if (printWindow) {
-          printWindow.document.write(data.htmlContent);
-          printWindow.document.close();
-          
-          // 等待內容載入完成後觸發列印
-          printWindow.onload = () => {
-            printWindow.print();
-            printWindow.close();
-          };
-        }
+        printPayslipHtml(data.htmlContent);
       }
     } catch (error) {
       console.error('生成PDF薪資條失敗:', error);
@@ -852,6 +923,27 @@ export default function ReportsPage() {
       };
     }
 
+    if (isTransferReport) {
+      const headers = [
+        '轉帳日期(yyyymmdd)', '員工編號', '姓名', '部門', '受款人身分證字號', '受款人帳號', '實領薪資'
+      ];
+
+      const rows = filteredTransferRecords.map(record => [
+        escapeCsvValue(record.transferDate),
+        escapeCsvValue(record.employeeId),
+        escapeCsvValue(record.name),
+        escapeCsvValue(record.department),
+        escapeCsvValue(record.idNumber),
+        escapeCsvValue(record.bankAccount),
+        escapeCsvValue(record.amount ?? ''),
+      ].join(','));
+
+      return {
+        filename: `${reportType === 'year_end_transfer' ? '年終薪轉報表' : '元大薪轉報表'}_${selectedYear}年${effectiveMonth}月.csv`,
+        rows: [headers.map(escapeCsvValue).join(','), ...rows],
+      };
+    }
+
     const headers = reportType === 'labor_insurance'
       ? ['員工編號', '姓名', '部門', '底薪', '投保薪資', '員工負擔', '公司負擔', '勞保總額']
       : ['員工編號', '姓名', '部門', '投保薪資', '眷屬數', '納保人數', '員工負擔', '公司負擔', '健保總額', '是否加保'];
@@ -951,8 +1043,7 @@ export default function ReportsPage() {
       const query = searchQuery.toLowerCase();
       return (
         record.employee.name.toLowerCase().includes(query) ||
-        record.employee.employeeId.toLowerCase().includes(query) ||
-        (record.employee.department && record.employee.department.toLowerCase().includes(query))
+        record.employee.employeeId.toLowerCase().includes(query)
       );
     }
     return true;
@@ -966,8 +1057,7 @@ export default function ReportsPage() {
       const query = searchQuery.toLowerCase();
       return (
         record.name.toLowerCase().includes(query) ||
-        record.employeeId.toLowerCase().includes(query) ||
-        (record.department && record.department.toLowerCase().includes(query))
+        record.employeeId.toLowerCase().includes(query)
       );
     }
     return true;
@@ -981,8 +1071,21 @@ export default function ReportsPage() {
       const query = searchQuery.toLowerCase();
       return (
         record.name.toLowerCase().includes(query) ||
-        record.employeeId.toLowerCase().includes(query) ||
-        (record.department && record.department.toLowerCase().includes(query))
+        record.employeeId.toLowerCase().includes(query)
+      );
+    }
+    return true;
+  });
+
+  const filteredTransferRecords = transferRecords.filter(record => {
+    if (selectedDepartment && record.department !== selectedDepartment) {
+      return false;
+    }
+    if (searchQuery) {
+      const query = searchQuery.toLowerCase();
+      return (
+        record.name.toLowerCase().includes(query) ||
+        record.employeeId.toLowerCase().includes(query)
       );
     }
     return true;
@@ -1039,6 +1142,19 @@ export default function ReportsPage() {
       };
     }
 
+    if (isTransferReport) {
+      const totalEmployees = filteredTransferRecords.length;
+      const totalNetPay = filteredTransferRecords.reduce((sum, record) => sum + (record.amount ?? 0), 0);
+
+      return {
+        totalEmployees,
+        totalGrossPay: 0,
+        totalNetPay,
+        totalOvertimeHours: 0,
+        avgSalary: totalEmployees > 0 ? totalNetPay / totalEmployees : 0,
+      };
+    }
+
     return {
       totalEmployees: filteredInsuranceRecords.length,
       totalGrossPay: 0,
@@ -1046,7 +1162,7 @@ export default function ReportsPage() {
       totalOvertimeHours: 0,
       avgSalary: 0,
     };
-  }, [filteredInsuranceRecords, filteredRecords, filteredTaxRecords, reportType]);
+  }, [filteredInsuranceRecords, filteredRecords, filteredTaxRecords, filteredTransferRecords, isTransferReport, reportType]);
 
   // 批量匯出薪資條
   const batchExportPayslips = async () => {
@@ -1102,7 +1218,43 @@ export default function ReportsPage() {
   };
 
   // 匯出 Excel 格式 (使用 CSV 格式，Excel 可正常開啟)
-  const exportToExcel = () => {
+  const exportToExcel = async () => {
+    if (isTransferReport) {
+      try {
+        const params = new URLSearchParams({
+          year: selectedYear.toString(),
+          month: effectiveMonth.toString(),
+          type: transferApiType,
+        });
+        const response = await fetch(`/api/reports/yuanta-transfer?${params.toString()}`, {
+          credentials: 'include',
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => null);
+          setTransferValidationErrors(errorData?.details || []);
+          showToast('error', errorData?.error || '薪轉報表匯出失敗');
+          return;
+        }
+
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${reportType === 'year_end_transfer' ? '元大薪轉_年終獎金' : '元大薪轉_薪水'}_${selectedYear}${effectiveMonth.toString().padStart(2, '0')}.xls`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        showToast('success', `${reportType === 'year_end_transfer' ? '年終薪轉' : '元大薪轉'}報表匯出成功`);
+        return;
+      } catch (error) {
+        console.error('匯出薪轉報表失敗:', error);
+        showToast('error', `${reportType === 'year_end_transfer' ? '年終薪轉' : '薪轉'}報表匯出失敗`);
+        return;
+      }
+    }
+
     const { filename, rows } = getReportCsvConfig();
     downloadCsvFile(rows.join('\n'), filename, 'Excel 報表匯出成功');
   };
@@ -1111,7 +1263,9 @@ export default function ReportsPage() {
     ? sortedRecords.length
     : reportType === 'income_tax'
       ? filteredTaxRecords.length
-      : filteredInsuranceRecords.length;
+      : isTransferReport
+        ? filteredTransferRecords.length
+        : filteredInsuranceRecords.length;
 
   const laborInsuranceSummary = {
     employee: filteredInsuranceRecords.reduce((sum, record) => sum + record.laborEmployee, 0),
@@ -1146,7 +1300,7 @@ export default function ReportsPage() {
 
           {/* 篩選區域 */}
           <div className="bg-white rounded-lg shadow-sm p-6 mb-6">
-          <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">年度</label>
               <select
@@ -1202,6 +1356,8 @@ export default function ReportsPage() {
                 className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-gray-900"
               >
                 <option value="salary">薪資報表</option>
+                <option value="salary_transfer">薪轉報表</option>
+                <option value="year_end_transfer">年終薪轉報表</option>
                 <option value="labor_insurance">勞保報表</option>
                 <option value="health_insurance">健保報表</option>
                 <option value="income_tax">所得稅報表</option>
@@ -1209,50 +1365,92 @@ export default function ReportsPage() {
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">搜尋</label>
-              <input
-                type="text"
-                placeholder="員工姓名、員編"
+              <EmployeeListSelect
+                label="員工"
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-gray-900"
+                onChange={(value) => setSearchQuery(value)}
+                emptyLabel="全部員工"
+                selectClassName="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-gray-900 disabled:bg-gray-100"
               />
             </div>
 
-            <div className="flex items-end gap-2">
-              <button
-                onClick={fetchReportData}
-                disabled={loading}
-                className="bg-indigo-600 text-white px-4 py-2 rounded-md hover:bg-indigo-700 disabled:opacity-50 flex items-center justify-center gap-2 text-sm font-medium"
-              >
-                <Search className="h-4 w-4" />
-                {loading ? '查詢中...' : '查詢'}
-              </button>
-              <button
-                onClick={exportToPDF}
-                disabled={loading || reportType !== 'salary' || currentRecordCount === 0}
-                className="bg-blue-600 text-white px-3 py-2 rounded-md hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-1 text-sm"
-              >
-                <Download className="h-4 w-4" />
-                PDF
-              </button>
-              <button
-                onClick={exportToCSV}
-                disabled={loading || currentRecordCount === 0}
-                className="bg-gray-600 text-white px-3 py-2 rounded-md hover:bg-gray-700 disabled:opacity-50 flex items-center justify-center gap-1 text-sm"
-              >
-                CSV
-              </button>
-              <button
-                onClick={exportToExcel}
-                disabled={loading || currentRecordCount === 0}
-                className="bg-emerald-600 text-white px-3 py-2 rounded-md hover:bg-emerald-700 disabled:opacity-50 flex items-center justify-center gap-1 text-sm"
-              >
-                Excel
-              </button>
+            <div className="md:col-span-2 xl:col-span-1">
+              <div className="flex flex-wrap items-end gap-2">
+                <button
+                  onClick={fetchReportData}
+                  disabled={loading}
+                  className="flex-1 min-w-[88px] bg-indigo-600 text-white px-4 py-2 rounded-md hover:bg-indigo-700 disabled:opacity-50 flex items-center justify-center gap-2 text-sm font-medium"
+                >
+                  <Search className="h-4 w-4" />
+                  {loading ? '查詢中...' : '查詢'}
+                </button>
+                <button
+                  onClick={exportToPDF}
+                  disabled={loading || reportType !== 'salary' || currentRecordCount === 0}
+                  className="flex-1 min-w-[72px] bg-blue-600 text-white px-3 py-2 rounded-md hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-1 text-sm"
+                >
+                  <Download className="h-4 w-4" />
+                  PDF
+                </button>
+                <button
+                  onClick={exportToCSV}
+                  disabled={loading || currentRecordCount === 0}
+                  className="flex-1 min-w-[72px] bg-gray-600 text-white px-3 py-2 rounded-md hover:bg-gray-700 disabled:opacity-50 flex items-center justify-center gap-1 text-sm"
+                >
+                  CSV
+                </button>
+                <button
+                  onClick={exportToExcel}
+                  disabled={loading || currentRecordCount === 0}
+                  className="flex-1 min-w-[72px] bg-emerald-600 text-white px-3 py-2 rounded-md hover:bg-emerald-700 disabled:opacity-50 flex items-center justify-center gap-1 text-sm"
+                >
+                  Excel
+                </button>
+              </div>
             </div>
           </div>
         </div>
+
+        {isTransferReport && (
+          <div className="mb-6 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
+            <div className="font-semibold">{reportType === 'year_end_transfer' ? '年終薪轉報表說明' : '薪轉報表說明'}</div>
+            <p className="mt-1">
+              會依「銀行帳戶管理」匯入範本欄位生成元大薪資轉帳報表，帶入
+              <span className="font-medium">
+                {' '}
+                員工身分證字號、薪轉元大銀行帳號、{reportType === 'year_end_transfer' ? '年終獎金實發金額' : '薪資實領金額'}
+              </span>。
+            </p>
+          </div>
+        )}
+
+        {isTransferReport && transferValidationErrors.length > 0 && (
+          <div className="mb-6 rounded-lg border border-amber-200 bg-amber-50 p-4">
+          <div className="font-semibold text-amber-900">{reportType === 'year_end_transfer' ? '年終薪轉' : '薪轉'}報表資料有缺漏，仍可匯出；以下欄位會留白</div>
+            <div className="mt-3 overflow-x-auto">
+            <table className="min-w-full divide-y divide-amber-200 text-sm">
+                <thead>
+                <tr className="text-left text-amber-800">
+                    <th className="px-3 py-2">員編</th>
+                    <th className="px-3 py-2">姓名</th>
+                    <th className="px-3 py-2">部門</th>
+                    <th className="px-3 py-2">問題</th>
+                  </tr>
+                </thead>
+              <tbody className="divide-y divide-amber-100">
+                  {transferValidationErrors.map((item) => (
+                    <tr key={`${item.employeeId}-${item.name}`}>
+                    <td className="px-3 py-2 text-amber-950">{item.employeeId}</td>
+                    <td className="px-3 py-2 text-amber-950">{item.name}</td>
+                    <td className="px-3 py-2 text-amber-950">{item.department}</td>
+                    <td className="px-3 py-2 text-amber-800">{item.reasons.join('、')}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
 
         {/* 排序和批量操作欄 */}
         {reportType === 'salary' && (
@@ -1409,7 +1607,12 @@ export default function ReportsPage() {
                     <Calendar className="h-8 w-8 text-orange-600" />
                     <div className="ml-4">
                       <p className="text-sm font-medium text-gray-600">費率</p>
-                      <p className="text-2xl font-bold text-gray-900">{(laborLawConfig.laborInsuranceRate * 100).toFixed(1)}%</p>
+                      <p className="text-2xl font-bold text-gray-900">
+                        {((laborLawConfig.laborInsuranceRate + laborLawConfig.employmentInsuranceRate) * 100).toFixed(1)}%
+                      </p>
+                      <p className="text-xs text-gray-500">
+                        普通事故 {(laborLawConfig.laborInsuranceRate * 100).toFixed(1)}% + 就保 {(laborLawConfig.employmentInsuranceRate * 100).toFixed(1)}%
+                      </p>
                     </div>
                   </div>
                 </div>
@@ -1509,6 +1712,55 @@ export default function ReportsPage() {
                 </div>
               </>
             )}
+
+            {isTransferReport && (
+              <>
+                <div className="bg-white p-6 rounded-lg shadow-sm">
+                  <div className="flex items-center">
+                    <Calculator className="h-8 w-8 text-purple-600" />
+                    <div className="ml-4">
+                      <p className="text-sm font-medium text-gray-600">{reportType === 'year_end_transfer' ? '年終轉帳總額' : '薪轉總額'}</p>
+                      <p className="text-2xl font-bold text-gray-900">
+                        {displayStats.totalNetPay.toLocaleString()}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+                <div className="bg-white p-6 rounded-lg shadow-sm">
+                  <div className="flex items-center">
+                    <DollarSign className="h-8 w-8 text-green-600" />
+                    <div className="ml-4">
+                      <p className="text-sm font-medium text-gray-600">{reportType === 'year_end_transfer' ? '平均年終金額' : '平均轉帳金額'}</p>
+                      <p className="text-2xl font-bold text-gray-900">
+                        {Math.round(displayStats.avgSalary).toLocaleString()}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+                <div className="bg-white p-6 rounded-lg shadow-sm">
+                  <div className="flex items-center">
+                    <Calendar className="h-8 w-8 text-orange-600" />
+                    <div className="ml-4">
+                      <p className="text-sm font-medium text-gray-600">{reportType === 'year_end_transfer' ? '獎金月份' : '薪資月份'}</p>
+                      <p className="text-2xl font-bold text-gray-900">
+                        {selectedYear} / {effectiveMonth.toString().padStart(2, '0')}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+                <div className="bg-white p-6 rounded-lg shadow-sm">
+                  <div className="flex items-center">
+                    <TrendingUp className="h-8 w-8 text-red-600" />
+                    <div className="ml-4">
+                      <p className="text-sm font-medium text-gray-600">資料完整率</p>
+                      <p className="text-2xl font-bold text-gray-900">
+                        {stats?.totalEmployees ? Math.round((currentRecordCount / stats.totalEmployees) * 100) : 0}%
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
         )}
 
@@ -1517,6 +1769,8 @@ export default function ReportsPage() {
           <div className="px-6 py-4 border-b border-gray-200">
             <h2 className="text-lg font-medium text-gray-900">
               {reportType === 'salary' && `薪資記錄 (${currentRecordCount})`}
+              {reportType === 'salary_transfer' && `薪轉報表 (${currentRecordCount})`}
+              {reportType === 'year_end_transfer' && `年終薪轉報表 (${currentRecordCount})`}
               {reportType === 'labor_insurance' && `勞保報表 (${currentRecordCount})`}
               {reportType === 'health_insurance' && `健保報表 (${currentRecordCount})`}
               {reportType === 'income_tax' && `所得稅報表 (${currentRecordCount})`}
@@ -1598,7 +1852,51 @@ export default function ReportsPage() {
               </table>
             )}
 
-            {reportType !== 'salary' && (
+            {isTransferReport && (
+              <table className="min-w-full divide-y divide-gray-200">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">轉帳日期</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">員工資訊</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">部門</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">身分證字號</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">元大薪轉帳號</th>
+                    <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">{reportType === 'year_end_transfer' ? '年終金額' : '實領薪資'}</th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-200">
+                  {loading ? (
+                    <tr>
+                      <td colSpan={6} className="px-6 py-4 text-center text-gray-500">載入中...</td>
+                    </tr>
+                  ) : filteredTransferRecords.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="px-6 py-4 text-center text-gray-500">沒有找到記錄</td>
+                    </tr>
+                  ) : (
+                    filteredTransferRecords.map((record) => (
+                      <tr key={`${record.employeeId}-${record.transferDate}`} className="hover:bg-gray-50">
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{record.transferDate}</td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div>
+                            <div className="text-sm font-medium text-gray-900">{record.name}</div>
+                            <div className="text-sm text-gray-500">{record.employeeId}</div>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{record.department}</td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{record.idNumber}</td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{record.bankAccount}</td>
+                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-semibold text-green-700">
+                          {record.amount === null ? '-' : `NT$ ${record.amount.toLocaleString()}`}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            )}
+
+            {reportType !== 'salary' && !isTransferReport && (
               <table className="min-w-full divide-y divide-gray-200">
                 <thead className="bg-gray-50">
                   <tr>
@@ -1718,6 +2016,19 @@ export default function ReportsPage() {
           {toast.message}
         </div>
       )}
+      <ConfirmDialog
+        open={!!pendingPayslipPrint}
+        title="列印受密碼保護的薪資條"
+        message={pendingPayslipPrint?.message || ''}
+        confirmLabel="繼續列印"
+        cancelLabel="取消"
+        onConfirm={() => {
+          if (!pendingPayslipPrint) return;
+          printPayslipHtml(pendingPayslipPrint.htmlContent);
+          setPendingPayslipPrint(null);
+        }}
+        onCancel={() => setPendingPayslipPrint(null)}
+      />
     </AuthenticatedLayout>
   );
 }

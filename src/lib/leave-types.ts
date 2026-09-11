@@ -17,6 +17,7 @@ export const LEAVE_TYPE_LABELS: Record<string, string> = {
   BREASTFEEDING: '哺乳假',
   PATERNITY_CHECKUP: '陪產檢及陪產假',
   MISCARRIAGE: '流產假',
+  BUSINESS_TRIP: '公出',
   OFFICIAL: '公假',
   MILITARY_SERVICE: '公假(教召)',
   FAMILY_CARE: '家庭照顧假',
@@ -49,6 +50,7 @@ const ORDERED_LEAVE_TYPE_CODES = [
   'BREASTFEEDING',
   'PATERNITY_CHECKUP',
   'MISCARRIAGE',
+  'BUSINESS_TRIP',
   'OFFICIAL',
   'MILITARY_SERVICE',
   'FAMILY_CARE',
@@ -179,6 +181,13 @@ const LEAVE_REASON_OPTIONS_BY_TYPE: Record<string, LeaveReasonOption[]> = {
     { value: '回診追蹤', label: '回診追蹤' },
     { value: '其他', label: '其他' },
   ],
+  BUSINESS_TRIP: [
+    { value: '公出洽公', label: '公出洽公' },
+    { value: '外部會議', label: '外部會議' },
+    { value: '機構拜訪', label: '機構拜訪' },
+    { value: '公務採購', label: '公務採購' },
+    { value: '其他', label: '其他' },
+  ],
   OFFICIAL: [
     { value: '公出洽公', label: '公出洽公' },
     { value: '教育訓練', label: '教育訓練' },
@@ -209,6 +218,10 @@ export function normalizeLeaveTypeCode(leaveType?: string | null): string {
 
 export function isAnnualLeaveType(leaveType?: string | null): boolean {
   return normalizeLeaveTypeCode(leaveType) === 'ANNUAL';
+}
+
+export function isCompensatoryLeaveType(leaveType?: string | null): boolean {
+  return normalizeLeaveTypeCode(leaveType) === 'COMPENSATORY';
 }
 
 export function isBereavementLeaveType(leaveType?: string | null): boolean {

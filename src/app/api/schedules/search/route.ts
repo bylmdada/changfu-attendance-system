@@ -30,12 +30,12 @@ export async function GET(request: NextRequest) {
     const position = searchParams.get('position');
 
     // 構建查詢條件
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const where: Record<string, any> = {};
+    const where: Record<string, unknown> = {};
+    const employeeWhere: Record<string, unknown> = {};
 
     // 非管理員只能查詢可管理的部門
     if (!isFullAdmin && manageableDepartments.length > 0) {
-      where.employee = { department: { in: manageableDepartments } };
+      employeeWhere.department = { in: manageableDepartments };
     }
 
     // 按年月份篩選
@@ -61,12 +61,12 @@ export async function GET(request: NextRequest) {
     // 按部門篩選（管理員可選擇任意部門，非管理員限制在可管理範圍內）
     if (department) {
       if (isFullAdmin || manageableDepartments.includes(department)) {
-        where.employee = { ...where.employee, department };
+        employeeWhere.department = department;
       }
     }
 
     if (position) {
-      where.employee = { ...where.employee, position };
+      employeeWhere.position = position;
     }
 
     // 按員編或姓名篩選
@@ -78,7 +78,11 @@ export async function GET(request: NextRequest) {
       if (employeeName) {
         employeeFilter.name = { contains: employeeName };
       }
-      where.employee = { ...where.employee, ...employeeFilter };
+      Object.assign(employeeWhere, employeeFilter);
+    }
+
+    if (Object.keys(employeeWhere).length > 0) {
+      where.employee = { is: employeeWhere };
     }
 
     // 從資料庫查詢

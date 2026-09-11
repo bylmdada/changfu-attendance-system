@@ -10,6 +10,15 @@ jest.mock('@/lib/database', () => ({
     schedule: {
       findFirst: jest.fn(),
       findMany: jest.fn()
+    },
+    overtimeRequest: {
+      findMany: jest.fn()
+    },
+    leaveRequest: {
+      findMany: jest.fn()
+    },
+    systemSettings: {
+      findUnique: jest.fn()
     }
   }
 }));
@@ -40,6 +49,7 @@ describe('attendance check-today auth guard', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockCheckClockRateLimit.mockResolvedValue({ allowed: true });
+    mockPrisma.leaveRequest.findMany.mockResolvedValue([] as never);
   });
 
   it('rejects requests without password so attendance data is not anonymously exposed', async () => {

@@ -5,6 +5,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
@@ -52,6 +53,44 @@ const STATUS_NAMES: Record<string, string> = {
   PENDING_ADMIN: '待管理員決核'
 };
 
+const DEFAULT_PAGE_SIZE = 25;
+const MAX_PAGE_SIZE = 100;
+const MAX_PAGE = 1000000;
+
+function parseBoundedPositiveInt(value: string | null, fallback: number, max: number) {
+  if (!value) return fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) return fallback;
+  return Math.min(parsed, max);
+}
+
+interface PendingApprovalItem {
+  id: number;
+  requestType: string;
+  requestTypeName: string;
+  requestId: number;
+  applicantName: string;
+  department: string;
+  status: string;
+  statusName: string;
+  currentLevel: number;
+  maxLevel: number;
+  deadlineAt?: string;
+  isOverdue: boolean | null;
+  isUrgent: boolean | null;
+  createdAt: string;
+  reviews: Array<{
+    level: number;
+    reviewerName: string;
+    reviewerDepartment: string;
+    roleShortLabel: string;
+    action: string;
+    comment: string | null;
+    createdAt: string;
+  }>;
+  requestDetails: Record<string, unknown> | null;
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -66,6 +105,10 @@ export async function GET(request: NextRequest) {
 
     const { searchParams } = new URL(request.url);
     const type = searchParams.get('type') || 'pending'; // pending | my
+    const requestTypeFilter = searchParams.get('requestType') || '';
+    const departmentFilter = searchParams.get('department') || '';
+    const page = parseBoundedPositiveInt(searchParams.get('page'), 1, MAX_PAGE);
+    const pageSize = parseBoundedPositiveInt(searchParams.get('pageSize'), DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
 
     if (type === 'my') {
       // 我的申請
@@ -105,12 +148,7 @@ export async function GET(request: NextRequest) {
     }
 
     // 待審核項目
-    interface WhereCondition {
-      status: { in: string[] };
-      OR?: Array<{ currentLevel: number; requireManager?: boolean } | { currentLevel: number; department: string }>;
-    }
-    
-    const where: WhereCondition = {
+    const where: Prisma.ApprovalInstanceWhereInput = {
       status: { in: ['PENDING', 'LEVEL1_REVIEWING', 'LEVEL2_REVIEWING', 'LEVEL3_REVIEWING'] }
     };
     const managedDepartments = new Set<string>();
@@ -165,7 +203,13 @@ export async function GET(request: NextRequest) {
       });
 
       if (allDepartments.size === 0) {
-        return NextResponse.json({ success: true, pending: [], stats: { total: 0, urgent: 0, overdue: 0 } });
+        return NextResponse.json({
+          success: true,
+          pending: [],
+          stats: { total: 0, urgent: 0, overdue: 0 },
+          pagination: { total: 0, page: 1, pageSize, pages: 1 },
+          filters: { requestTypes: [], departments: [] }
+        });
       }
 
       where.OR = Array.from(allDepartments).map(dept => ({
@@ -325,57 +369,57 @@ export async function GET(request: NextRequest) {
       return null;
     };
 
-    // 批量取得申請詳情
-    const pendingWithDetails = await Promise.all(
-      filteredInstances.map(async (inst) => {
-        const isOverdue = inst.deadlineAt && new Date(inst.deadlineAt) < now;
-        const isUrgent = inst.deadlineAt && 
-          new Date(inst.deadlineAt) < new Date(now.getTime() + 24 * 60 * 60 * 1000) &&
-          !isOverdue;
+    const approvalSummaries = filteredInstances.map((inst) => {
+      const isOverdue = inst.deadlineAt && new Date(inst.deadlineAt) < now;
+      const isUrgent = inst.deadlineAt && 
+        new Date(inst.deadlineAt) < new Date(now.getTime() + 24 * 60 * 60 * 1000) &&
+        !isOverdue;
 
-        const requestDetails = await getRequestDetails(inst.requestType, inst.requestId);
+      return {
+        id: inst.id,
+        requestType: inst.requestType,
+        requestTypeName: REQUEST_TYPE_NAMES[inst.requestType] || inst.requestType,
+        requestId: inst.requestId,
+        applicantName: inst.applicantName,
+        department: inst.department || '',
+        status: inst.status,
+        statusName: STATUS_NAMES[inst.status] || inst.status,
+        currentLevel: inst.currentLevel,
+        maxLevel: inst.maxLevel,
+        deadlineAt: inst.deadlineAt?.toISOString(),
+        isOverdue,
+        isUrgent,
+        createdAt: inst.createdAt.toISOString(),
+        reviews: inst.reviews.map(r => {
+          // 職位簡稱：與員工清單格式統一
+          const roleShortLabels: Record<string, string> = {
+            'MANAGER': '正',
+            'DEPUTY': '副',
+            'HR': 'HR',
+            'ADMIN': '管理員'
+          };
+          return {
+            level: r.level,
+            reviewerName: r.reviewerName,
+            reviewerDepartment: r.reviewer?.department || '',
+            roleShortLabel: roleShortLabels[r.reviewerRole] || r.reviewerRole,
+            action: r.action,
+            comment: r.comment,
+            createdAt: r.createdAt.toISOString()
+          };
+        }),
+      };
+    });
 
-        return {
-          id: inst.id,
-          requestType: inst.requestType,
-          requestTypeName: REQUEST_TYPE_NAMES[inst.requestType] || inst.requestType,
-          requestId: inst.requestId,
-          applicantName: inst.applicantName,
-          department: inst.department,
-          status: inst.status,
-          statusName: STATUS_NAMES[inst.status] || inst.status,
-          currentLevel: inst.currentLevel,
-          maxLevel: inst.maxLevel,
-          deadlineAt: inst.deadlineAt?.toISOString(),
-          isOverdue,
-          isUrgent,
-          createdAt: inst.createdAt.toISOString(),
-          reviews: inst.reviews.map(r => {
-            // 職位簡稱：與員工清單格式統一
-            const roleShortLabels: Record<string, string> = {
-              'MANAGER': '正',
-              'DEPUTY': '副',
-              'HR': 'HR',
-              'ADMIN': '管理員'
-            };
-            return {
-              level: r.level,
-              reviewerName: r.reviewerName,
-              reviewerDepartment: r.reviewer?.department || '',
-              roleShortLabel: roleShortLabels[r.reviewerRole] || r.reviewerRole,
-              action: r.action,
-              comment: r.comment,
-              createdAt: r.createdAt.toISOString()
-            };
-          }),
-          requestDetails
-        };
-      })
-    );
+    const withRequestDetails = async (
+      item: Omit<PendingApprovalItem, 'requestDetails'>
+    ): Promise<PendingApprovalItem> => ({
+      ...item,
+      requestDetails: await getRequestDetails(item.requestType, item.requestId)
+    });
 
     // 額外取得勞退自提待審核項目
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let pensionApplications: any[] = [];
+    const pensionApplications: Omit<PendingApprovalItem, 'requestDetails'>[] = [];
     
     if (user.role === 'ADMIN' || user.role === 'HR') {
       const pensionStatusFilter = user.role === 'ADMIN' 
@@ -401,7 +445,7 @@ export async function GET(request: NextRequest) {
         orderBy: { createdAt: 'asc' }
       });
 
-      pensionApplications = pendingPensions.map(app => ({
+      pensionApplications.push(...pendingPensions.map(app => ({
         id: app.id * -1, // 使用負數 ID 來區分勞退自提
         requestType: 'PENSION_CONTRIBUTION',
         requestTypeName: REQUEST_TYPE_NAMES['PENSION_CONTRIBUTION'],
@@ -415,7 +459,7 @@ export async function GET(request: NextRequest) {
         deadlineAt: undefined,
         isOverdue: false,
         isUrgent: false,
-        createdAt: new Date(Number(app.createdAt)).toISOString(),
+        createdAt: app.createdAt.toISOString(),
         reviews: app.hrReviewer ? [{
           level: 1,
           reviewerName: app.hrReviewer.name,
@@ -425,32 +469,101 @@ export async function GET(request: NextRequest) {
           comment: app.hrNote,
           createdAt: app.hrReviewedAt?.toISOString() || ''
         }] : [],
-        requestDetails: {
-          type: 'pension_contribution',
-          currentRate: app.currentRate,
-          requestedRate: app.requestedRate,
-          effectiveDate: app.effectiveDate.toISOString().split('T')[0],
-          reason: app.reason
-        }
-      }));
+      })));
     }
 
-    // 合併所有待審核項目
-    const allPending = [...pendingWithDetails, ...pensionApplications];
-    
+    const allAccessible = [...approvalSummaries, ...pensionApplications]
+      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+    const requestTypeCounts = new Map<string, number>();
+    allAccessible.forEach((item) => {
+      requestTypeCounts.set(item.requestType, (requestTypeCounts.get(item.requestType) || 0) + 1);
+    });
+    const requestTypes = Array.from(requestTypeCounts.entries()).map(([value, count]) => ({
+      value,
+      label: REQUEST_TYPE_NAMES[value] || value,
+      count,
+    }));
+
+    const typeFiltered = requestTypeFilter
+      ? allAccessible.filter((item) => item.requestType === requestTypeFilter)
+      : allAccessible;
+    const departments = Array.from(
+      new Set(typeFiltered.map((item) => item.department).filter(Boolean))
+    ).sort((a, b) => a.localeCompare(b, 'zh-TW'));
+    const filteredPending = departmentFilter
+      ? typeFiltered.filter((item) => item.department === departmentFilter)
+      : typeFiltered;
+    const total = filteredPending.length;
+    const pages = Math.max(1, Math.ceil(total / pageSize));
+    const effectivePage = Math.min(page, pages);
+    const pageItems = filteredPending.slice((effectivePage - 1) * pageSize, effectivePage * pageSize);
+
+    const pendingWithDetails = await Promise.all(
+      pageItems.map(async (item) => {
+        if (item.requestType === 'PENSION_CONTRIBUTION') {
+          return {
+            ...item,
+            requestDetails: {
+              type: 'pension_contribution',
+              currentRate: undefined,
+              requestedRate: undefined,
+              effectiveDate: undefined,
+              reason: undefined
+            }
+          } as PendingApprovalItem;
+        }
+
+        return withRequestDetails(item);
+      })
+    );
+
+    const pensionDetailIds = pendingWithDetails
+      .filter((item) => item.requestType === 'PENSION_CONTRIBUTION')
+      .map((item) => item.requestId);
+    if (pensionDetailIds.length > 0) {
+      const pensionDetails = await prisma.pensionContributionApplication.findMany({
+        where: { id: { in: pensionDetailIds } },
+        select: {
+          id: true,
+          currentRate: true,
+          requestedRate: true,
+          effectiveDate: true,
+          reason: true
+        }
+      });
+      const pensionDetailMap = new Map(pensionDetails.map((app) => [app.id, app]));
+      pendingWithDetails.forEach((item) => {
+        if (item.requestType !== 'PENSION_CONTRIBUTION') return;
+        const detail = pensionDetailMap.get(item.requestId);
+        if (!detail) return;
+        item.requestDetails = {
+          type: 'pension_contribution',
+          currentRate: detail.currentRate,
+          requestedRate: detail.requestedRate,
+          effectiveDate: detail.effectiveDate.toISOString().split('T')[0],
+          reason: detail.reason
+        };
+      });
+    }
+
     return NextResponse.json({
       success: true,
-      pending: allPending,
+      pending: pendingWithDetails,
       stats: {
-        total: allPending.length,
-        urgent: filteredInstances.filter(i => 
-          i.deadlineAt && 
-          new Date(i.deadlineAt) < new Date(now.getTime() + 24 * 60 * 60 * 1000) &&
-          new Date(i.deadlineAt) >= now
-        ).length,
-        overdue: filteredInstances.filter(i => 
-          i.deadlineAt && new Date(i.deadlineAt) < now
-        ).length
+        total,
+        urgent: filteredPending.filter(i => i.isUrgent).length,
+        overdue: filteredPending.filter(i => i.isOverdue).length
+      },
+      pagination: {
+        total,
+        page: effectivePage,
+        pageSize,
+        pages
+      },
+      filters: {
+        requestTypes,
+        departments
       }
     });
 

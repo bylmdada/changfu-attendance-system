@@ -11,6 +11,7 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { safeParseJSON } from '@/lib/validation';
+import { logSystemSettingsChange } from '@/lib/system-settings-audit';
 
 const BOOLEAN_FIELDS = [
   'isPrimary',
@@ -215,6 +216,16 @@ export async function POST(request: NextRequest) {
       }
     });
 
+    await logSystemSettingsChange({
+      request,
+      user,
+      settingKey: 'department-managers',
+      description: '部門主管新增',
+      oldValue: null,
+      newValue: manager,
+      targetId: manager.id,
+    });
+
     return NextResponse.json({
       success: true,
       manager: {
@@ -308,6 +319,16 @@ export async function PUT(request: NextRequest) {
       }
     });
 
+    await logSystemSettingsChange({
+      request,
+      user,
+      settingKey: 'department-managers',
+      description: '部門主管設定變更',
+      oldValue: existing,
+      newValue: manager,
+      targetId: manager.id,
+    });
+
     return NextResponse.json({
       success: true,
       manager
@@ -344,8 +365,22 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: '缺少 ID' }, { status: 400 });
     }
 
+    const existing = await prisma.departmentManager.findUnique({
+      where: { id }
+    });
+
     await prisma.departmentManager.delete({
       where: { id }
+    });
+
+    await logSystemSettingsChange({
+      request,
+      user,
+      settingKey: 'department-managers',
+      description: '部門主管刪除',
+      oldValue: existing,
+      newValue: null,
+      targetId: id,
     });
 
     return NextResponse.json({

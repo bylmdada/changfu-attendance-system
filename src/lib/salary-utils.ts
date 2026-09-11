@@ -4,9 +4,10 @@
  */
 
 import { prisma } from '@/lib/database';
+import { calculateMonthlySalaryHourlyRate } from '@/lib/hourly-rate';
 
 // 加班類型
-export type OvertimeType = 'WEEKDAY' | 'REST_DAY' | 'HOLIDAY';
+export type OvertimeType = 'WEEKDAY' | 'REST_DAY' | 'HOLIDAY' | 'MANDATORY_REST';
 
 const WEEKDAY_FIRST_TWO_HOURS_RATE = 4 / 3;
 const WEEKDAY_AFTER_TWO_HOURS_RATE = 5 / 3;
@@ -17,24 +18,32 @@ export type AdjustmentType = 'INITIAL' | 'RAISE' | 'PROMOTION' | 'ADJUSTMENT';
 
 /**
  * 根據月薪計算時薪
- * 公式：月薪 ÷ 240
+ * 公式：月薪 ÷ 240，四捨五入至整數，與員工管理自動計算保持一致
  */
 export function calculateHourlyRate(baseSalary: number): number {
-  return Math.round((baseSalary / 240) * 100) / 100;
+  return calculateMonthlySalaryHourlyRate(baseSalary);
 }
 
 /**
  * 取得員工在指定日期的有效薪資
  * 會查找生效日期 <= 指定日期的最新一筆薪資記錄
  */
-export async function getEffectiveSalary(employeeId: number, date: Date) {
+export async function getEffectiveSalary(
+  employeeId: number,
+  date: Date,
+  fallbackSalary?: { baseSalary: number; hourlyRate: number }
+) {
   // 先嘗試從薪資歷史取得
   const salaryHistory = await prisma.salaryHistory.findFirst({
     where: {
       employeeId,
       effectiveDate: { lte: date }
     },
-    orderBy: { effectiveDate: 'desc' }
+    orderBy: [
+      { effectiveDate: 'desc' },
+      { createdAt: 'desc' },
+      { id: 'desc' },
+    ]
   });
 
   if (salaryHistory) {
@@ -43,6 +52,14 @@ export async function getEffectiveSalary(employeeId: number, date: Date) {
       hourlyRate: salaryHistory.hourlyRate,
       effectiveDate: salaryHistory.effectiveDate,
       source: 'history' as const
+    };
+  }
+
+  if (fallbackSalary) {
+    return {
+      ...fallbackSalary,
+      effectiveDate: null,
+      source: 'employee' as const,
     };
   }
 
@@ -87,7 +104,7 @@ export function calculateOvertimePay(
   if (hours <= 0) return 0;
 
   // 國定假日/例假日
-  if (overtimeType === 'HOLIDAY') {
+  if (overtimeType === 'HOLIDAY' || overtimeType === 'MANDATORY_REST') {
     return Math.round(hourlyRate * hours * 2);
   }
 
@@ -162,7 +179,7 @@ function getOvertimeCalculationDetail(
   hours: number,
   overtimeType: OvertimeType
 ): string {
-  if (overtimeType === 'HOLIDAY') {
+  if (overtimeType === 'HOLIDAY' || overtimeType === 'MANDATORY_REST') {
     return `${hourlyRate} × ${hours} × 2 = ${Math.round(hourlyRate * hours * 2)}`;
   }
 

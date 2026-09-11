@@ -6,6 +6,8 @@ import { DEPARTMENT_OPTIONS } from '@/constants/departments';
 import { buildAuthMeRequest, buildCookieSessionRequest } from '@/lib/admin-session-client';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import SystemNavbar from '@/components/SystemNavbar';
+import ConfirmDialog from '@/components/ConfirmDialog';
+import { SimpleToast, useLocalToast } from '@/components/Toast';
 
 interface Employee {
   id: number;
@@ -13,6 +15,7 @@ interface Employee {
   name: string;
   department: string;
   position: string;
+  isActive: boolean;
 }
 
 interface AttendancePermission {
@@ -67,6 +70,10 @@ export default function AttendancePermissionsPage() {
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [showEditForm, setShowEditForm] = useState(false);
   const [editingPermission, setEditingPermission] = useState<AttendancePermission | null>(null);
+  const [deleteConfirmPermission, setDeleteConfirmPermission] = useState<AttendancePermission | null>(null);
+  const [createEmployeeStatusFilter, setCreateEmployeeStatusFilter] = useState<'active' | 'inactive' | 'all'>('active');
+  const [createDepartmentFilter, setCreateDepartmentFilter] = useState('');
+  const { toast, showToast, clearToast } = useLocalToast();
 
   // 新增權限表單狀態
   const [newPermission, setNewPermission] = useState({
@@ -112,7 +119,7 @@ export default function AttendancePermissionsPage() {
         }
 
         // 載入員工列表
-        const employeesRequest = buildCookieSessionRequest(window.location.origin, '/api/employees');
+        const employeesRequest = buildCookieSessionRequest(window.location.origin, '/api/employees?limit=1000');
         const employeesRes = await fetch(employeesRequest.url, employeesRequest.options);
         if (employeesRes.ok) {
           const employeesData = await employeesRes.json();
@@ -154,6 +161,77 @@ export default function AttendancePermissionsPage() {
     fetchData();
   }, []);
 
+  const resetCreateForm = () => {
+    setShowCreateForm(false);
+    setNewPermission({
+      employeeId: '',
+      leaveRequests: [],
+      overtimeRequests: [],
+      shiftExchanges: [],
+      scheduleManagement: []
+    });
+    setCreateEmployeeStatusFilter('active');
+    setCreateDepartmentFilter('');
+  };
+
+  const selectableEmployees = employees.filter(
+    employee => !permissions.some(permission => permission.employeeId === employee.id)
+  );
+  const filteredSelectableEmployees = selectableEmployees.filter((employee) => {
+    const matchesStatus =
+      createEmployeeStatusFilter === 'all'
+        ? true
+        : createEmployeeStatusFilter === 'active'
+          ? employee.isActive
+          : !employee.isActive;
+    const matchesDepartment = createDepartmentFilter ? employee.department === createDepartmentFilter : true;
+
+    return matchesStatus && matchesDepartment;
+  });
+  const activeSelectableEmployeesCount = selectableEmployees.filter(employee => employee.isActive).length;
+
+  const selectedCreateEmployee = newPermission.employeeId
+    ? employees.find(employee => employee.id === Number(newPermission.employeeId))
+    : undefined;
+
+  const updateCreateEmployeeStatusFilter = (statusFilter: 'active' | 'inactive' | 'all') => {
+    setCreateEmployeeStatusFilter(statusFilter);
+
+    if (!selectedCreateEmployee) return;
+
+    const stillMatchesStatus =
+      statusFilter === 'all'
+        ? true
+        : statusFilter === 'active'
+          ? selectedCreateEmployee.isActive
+          : !selectedCreateEmployee.isActive;
+    const stillMatchesDepartment = createDepartmentFilter
+      ? selectedCreateEmployee.department === createDepartmentFilter
+      : true;
+
+    if (!stillMatchesStatus || !stillMatchesDepartment) {
+      setNewPermission(prev => ({ ...prev, employeeId: '' }));
+    }
+  };
+
+  const updateCreateDepartmentFilter = (department: string) => {
+    setCreateDepartmentFilter(department);
+
+    if (!selectedCreateEmployee) return;
+
+    const stillMatchesDepartment = department ? selectedCreateEmployee.department === department : true;
+    const stillMatchesStatus =
+      createEmployeeStatusFilter === 'all'
+        ? true
+        : createEmployeeStatusFilter === 'active'
+          ? selectedCreateEmployee.isActive
+          : !selectedCreateEmployee.isActive;
+
+    if (!stillMatchesDepartment || !stillMatchesStatus) {
+      setNewPermission(prev => ({ ...prev, employeeId: '' }));
+    }
+  };
+
   // 處理部門選擇變更
   const handleDepartmentChange = (
     type: keyof typeof newPermission,
@@ -183,7 +261,13 @@ export default function AttendancePermissionsPage() {
     e.preventDefault();
     
     if (!newPermission.employeeId) {
-      alert('請選擇員工');
+      showToast('error', '請選擇員工');
+      return;
+    }
+
+    const targetEmployee = employees.find(employee => employee.id === Number(newPermission.employeeId));
+    if (!targetEmployee?.isActive) {
+      showToast('error', '只能替員工清單狀態為活躍的有效員工新增考勤權限');
       return;
     }
 
@@ -193,7 +277,7 @@ export default function AttendancePermissionsPage() {
     );
     
     if (!hasPermissions) {
-      alert('請至少選擇一個權限');
+      showToast('error', '請至少選擇一個權限');
       return;
     }
 
@@ -214,22 +298,15 @@ export default function AttendancePermissionsPage() {
       if (response.ok) {
         const createdPermission = await response.json();
         setPermissions(prev => [...prev, createdPermission]);
-        setShowCreateForm(false);
-        setNewPermission({
-          employeeId: '',
-          leaveRequests: [],
-          overtimeRequests: [],
-          shiftExchanges: [],
-          scheduleManagement: []
-        });
-        alert('權限設定已新增！');
+        resetCreateForm();
+        showToast('success', '權限設定已新增！');
       } else {
         const error = await response.json();
-        alert(error.error || '新增失敗，請重試');
+        showToast('error', error.error || '新增失敗，請重試');
       }
     } catch (error) {
       console.error('新增失敗:', error);
-      alert('新增失敗，請重試');
+      showToast('error', '新增失敗，請重試');
     }
   };
 
@@ -258,7 +335,7 @@ export default function AttendancePermissionsPage() {
     );
     
     if (!hasPermissions) {
-      alert('請至少選擇一個權限');
+      showToast('error', '請至少選擇一個權限');
       return;
     }
 
@@ -282,36 +359,40 @@ export default function AttendancePermissionsPage() {
         ));
         setShowEditForm(false);
         setEditingPermission(null);
-        alert('權限設定已更新！');
+        showToast('success', '權限設定已更新！');
       } else {
         const error = await response.json();
-        alert(error.error || '更新失敗，請重試');
+        showToast('error', error.error || '更新失敗，請重試');
       }
     } catch (error) {
       console.error('更新失敗:', error);
-      alert('更新失敗，請重試');
+      showToast('error', '更新失敗，請重試');
     }
   };
 
   // 刪除權限
-  const handleDeletePermission = async (id: number) => {
-    if (!confirm('確定要刪除此權限設定嗎？')) return;
+  const handleDeletePermission = async (permission: AttendancePermission) => {
+    setDeleteConfirmPermission(permission);
+  };
 
+  const performDeletePermission = async () => {
+    if (!deleteConfirmPermission) return;
     try {
-      const response = await fetchJSONWithCSRF(`/api/attendance-permissions/${id}`, {
+      const response = await fetchJSONWithCSRF(`/api/attendance-permissions/${deleteConfirmPermission.id}`, {
         method: 'DELETE'
       });
 
       if (response.ok) {
-        setPermissions(prev => prev.filter(p => p.id !== id));
-        alert('權限設定已刪除！');
+        setPermissions(prev => prev.filter(p => p.id !== deleteConfirmPermission.id));
+        showToast('success', '權限設定已刪除！');
+        setDeleteConfirmPermission(null);
       } else {
         const error = await response.json();
-        alert(error.error || '刪除失敗，請重試');
+        showToast('error', error.error || '刪除失敗，請重試');
       }
     } catch (error) {
       console.error('刪除失敗:', error);
-      alert('刪除失敗，請重試');
+      showToast('error', '刪除失敗，請重試');
     }
   };
 
@@ -547,7 +628,7 @@ export default function AttendancePermissionsPage() {
                           <Pencil className="w-4 h-4" />
                         </button>
                         <button
-                          onClick={() => handleDeletePermission(permission.id)}
+                          onClick={() => handleDeletePermission(permission)}
                           className="text-red-600 hover:text-red-800"
                           title="刪除權限"
                         >
@@ -580,7 +661,7 @@ export default function AttendancePermissionsPage() {
             <div className="flex items-center justify-between border-b border-gray-200 pb-4 mb-6">
               <h3 className="text-lg font-medium text-gray-900">新增權限設定</h3>
               <button
-                onClick={() => setShowCreateForm(false)}
+                onClick={resetCreateForm}
                 className="text-gray-400 hover:text-gray-600"
               >
                 <XCircle className="w-6 h-6" />
@@ -588,6 +669,52 @@ export default function AttendancePermissionsPage() {
             </div>
 
             <form onSubmit={handleCreatePermission} className="space-y-6">
+              {/* 員工篩選 */}
+              <div className="rounded-lg border border-blue-100 bg-blue-50 p-4">
+                <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+                  <div>
+                    <h4 className="text-sm font-semibold text-blue-950">員工篩選</h4>
+                    <p className="text-xs text-blue-700">
+                      預設只顯示員工清單狀態為活躍的有效員工，避免替停用員工建立新權限。
+                    </p>
+                  </div>
+                  <div className="text-xs font-medium text-blue-800">
+                    可新增有效員工 {activeSelectableEmployeesCount} 位，目前符合 {filteredSelectableEmployees.length} 位
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <div>
+                    <label className="block text-xs font-medium text-blue-900 mb-1">員工狀態</label>
+                    <select
+                      value={createEmployeeStatusFilter}
+                      onChange={(e) => updateCreateEmployeeStatusFilter(e.target.value as 'active' | 'inactive' | 'all')}
+                      className="w-full px-3 py-2 border border-blue-200 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
+                    >
+                      <option value="active">有效員工（活躍）</option>
+                      <option value="all">全部員工</option>
+                      <option value="inactive">停用員工（僅供核對）</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-blue-900 mb-1">部門</label>
+                    <select
+                      value={createDepartmentFilter}
+                      onChange={(e) => updateCreateDepartmentFilter(e.target.value)}
+                      className="w-full px-3 py-2 border border-blue-200 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
+                    >
+                      <option value="">全部部門</option>
+                      {departmentOptions.map((department) => (
+                        <option key={department} value={department}>
+                          {department}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+
               {/* 選擇員工 */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">選擇員工</label>
@@ -598,15 +725,21 @@ export default function AttendancePermissionsPage() {
                   required
                 >
                   <option value="">請選擇員工</option>
-                  {employees
-                    .filter(emp => !permissions.some(p => p.employeeId === emp.id))
+                  {filteredSelectableEmployees
                     .map((employee) => (
-                      <option key={employee.id} value={employee.id}>
-                        {employee.employeeId} - {employee.name} ({employee.department} • {employee.position})
+                      <option key={employee.id} value={employee.id} disabled={!employee.isActive}>
+                        {employee.employeeId} - {employee.name} ({employee.department} • {employee.position} • {employee.isActive ? '活躍' : '停用，不可新增'})
                       </option>
                     ))}
                 </select>
-                <p className="text-xs text-gray-500 mt-1">只顯示尚未設定權限的員工</p>
+                <p className="text-xs text-gray-500 mt-1">
+                  只顯示尚未設定權限，且符合上方狀態與部門篩選的員工。
+                </p>
+                {filteredSelectableEmployees.length === 0 && (
+                  <p className="text-xs text-amber-600 mt-1">
+                    目前沒有符合條件的員工，請調整員工狀態或部門篩選。
+                  </p>
+                )}
               </div>
 
               {/* 權限設定 */}
@@ -664,7 +797,7 @@ export default function AttendancePermissionsPage() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setShowCreateForm(false)}
+                  onClick={resetCreateForm}
                   className="px-4 py-2 bg-gray-300 text-gray-700 rounded-md hover:bg-gray-400 transition-colors font-medium"
                 >
                   取消
@@ -753,6 +886,16 @@ export default function AttendancePermissionsPage() {
           </div>
         </div>
       )}
+      <ConfirmDialog
+        open={Boolean(deleteConfirmPermission)}
+        title="刪除考勤權限"
+        message={deleteConfirmPermission ? `確定要刪除「${deleteConfirmPermission.employee.name}（${deleteConfirmPermission.employee.employeeId}）」的考勤權限設定嗎？\n\n刪除後該員工將失去目前設定的請假、加班、調班或班表管理權限。` : ''}
+        tone="danger"
+        confirmLabel="刪除權限"
+        onCancel={() => setDeleteConfirmPermission(null)}
+        onConfirm={performDeletePermission}
+      />
+      <SimpleToast toast={toast} onClose={clearToast} />
     </div>
   );
 }

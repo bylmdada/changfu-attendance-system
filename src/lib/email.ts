@@ -188,6 +188,8 @@ async function sendEmail(content: EmailContent): Promise<{ success: boolean; err
       host: config.host,
       port: config.port,
       secure: config.secure,
+      disableFileAccess: true,
+      disableUrlAccess: true,
       auth: {
         user: config.user,
         pass: config.password,

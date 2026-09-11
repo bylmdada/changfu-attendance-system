@@ -4,6 +4,8 @@ import { useState, useEffect } from 'react';
 import { Key, Eye, EyeOff, Shield, Users, Lock, X } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import ConfirmDialog from '@/components/ConfirmDialog';
+import EmployeeListSelect from '@/components/EmployeeListSelect';
 import {
   type PasswordPolicy,
   type PasswordStrengthResult,
@@ -77,6 +79,7 @@ export default function PasswordManagement() {
   
   // Toast 狀態
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [accountStatusTarget, setAccountStatusTarget] = useState<{ userId: number; currentStatus: boolean; name: string } | null>(null);
   
   // 排序狀態
   const [sortConfig, setSortConfig] = useState<{ field: 'name' | 'department' | 'status'; direction: 'asc' | 'desc' }>({ field: 'name', direction: 'asc' });
@@ -324,13 +327,12 @@ export default function PasswordManagement() {
     if (selectedDepartment && user.employee.department !== selectedDepartment) {
       return false;
     }
-    // 搜尋篩選
+    // 員工篩選
     if (searchQuery) {
       const query = searchQuery.toLowerCase();
       return (
         user.employee.name.toLowerCase().includes(query) ||
-        user.employee.employeeId.toLowerCase().includes(query) ||
-        user.username.toLowerCase().includes(query)
+        user.employee.employeeId.toLowerCase().includes(query)
       );
     }
     return true;
@@ -480,10 +482,6 @@ export default function PasswordManagement() {
   const toggleAccountStatus = async (userId: number, currentStatus: boolean) => {
     const newStatus = !currentStatus;
     const action = newStatus ? '啟用' : '停用';
-    
-    if (!confirm(`確定要${action}此帳號嗎？`)) {
-      return;
-    }
 
     try {
       const response = await fetchJSONWithCSRF('/api/users/status', {
@@ -498,6 +496,7 @@ export default function PasswordManagement() {
         setUsers(users.map(u => 
           u.id === userId ? { ...u, isActive: newStatus } : u
         ));
+        setAccountStatusTarget(null);
       } else {
         const data = await response.json();
         showToast('error', data.error || `${action}失敗`);
@@ -803,12 +802,14 @@ export default function PasswordManagement() {
               {/* 搜尋和篩選區域 */}
               <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
                 <div>
-                  <input
-                    type="text"
-                    placeholder="搜尋姓名/員編/帳號"
+                  <EmployeeListSelect
                     value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900"
+                    onChange={(value) => {
+                      setSearchQuery(value);
+                      setCurrentPage(1);
+                    }}
+                    emptyLabel="全部員工"
+                    selectClassName="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 disabled:bg-gray-100"
                   />
                 </div>
                 <div>
@@ -897,7 +898,7 @@ export default function PasswordManagement() {
                     </div>
                     <div className="flex items-center gap-2">
                       <button
-                        onClick={() => toggleAccountStatus(user.id, user.isActive)}
+                        onClick={() => setAccountStatusTarget({ userId: user.id, currentStatus: user.isActive, name: user.employee.name })}
                         className={`px-3 py-2 text-sm rounded-lg transition-colors ${
                           user.isActive 
                             ? 'bg-orange-100 text-orange-700 hover:bg-orange-200' 
@@ -1130,6 +1131,23 @@ export default function PasswordManagement() {
           {toast.message}
         </div>
       )}
+      <ConfirmDialog
+        open={!!accountStatusTarget}
+        title={accountStatusTarget?.currentStatus ? '停用帳號' : '啟用帳號'}
+        message={
+          accountStatusTarget
+            ? `確定要${accountStatusTarget.currentStatus ? '停用' : '啟用'}「${accountStatusTarget.name}」的帳號嗎？`
+            : ''
+        }
+        confirmLabel={accountStatusTarget?.currentStatus ? '停用' : '啟用'}
+        cancelLabel="取消"
+        tone={accountStatusTarget?.currentStatus ? 'danger' : 'default'}
+        onConfirm={() => {
+          if (!accountStatusTarget) return;
+          void toggleAccountStatus(accountStatusTarget.userId, accountStatusTarget.currentStatus);
+        }}
+        onCancel={() => setAccountStatusTarget(null)}
+      />
     </AuthenticatedLayout>
   );
 }

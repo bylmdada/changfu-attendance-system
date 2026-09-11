@@ -19,7 +19,11 @@ jest.mock('@/lib/database', () => ({
       findFirst: jest.fn()
     },
     overtimeRequest: {
-      findFirst: jest.fn()
+      findFirst: jest.fn(),
+      findMany: jest.fn()
+    },
+    leaveRequest: {
+      findMany: jest.fn()
     }
   }
 }));
@@ -86,6 +90,8 @@ describe('verify-clock quick auth account status', () => {
     mockValidateGpsClockLocation.mockReturnValue({ ok: true } as never);
     mockPrisma.holiday.findFirst.mockResolvedValue(null as never);
     mockPrisma.overtimeRequest.findFirst.mockResolvedValue(null as never);
+    mockPrisma.overtimeRequest.findMany.mockResolvedValue([] as never);
+    mockPrisma.leaveRequest.findMany.mockResolvedValue([] as never);
   });
 
   afterEach(() => {
@@ -482,7 +488,7 @@ describe('verify-clock quick auth account status', () => {
     });
   });
 
-  it('calculates quick clock-out overtime from the scheduled work hours', async () => {
+  it('does not treat short-shift hours within the statutory 8-hour limit as overtime', async () => {
     jest.setSystemTime(new Date('2026-04-08T10:00:00.000Z'));
 
     mockPrisma.user.findUnique.mockResolvedValue({
@@ -513,7 +519,7 @@ describe('verify-clock quick auth account status', () => {
     mockPrisma.attendanceRecord.update.mockResolvedValue({
       id: 88,
       regularHours: 6,
-      overtimeHours: 2
+      overtimeHours: 0
     } as never);
 
     const request = new NextRequest('http://localhost/api/attendance/verify-clock', {
@@ -530,17 +536,17 @@ describe('verify-clock quick auth account status', () => {
 
     expect(response.status).toBe(200);
     expect(payload.regularHours).toBe(6);
-    expect(payload.overtimeHours).toBe(2);
+    expect(payload.overtimeHours).toBe(0);
     expect(mockPrisma.attendanceRecord.update).toHaveBeenCalledWith(expect.objectContaining({
       where: { id: 88 },
       data: expect.objectContaining({
         regularHours: 6,
-        overtimeHours: 2
+        overtimeHours: 0
       })
     }));
   });
 
-  it('stores the fixed late clock-out reason text when business reason is submitted directly', async () => {
+  it('stores the canonical late clock-out business reason when business is submitted directly', async () => {
     jest.setSystemTime(new Date('2026-04-08T09:30:00.000Z'));
 
     mockPrisma.user.findUnique.mockResolvedValue({
@@ -568,7 +574,7 @@ describe('verify-clock quick auth account status', () => {
       id: 88,
       regularHours: 9.5,
       overtimeHours: 0,
-      clockOutReason: 'code review、修正、收尾'
+      clockOutReason: 'BUSINESS'
     } as never);
 
     const request = new NextRequest('http://localhost/api/attendance/verify-clock', {
@@ -595,7 +601,7 @@ describe('verify-clock quick auth account status', () => {
     expect(mockPrisma.attendanceRecord.update).toHaveBeenCalledWith(expect.objectContaining({
       where: { id: 88 },
       data: expect.objectContaining({
-        clockOutReason: 'code review、修正、收尾'
+        clockOutReason: 'BUSINESS'
       })
     }));
   });

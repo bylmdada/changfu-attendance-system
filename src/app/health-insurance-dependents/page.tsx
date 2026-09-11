@@ -5,6 +5,13 @@ import { useRouter } from 'next/navigation';
 import { Users, Save, Plus, Edit2, Trash2, Search, AlertTriangle, Download, Upload, X, FileText, BarChart3, History, CheckCircle, Clock } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import EmployeeListSelect from '@/components/EmployeeListSelect';
+import {
+  calculateHealthInsurancePremium,
+  resolveHealthInsuranceLevels,
+  type HealthInsuranceCalculation,
+  type InsuranceSalaryLevel,
+} from '@/lib/insurance-calculator';
 
 
 interface EmployeeDependent {
@@ -23,10 +30,25 @@ interface EmployeeDependent {
 
 interface DependentSummary {
   employeeId: number;
+  employeeNumber?: string;
   employeeName: string;
   department: string;
+  baseSalary: number;
+  insuredBase?: number | null;
   dependentCount: number;
+  payrollDependentCount?: number;
+  isDependentCountSynced?: boolean;
+  healthInsuranceActive?: boolean;
   dependents: EmployeeDependent[];
+}
+
+interface HealthFormulaConfig {
+  premiumRate: number;
+  employeeContributionRatio: number;
+  companyContributionRatio: number;
+  governmentSubsidyRatio: number;
+  maxDependents: number;
+  salaryLevels?: InsuranceSalaryLevel[];
 }
 
 function readLinkedApplicationId() {
@@ -60,7 +82,9 @@ export default function HealthInsuranceDependentsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [dependentSummaries, setDependentSummaries] = useState<DependentSummary[]>([]);
+  const [healthFormulaConfig, setHealthFormulaConfig] = useState<HealthFormulaConfig | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
+  const [dependentSearchTerm, setDependentSearchTerm] = useState('');
   const [departmentFilter, setDepartmentFilter] = useState<string>('');
   const [showForm, setShowForm] = useState(false);
   const [showBatchForm, setShowBatchForm] = useState(false);
@@ -153,9 +177,9 @@ export default function HealthInsuranceDependentsPage() {
           if (requestId) {
             setLinkedApplicationId(requestId);
             setActiveTab('applications');
-            await Promise.all([loadDependents(), loadApplications()]);
+            await Promise.all([loadDependents(), loadApplications(), loadHealthFormulaConfig()]);
           } else {
-            await loadDependents();
+            await Promise.all([loadDependents(), loadHealthFormulaConfig()]);
           }
         } else if (response.status === 401 || response.status === 403) {
           console.warn('Authentication failed, redirecting to login');
@@ -186,6 +210,31 @@ export default function HealthInsuranceDependentsPage() {
       }
     } catch (error) {
       console.error('載入眷屬資料失敗:', error);
+    }
+  };
+
+  const loadHealthFormulaConfig = async () => {
+    try {
+      const response = await fetch('/api/system-settings/health-insurance-formula', {
+        credentials: 'include'
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const config = data.config;
+        if (config) {
+          setHealthFormulaConfig({
+            premiumRate: Number(config.premiumRate ?? 0.0517),
+            employeeContributionRatio: Number(config.employeeContributionRatio ?? 0.3),
+            companyContributionRatio: Number(config.companyContributionRatio ?? 0.6),
+            governmentSubsidyRatio: Number(config.governmentSubsidyRatio ?? 0.1),
+            maxDependents: Number(config.maxDependents ?? 3),
+            salaryLevels: config.salaryLevels || [],
+          });
+        }
+      }
+    } catch (error) {
+      console.error('載入健保公式配置失敗:', error);
     }
   };
 
@@ -433,12 +482,14 @@ export default function HealthInsuranceDependentsPage() {
     if (departmentFilter && summary.department !== departmentFilter) {
       return false;
     }
-    // 文字搜尋
+    // 員工篩選
     if (searchTerm) {
-      const term = searchTerm.toLowerCase();
+      return String(summary.employeeId) === searchTerm;
+    }
+    // 眷屬姓名搜尋
+    if (dependentSearchTerm) {
+      const term = dependentSearchTerm.toLowerCase();
       return (
-        summary.employeeName.toLowerCase().includes(term) ||
-        summary.department.toLowerCase().includes(term) ||
         summary.dependents.some(dep => 
           dep.dependentName.toLowerCase().includes(term)
         )
@@ -453,6 +504,31 @@ export default function HealthInsuranceDependentsPage() {
   const averageDependents = totalEmployeesWithDependents > 0 
     ? (totalDependents / totalEmployeesWithDependents).toFixed(1) 
     : '0';
+  const calculateEmployeeHealthPremium = (summary: DependentSummary): HealthInsuranceCalculation | null => {
+    if (!healthFormulaConfig || summary.healthInsuranceActive === false) {
+      return null;
+    }
+
+    const salaryBasis = summary.insuredBase || summary.baseSalary || 0;
+    if (!Number.isFinite(salaryBasis) || salaryBasis <= 0) {
+      return null;
+    }
+
+    return calculateHealthInsurancePremium({
+      salary: salaryBasis,
+      premiumRate: healthFormulaConfig.premiumRate,
+      employeeRate: healthFormulaConfig.employeeContributionRatio,
+      employerRate: healthFormulaConfig.companyContributionRatio,
+      governmentRate: healthFormulaConfig.governmentSubsidyRatio,
+      dependents: summary.dependentCount,
+      maxDependents: healthFormulaConfig.maxDependents,
+      levels: resolveHealthInsuranceLevels(healthFormulaConfig.salaryLevels),
+    });
+  };
+  const totalEstimatedHealthPremium = dependentSummaries.reduce((sum, summary) => {
+    return sum + (calculateEmployeeHealthPremium(summary)?.employeePremium ?? 0);
+  }, 0);
+  const unsyncedSummaryCount = dependentSummaries.filter(summary => summary.isDependentCountSynced === false).length;
 
   if (loading) {
     return (
@@ -487,11 +563,11 @@ export default function HealthInsuranceDependentsPage() {
         )}
 
         {/* 統計資訊 */}
-        <div className="mb-8 grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="mb-6 grid grid-cols-1 md:grid-cols-5 gap-4">
           <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
             <div className="text-center">
               <div className="text-2xl font-bold text-blue-600">{dependentSummaries.length}</div>
-              <div className="text-sm text-gray-900">總員工數</div>
+              <div className="text-sm text-gray-900">有效員工數</div>
             </div>
           </div>
           <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
@@ -510,6 +586,31 @@ export default function HealthInsuranceDependentsPage() {
             <div className="text-center">
               <div className="text-2xl font-bold text-orange-600">{averageDependents}</div>
               <div className="text-sm text-gray-900">平均眷屬數</div>
+            </div>
+          </div>
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
+            <div className="text-center">
+              <div className="text-2xl font-bold text-emerald-600">NT$ {totalEstimatedHealthPremium.toLocaleString()}</div>
+              <div className="text-sm text-gray-900">預估健保自付額</div>
+            </div>
+          </div>
+        </div>
+
+        <div className="mb-8 rounded-2xl border border-emerald-200 bg-gradient-to-r from-emerald-50 via-white to-blue-50 p-5 shadow-sm">
+          <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-gray-950">健保眷屬自付額關係式</h2>
+              <p className="mt-1 text-sm leading-6 text-gray-700">
+                薪資條健康保險 = 四捨五入(月投保金額 × 健保費率 × 員工自付比例 × (本人 1 + 有效眷屬數))。
+                眷屬數上限依健保費率設定，目前上限為 {healthFormulaConfig?.maxDependents ?? 3} 人。
+              </p>
+            </div>
+            <div className="rounded-xl bg-white/80 px-4 py-3 text-sm text-gray-800 shadow-sm ring-1 ring-emerald-100">
+              <div>費率：{((healthFormulaConfig?.premiumRate ?? 0.0517) * 100).toFixed(2)}%</div>
+              <div>員工自付：{((healthFormulaConfig?.employeeContributionRatio ?? 0.3) * 100).toFixed(0)}%</div>
+              <div className={unsyncedSummaryCount > 0 ? 'font-semibold text-amber-700' : 'font-semibold text-emerald-700'}>
+                同步狀態：{unsyncedSummaryCount > 0 ? `${unsyncedSummaryCount} 位需同步` : '已同步'}
+              </div>
             </div>
           </div>
         </div>
@@ -837,14 +938,23 @@ export default function HealthInsuranceDependentsPage() {
               </select>
             </div>
             
-            {/* 搜尋框 */}
+            <EmployeeListSelect
+              value={searchTerm}
+              valueField="id"
+              onChange={(value) => setSearchTerm(value)}
+              emptyLabel="全部員工"
+              className="flex-1"
+              selectClassName="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500 text-gray-900 disabled:bg-gray-100"
+            />
+
+            {/* 眷屬搜尋框 */}
             <div className="flex-1 relative">
               <Search className="h-5 w-5 text-gray-400 absolute left-3 top-1/2 transform -translate-y-1/2" />
               <input
                 type="text"
-                placeholder="搜尋員工姓名或眷屬姓名..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder="搜尋眷屬姓名..."
+                value={dependentSearchTerm}
+                onChange={(e) => setDependentSearchTerm(e.target.value)}
                 className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500 text-gray-900"
               />
             </div>
@@ -861,12 +971,12 @@ export default function HealthInsuranceDependentsPage() {
           </div>
           
           {/* 篩選結果提示 */}
-          {(departmentFilter || searchTerm) && (
+          {(departmentFilter || searchTerm || dependentSearchTerm) && (
             <div className="mt-3 flex items-center gap-2 text-sm text-gray-600">
               <span>篩選結果：{filteredSummaries.length} 位員工</span>
-              {(departmentFilter || searchTerm) && (
+              {(departmentFilter || searchTerm || dependentSearchTerm) && (
                 <button
-                  onClick={() => { setDepartmentFilter(''); setSearchTerm(''); }}
+                  onClick={() => { setDepartmentFilter(''); setSearchTerm(''); setDependentSearchTerm(''); }}
                   className="text-blue-600 hover:text-blue-800 underline"
                 >
                   清除篩選
@@ -883,12 +993,48 @@ export default function HealthInsuranceDependentsPage() {
           </div>
           
           <div className="divide-y divide-gray-200">
-            {filteredSummaries.map((summary) => (
+            {filteredSummaries.map((summary) => {
+              const healthPremium = calculateEmployeeHealthPremium(summary);
+              const salaryBasis = summary.insuredBase || summary.baseSalary || 0;
+              const isSynced = summary.isDependentCountSynced !== false;
+
+              return (
               <div key={summary.employeeId} className="p-6">
-                <div className="flex items-center justify-between mb-4">
+                <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between mb-4">
                   <div>
                     <h3 className="text-lg font-medium text-gray-900">{summary.employeeName}</h3>
-                    <p className="text-sm text-gray-900">{summary.department} • 眷屬數：{summary.dependentCount}</p>
+                    <p className="text-sm text-gray-900">
+                      {summary.department} • 員編：{summary.employeeNumber || summary.employeeId} • 有效眷屬數：{summary.dependentCount}
+                    </p>
+                    <div className="mt-3 grid gap-3 rounded-xl border border-emerald-100 bg-emerald-50/60 p-3 text-sm text-gray-800 md:grid-cols-4">
+                      <div>
+                        <div className="text-xs text-gray-500">薪資 / 投保基準</div>
+                        <div className="font-semibold text-gray-950">NT$ {salaryBasis.toLocaleString()}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-gray-500">月投保金額</div>
+                        <div className="font-semibold text-gray-950">
+                          {healthPremium ? `NT$ ${healthPremium.insuredAmount.toLocaleString()}` : '未啟用'}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-gray-500">計費人數</div>
+                        <div className="font-semibold text-gray-950">
+                          {healthPremium ? `${healthPremium.totalPersons} 人 (本人 + ${healthPremium.dependents})` : '0 人'}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-gray-500">薪資條健保自付額</div>
+                        <div className="font-semibold text-emerald-700">
+                          {healthPremium ? `NT$ ${healthPremium.employeePremium.toLocaleString()}` : 'NT$ 0'}
+                        </div>
+                      </div>
+                    </div>
+                    {!isSynced && (
+                      <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                        員工主檔眷屬數為 {summary.payrollDependentCount ?? 0}，目前有效眷屬數為 {summary.dependentCount}；系統已以有效眷屬數作為薪資條計算依據。
+                      </div>
+                    )}
                   </div>
                   <div className="flex items-center space-x-2">
                     <button
@@ -964,14 +1110,15 @@ export default function HealthInsuranceDependentsPage() {
                   </div>
                 )}
               </div>
-            ))}
+              );
+            })}
           </div>
           
           {filteredSummaries.length === 0 && (
             <div className="text-center py-12">
               <Users className="h-12 w-12 text-gray-400 mx-auto mb-4" />
               <p className="text-gray-900">
-                {searchTerm ? '沒有找到符合條件的資料' : '尚未載入員工資料'}
+                {searchTerm || dependentSearchTerm ? '沒有找到符合條件的資料' : '尚未載入員工資料'}
               </p>
             </div>
           )}

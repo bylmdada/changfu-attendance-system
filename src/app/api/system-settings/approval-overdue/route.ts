@@ -15,6 +15,7 @@ import {
   processOverdueApprovals,
   getOverdueStats 
 } from '@/lib/approval-scheduler';
+import { logSystemSettingsChange } from '@/lib/system-settings-audit';
 
 const BOOLEAN_FIELDS = [
   'enabled',
@@ -123,11 +124,21 @@ export async function PUT(request: NextRequest) {
       }
     }
 
+    const oldSettings = await getOverdueSettings();
     const result = await updateOverdueSettings(data);
 
     if (!result.success) {
       return NextResponse.json({ error: '更新失敗' }, { status: 500 });
     }
+
+    await logSystemSettingsChange({
+      request,
+      user,
+      settingKey: 'approval-overdue',
+      description: '審核逾期處理設定變更',
+      oldValue: oldSettings,
+      newValue: result.settings,
+    });
 
     return NextResponse.json({
       success: true,
@@ -184,6 +195,15 @@ export async function POST(request: NextRequest) {
 
     // 執行處理
     const result = await processOverdueApprovals({ forceRun });
+
+    await logSystemSettingsChange({
+      request,
+      user,
+      settingKey: 'approval-overdue/manual-run',
+      description: '手動執行審核逾期處理',
+      oldValue: null,
+      newValue: { forceRun, result },
+    });
 
     return NextResponse.json({
       success: true,

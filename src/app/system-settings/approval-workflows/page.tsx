@@ -5,10 +5,12 @@ import { useRouter } from 'next/navigation';
 import { Settings, Users, Clock, Save, Plus, Trash2, UserCheck, Timer, Play, Edit2, X, Check } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import SystemNavbar from '@/components/SystemNavbar';
+import ConfirmDialog from '@/components/ConfirmDialog';
 
 interface Workflow {
   id: number;
   workflowType: string;
+  department: string;
   workflowName: string;
   approvalLevel: number;
   requireManager: boolean;
@@ -69,6 +71,16 @@ interface OverdueStats {
   percentOverdue: number;
 }
 
+const DEFAULT_WORKFLOW_DEPARTMENT = '__ALL__';
+
+function getWorkflowDepartmentLabel(department: string) {
+  return department === DEFAULT_WORKFLOW_DEPARTMENT ? '全公司預設' : department;
+}
+
+function getWorkflowDepartment(workflow: Workflow) {
+  return workflow.department || DEFAULT_WORKFLOW_DEPARTMENT;
+}
+
 export default function ApprovalWorkflowsPage() {
   const router = useRouter();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -79,6 +91,10 @@ export default function ApprovalWorkflowsPage() {
   
   // 工作流程設定
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
+  const [savedWorkflowKey, setSavedWorkflowKey] = useState('');
+  const [selectedWorkflowDepartment, setSelectedWorkflowDepartment] = useState(DEFAULT_WORKFLOW_DEPARTMENT);
+  const [newWorkflowDepartment, setNewWorkflowDepartment] = useState('');
+  const [deletedWorkflowIds, setDeletedWorkflowIds] = useState<number[]>([]);
   const [freezeReminder, setFreezeReminder] = useState<FreezeReminder | null>(null);
   const [freezeSettings, setFreezeSettings] = useState<{ freezeDay: number; freezeTime: string } | null>(null);
   const [overdueSettings, setOverdueSettings] = useState<OverdueSettings | null>(null);
@@ -105,6 +121,8 @@ export default function ApprovalWorkflowsPage() {
   // 編輯代理人
   const [editingDeputyId, setEditingDeputyId] = useState<number | null>(null);
   const [editDeputy, setEditDeputy] = useState({ startDate: '', endDate: '' });
+  const [deleteManagerTarget, setDeleteManagerTarget] = useState<Manager | null>(null);
+  const [deleteDeputyTarget, setDeleteDeputyTarget] = useState<{ id: number; employeeName: string } | null>(null);
   
   // 訊息
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -138,9 +156,15 @@ export default function ApprovalWorkflowsPage() {
       const response = await fetch('/api/system-settings/approval-workflows', { credentials: 'include' });
       if (response.ok) {
         const data = await response.json();
-        setWorkflows(data.workflows || []);
+        const loadedWorkflows = (data.workflows || []).map((workflow: Workflow) => ({
+          ...workflow,
+          department: getWorkflowDepartment(workflow)
+        }));
+        setWorkflows(loadedWorkflows);
+        setDeletedWorkflowIds([]);
         setFreezeReminder(data.freezeReminder);
         setFreezeSettings(data.freezeSettings);
+        setSavedWorkflowKey(JSON.stringify({ workflows: loadedWorkflows, freezeReminder: data.freezeReminder, deletedWorkflowIds: [] }));
       }
     } catch (error) {
       console.error('載入工作流程失敗:', error);
@@ -182,9 +206,11 @@ export default function ApprovalWorkflowsPage() {
     try {
       const response = await fetchJSONWithCSRF('/api/system-settings/approval-workflows', {
         method: 'PUT',
-        body: { workflows, freezeReminder }
+        body: { workflows, deletedWorkflowIds, freezeReminder }
       });
       if (response.ok) {
+        setSavedWorkflowKey(JSON.stringify({ workflows, freezeReminder, deletedWorkflowIds: [] }));
+        setDeletedWorkflowIds([]);
         setMessage({ type: 'success', text: '設定已儲存' });
       } else {
         setMessage({ type: 'error', text: '儲存失敗' });
@@ -286,14 +312,16 @@ export default function ApprovalWorkflowsPage() {
     }
   };
 
-  const handleDeleteManager = async (id: number) => {
-    if (!confirm('確定要刪除此主管嗎？')) return;
+  const handleDeleteManager = async () => {
+    if (!deleteManagerTarget) return;
+
     try {
-      const response = await fetchJSONWithCSRF(`/api/system-settings/department-managers?id=${id}`, {
+      const response = await fetchJSONWithCSRF(`/api/system-settings/department-managers?id=${deleteManagerTarget.id}`, {
         method: 'DELETE'
       });
       if (response.ok) {
         setMessage({ type: 'success', text: '已刪除' });
+        setDeleteManagerTarget(null);
         await loadManagers();
       }
     } catch {
@@ -332,14 +360,16 @@ export default function ApprovalWorkflowsPage() {
   };
 
   // 刪除代理人
-  const handleDeleteDeputy = async (deputyId: number) => {
-    if (!confirm('確定要刪除此代理人嗎？')) return;
+  const handleDeleteDeputy = async () => {
+    if (!deleteDeputyTarget) return;
+
     try {
-      const response = await fetchJSONWithCSRF(`/api/system-settings/manager-deputies?id=${deputyId}`, {
+      const response = await fetchJSONWithCSRF(`/api/system-settings/manager-deputies?id=${deleteDeputyTarget.id}`, {
         method: 'DELETE'
       });
       if (response.ok) {
         setMessage({ type: 'success', text: '已刪除代理人' });
+        setDeleteDeputyTarget(null);
         await loadManagers();
       }
     } catch {
@@ -422,6 +452,59 @@ export default function ApprovalWorkflowsPage() {
     ));
   };
 
+  const workflowDepartmentOptions = [
+    DEFAULT_WORKFLOW_DEPARTMENT,
+    ...Array.from(new Set(workflows.map(getWorkflowDepartment).filter((department) => department !== DEFAULT_WORKFLOW_DEPARTMENT))).sort()
+  ];
+  const visibleWorkflows = workflows.filter((workflow) => getWorkflowDepartment(workflow) === selectedWorkflowDepartment);
+  const configuredWorkflowDepartments = new Set(workflowDepartmentOptions);
+  const availableNewWorkflowDepartments = departments
+    .filter((department) => !configuredWorkflowDepartments.has(department))
+    .sort();
+
+  const handleAddDepartmentWorkflows = () => {
+    if (!newWorkflowDepartment) {
+      setMessage({ type: 'error', text: '請選擇要新增流程的部門' });
+      return;
+    }
+
+    if (configuredWorkflowDepartments.has(newWorkflowDepartment)) {
+      setMessage({ type: 'error', text: '此部門已設定審核流程' });
+      return;
+    }
+
+    const defaultWorkflows = workflows.filter((workflow) => getWorkflowDepartment(workflow) === DEFAULT_WORKFLOW_DEPARTMENT);
+    if (defaultWorkflows.length === 0) {
+      setMessage({ type: 'error', text: '找不到全公司預設流程，無法新增部門流程' });
+      return;
+    }
+
+    const now = Date.now();
+    const departmentWorkflows = defaultWorkflows.map((workflow, index) => ({
+      ...workflow,
+      id: -(now + index),
+      department: newWorkflowDepartment
+    }));
+
+    setWorkflows((prev) => [...prev, ...departmentWorkflows]);
+    setSelectedWorkflowDepartment(newWorkflowDepartment);
+    setNewWorkflowDepartment('');
+    setMessage({ type: 'success', text: '已新增部門流程，請調整後儲存' });
+  };
+
+  const handleRemoveDepartmentWorkflows = (department: string) => {
+    if (department === DEFAULT_WORKFLOW_DEPARTMENT) return;
+
+    const removingWorkflows = workflows.filter((workflow) => getWorkflowDepartment(workflow) === department);
+    setDeletedWorkflowIds((prev) => Array.from(new Set([
+      ...prev,
+      ...removingWorkflows.filter((workflow) => workflow.id > 0).map((workflow) => workflow.id)
+    ])));
+    setWorkflows((prev) => prev.filter((workflow) => getWorkflowDepartment(workflow) !== department));
+    setSelectedWorkflowDepartment(DEFAULT_WORKFLOW_DEPARTMENT);
+    setMessage({ type: 'success', text: '已移除部門流程，儲存後生效' });
+  };
+
   const updateOverdueSetting = <K extends keyof OverdueSettings>(field: K, value: OverdueSettings[K]) => {
     setOverdueSettings(prev => prev ? { ...prev, [field]: value } : prev);
   };
@@ -433,6 +516,9 @@ export default function ApprovalWorkflowsPage() {
       </div>
     );
   }
+
+  const workflowKey = JSON.stringify({ workflows, freezeReminder, deletedWorkflowIds });
+  const hasWorkflowChanges = savedWorkflowKey !== '' && workflowKey !== savedWorkflowKey;
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -512,21 +598,80 @@ export default function ApprovalWorkflowsPage() {
             {/* 審核流程表格 */}
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
               <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-                <h2 className="text-lg font-medium text-gray-900">審核流程設定</h2>
+                <div>
+                  <h2 className="text-lg font-medium text-gray-900">審核流程設定</h2>
+                  <p className="mt-1 text-sm text-gray-500">
+                    {saving ? '儲存中...' : hasWorkflowChanges ? '有未儲存變更' : '已儲存'}，
+                    目前：{getWorkflowDepartmentLabel(selectedWorkflowDepartment)}
+                  </p>
+                </div>
                 <button
                   onClick={handleSaveWorkflows}
-                  disabled={saving}
+                  disabled={saving || !hasWorkflowChanges}
                   className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
                 >
                   <Save className="w-4 h-4" />
                   {saving ? '儲存中...' : '儲存設定'}
                 </button>
               </div>
+
+              <div className="grid grid-cols-1 gap-3 border-b border-gray-200 bg-gray-50 px-6 py-4 lg:grid-cols-[minmax(220px,320px)_minmax(220px,320px)_auto_auto] lg:items-end">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">編輯範圍</label>
+                  <select
+                    value={selectedWorkflowDepartment}
+                    onChange={(e) => setSelectedWorkflowDepartment(e.target.value)}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                  >
+                    {workflowDepartmentOptions.map((department) => (
+                      <option key={department} value={department}>
+                        {getWorkflowDepartmentLabel(department)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">新增部門流程</label>
+                  <select
+                    value={newWorkflowDepartment}
+                    onChange={(e) => setNewWorkflowDepartment(e.target.value)}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="">請選擇部門</option>
+                    {availableNewWorkflowDepartments.map((department) => (
+                      <option key={department} value={department}>{department}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleAddDepartmentWorkflows}
+                  disabled={!newWorkflowDepartment}
+                  className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                >
+                  <Plus className="h-4 w-4" />
+                  新增
+                </button>
+
+                {selectedWorkflowDepartment !== DEFAULT_WORKFLOW_DEPARTMENT && (
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveDepartmentWorkflows(selectedWorkflowDepartment)}
+                    className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-red-200 bg-white px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-50"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    移除部門流程
+                  </button>
+                )}
+              </div>
               
               <div className="overflow-x-auto">
                 <table className="min-w-full divide-y divide-gray-200">
                   <thead className="bg-gray-50">
                     <tr>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">適用部門</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">申請類型</th>
                       <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">層級</th>
                       <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">需主管</th>
@@ -537,8 +682,9 @@ export default function ApprovalWorkflowsPage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200">
-                    {workflows.map(wf => (
+                    {visibleWorkflows.map(wf => (
                       <tr key={wf.id}>
+                        <td className="px-4 py-3 text-gray-900">{getWorkflowDepartmentLabel(getWorkflowDepartment(wf))}</td>
                         <td className="px-4 py-3 text-gray-900 font-medium">{wf.workflowName}</td>
                         <td className="px-4 py-3 text-center">
                           <select
@@ -549,7 +695,6 @@ export default function ApprovalWorkflowsPage() {
                           >
                             <option value={1}>一階</option>
                             <option value={2}>二階</option>
-                            <option value={3}>三階</option>
                           </select>
                         </td>
                         <td className="px-4 py-3 text-center">
@@ -606,9 +751,19 @@ export default function ApprovalWorkflowsPage() {
                         </td>
                       </tr>
                     ))}
+                    {visibleWorkflows.length === 0 && (
+                      <tr>
+                        <td colSpan={8} className="px-4 py-8 text-center text-gray-500">
+                          尚未設定此範圍的審核流程
+                        </td>
+                      </tr>
+                    )}
                   </tbody>
                 </table>
               </div>
+              <p className="px-6 pb-4 pt-2 text-sm text-gray-500 sm:hidden">
+                表格可左右滑動查看全部設定。
+              </p>
             </div>
 
             {/* 凍結提醒設定 */}
@@ -833,7 +988,7 @@ export default function ApprovalWorkflowsPage() {
                                     <Edit2 className="w-3 h-3" />
                                   </button>
                                   <button
-                                    onClick={() => handleDeleteDeputy(d.id)}
+                                    onClick={() => setDeleteDeputyTarget({ id: d.id, employeeName: d.employeeName })}
                                     className="text-red-500 hover:text-red-700"
                                     title="刪除代理人"
                                   >
@@ -932,7 +1087,7 @@ export default function ApprovalWorkflowsPage() {
                                 <Edit2 className="w-4 h-4" />
                               </button>
                               <button
-                                onClick={() => handleDeleteManager(m.id)}
+                                onClick={() => setDeleteManagerTarget(m)}
                                 className="text-red-600 hover:text-red-800"
                                 title="刪除"
                               >
@@ -1185,6 +1340,32 @@ export default function ApprovalWorkflowsPage() {
           </div>
         )}
       </main>
+
+      <ConfirmDialog
+        open={!!deleteManagerTarget}
+        title="刪除部門主管"
+        message={
+          deleteManagerTarget
+            ? `確定要刪除「${deleteManagerTarget.employeeName}」在「${deleteManagerTarget.department}」的主管設定嗎？`
+            : ''
+        }
+        confirmLabel="刪除"
+        cancelLabel="取消"
+        tone="danger"
+        onConfirm={handleDeleteManager}
+        onCancel={() => setDeleteManagerTarget(null)}
+      />
+
+      <ConfirmDialog
+        open={!!deleteDeputyTarget}
+        title="刪除代理人"
+        message={deleteDeputyTarget ? `確定要刪除「${deleteDeputyTarget.employeeName}」的代理人設定嗎？` : ''}
+        confirmLabel="刪除"
+        cancelLabel="取消"
+        tone="danger"
+        onConfirm={handleDeleteDeputy}
+        onCancel={() => setDeleteDeputyTarget(null)}
+      />
     </div>
   );
 }

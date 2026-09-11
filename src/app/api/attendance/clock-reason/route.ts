@@ -6,6 +6,11 @@ import {
   DEFAULT_LATE_CLOCK_OUT_BUSINESS_REASON,
   normalizeClockReasonForStorage,
 } from '@/lib/attendance-clock-reasons';
+import { getStoredOvertimeCalculationSettings } from '@/lib/overtime-settings';
+import {
+  calculateActualOvertimeHoursFromTimeRange,
+  getMinimumOvertimeHours,
+} from '@/lib/overtime-hours';
 import { safeParseJSON } from '@/lib/validation';
 import { checkClockRateLimit, clearFailedAttempts, recordFailedClockAttempt } from '@/lib/rate-limit';
 
@@ -30,7 +35,10 @@ function parseTimeToMinutes(value: unknown): number | null {
   return hour * 60 + minute;
 }
 
-function calculateLinkedOvertimeHours(startTime: unknown, endTime: unknown): number | null {
+function calculateLinkedOvertimeHours(
+  startTime: unknown,
+  endTime: unknown
+): number | null {
   const startMinutes = parseTimeToMinutes(startTime);
   const endMinutes = parseTimeToMinutes(endTime);
 
@@ -38,8 +46,7 @@ function calculateLinkedOvertimeHours(startTime: unknown, endTime: unknown): num
     return null;
   }
 
-  const totalHours = (endMinutes - startMinutes) / 60;
-  return Math.ceil(totalHours * 2) / 2;
+  return calculateActualOvertimeHoursFromTimeRange(String(startTime), String(endTime));
 }
 
 // POST - 提交打卡原因
@@ -157,6 +164,8 @@ export async function POST(request: NextRequest) {
 
     // 如果選擇公務且需要快速申請加班
     if (reason === 'BUSINESS' && newOvertimeRequest) {
+      const overtimeSettings = await getStoredOvertimeCalculationSettings();
+      const minimumOvertimeHours = getMinimumOvertimeHours(overtimeSettings.overtimeMinUnit);
       const startTime = isPlainObject(newOvertimeRequest) && typeof newOvertimeRequest.startTime === 'string'
         ? newOvertimeRequest.startTime
         : undefined;
@@ -166,14 +175,17 @@ export async function POST(request: NextRequest) {
       const overtimeReason = isPlainObject(newOvertimeRequest) && typeof newOvertimeRequest.overtimeReason === 'string'
         ? newOvertimeRequest.overtimeReason
         : undefined;
-      const calculatedHours = calculateLinkedOvertimeHours(startTime, endTime);
+      const calculatedHours = calculateLinkedOvertimeHours(
+        startTime,
+        endTime
+      );
 
       if (calculatedHours === null) {
         return NextResponse.json({ error: '加班時間格式無效' }, { status: 400 });
       }
 
-      if (calculatedHours < 0.5) {
-        return NextResponse.json({ error: '加班時數最少0.5小時' }, { status: 400 });
+      if (calculatedHours < minimumOvertimeHours) {
+        return NextResponse.json({ error: `加班時數最少${minimumOvertimeHours}小時` }, { status: 400 });
       }
 
       if (calculatedHours > 4) {

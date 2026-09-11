@@ -9,34 +9,22 @@ import {
 } from '@/lib/supplementary-premium-config';
 import { getStoredSupplementaryPremiumSettings } from '@/lib/supplementary-premium-settings';
 import { safeParseJSON } from '@/lib/validation';
+import { HEALTH_INSURANCE_2026_LEVELS, resolveHealthInsuranceLevels } from '@/lib/insurance-calculator';
+import { logSystemSettingsChange } from '@/lib/system-settings-audit';
 
 const DEFAULT_HEALTH_INSURANCE_CONFIG = {
   id: 0,
   premiumRate: 0.0517,
   employeeContributionRatio: 0.30,
+  companyContributionRatio: 0.60,
+  governmentSubsidyRatio: 0.10,
   maxDependents: 3,
   supplementaryRate: 0.0211,
   supplementaryThreshold: 4,
   isActive: true
 };
 
-const DEFAULT_HEALTH_INSURANCE_SALARY_LEVELS = [
-  { level: 1, minSalary: 0, maxSalary: 25000, insuredAmount: 25200 },
-  { level: 2, minSalary: 25001, maxSalary: 30000, insuredAmount: 30300 },
-  { level: 3, minSalary: 30001, maxSalary: 36000, insuredAmount: 36300 },
-  { level: 4, minSalary: 36001, maxSalary: 40000, insuredAmount: 40100 },
-  { level: 5, minSalary: 40001, maxSalary: 44000, insuredAmount: 44000 },
-  { level: 6, minSalary: 44001, maxSalary: 50000, insuredAmount: 50800 },
-  { level: 7, minSalary: 50001, maxSalary: 55000, insuredAmount: 55800 },
-  { level: 8, minSalary: 55001, maxSalary: 60000, insuredAmount: 60100 },
-  { level: 9, minSalary: 60001, maxSalary: 70000, insuredAmount: 69100 },
-  { level: 10, minSalary: 70001, maxSalary: 80000, insuredAmount: 78800 },
-  { level: 11, minSalary: 80001, maxSalary: 90000, insuredAmount: 87600 },
-  { level: 12, minSalary: 90001, maxSalary: 100000, insuredAmount: 96200 },
-  { level: 13, minSalary: 100001, maxSalary: 110000, insuredAmount: 105500 },
-  { level: 14, minSalary: 110001, maxSalary: 120000, insuredAmount: 115500 },
-  { level: 15, minSalary: 120001, maxSalary: 999999999, insuredAmount: 182000 }
-];
+const DEFAULT_HEALTH_INSURANCE_SALARY_LEVELS = HEALTH_INSURANCE_2026_LEVELS;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -141,14 +129,16 @@ export async function GET(request: NextRequest) {
         id: config.id,
         premiumRate: config.premiumRate,
         employeeContributionRatio: config.employeeContributionRatio,
+        companyContributionRatio: config.companyContributionRatio ?? DEFAULT_HEALTH_INSURANCE_CONFIG.companyContributionRatio,
+        governmentSubsidyRatio: config.governmentSubsidyRatio ?? DEFAULT_HEALTH_INSURANCE_CONFIG.governmentSubsidyRatio,
         maxDependents: config.maxDependents,
         supplementaryRate: supplementarySettings.premiumRate / 100,
         supplementaryThreshold: supplementarySettings.exemptThresholdMultiplier,
         effectiveDate: config.effectiveDate.toISOString().split('T')[0],
         isActive: config.isActive
       },
-      salaryLevels: config.salaryLevels.map(level => ({
-        id: level.id,
+      salaryLevels: resolveHealthInsuranceLevels(config.salaryLevels).map(level => ({
+        id: 'id' in level ? level.id : undefined,
         level: level.level,
         minSalary: level.minSalary,
         maxSalary: level.maxSalary,
@@ -230,6 +220,8 @@ export async function POST(request: NextRequest) {
         id?: number;
         premiumRate?: number;
         employeeContributionRatio?: number;
+        companyContributionRatio?: number;
+        governmentSubsidyRatio?: number;
         maxDependents?: number;
         supplementaryRate?: number;
         supplementaryThreshold?: number;
@@ -248,6 +240,12 @@ export async function POST(request: NextRequest) {
       id: typeof config.id === 'number' ? config.id : null,
       premiumRate: typeof config.premiumRate === 'number' ? config.premiumRate : null,
       employeeContributionRatio: typeof config.employeeContributionRatio === 'number' ? config.employeeContributionRatio : null,
+      companyContributionRatio: typeof config.companyContributionRatio === 'number'
+        ? config.companyContributionRatio
+        : DEFAULT_HEALTH_INSURANCE_CONFIG.companyContributionRatio,
+      governmentSubsidyRatio: typeof config.governmentSubsidyRatio === 'number'
+        ? config.governmentSubsidyRatio
+        : DEFAULT_HEALTH_INSURANCE_CONFIG.governmentSubsidyRatio,
       maxDependents: typeof config.maxDependents === 'number' ? config.maxDependents : DEFAULT_HEALTH_INSURANCE_CONFIG.maxDependents,
       supplementaryRate: typeof config.supplementaryRate === 'number' ? config.supplementaryRate : DEFAULT_HEALTH_INSURANCE_CONFIG.supplementaryRate,
       supplementaryThreshold: typeof config.supplementaryThreshold === 'number' ? config.supplementaryThreshold : DEFAULT_HEALTH_INSURANCE_CONFIG.supplementaryThreshold,
@@ -307,6 +305,31 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if (normalizedConfig.companyContributionRatio < 0 || normalizedConfig.companyContributionRatio > 1) {
+      return NextResponse.json(
+        { error: '公司負擔比例必須在 0% 到 100% 之間' },
+        { status: 400 }
+      );
+    }
+
+    if (normalizedConfig.governmentSubsidyRatio < 0 || normalizedConfig.governmentSubsidyRatio > 1) {
+      return NextResponse.json(
+        { error: '政府補助比例必須在 0% 到 100% 之間' },
+        { status: 400 }
+      );
+    }
+
+    const contributionRatioTotal =
+      normalizedConfig.employeeContributionRatio +
+      normalizedConfig.companyContributionRatio +
+      normalizedConfig.governmentSubsidyRatio;
+    if (Math.abs(contributionRatioTotal - 1) > 0.0001) {
+      return NextResponse.json(
+        { error: '員工、公司與政府負擔比例合計必須為 100%' },
+        { status: 400 }
+      );
+    }
+
     if (!Number.isInteger(normalizedConfig.maxDependents) || normalizedConfig.maxDependents < 0) {
       return NextResponse.json(
         { error: '最大眷屬人數必須為 0 以上整數' },
@@ -340,6 +363,8 @@ export async function POST(request: NextRequest) {
       id: normalizedConfig.id,
       premiumRate: normalizedConfig.premiumRate,
       employeeContributionRatio: normalizedConfig.employeeContributionRatio,
+      companyContributionRatio: normalizedConfig.companyContributionRatio,
+      governmentSubsidyRatio: normalizedConfig.governmentSubsidyRatio,
       maxDependents: normalizedConfig.maxDependents,
       supplementaryRate: normalizedConfig.supplementaryRate,
       supplementaryThreshold: normalizedConfig.supplementaryThreshold,
@@ -369,6 +394,13 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    const oldConfig = validatedConfig.id !== null
+      ? await prisma.healthInsuranceConfig.findUnique({
+          where: { id: validatedConfig.id },
+          include: { salaryLevels: { orderBy: { level: 'asc' } } }
+        })
+      : null;
+
     // 開始交易
     const result = await prisma.$transaction(async (tx) => {
       // 如果是更新現有配置
@@ -380,6 +412,8 @@ export async function POST(request: NextRequest) {
           data: {
             premiumRate: validatedConfig.premiumRate,
             employeeContributionRatio: validatedConfig.employeeContributionRatio,
+            companyContributionRatio: validatedConfig.companyContributionRatio,
+            governmentSubsidyRatio: validatedConfig.governmentSubsidyRatio,
             maxDependents: validatedConfig.maxDependents,
             supplementaryRate: validatedConfig.supplementaryRate,
             supplementaryThreshold: validatedConfig.supplementaryThreshold,
@@ -398,6 +432,8 @@ export async function POST(request: NextRequest) {
           data: {
             premiumRate: validatedConfig.premiumRate,
             employeeContributionRatio: validatedConfig.employeeContributionRatio,
+            companyContributionRatio: validatedConfig.companyContributionRatio,
+            governmentSubsidyRatio: validatedConfig.governmentSubsidyRatio,
             maxDependents: validatedConfig.maxDependents,
             supplementaryRate: validatedConfig.supplementaryRate,
             supplementaryThreshold: validatedConfig.supplementaryThreshold,
@@ -450,12 +486,24 @@ export async function POST(request: NextRequest) {
       return savedConfig;
     });
 
+    await logSystemSettingsChange({
+      request,
+      user,
+      settingKey: 'health-insurance-formula',
+      description: '健保公式設定變更',
+      oldValue: oldConfig,
+      newValue: { config: result, salaryLevels: validatedSalaryLevels },
+      targetId: result.id,
+    });
+
     return NextResponse.json({
       success: true,
       config: {
         id: result.id,
         premiumRate: result.premiumRate,
         employeeContributionRatio: result.employeeContributionRatio,
+        companyContributionRatio: result.companyContributionRatio,
+        governmentSubsidyRatio: result.governmentSubsidyRatio,
         maxDependents: result.maxDependents,
         supplementaryRate: syncedSupplementarySettings.premiumRate / 100,
         supplementaryThreshold: syncedSupplementarySettings.exemptThresholdMultiplier,

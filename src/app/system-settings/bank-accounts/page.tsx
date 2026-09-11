@@ -4,9 +4,10 @@ import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { 
   CreditCard, RefreshCw, CheckCircle, AlertCircle, Upload, 
-  Search, Eye, EyeOff, Edit2, Save, X, Download
+  Eye, EyeOff, Edit2, Save, X, Download
 } from 'lucide-react';
 import SystemNavbar from '@/components/SystemNavbar';
+import EmployeeListSelect from '@/components/EmployeeListSelect';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 
 interface BankAccountRecord {
@@ -27,6 +28,15 @@ interface User {
   role: string;
 }
 
+interface BankImportResult {
+  successCount: number;
+  skippedCount: number;
+  errorCount: number;
+  errors?: Array<{ name: string; error: string }>;
+  skipped?: Array<{ name: string; reason: string }>;
+  updatedEmployees?: Array<{ id: number; name: string }>;
+}
+
 export default function BankAccountsPage() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
@@ -40,6 +50,7 @@ export default function BankAccountsPage() {
   const [editForm, setEditForm] = useState({ idNumber: '', bankAccount: '' });
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [summary, setSummary] = useState({ totalEmployees: 0, withBankAccount: 0, missingBankAccount: 0 });
+  const [lastImportResult, setLastImportResult] = useState<BankImportResult | null>(null);
 
   const showToast = (type: 'success' | 'error', message: string) => {
     setToast({ type, message });
@@ -174,9 +185,22 @@ export default function BankAccountsPage() {
         const sheet = workbook.Sheets[sheetName];
         const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1 }) as (string | number)[][];
 
-        // 解析元大格式：從第3行開始（跳過標題）
+        const headerRowIndex = jsonData.findIndex((row) => {
+          if (!Array.isArray(row)) return false;
+          const normalizedRow = row.map((cell) => String(cell || '').trim());
+          return normalizedRow.includes('受款人身分證字號')
+            && normalizedRow.includes('受款人帳號')
+            && normalizedRow.includes('姓名');
+        });
+
+        if (headerRowIndex === -1) {
+          showToast('error', '匯入檔格式不正確，請使用銀行帳戶匯入範本');
+          return;
+        }
+
+        // 自動支援「警告列 + 標題列」與「僅標題列」兩種範本
         const importRecords: Array<{ idNumber: string; bankAccount: string; name: string }> = [];
-        for (let i = 2; i < jsonData.length; i++) {
+        for (let i = headerRowIndex + 1; i < jsonData.length; i++) {
           const row = jsonData[i];
           if (!row || row.length < 4) continue;
           
@@ -200,12 +224,40 @@ export default function BankAccountsPage() {
           body: { records: importRecords }
         });
 
-        const payload = await response.json() as { success?: boolean; message?: string; error?: string };
+        const payload = await response.json() as ({
+          success?: boolean;
+          message?: string;
+          error?: string;
+        } & BankImportResult);
 
         if (response.ok && payload.success) {
-          showToast('success', payload.message || '匯入成功');
-          loadData(showFull);
+          const successCount = payload.successCount || 0;
+          const skippedCount = payload.skippedCount || 0;
+          const errorCount = payload.errorCount || 0;
+          setLastImportResult({
+            successCount,
+            skippedCount,
+            errorCount,
+            errors: payload.errors || [],
+            skipped: payload.skipped || [],
+            updatedEmployees: payload.updatedEmployees || [],
+          });
+          setSearchTerm('');
+          setSelectedDepartment('');
+
+          if (successCount > 0 || (successCount === 0 && skippedCount > 0 && errorCount === 0)) {
+            showToast('success', payload.message || '匯入成功');
+          } else {
+            showToast('error', payload.message || '匯入失敗');
+          }
+
+          if (payload.errorCount && payload.errorCount > 0) {
+            showToast('error', `另有 ${payload.errorCount} 筆匯入失敗，請檢查資料後重試`);
+          }
+          setShowFull(true);
+          await loadData(true);
         } else {
+          setLastImportResult(null);
           showToast('error', payload.error || '匯入失敗');
         }
       };
@@ -294,16 +346,12 @@ export default function BankAccountsPage() {
           <div className="flex flex-wrap items-center gap-4">
             {/* 搜尋 */}
             <div className="flex-1 min-w-[200px]">
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-                <input
-                  type="text"
-                  placeholder="輸入員工編號或姓名搜尋..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  className="w-full pl-10 pr-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-900"
-                />
-              </div>
+              <EmployeeListSelect
+                value={searchTerm}
+                onChange={(value) => setSearchTerm(value)}
+                emptyLabel="全部員工"
+                selectClassName="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-900 disabled:bg-gray-100"
+              />
             </div>
 
             {/* 部門篩選 */}
@@ -354,6 +402,57 @@ export default function BankAccountsPage() {
           </div>
         </div>
 
+        {lastImportResult && (
+          <div className="mb-6 rounded-lg border border-blue-200 bg-blue-50 p-4">
+            <div className="flex flex-wrap items-center gap-4 text-sm">
+              <span className="font-semibold text-blue-900">本次匯入結果</span>
+              <span className="text-green-700">成功 {lastImportResult.successCount} 筆</span>
+              <span className="text-amber-700">略過 {lastImportResult.skippedCount} 筆</span>
+              <span className="text-red-700">失敗 {lastImportResult.errorCount} 筆</span>
+            </div>
+
+            {lastImportResult.updatedEmployees && lastImportResult.updatedEmployees.length > 0 && (
+              <div className="mt-3">
+                <div className="text-sm font-medium text-blue-900">已更新成功員工</div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {lastImportResult.updatedEmployees.slice(0, 20).map((employee) => (
+                    <span key={employee.id} className="rounded-full bg-green-100 px-3 py-1 text-xs font-medium text-green-800">
+                      {employee.name}
+                    </span>
+                  ))}
+                  {lastImportResult.updatedEmployees.length > 20 && (
+                    <span className="rounded-full bg-white px-3 py-1 text-xs text-blue-700">
+                      另有 {lastImportResult.updatedEmployees.length - 20} 筆
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {lastImportResult.skipped && lastImportResult.skipped.length > 0 && (
+              <div className="mt-3">
+                <div className="text-sm font-medium text-amber-900">已略過資料</div>
+                <ul className="mt-2 space-y-1 text-sm text-amber-800">
+                  {lastImportResult.skipped.map((item, index) => (
+                    <li key={`${item.name}-${index}`}>- {item.name}：{item.reason}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {lastImportResult.errors && lastImportResult.errors.length > 0 && (
+              <div className="mt-3">
+                <div className="text-sm font-medium text-red-900">匯入失敗資料</div>
+                <ul className="mt-2 space-y-1 text-sm text-red-800">
+                  {lastImportResult.errors.map((item, index) => (
+                    <li key={`${item.name}-${index}`}>- {item.name}：{item.error}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* 資料表格 */}
         <div className="bg-white rounded-lg shadow-sm border overflow-hidden">
           <table className="w-full">
@@ -368,8 +467,11 @@ export default function BankAccountsPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200">
-              {filteredRecords.map(record => (
-                <tr key={record.id} className="hover:bg-blue-50">
+              {filteredRecords.map(record => {
+                const isRecentlyUpdated = lastImportResult?.updatedEmployees?.some((employee) => employee.id === record.id);
+
+                return (
+                <tr key={record.id} className={isRecentlyUpdated ? 'bg-green-50 hover:bg-green-100' : 'hover:bg-blue-50'}>
                   <td className="px-4 py-3 text-sm font-semibold text-gray-900">{record.employeeId}</td>
                   <td className="px-4 py-3 text-sm font-bold text-gray-900">{record.name}</td>
                   <td className="px-4 py-3 text-sm text-gray-700">{record.department}</td>
@@ -434,7 +536,7 @@ export default function BankAccountsPage() {
                     )}
                   </td>
                 </tr>
-              ))}
+              )})}
             </tbody>
           </table>
 

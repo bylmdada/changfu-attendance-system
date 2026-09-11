@@ -3,6 +3,7 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { safeParseJSON } from '@/lib/validation';
+import { logSystemSettingsChange } from '@/lib/system-settings-audit';
 
 function parsePositiveInteger(value: unknown) {
   if (typeof value === 'number') {
@@ -184,6 +185,16 @@ export async function POST(request: NextRequest) {
       }
     });
 
+    await logSystemSettingsChange({
+      request,
+      user,
+      settingKey: 'holidays',
+      description: '國定假日新增',
+      oldValue: null,
+      newValue: holiday,
+      targetId: holiday.id,
+    });
+
     return NextResponse.json({ holiday, message: '假日已新增' });
   } catch (error) {
     console.error('新增假日失敗:', error);
@@ -288,6 +299,15 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: '假日匯入失敗，未新增任何資料' }, { status: 400 });
     }
 
+    await logSystemSettingsChange({
+      request,
+      user,
+      settingKey: 'holidays',
+      description: '年度國定假日批量匯入',
+      oldValue: { year: parsedYear },
+      newValue: { year: parsedYear, holidays: validHolidays, count: created.count },
+    });
+
     return NextResponse.json({ 
       message: `已新增 ${created.count} 筆假日`,
       count: created.count
@@ -323,8 +343,22 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: '假日 ID 格式無效' }, { status: 400 });
     }
 
+    const existingHoliday = await prisma.holiday.findUnique({
+      where: { id }
+    });
+
     await prisma.holiday.delete({
       where: { id }
+    });
+
+    await logSystemSettingsChange({
+      request,
+      user,
+      settingKey: 'holidays',
+      description: '國定假日刪除',
+      oldValue: existingHoliday,
+      newValue: null,
+      targetId: id,
     });
 
     return NextResponse.json({ message: '假日已刪除' });

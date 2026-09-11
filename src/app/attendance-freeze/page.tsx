@@ -10,6 +10,7 @@ interface AttendanceFreeze {
   targetYear: number;
   description?: string;
   isActive: boolean;
+  status?: 'ACTIVE' | 'SCHEDULED' | 'DISABLED';
   createdAt: string;
   creator: {
     id: number;
@@ -38,8 +39,7 @@ export default function AttendanceFreezePage() {
     freezeDate: '',
     targetMonth: '',
     targetYear: '',
-    description: '',
-    autoCalculatePayroll: false
+    description: ''
   });
 
   const initializeData = async () => {
@@ -109,8 +109,7 @@ export default function AttendanceFreezePage() {
           freezeDate: new Date(`${formData.freezeDate}:00+08:00`).toISOString(),
           targetMonth: parseInt(formData.targetMonth),
           targetYear: parseInt(formData.targetYear),
-          description: formData.description,
-          autoCalculatePayroll: formData.autoCalculatePayroll
+          description: formData.description
         }
       });
 
@@ -124,8 +123,7 @@ export default function AttendanceFreezePage() {
           freezeDate: '',
           targetMonth: '',
           targetYear: '',
-          description: '',
-          autoCalculatePayroll: false
+          description: ''
         });
         await fetchFreezes();
       } else {
@@ -136,6 +134,29 @@ export default function AttendanceFreezePage() {
       setError('創建失敗');
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleToggleFreeze = async (freeze: AttendanceFreeze) => {
+    if (!canCreateFreeze) return;
+    const reason = window.prompt(freeze.isActive ? '請輸入停用原因' : '請輸入重新啟用原因');
+    if (!reason?.trim()) return;
+
+    setError('');
+    try {
+      const response = await fetchJSONWithCSRF('/api/attendance-freeze', {
+        method: 'PATCH',
+        body: { id: freeze.id, isActive: !freeze.isActive, reason: reason.trim() },
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setError(data.error || '更新凍結狀態失敗');
+        return;
+      }
+      setSuccess(freeze.isActive ? '凍結設定已停用' : '凍結設定已重新啟用');
+      await fetchFreezes();
+    } catch {
+      setError('更新凍結狀態失敗');
     }
   };
 
@@ -152,6 +173,12 @@ export default function AttendanceFreezePage() {
     const months = ['一月', '二月', '三月', '四月', '五月', '六月',
                    '七月', '八月', '九月', '十月', '十一月', '十二月'];
     return months[month - 1];
+  };
+
+  const getFreezeStatus = (freeze: AttendanceFreeze) => {
+    if (freeze.status) return freeze.status;
+    if (!freeze.isActive) return 'DISABLED';
+    return new Date() >= new Date(freeze.freezeDate) ? 'ACTIVE' : 'SCHEDULED';
   };
 
   if (loading) {
@@ -271,32 +298,12 @@ export default function AttendanceFreezePage() {
               />
             </div>
 
-            {/* 自動計算薪資選項 */}
-            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-              <label className="flex items-start gap-3 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={formData.autoCalculatePayroll}
-                  onChange={(e) => setFormData({ ...formData, autoCalculatePayroll: e.target.checked })}
-                  disabled={!canCreateFreeze}
-                  className="mt-1 h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                />
-                <div>
-                  <span className="font-medium text-blue-900">凍結後自動計算薪資</span>
-                  <p className="text-sm text-blue-700 mt-1">
-                    勾選後，系統將自動為尚未產生薪資的員工計算當月薪資。
-                    若不勾選，需手動前往薪資管理頁面執行。
-                  </p>
-                </div>
-              </label>
-            </div>
-
             <button
               type="submit"
               disabled={submitting || !canCreateFreeze}
               className="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
             >
-              {submitting ? '處理中...' : formData.autoCalculatePayroll ? '凍結並計算薪資' : '創建凍結設定'}
+              {submitting ? '處理中...' : '創建凍結設定'}
             </button>
           </form>
         </div>
@@ -315,18 +322,33 @@ export default function AttendanceFreezePage() {
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
                       <span className={`px-2 py-1 text-xs rounded ${
-                        freeze.isActive
+                        getFreezeStatus(freeze) === 'ACTIVE'
                           ? 'bg-red-100 text-red-800'
-                          : 'bg-gray-100 text-gray-800'
+                          : getFreezeStatus(freeze) === 'SCHEDULED'
+                            ? 'bg-yellow-100 text-yellow-800'
+                            : 'bg-gray-100 text-gray-800'
                       }`}>
-                        {freeze.isActive ? '生效中' : '已停用'}
+                        {getFreezeStatus(freeze) === 'ACTIVE'
+                          ? '生效中'
+                          : getFreezeStatus(freeze) === 'SCHEDULED'
+                            ? '已排程，尚未生效'
+                            : '已停用'}
                       </span>
                       <span className="font-medium">
                         {freeze.targetYear}年{getMonthName(freeze.targetMonth)}
                       </span>
                     </div>
-                    <div className="text-sm text-gray-500">
-                      操作者：{freeze.creator.name}
+                    <div className="flex items-center gap-3 text-sm text-gray-500">
+                      <span>操作者：{freeze.creator.name}</span>
+                      {canCreateFreeze && (
+                        <button
+                          type="button"
+                          onClick={() => handleToggleFreeze(freeze)}
+                          className="text-blue-600 hover:text-blue-800"
+                        >
+                          {freeze.isActive ? '停用' : '重新啟用'}
+                        </button>
+                      )}
                     </div>
                   </div>
 

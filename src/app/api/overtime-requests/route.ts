@@ -10,6 +10,13 @@ import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseSystemSettingsValue } from '@/lib/system-settings-json';
 import { safeParseJSON } from '@/lib/validation';
 import { getAttendancePermissionDepartments } from '@/lib/attendance-permission-scopes';
+import { getStoredOvertimeCalculationSettings } from '@/lib/overtime-settings';
+import { buildApplicationRequestNumber } from '@/lib/application-request-number';
+import {
+  calculateActualOvertimeHoursFromTimeRange,
+  getMinimumOvertimeHours,
+} from '@/lib/overtime-hours';
+import { calculateOvertimeRequestsEligibility } from '@/lib/overtime-eligibility';
 
 // 簡易型別：避免直接耦合到 Prisma 生成客戶端
 interface ScheduleLite { shiftType: string; startTime: string; endTime: string }
@@ -199,11 +206,74 @@ export async function GET(request: NextRequest) {
         createdAt: 'desc'
       }
     });
+    const managerReviewerIds = Array.from(new Set(
+      overtimeRequestsRaw
+        .map((requestItem) => requestItem.managerReviewerId)
+        .filter((reviewerId): reviewerId is number => typeof reviewerId === 'number')
+    ));
+    const managerReviewers = managerReviewerIds.length > 0
+      ? await prisma.employee.findMany({
+          where: { id: { in: managerReviewerIds } },
+          select: {
+            id: true,
+            employeeId: true,
+            name: true,
+            department: true,
+            position: true,
+          },
+        })
+      : [];
+    const managerReviewerById = new Map(managerReviewers.map((reviewer) => [reviewer.id, reviewer]));
+    const legacyApprovalInstances = overtimeRequestsRaw.length > 0
+      ? await prisma.approvalInstance.findMany({
+          where: {
+            requestType: 'OVERTIME',
+            requestId: { in: overtimeRequestsRaw.map((requestItem) => requestItem.id) },
+          },
+          orderBy: { createdAt: 'desc' },
+          select: {
+            requestId: true,
+            reviews: {
+              where: { action: { in: ['APPROVE', 'REJECT'] } },
+              orderBy: [{ level: 'desc' }, { createdAt: 'desc' }],
+              take: 1,
+              select: {
+                reviewer: {
+                  select: {
+                    id: true,
+                    employeeId: true,
+                    name: true,
+                    department: true,
+                    position: true,
+                  },
+                },
+              },
+            },
+          },
+        })
+      : [];
+    const historyApproverByRequestId = new Map<number, (typeof legacyApprovalInstances)[number]['reviews'][number]['reviewer']>();
+    for (const instance of legacyApprovalInstances) {
+      const historyApprover = instance.reviews[0]?.reviewer;
+      if (historyApprover && !historyApproverByRequestId.has(instance.requestId)) {
+        historyApproverByRequestId.set(instance.requestId, historyApprover);
+      }
+    }
+    const approvedEligibility = await calculateOvertimeRequestsEligibility(
+      overtimeRequestsRaw.filter(requestItem => requestItem.status === 'APPROVED')
+    );
 
     // 取得加班當日班別（若 Schedule 模型可用）
     const overtimeRequests = await Promise.all(
       overtimeRequestsRaw.map(async (req) => {
-        if (!db.schedule) return { ...req, scheduleShiftType: null, scheduleStartTime: null, scheduleEndTime: null, scheduleShiftLabel: null };
+        const requestNumber = buildApplicationRequestNumber('OT', req.id, req.createdAt);
+        const managerReviewer = req.managerReviewerId
+          ? managerReviewerById.get(req.managerReviewerId) ?? null
+          : null;
+        const historyApprover = req.approver
+          ? null
+          : historyApproverByRequestId.get(req.id) ?? null;
+        if (!db.schedule) return { ...req, requestNumber, managerReviewer, historyApprover, scheduleShiftType: null, scheduleStartTime: null, scheduleEndTime: null, scheduleShiftLabel: null };
         const ymd = toTaiwanDateStr(new Date(req.overtimeDate)); // 我們 Schedule 使用字串 YYYY-MM-DD
         const schedule = await db.schedule.findFirst({
           where: { employeeId: req.employeeId, workDate: ymd },
@@ -211,6 +281,9 @@ export async function GET(request: NextRequest) {
         });
         return {
           ...req,
+          requestNumber,
+          managerReviewer,
+          historyApprover,
           scheduleShiftType: schedule?.shiftType || null,
           scheduleStartTime: schedule?.startTime || null,
           scheduleEndTime: schedule?.endTime || null,
@@ -221,7 +294,10 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      overtimeRequests
+      overtimeRequests,
+      summary: {
+        approvedEffectiveHours: approvedEligibility.totalEffectiveHours,
+      },
     });
   } catch (error) {
     console.error('獲取加班申請失敗:', error);
@@ -327,12 +403,19 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '加班開始時間必須在17:00之後（正常工作8小時後）' }, { status: 400 });
     }
 
+    const overtimeSettings = await getStoredOvertimeCalculationSettings();
+    const minimumOvertimeHours = getMinimumOvertimeHours(overtimeSettings.overtimeMinUnit);
+
     // 計算加班時數
-    const totalHours = calculateOvertimeHours(startTime, endTime);
+    const totalHours = calculateActualOvertimeHoursFromTimeRange(startTime, endTime);
 
     // 驗證加班時數
-    if (totalHours < 0.5) {
-      return NextResponse.json({ error: '加班時數最少0.5小時' }, { status: 400 });
+    if (totalHours === null) {
+      return NextResponse.json({ error: '加班時間格式無效' }, { status: 400 });
+    }
+
+    if (totalHours < minimumOvertimeHours) {
+      return NextResponse.json({ error: `加班時數最少${minimumOvertimeHours}小時` }, { status: 400 });
     }
 
     if (totalHours > 4) {
@@ -390,7 +473,10 @@ export async function POST(request: NextRequest) {
         }
       });
 
-      const currentMonthHours = monthlyApproved.reduce((sum, req) => sum + req.totalHours, 0);
+      const monthlyEligibility = await calculateOvertimeRequestsEligibility(monthlyApproved, {
+        unitMinutes: overtimeSettings.overtimeMinUnit,
+      });
+      const currentMonthHours = monthlyEligibility.totalEffectiveHours;
       const projectedHours = currentMonthHours + totalHours;
 
       // 檢查是否超過上限
@@ -474,24 +560,4 @@ export async function POST(request: NextRequest) {
     console.error('提交加班申請失敗:', error);
     return NextResponse.json({ error: '系統錯誤' }, { status: 500 });
   }
-}
-
-// 計算加班時數（以0.5小時為最小單位）
-function calculateOvertimeHours(startTime: string, endTime: string): number {
-  const [startHour, startMinute] = startTime.split(':').map(Number);
-  const [endHour, endMinute] = endTime.split(':').map(Number);
-  
-  const startTotalMinutes = startHour * 60 + startMinute;
-  const endTotalMinutes = endHour * 60 + endMinute;
-  
-  let totalMinutes = endTotalMinutes - startTotalMinutes;
-  
-  // 處理跨日情況
-  if (totalMinutes < 0) {
-    totalMinutes += 24 * 60;
-  }
-  
-  // 轉換為小時，以0.5為最小單位進位
-  const totalHours = totalMinutes / 60;
-  return Math.ceil(totalHours * 2) / 2;
 }

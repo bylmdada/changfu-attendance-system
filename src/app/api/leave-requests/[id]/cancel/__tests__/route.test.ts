@@ -4,6 +4,7 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
+import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
 
 jest.mock('@/lib/database', () => ({
   prisma: {
@@ -13,6 +14,12 @@ jest.mock('@/lib/database', () => ({
     },
     annualLeave: {
       updateMany: jest.fn(),
+    },
+    schedule: {
+      findMany: jest.fn(),
+    },
+    payrollRecord: {
+      findMany: jest.fn(),
     },
     departmentManager: {
       findMany: jest.fn(),
@@ -33,10 +40,15 @@ jest.mock('@/lib/csrf', () => ({
   validateCSRF: jest.fn(),
 }));
 
+jest.mock('@/lib/attendance-freeze', () => ({
+  checkAttendanceFreeze: jest.fn(),
+}));
+
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
 const mockCheckRateLimit = checkRateLimit as jest.MockedFunction<typeof checkRateLimit>;
 const mockValidateCSRF = validateCSRF as jest.MockedFunction<typeof validateCSRF>;
+const mockCheckAttendanceFreeze = checkAttendanceFreeze as jest.MockedFunction<typeof checkAttendanceFreeze>;
 
 const transactionClient = {
   leaveRequest: {
@@ -45,6 +57,10 @@ const transactionClient = {
   annualLeave: {
     updateMany: jest.fn(),
   },
+  schedule: {
+    findUnique: jest.fn(),
+    update: jest.fn(),
+  },
 };
 
 describe('leave request cancellation authorization guards', () => {
@@ -52,6 +68,9 @@ describe('leave request cancellation authorization guards', () => {
     jest.clearAllMocks();
     mockCheckRateLimit.mockResolvedValue({ allowed: true } as never);
     mockValidateCSRF.mockResolvedValue({ valid: true } as never);
+    mockCheckAttendanceFreeze.mockResolvedValue({ isFrozen: false } as never);
+    mockPrisma.payrollRecord.findMany.mockResolvedValue([] as never);
+    mockPrisma.schedule.findMany.mockResolvedValue([] as never);
     mockGetUserFromRequest.mockResolvedValue({
       role: 'MANAGER',
       employeeId: 99,
@@ -110,6 +129,35 @@ describe('leave request cancellation authorization guards', () => {
     expect(response.status).toBe(400);
     expect(payload.error).toBe('請假申請 ID 格式錯誤');
     expect(mockPrisma.leaveRequest.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('rejects employee cancellation after the leave has ended', async () => {
+    mockGetUserFromRequest.mockResolvedValue({
+      role: 'EMPLOYEE',
+      employeeId: 10,
+      userId: 110,
+    } as never);
+    mockPrisma.leaveRequest.findUnique.mockResolvedValue({
+      id: 8,
+      employeeId: 10,
+      status: 'APPROVED',
+      cancellationStatus: null,
+      leaveType: 'ANNUAL',
+      startDate: new Date('2025-04-10T00:00:00.000Z'),
+      endDate: new Date('2025-04-10T00:00:00.000Z'),
+      employee: { id: 10, department: '製造部' },
+    } as never);
+
+    const response = await POST(new NextRequest('http://localhost:3000/api/leave-requests/8/cancel', {
+      method: 'POST',
+      headers: { cookie: 'token=session-token', 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: '誤填' }),
+    }), { params: Promise.resolve({ id: '8' }) });
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload.error).toContain('歷史請假');
+    expect(mockPrisma.leaveRequest.update).not.toHaveBeenCalled();
   });
 
   it('rejects null POST bodies before querying Prisma', async () => {
@@ -246,7 +294,7 @@ describe('leave request cancellation authorization guards', () => {
     expect(mockPrisma.annualLeave.updateMany).not.toHaveBeenCalled();
     expect(transactionClient.leaveRequest.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 8 },
+        where: { id: 8, status: 'APPROVED' },
         data: expect.objectContaining({
           status: 'CANCELLED',
           cancellationStatus: 'APPROVED',

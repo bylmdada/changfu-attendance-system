@@ -5,6 +5,7 @@ import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { prisma } from '@/lib/database';
 import { checkRateLimit } from '@/lib/rate-limit';
+import { invalidateConfirmation } from '@/lib/schedule-confirm-service';
 
 jest.mock('@/lib/database', () => ({
   prisma: {
@@ -41,10 +42,29 @@ jest.mock('@/lib/csrf', () => ({
   validateCSRF: jest.fn(),
 }));
 
+jest.mock('@/lib/schedule-confirm-service', () => ({
+  invalidateConfirmation: jest.fn(),
+}));
+
+jest.mock('@/lib/shift-definition-service', () => ({
+  listShiftDefinitions: jest.fn().mockResolvedValue([{
+    code: 'B',
+    breakTime: 60,
+    workHours: 8,
+  }]),
+}));
+
+jest.mock('@/lib/attendance-freeze', () => ({
+  checkAttendanceFreeze: jest.fn().mockResolvedValue({ isFrozen: false }),
+  checkMultipleDatesFreeze: jest.fn().mockResolvedValue(null),
+  getAttendanceFreezeError: jest.fn().mockReturnValue(null),
+}));
+
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
 const mockCheckRateLimit = checkRateLimit as jest.MockedFunction<typeof checkRateLimit>;
 const mockValidateCSRF = validateCSRF as jest.MockedFunction<typeof validateCSRF>;
+const mockInvalidateConfirmation = invalidateConfirmation as jest.MockedFunction<typeof invalidateConfirmation>;
 
 describe('disaster day off route guards', () => {
   beforeEach(() => {
@@ -63,6 +83,7 @@ describe('disaster day off route guards', () => {
     } as never);
 
     mockValidateCSRF.mockResolvedValue({ valid: true } as never);
+    mockInvalidateConfirmation.mockResolvedValue({ invalidated: false } as never);
 
     mockPrisma.disasterDayOff.findMany.mockResolvedValue([] as never);
     mockPrisma.disasterDayOff.findFirst.mockResolvedValue(null as never);
@@ -263,6 +284,8 @@ describe('disaster day off route guards', () => {
           shiftType: 'A',
           startTime: '08:00',
           endTime: '17:00',
+          breakTime: 60,
+          workHours: 8,
         },
       ]),
     } as never);
@@ -271,6 +294,8 @@ describe('disaster day off route guards', () => {
       shiftType: 'TD',
       startTime: '00:00',
       endTime: '23:59',
+      breakTime: 60,
+      workHours: 8,
     } as never);
 
     const request = new NextRequest('http://localhost:3000/api/disaster-day-off', {
@@ -290,8 +315,100 @@ describe('disaster day off route guards', () => {
     expect(mockPrisma.schedule.update).toHaveBeenCalledWith({
       where: { id: 88 },
       data: {
-        startTime: '12:00',
-        endTime: '23:59',
+        startTime: '08:00',
+        endTime: '12:00',
+        breakTime: 0,
+        workHours: 4,
+      },
+    });
+    expect(mockInvalidateConfirmation).toHaveBeenCalledWith(11, '2026-07');
+  });
+
+  it('stores full-day disaster leave as a zero-hour non-working schedule with a restorable snapshot', async () => {
+    mockPrisma.schedule.findUnique.mockResolvedValue({
+      id: 88,
+      employeeId: 11,
+      shiftType: 'B',
+      startTime: '08:00',
+      endTime: '17:00',
+      breakTime: 60,
+      workHours: 8,
+    } as never);
+    mockPrisma.schedule.update.mockResolvedValue({ id: 88 } as never);
+
+    const request = new NextRequest('http://localhost:3000/api/disaster-day-off', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        disasterDate: '2026-07-06',
+        disasterType: 'TYPHOON',
+        stopWorkType: 'FULL',
+      }),
+    });
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(200);
+    expect(mockPrisma.schedule.update).toHaveBeenCalledWith({
+      where: { id: 88 },
+      data: {
+        shiftType: 'TD',
+        startTime: '',
+        endTime: '',
+        breakTime: 0,
+        workHours: 0,
+      },
+    });
+    expect(mockPrisma.disasterDayOff.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          originalSchedules: JSON.stringify([{
+            employeeId: 11,
+            existed: true,
+            shiftType: 'B',
+            startTime: '08:00',
+            endTime: '17:00',
+            breakTime: 60,
+            workHours: 8,
+          }]),
+        }),
+      })
+    );
+    expect(mockInvalidateConfirmation).toHaveBeenCalledWith(11, '2026-07');
+  });
+
+  it('keeps only the actual afternoon work window for morning disaster leave', async () => {
+    mockPrisma.schedule.findUnique.mockResolvedValue({
+      id: 88,
+      employeeId: 11,
+      shiftType: 'B',
+      startTime: '08:00',
+      endTime: '17:00',
+      breakTime: 60,
+      workHours: 8,
+    } as never);
+
+    const request = new NextRequest('http://localhost:3000/api/disaster-day-off', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        disasterDate: '2026-07-06',
+        disasterType: 'TYPHOON',
+        stopWorkType: 'AM',
+      }),
+    });
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(200);
+    expect(mockPrisma.schedule.update).toHaveBeenCalledWith({
+      where: { id: 88 },
+      data: {
+        shiftType: 'TD',
+        startTime: '13:00',
+        endTime: '17:00',
+        breakTime: 0,
+        workHours: 4,
       },
     });
   });
@@ -341,6 +458,48 @@ describe('disaster day off route guards', () => {
     expect(mockPrisma.schedule.delete).toHaveBeenCalledWith({
       where: { id: 88 },
     });
+  });
+
+  it('restores all original schedule hour fields when deleting disaster leave', async () => {
+    mockPrisma.disasterDayOff.findUnique.mockResolvedValue({
+      id: 1,
+      disasterDate: '2026-07-06',
+      originalSchedules: JSON.stringify([{
+        employeeId: 11,
+        existed: true,
+        shiftType: 'B',
+        startTime: '08:00',
+        endTime: '17:00',
+        breakTime: 60,
+        workHours: 8,
+      }]),
+    } as never);
+    mockPrisma.schedule.findUnique.mockResolvedValue({
+      id: 88,
+      shiftType: 'TD',
+      startTime: '',
+      endTime: '',
+      breakTime: 0,
+      workHours: 0,
+    } as never);
+
+    const response = await DELETE(new NextRequest(
+      'http://localhost:3000/api/disaster-day-off?id=1',
+      { method: 'DELETE' }
+    ));
+
+    expect(response.status).toBe(200);
+    expect(mockPrisma.schedule.update).toHaveBeenCalledWith({
+      where: { id: 88 },
+      data: {
+        shiftType: 'B',
+        startTime: '08:00',
+        endTime: '17:00',
+        breakTime: 60,
+        workHours: 8,
+      },
+    });
+    expect(mockInvalidateConfirmation).toHaveBeenCalledWith(11, '2026-07');
   });
 
   it('returns 409 on DELETE when an affected schedule is no longer TD', async () => {

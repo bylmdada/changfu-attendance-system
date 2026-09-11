@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react';
 import Image from 'next/image';
 import { Users, Clock, Calendar, DollarSign, LogOut, Timer, BarChart3, UserPlus, FileText, Key, Megaphone, X, AlertTriangle, ShoppingCart, Heart, Cloud, Wallet, Settings, Wrench } from 'lucide-react';
 import ResponsiveSidebar from '@/components/ResponsiveSidebar';
+import NotificationBell from '@/components/NotificationBell';
+import PageSkeleton from '@/components/PageSkeleton';
 import { clearCSRFToken, fetchWithCSRF } from '@/lib/fetchWithCSRF';
 
 interface Announcement {
@@ -166,25 +168,27 @@ export default function DashboardPage() {
 
   const loadDashboardStats = async () => {
     try {
-      // 載入待審核請假申請數量
-      const leaveResponse = await fetch('/api/leave-requests?status=PENDING', {
-        credentials: 'include'
-      });
-      
-      // 載入待審核加班申請數量
-      const overtimeResponse = await fetch('/api/overtime-requests?status=PENDING', {
-        credentials: 'include'
-      });
-
-      // 載入待審核調班申請數量
-      const shiftExchangeResponse = await fetch('/api/shift-exchanges?status=PENDING', {
-        credentials: 'include'
-      });
-
-      // 載入待審核忘打卡申請數量
-      const missedClockResponse = await fetch('/api/missed-clock-requests?status=PENDING', {
-        credentials: 'include'
-      });
+      const commonOptions = { credentials: 'include' as const };
+      const baseRequests = [
+        fetch('/api/leave-requests?status=PENDING', commonOptions),
+        fetch('/api/overtime-requests?status=PENDING', commonOptions),
+        fetch('/api/shift-exchanges?status=PENDING', commonOptions),
+        fetch('/api/missed-clock-requests?status=PENDING', commonOptions),
+      ];
+      const adminRequests = user?.role === 'ADMIN' || user?.role === 'HR'
+        ? [
+            fetch('/api/employees?limit=1&status=active', commonOptions),
+            fetch('/api/attendance/today-summary', commonOptions),
+          ]
+        : [];
+      const [
+        leaveResponse,
+        overtimeResponse,
+        shiftExchangeResponse,
+        missedClockResponse,
+        employeeResponse,
+        attendanceResponse,
+      ] = await Promise.all([...baseRequests, ...adminRequests]);
 
       let pendingLeave = 0;
       let pendingOvertime = 0;
@@ -216,28 +220,17 @@ export default function DashboardPage() {
         pendingMissedClock = missedClockData.requests?.filter((req: { status: string }) => req.status === 'PENDING').length || 0;
       }
 
-      // 管理員可以看到更多統計
-      if (user?.role === 'ADMIN' || user?.role === 'HR') {
-        // 載入總員工數
-        const employeeResponse = await fetch('/api/employees?limit=1', {
-          credentials: 'include'
-        });
-        if (employeeResponse.ok) {
-          const employeeData = await employeeResponse.json();
-          // 使用分頁中的 total 來獲取正確的總數
-          totalEmp = employeeData.pagination?.total || employeeData.employees?.length || 0;
-        }
+      if (employeeResponse?.ok) {
+        const employeeData = await employeeResponse.json();
+        // 使用分頁中的 total 來獲取正確的總數
+        totalEmp = employeeData.pagination?.total || employeeData.employees?.length || 0;
+      }
 
-        // 載入今日出勤數據
-        const attendanceResponse = await fetch('/api/attendance/today-summary', {
-          credentials: 'include'
-        });
-        if (attendanceResponse.ok) {
-          const attendanceData = await attendanceResponse.json();
-          todayAtt = attendanceData.attendanceCount || 0;
-          todayLate = attendanceData.lateCount || 0;
-          todayAbsent = attendanceData.absentCount || 0;
-        }
+      if (attendanceResponse?.ok) {
+        const attendanceData = await attendanceResponse.json();
+        todayAtt = attendanceData.attendanceCount || 0;
+        todayLate = attendanceData.lateCount || 0;
+        todayAbsent = attendanceData.absentCount || 0;
       }
 
       setDashboardStats({
@@ -399,11 +392,7 @@ export default function DashboardPage() {
   };
 
   if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-      </div>
-    );
+    return <PageSkeleton title="儀表板載入中" />;
   }
 
   return (
@@ -435,6 +424,7 @@ export default function DashboardPage() {
                   {user?.role === 'ADMIN' ? '管理員' : user?.role === 'HR' ? 'HR' : '員工'}
                 </span>
               </div>
+              <NotificationBell />
               <button
                 onClick={handleLogout}
                 className="flex items-center space-x-1 bg-red-600 hover:bg-red-700 text-white px-3 py-2 rounded-lg text-sm transition-colors"

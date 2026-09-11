@@ -3,6 +3,7 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { writeFile, mkdir } from 'fs/promises';
 import path from 'path';
+import { randomUUID } from 'crypto';
 import { validateCSRF } from '@/lib/csrf';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 
@@ -104,11 +105,11 @@ export async function POST(request: NextRequest) {
     }
 
     // 確保目錄存在
-    const uploadDir = path.join(process.cwd(), 'public', 'uploads', 'dependent-attachments');
+    const uploadDir = path.join(process.cwd(), 'uploads', 'dependent-attachments');
     await mkdir(uploadDir, { recursive: true });
 
     // 生成唯一檔名
-    const timestamp = Date.now();
+    const timestamp = randomUUID();
     const uniqueFileName = `${parsedApplicationId}_${fileType}_${timestamp}${ext}`;
     const filePath = path.join(uploadDir, uniqueFileName);
 
@@ -123,7 +124,7 @@ export async function POST(request: NextRequest) {
           applicationId: parsedApplicationId,
           fileType,
         fileName: file.name,
-        filePath: `/uploads/dependent-attachments/${uniqueFileName}`,
+        filePath: `uploads/dependent-attachments/${uniqueFileName}`,
         fileSize: file.size,
         mimeType: file.type
       }
@@ -136,7 +137,7 @@ export async function POST(request: NextRequest) {
         fileType: attachment.fileType,
         fileTypeName: FILE_TYPES[fileType as keyof typeof FILE_TYPES],
         fileName: attachment.fileName,
-        filePath: attachment.filePath,
+        filePath: `/api/my-dependents/attachments/${attachment.id}`,
         fileSize: attachment.fileSize
       }
     });
@@ -191,7 +192,7 @@ export async function GET(request: NextRequest) {
         fileType: a.fileType,
         fileTypeName: FILE_TYPES[a.fileType as keyof typeof FILE_TYPES] || a.fileType,
         fileName: a.fileName,
-        filePath: a.filePath,
+        filePath: `/api/my-dependents/attachments/${a.id}`,
         fileSize: a.fileSize,
         mimeType: a.mimeType,
         uploadedAt: a.uploadedAt

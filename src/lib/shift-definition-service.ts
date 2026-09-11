@@ -22,6 +22,11 @@ type ShiftDefinitionRecord = {
   description: string | null;
 };
 
+type ShiftScheduleFieldSource = Pick<
+  ShiftDefinitionDTO,
+  'code' | 'startTime' | 'endTime' | 'breakTime' | 'workHours' | 'specialLeaveHours' | 'compLeaveHours' | 'overtimeHours'
+>;
+
 export function toShiftDefinitionDTO(shift: ShiftDefinitionRecord): ShiftDefinitionDTO {
   return {
     id: shift.id,
@@ -110,6 +115,24 @@ export async function findShiftDefinition(code: string) {
   });
 
   return shift ? toShiftDefinitionDTO(shift) : null;
+}
+
+export function buildScheduleFieldsFromShiftDefinition(shift: ShiftScheduleFieldSource) {
+  return {
+    shiftType: shift.code,
+    startTime: shift.startTime,
+    endTime: shift.endTime,
+    breakTime: shift.breakTime,
+    workHours: shift.workHours,
+    specialLeaveHours: shift.specialLeaveHours,
+    compLeaveHours: shift.compLeaveHours,
+    overtimeHours: shift.overtimeHours,
+  };
+}
+
+export async function findActiveScheduleFieldsForShift(code: string) {
+  const shift = await findActiveShiftDefinition(code);
+  return shift ? buildScheduleFieldsFromShiftDefinition(shift) : null;
 }
 
 function buildFallbackShiftDefinitions(includeInactive = false) {

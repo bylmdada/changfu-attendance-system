@@ -7,6 +7,8 @@
 - **申請方式**: [education.github.com](https://education.github.com/pack)
 
 > 注意：本文件主路徑適用於 `DigitalOcean VPS + PM2 + Nginx`，並以目前正式環境的 `3000` port 為基準。根目錄 `deploy-vps.sh` 與 `setup-production.sh` 已改為 **手動 VPS / PM2 部署腳本**；若您改走容器化部署，請另行維護 Docker 設定，不要直接套用本頁 PM2/Nginx 範例。
+>
+> 推薦先閱讀精簡版流程：[`DIGITALOCEAN_PM2_VPS_QUICKSTART.md`](./DIGITALOCEAN_PM2_VPS_QUICKSTART.md)。
 
 ---
 
@@ -84,7 +86,7 @@ su - deploy
 
 ## 🟢 第二部分：安裝 Node.js 與相關工具
 
-### 2.1 安裝 Node.js 20 LTS
+### 2.1 安裝 Node.js（以 VPS nvm/default 版本為部署基準）
 
 > 重要：目前正式環境實際使用的是 Node `20.19.6`。如果您採用「本機 build，僅同步 `.next` 到 VPS」的部署方式，本機建置機器也必須使用相同的 Node 主版號，最好直接使用 `20.19.6`。曾發生過本機用 Node 25 建置、遠端用 Node 20 執行，導致首頁出現 500，但 `/api/health` 仍正常的情況。
 
@@ -107,6 +109,22 @@ npm -v
 
 ```bash
 npm install -g pm2
+```
+
+> PM2 必須安裝在目前 `nvm use default` 的 Node.js 環境內。專案的 [`ecosystem.config.cjs`](../ecosystem.config.cjs) 會用 `NODE_BINARY` 綁定目前 Node binary，避免 VPS 重開後 PM2 誤用系統 Node。
+
+#### 2.2.1 PM2 日誌輪轉
+
+正式環境已於 2026-07-02 啟用 `pm2-logrotate`，避免 PM2 stdout/stderr 日誌無限增長。
+
+```bash
+pm2 install pm2-logrotate
+pm2 set pm2-logrotate:max_size 10M
+pm2 set pm2-logrotate:retain 30
+pm2 set pm2-logrotate:compress true
+pm2 set pm2-logrotate:dateFormat YYYY-MM-DD_HH-mm-ss
+pm2 set pm2-logrotate:rotateModule true
+pm2 save
 ```
 
 ### 2.3 安裝 Nginx
@@ -189,7 +207,17 @@ npx prisma migrate deploy
 npm run build
 ```
 
-### 3.3.1 正式環境推薦：本機 build 後同步 `.next`
+### 3.3.1 正式環境推薦：使用部署腳本配合 VPS Node 版本
+
+新版流程建議直接在本機執行：
+
+```bash
+VPS_HOST=YOUR_VPS_IP npm run deploy:vps
+```
+
+此指令會自動讀取 VPS 的 `nvm/default` Node.js 版本，切換本機 build 環境，同步 `.next` 與必要專案檔案，並在 VPS 端用 PM2 reload。完整說明請見 [`DIGITALOCEAN_PM2_VPS_QUICKSTART.md`](./DIGITALOCEAN_PM2_VPS_QUICKSTART.md)。
+
+### 3.3.2 手動替代方案：本機 build 後同步 `.next`
 
 > 若這次版本包含 Prisma schema 變更，僅同步 `.next` 不夠；還需要同步 `prisma/schema.prisma`、對應 migration 目錄，並在 VPS 上執行 `npx prisma generate` 與 `npx prisma migrate deploy`。本次 `Schedule.breakTime` 版本可直接參考 [SCHEDULE_BREAKTIME_RELEASE_CHECKLIST.md](./SCHEDULE_BREAKTIME_RELEASE_CHECKLIST.md)。
 
@@ -220,7 +248,7 @@ curl -i https://your-domain.com/api/health
 curl -I https://your-domain.com
 ```
 
-### 3.3.2 常見錯誤：首頁 500，但健康檢查正常
+### 3.3.3 常見錯誤：首頁 500，但健康檢查正常
 
 若您遇到：
 
@@ -243,10 +271,10 @@ ssh deploy@YOUR_VPS_IP 'source ~/.nvm/nvm.sh && node -v'
 ### 3.4 使用 PM2 啟動
 
 ```bash
-# 啟動（正式環境基準使用 3000）
-PORT=3000 pm2 start npm --name "attendance" -- start
+# 推薦使用根目錄 PM2 設定檔啟動，讓 PM2 綁定目前 nvm Node binary
+NODE_BINARY="$(command -v node)" PORT=3000 PM2_APP_NAME=attendance pm2 start ecosystem.config.cjs --update-env
 
-# 設定開機自啟
+# 設定開機自啟；請使用 setup-production.sh 輸出的完整 sudo env PATH=... 指令
 pm2 startup
 pm2 save
 
@@ -272,8 +300,10 @@ server {
     listen 80;
     server_name your-domain.com;
 
+    client_max_body_size 12m;
+
     location / {
-        proxy_pass http://localhost:3000;
+        proxy_pass http://127.0.0.1:3000;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection 'upgrade';

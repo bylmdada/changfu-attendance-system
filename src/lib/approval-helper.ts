@@ -35,7 +35,7 @@ export async function createApprovalForRequest(params: CreateApprovalParams) {
 
   try {
     // 取得審核流程設定
-    const workflow = await getApprovalWorkflow(requestType);
+    const workflow = await getApprovalWorkflow(requestType, { department });
 
     // 預設設定
     const approvalLevel = workflow?.approvalLevel ?? 2;

@@ -2,8 +2,10 @@
 
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
+import { Download } from 'lucide-react';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import { STATUS_UI, fmtDate, type DisplayStatus } from '@/lib/property-status-ui';
+import { propertyAuditStatusLabel } from '@/lib/property-audit-status';
 
 interface Detail {
   asset: {
@@ -75,6 +77,10 @@ export default function AssetDetailPage() {
     }
   };
 
+  const historyExportHref = (format: 'csv' | 'xlsx') =>
+    `/api/property-maintenance/reports/history?assetId=${encodeURIComponent(id)}&format=${format}`;
+  const inventoryResultLabel = (value: string | null) => value?.replace(/帳物/g, '財產') || '—';
+
   if (err)
     return (
       <AuthenticatedLayout backUrl="/property-management/assets" backLabel="返回清冊">
@@ -102,6 +108,20 @@ export default function AssetDetailPage() {
                   <p>維護頻率：{data.asset.maintenanceFrequency || '—'}</p>
                   <p>取得日期：{fmtDate(data.asset.acquiredDate)}</p>
                   <p>下次應維護：{fmtDate(data.asset.nextMaintenanceDate)}</p>
+                </div>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <a
+                    href={historyExportHref('xlsx')}
+                    className="inline-flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-medium text-blue-700 hover:bg-blue-100"
+                  >
+                    <Download className="h-4 w-4" /> 匯出單項維護歷程 .xlsx
+                  </a>
+                  <a
+                    href={historyExportHref('csv')}
+                    className="inline-flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-900 hover:bg-gray-50"
+                  >
+                    <Download className="h-4 w-4" /> 匯出單項維護歷程 .csv
+                  </a>
                 </div>
               </div>
               <div className="text-center">
@@ -150,7 +170,13 @@ export default function AssetDetailPage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
-                    {data.history.map((h) => {
+                    {data.history.length === 0 ? (
+                      <tr>
+                        <td colSpan={7} className="px-3 py-8 text-center text-gray-600">
+                          目前沒有維護歷程
+                        </td>
+                      </tr>
+                    ) : data.history.map((h) => {
                       const s = STATUS_UI[h.displayStatus] ?? STATUS_UI.PENDING;
                       return (
                         <tr key={h.recordId}>
@@ -162,8 +188,8 @@ export default function AssetDetailPage() {
                             </span>
                           </td>
                           <td className="px-3 py-2">{h.maintainerRaw || '—'}</td>
-                          <td className="px-3 py-2">{h.inventoryResult || '—'}</td>
-                          <td className="px-3 py-2">{h.auditStatus || '—'}</td>
+                          <td className="px-3 py-2">{inventoryResultLabel(h.inventoryResult)}</td>
+                          <td className="px-3 py-2">{propertyAuditStatusLabel(h.auditStatus)}</td>
                           <td className="px-3 py-2">
                             {h.photoPath ? (
                               <a

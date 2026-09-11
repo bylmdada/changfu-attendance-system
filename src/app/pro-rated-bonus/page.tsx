@@ -10,6 +10,8 @@ import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Calculator, Users, FileText, AlertCircle, CheckCircle, Clock, Download, Settings } from 'lucide-react';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import ConfirmDialog from '@/components/ConfirmDialog';
+import { SimpleToast, useLocalToast } from '@/components/Toast';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 
 interface Employee {
@@ -64,6 +66,7 @@ const FESTIVAL_TYPES = [
 ];
 
 export default function ProRatedBonusPage() {
+  const { toast, showToast, clearToast } = useLocalToast();
   const [employees, setEmployees] = useState<Employee[]>([]);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [calculations, setCalculations] = useState<any>({});
@@ -71,6 +74,7 @@ export default function ProRatedBonusPage() {
   const [loading, setLoading] = useState(false);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [reportData, setReportData] = useState<any>(null);
+  const [batchCreateConfirmOpen, setBatchCreateConfirmOpen] = useState(false);
 
   // 設定狀態
   const [settings, setSettings] = useState({
@@ -102,7 +106,7 @@ export default function ProRatedBonusPage() {
   // 批量計算按比例獎金
   const handleBatchCalculate = async () => {
     if (!settings.bonusType) {
-      alert('請選擇獎金類型');
+      showToast('warning', '請選擇獎金類型');
       return;
     }
 
@@ -122,11 +126,11 @@ export default function ProRatedBonusPage() {
         setCalculations(data.data.calculations);
       } else {
         const error = await response.json();
-        alert(`計算失敗: ${error.error}`);
+        showToast('error', `計算失敗: ${error.error}`);
       }
     } catch (error) {
       console.error('批量計算失敗:', error);
-      alert('計算失敗，請稍後重試');
+      showToast('error', '計算失敗，請稍後重試');
     } finally {
       setLoading(false);
     }
@@ -149,11 +153,11 @@ export default function ProRatedBonusPage() {
         setReportData(data.data);
       } else {
         const error = await response.json();
-        alert(`報表生成失敗: ${error.error}`);
+        showToast('error', `報表生成失敗: ${error.error}`);
       }
     } catch (error) {
       console.error('報表生成失敗:', error);
-      alert('報表生成失敗，請稍後重試');
+      showToast('error', '報表生成失敗，請稍後重試');
     } finally {
       setLoading(false);
     }
@@ -162,14 +166,14 @@ export default function ProRatedBonusPage() {
   // 批量創建獎金記錄
   const handleBatchCreateRecords = async () => {
     if (selectedEmployees.length === 0) {
-      alert('請選擇要發放獎金的員工');
+      showToast('warning', '請選擇要發放獎金的員工');
       return;
     }
 
-    if (!confirm(`確定要為 ${selectedEmployees.length} 位員工創建${settings.bonusType === 'YEAR_END' ? '年終' : '三節'}獎金記錄嗎？`)) {
-      return;
-    }
+    setBatchCreateConfirmOpen(true);
+  };
 
+  const performBatchCreateRecords = async () => {
     setLoading(true);
     try {
       const requestedEmployeeIds = [...selectedEmployees];
@@ -196,26 +200,27 @@ export default function ProRatedBonusPage() {
         const successfulEmployeeIds = requestedEmployeeIds.filter(id => !failedEmployeeIds.includes(id));
 
         if (createdRecordsCount === 0 || successfulEmployeeIds.length === 0) {
-          alert('創建記錄失敗：沒有任何獎金記錄建立成功');
+          showToast('error', '創建記錄失敗：沒有任何獎金記錄建立成功');
           return;
         }
 
+        setBatchCreateConfirmOpen(false);
         if (failedEmployeeIds.length > 0) {
-          alert(`成功創建 ${createdRecordsCount} 筆獎金記錄，${failedEmployeeIds.length} 位員工建立失敗`);
+          showToast('warning', `成功創建 ${createdRecordsCount} 筆獎金記錄，${failedEmployeeIds.length} 位員工建立失敗`);
           setSelectedEmployees(failedEmployeeIds);
         } else {
-          alert(`成功創建 ${createdRecordsCount} 筆獎金記錄`);
+          showToast('success', `成功創建 ${createdRecordsCount} 筆獎金記錄`);
           setSelectedEmployees([]);
         }
         // 重新載入計算結果
         handleBatchCalculate();
       } else {
         const error = await response.json();
-        alert(`創建記錄失敗: ${error.error}`);
+        showToast('error', `創建記錄失敗: ${error.error}`);
       }
     } catch (error) {
       console.error('創建記錄失敗:', error);
-      alert('創建記錄失敗，請稍後重試');
+      showToast('error', '創建記錄失敗，請稍後重試');
     } finally {
       setLoading(false);
     }
@@ -275,7 +280,7 @@ export default function ProRatedBonusPage() {
   // 匯出 CSV 功能
   const handleExportCSV = () => {
     if (calculationResults.length === 0) {
-      alert('請先計算獎金後再匯出');
+      showToast('warning', '請先計算獎金後再匯出');
       return;
     }
 
@@ -673,6 +678,19 @@ export default function ProRatedBonusPage() {
         </Card>
       )}
       </div>
+      <ConfirmDialog
+        open={batchCreateConfirmOpen}
+        title="批量建立獎金記錄"
+        message={`確定要為 ${selectedEmployees.length} 位員工創建${settings.bonusType === 'YEAR_END' ? '年終' : '三節'}獎金記錄嗎？`}
+        confirmLabel="建立記錄"
+        cancelLabel="取消"
+        loading={loading}
+        onConfirm={performBatchCreateRecords}
+        onCancel={() => {
+          if (!loading) setBatchCreateConfirmOpen(false);
+        }}
+      />
+      <SimpleToast toast={toast} onClose={clearToast} />
     </AuthenticatedLayout>
   );
 }

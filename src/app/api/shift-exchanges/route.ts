@@ -8,6 +8,8 @@ import { createApprovalForRequest } from '@/lib/approval-helper';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
 import { getAttendancePermissionDepartments } from '@/lib/attendance-permission-scopes';
+import { findActiveShiftDefinition } from '@/lib/shift-definition-service';
+import { buildApplicationRequestNumber } from '@/lib/application-request-number';
 
 interface DBItem {
   id: number;
@@ -16,6 +18,9 @@ interface DBItem {
   originalWorkDate: string;
   targetWorkDate: string;
   requestReason: string;
+  originalShiftType?: string | null;
+  newShiftType?: string | null;
+  leaveType?: string | null;
   status: string;
   createdAt: Date;
   requester?: {
@@ -39,9 +44,6 @@ interface DBItem {
     position: string | null;
   } | null;
   shiftDate?: string;
-  originalShiftType?: string;
-  newShiftType?: string;
-  leaveType?: string;
   reason?: string;
 }
 
@@ -49,18 +51,12 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function isJSON(str: string) {
-  try {
-    JSON.parse(str);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 // normalize a DB item to the frontend shape
 function normalizeItem(it: DBItem) {
-  const item = { ...it };
+  const item = {
+    ...it,
+    requestNumber: buildApplicationRequestNumber('SE', it.id, it.createdAt),
+  };
 
   // requester/targetEmployee placeholders
   item.requester = item.requester || { 
@@ -75,26 +71,33 @@ function normalizeItem(it: DBItem) {
 
   // derive frontend-friendly fields
   // If requestReason is structured SELF_CHANGE, extract shift types and shiftDate
-  let parsed: { type?: string; shiftDate?: string; original?: string; new?: string; note?: string; reason?: string; leaveType?: string } | null = null;
-  if (typeof item.requestReason === 'string' && isJSON(item.requestReason)) {
-    try { 
-      parsed = JSON.parse(item.requestReason); 
-    } catch { 
-      parsed = null; 
-    }
+  if (item.originalShiftType && item.newShiftType) {
+    item.shiftDate = item.originalWorkDate;
+    item.reason = item.requestReason;
+    item.leaveType ||= '';
+    return item;
   }
 
-  if (parsed && parsed.type === 'SELF_CHANGE') {
+  try {
+    const parsed = JSON.parse(item.requestReason) as {
+      type?: string;
+      shiftDate?: string;
+      original?: string;
+      new?: string;
+      note?: string;
+      reason?: string;
+      leaveType?: string;
+    };
+    if (parsed.type !== 'SELF_CHANGE' || !parsed.original || !parsed.new) return null;
     item.shiftDate = parsed.shiftDate ?? item.originalWorkDate;
-    item.originalShiftType = parsed.original ?? 'A';
-    item.newShiftType = parsed.new ?? item.originalShiftType ?? 'A';
+    item.originalShiftType = parsed.original;
+    item.newShiftType = parsed.new;
     item.leaveType = parsed.leaveType ?? '';
     item.reason = parsed.note ?? parsed.reason ?? '';
-  } else {
+    return item;
+  } catch {
     return null;
   }
-
-  return item;
 }
 
 // 查詢調班記錄列表
@@ -242,26 +245,34 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '調班日期、原班別、新班別與申請原因為必填' }, { status: 400 });
     }
 
+    const nextShift = await findActiveShiftDefinition(next);
+    if (!nextShift) {
+      return NextResponse.json({ error: '新班別不存在或已停用，請重新整理後再試' }, { status: 400 });
+    }
+
+    if (next === 'FDL' && !leaveType) {
+      return NextResponse.json({ error: '調班為全日請假時，請選擇請假類型' }, { status: 400 });
+    }
+
     const data: {
       requesterId: number;
       targetEmployeeId: number;
       originalWorkDate: string;
       targetWorkDate: string;
       requestReason: string;
+      originalShiftType: string;
+      newShiftType: string;
+      leaveType: string | null;
       status: string;
     } = {
       requesterId,
       targetEmployeeId: requesterId,
       originalWorkDate: shiftDate,
       targetWorkDate: shiftDate,
-      requestReason: JSON.stringify({
-        type: 'SELF_CHANGE',
-        shiftDate,
-        original,
-        new: next,
-        note,
-        leaveType: next === 'FDL' ? leaveType : undefined
-      }),
+      requestReason: note,
+      originalShiftType: original,
+      newShiftType: next,
+      leaveType: next === 'FDL' ? leaveType : null,
       status: 'PENDING'
     };
 

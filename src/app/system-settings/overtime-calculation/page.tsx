@@ -11,8 +11,9 @@ interface OvertimeCalculationSettings {
   id?: number;
   weekdayFirstTwoHoursRate: number; // 平日前2小時倍率
   weekdayAfterTwoHoursRate: number; // 平日2小時後倍率
-  restDayFirstEightHoursRate: number; // 休息日前8小時倍率
-  restDayAfterEightHoursRate: number; // 休息日8小時後倍率
+  restDayFirstTwoHoursRate: number; // 休息日前2小時倍率
+  restDayHours3To8Rate: number; // 休息日第3至8小時倍率
+  restDayAfterEightHoursRate: number; // 休息日第9小時起倍率
   holidayRate: number; // 國定假日倍率
   mandatoryRestRate: number; // 例假日倍率
   weekdayMaxHours: number; // 平日最大加班時數
@@ -49,8 +50,9 @@ export default function OvertimeCalculationPage() {
   const [settings, setSettings] = useState<OvertimeCalculationSettings>({
     weekdayFirstTwoHoursRate: 1.34,
     weekdayAfterTwoHoursRate: 1.67,
-    restDayFirstEightHoursRate: 1.34,
-    restDayAfterEightHoursRate: 1.67,
+    restDayFirstTwoHoursRate: 4 / 3,
+    restDayHours3To8Rate: 5 / 3,
+    restDayAfterEightHoursRate: 8 / 3,
     holidayRate: 2.0,
     mandatoryRestRate: 2.0,
     weekdayMaxHours: 4,
@@ -124,7 +126,11 @@ export default function OvertimeCalculationPage() {
     try {
       const response = await fetchJSONWithCSRF('/api/system-settings/overtime-calculation', {
         method: 'POST',
-        body: settings
+        body: {
+          compensationMode: settings.compensationMode,
+          overtimeMinUnit: settings.overtimeMinUnit,
+          description: settings.description
+        }
       });
 
       if (response.ok) {
@@ -133,20 +139,13 @@ export default function OvertimeCalculationPage() {
         setMessage({ type: 'success', text: '設定已儲存成功！' });
       } else {
         const errorData = await response.json();
-        setMessage({ type: 'error', text: errorData.error || '儲存失敗' });
+        setMessage({ type: 'error', text: errorData.message || errorData.error || '儲存失敗' });
       }
     } catch (error) {
       console.error('儲存設定失敗:', error);
       setMessage({ type: 'error', text: '儲存失敗，請稍後再試' });
     } finally {
       setSaving(false);
-    }
-  };
-
-  const handleRateChange = (field: keyof OvertimeCalculationSettings, value: string) => {
-    const numValue = parseFloat(value);
-    if (!isNaN(numValue)) {
-      setSettings({ ...settings, [field]: numValue });
     }
   };
 
@@ -174,7 +173,7 @@ export default function OvertimeCalculationPage() {
             <Clock className="w-8 h-8 text-blue-600 mr-3" />
             加班費計算設定
           </h1>
-          <p className="text-gray-600 mt-2">設定加班費計算倍率與規則</p>
+          <p className="text-gray-600 mt-2">設定已接入計算流程的加班參數</p>
         </div>
 
         {message && (
@@ -194,20 +193,6 @@ export default function OvertimeCalculationPage() {
           </div>
           
           <div className="p-6 space-y-8">
-            {/* 啟用開關 */}
-            <div>
-              <label className="flex items-center space-x-3">
-                <input
-                  type="checkbox"
-                  checked={settings.isEnabled}
-                  onChange={(e) => setSettings({ ...settings, isEnabled: e.target.checked })}
-                  className="rounded border-gray-300 text-blue-600 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200 focus:ring-opacity-50"
-                />
-                <span className="text-sm font-medium text-gray-900">啟用加班費計算系統</span>
-              </label>
-              <p className="mt-1 text-sm text-gray-900">關閉此功能將使用預設的簡單計算方式</p>
-            </div>
-
             {/* 加班補償方式設定 */}
             <div className="bg-orange-50 border border-orange-200 rounded-lg p-6">
               <h3 className="text-lg font-medium text-gray-900 mb-4 flex items-center">
@@ -228,7 +213,6 @@ export default function OvertimeCalculationPage() {
                         checked={settings.compensationMode === 'COMP_LEAVE_ONLY'}
                         onChange={() => setSettings({ ...settings, compensationMode: 'COMP_LEAVE_ONLY' })}
                         className="text-blue-600 focus:ring-blue-500"
-                        disabled={!settings.isEnabled}
                       />
                       <span className="ml-2 text-sm text-gray-900">僅給予補休時數（預設）</span>
                     </label>
@@ -240,7 +224,6 @@ export default function OvertimeCalculationPage() {
                         checked={settings.compensationMode === 'OVERTIME_PAY_ONLY'}
                         onChange={() => setSettings({ ...settings, compensationMode: 'OVERTIME_PAY_ONLY' })}
                         className="text-blue-600 focus:ring-blue-500"
-                        disabled={!settings.isEnabled}
                       />
                       <span className="ml-2 text-sm text-gray-900">僅給予加班費</span>
                     </label>
@@ -252,7 +235,6 @@ export default function OvertimeCalculationPage() {
                         checked={settings.compensationMode === 'EMPLOYEE_CHOICE'}
                         onChange={() => setSettings({ ...settings, compensationMode: 'EMPLOYEE_CHOICE' })}
                         className="text-blue-600 focus:ring-blue-500"
-                        disabled={!settings.isEnabled}
                       />
                       <span className="ml-2 text-sm text-gray-900">員工自選（申請時選擇）</span>
                     </label>
@@ -261,226 +243,37 @@ export default function OvertimeCalculationPage() {
                     「員工自選」模式下，員工可在加班申請時選擇補休或加班費
                   </p>
                 </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-900 mb-3">
-                    離職結算規則
-                  </label>
-                  <label className="flex items-center">
-                    <input
-                      type="checkbox"
-                      checked={settings.settleOnResignation}
-                      onChange={(e) => setSettings({ ...settings, settleOnResignation: e.target.checked })}
-                      className="rounded border-gray-300 text-blue-600 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200 focus:ring-opacity-50"
-                      disabled={!settings.isEnabled || settings.compensationMode === 'OVERTIME_PAY_ONLY'}
-                    />
-                    <span className="ml-2 text-sm text-gray-900">離職時將剩餘補休時數結算為金錢</span>
-                  </label>
-                  <p className="mt-2 text-xs text-gray-600">
-                    {settings.compensationMode === 'OVERTIME_PAY_ONLY' 
-                      ? '此選項僅在含有補休模式時有效'
-                      : '當員工離職時，未使用的補休時數將依加班費率結算為現金'}
+                <div className="rounded-md border border-orange-200 bg-white p-4">
+                  <p className="text-sm font-medium text-gray-900">目前可調整項目</p>
+                  <p className="mt-2 text-sm text-gray-700">
+                    此頁只儲存已接入計算流程的設定。費率、每日上限、離職補休結算開關目前不從此頁控制，避免儲存成功但薪資不變。
                   </p>
                 </div>
               </div>
             </div>
 
-            {/* 平日加班設定 */}
+            {/* 固定法定倍率 */}
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-6">
               <h3 className="text-lg font-medium text-gray-900 mb-4 flex items-center">
                 <Calculator className="h-5 w-5 mr-2" />
-                平日加班設定
+                固定倍率與上限
               </h3>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-900 mb-2">
-                    前2小時倍率
-                  </label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="1"
-                    max="3"
-                    value={settings.weekdayFirstTwoHoursRate}
-                    onChange={(e) => handleRateChange('weekdayFirstTwoHoursRate', e.target.value)}
-                    className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-gray-900"
-                    disabled={!settings.isEnabled}
-                  />
-                  <p className="mt-1 text-xs text-gray-900">法定：4/3 ≈ 1.34倍</p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm text-gray-800">
+                <div className="rounded-md bg-white border border-blue-100 p-4">
+                  <p className="font-medium text-gray-900">平日加班</p>
+                  <p className="mt-1">前 2 小時 × 4/3，第 3 小時起 × 5/3。</p>
                 </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-900 mb-2">
-                    2小時後倍率
-                  </label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="1"
-                    max="3"
-                    value={settings.weekdayAfterTwoHoursRate}
-                    onChange={(e) => handleRateChange('weekdayAfterTwoHoursRate', e.target.value)}
-                    className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-gray-900"
-                    disabled={!settings.isEnabled}
-                  />
-                  <p className="mt-1 text-xs text-gray-900">法定：5/3 ≈ 1.67倍</p>
+                <div className="rounded-md bg-white border border-blue-100 p-4">
+                  <p className="font-medium text-gray-900">休息日加班</p>
+                  <p className="mt-1">前 2 小時 × 4/3，第 3 至 8 小時 × 5/3，第 9 小時起 × 8/3。</p>
                 </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-900 mb-2">
-                    最大加班時數
-                  </label>
-                  <input
-                    type="number"
-                    min="1"
-                    max="12"
-                    value={settings.weekdayMaxHours}
-                    onChange={(e) => handleRateChange('weekdayMaxHours', e.target.value)}
-                    className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-gray-900"
-                    disabled={!settings.isEnabled}
-                  />
-                  <p className="mt-1 text-xs text-gray-900">法定限制：4小時</p>
+                <div className="rounded-md bg-white border border-blue-100 p-4">
+                  <p className="font-medium text-gray-900">國定假日 / 例假日</p>
+                  <p className="mt-1">國定假日 × 2；例假日僅特殊情況，並需依法補假。</p>
                 </div>
-              </div>
-            </div>
-
-            {/* 休息日加班設定 */}
-            <div className="bg-green-50 border border-green-200 rounded-lg p-6">
-              <h3 className="text-lg font-medium text-gray-900 mb-4 flex items-center">
-                <Calculator className="h-5 w-5 mr-2" />
-                休息日加班設定
-              </h3>
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-900 mb-2">
-                    前8小時倍率
-                  </label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="1"
-                    max="3"
-                    value={settings.restDayFirstEightHoursRate}
-                    onChange={(e) => handleRateChange('restDayFirstEightHoursRate', e.target.value)}
-                    className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-gray-900"
-                    disabled={!settings.isEnabled}
-                  />
-                  <p className="mt-1 text-xs text-gray-900">法定：4/3 ≈ 1.34倍</p>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-900 mb-2">
-                    8小時後倍率
-                  </label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="1"
-                    max="3"
-                    value={settings.restDayAfterEightHoursRate}
-                    onChange={(e) => handleRateChange('restDayAfterEightHoursRate', e.target.value)}
-                    className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-gray-900"
-                    disabled={!settings.isEnabled}
-                  />
-                  <p className="mt-1 text-xs text-gray-900">法定：5/3 ≈ 1.67倍</p>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-900 mb-2">
-                    最低計費時數
-                  </label>
-                  <input
-                    type="number"
-                    min="2"
-                    max="8"
-                    value={settings.restDayMinimumPayHours}
-                    onChange={(e) => handleRateChange('restDayMinimumPayHours', e.target.value)}
-                    className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-gray-900"
-                    disabled={!settings.isEnabled}
-                  />
-                  <p className="mt-1 text-xs text-gray-900">法定：工作2小時以4小時計</p>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-900 mb-2">
-                    最大加班時數
-                  </label>
-                  <input
-                    type="number"
-                    min="8"
-                    max="16"
-                    value={settings.restDayMaxHours}
-                    onChange={(e) => handleRateChange('restDayMaxHours', e.target.value)}
-                    className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-gray-900"
-                    disabled={!settings.isEnabled}
-                  />
-                  <p className="mt-1 text-xs text-gray-900">法定限制：12小時</p>
-                </div>
-              </div>
-            </div>
-
-            {/* 假日加班設定 */}
-            <div className="bg-purple-50 border border-purple-200 rounded-lg p-6">
-              <h3 className="text-lg font-medium text-gray-900 mb-4 flex items-center">
-                <Calculator className="h-5 w-5 mr-2" />
-                假日加班設定
-              </h3>
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-900 mb-2">
-                    國定假日倍率
-                  </label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="1"
-                    max="3"
-                    value={settings.holidayRate}
-                    onChange={(e) => handleRateChange('holidayRate', e.target.value)}
-                    className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-gray-900"
-                    disabled={!settings.isEnabled}
-                  />
-                  <p className="mt-1 text-xs text-gray-900">法定：2倍</p>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-900 mb-2">
-                    例假日倍率
-                  </label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="1"
-                    max="3"
-                    value={settings.mandatoryRestRate}
-                    onChange={(e) => handleRateChange('mandatoryRestRate', e.target.value)}
-                    className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-gray-900"
-                    disabled={!settings.isEnabled}
-                  />
-                  <p className="mt-1 text-xs text-gray-900">法定：2倍 + 補假</p>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-900 mb-2">
-                    國定假日最大時數
-                  </label>
-                  <input
-                    type="number"
-                    min="4"
-                    max="12"
-                    value={settings.holidayMaxHours}
-                    onChange={(e) => handleRateChange('holidayMaxHours', e.target.value)}
-                    className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-gray-900"
-                    disabled={!settings.isEnabled}
-                  />
-                  <p className="mt-1 text-xs text-gray-900">建議：8小時</p>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-900 mb-2">
-                    例假日最大時數
-                  </label>
-                  <input
-                    type="number"
-                    min="4"
-                    max="12"
-                    value={settings.mandatoryRestMaxHours}
-                    onChange={(e) => handleRateChange('mandatoryRestMaxHours', e.target.value)}
-                    className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-gray-900"
-                    disabled={!settings.isEnabled}
-                  />
-                  <p className="mt-1 text-xs text-gray-900">特殊情況限制</p>
+                <div className="rounded-md bg-white border border-blue-100 p-4">
+                  <p className="font-medium text-gray-900">每日/月度上限</p>
+                  <p className="mt-1">加班上限由「加班限制設定」與申請流程控管，本頁不控制上限。</p>
                 </div>
               </div>
             </div>
@@ -492,30 +285,20 @@ export default function OvertimeCalculationPage() {
                 基本參數設定
               </h3>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-900 mb-2">
-                    每月基本工時
-                  </label>
-                  <input
-                    type="number"
-                    min="160"
-                    max="280"
-                    value={settings.monthlyBasicHours}
-                    onChange={(e) => handleRateChange('monthlyBasicHours', e.target.value)}
-                    className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-gray-900"
-                    disabled={!settings.isEnabled}
-                  />
-                  <p className="mt-1 text-xs text-gray-900">用於計算平日每小時工資額</p>
+                <div className="rounded-md border border-gray-200 bg-gray-50 p-4">
+                  <p className="text-sm font-medium text-gray-900">時薪基準</p>
+                  <p className="mt-2 text-sm text-gray-700">
+                    以薪資檔時薪為準；未設定時依月薪除以 240 小時計算。
+                  </p>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-900 mb-2">
-                    加班最小單位
+                    最低申請時數
                   </label>
                   <select
                     value={settings.overtimeMinUnit}
                     onChange={(e) => setSettings({ ...settings, overtimeMinUnit: parseInt(e.target.value) })}
                     className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-gray-900"
-                    disabled={!settings.isEnabled}
                   >
                     <option value={1}>1 分鐘</option>
                     <option value={5}>5 分鐘</option>
@@ -523,7 +306,9 @@ export default function OvertimeCalculationPage() {
                     <option value={30}>30 分鐘</option>
                     <option value={60}>60 分鐘（1小時）</option>
                   </select>
-                  <p className="mt-1 text-xs text-gray-900">加班時數依此單位進位/捨去</p>
+                  <p className="mt-1 text-xs text-gray-900">
+                    申請須達此門檻；達門檻後依實際起訖分鐘認列，不捨去零星分鐘
+                  </p>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-900 mb-2">
@@ -534,7 +319,6 @@ export default function OvertimeCalculationPage() {
                     value={settings.description}
                     onChange={(e) => setSettings({ ...settings, description: e.target.value })}
                     className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-gray-900"
-                    disabled={!settings.isEnabled}
                     placeholder="請輸入加班費計算規則說明..."
                   />
                   <p className="mt-1 text-xs text-gray-900">顯示給用戶的說明文字</p>
@@ -550,10 +334,10 @@ export default function OvertimeCalculationPage() {
                   <h4 className="text-sm font-medium text-yellow-800">勞動基準法規定</h4>
                   <ul className="text-sm text-yellow-700 mt-1 space-y-1">
                     <li>• 平日加班：前2小時 × 4/3，2小時後 × 5/3，每日最多4小時</li>
-                    <li>• 休息日加班：前8小時 × 4/3，8小時後 × 5/3，特殊計費規則</li>
+                    <li>• 休息日加班：前2小時 × 4/3，第3至8小時 × 5/3，第9小時起 × 8/3</li>
                     <li>• 國定假日加班：全日 × 2倍</li>
                     <li>• 例假日加班：僅特殊情況，全日 × 2倍 + 補假</li>
-                    <li>• 修改參數前請確認符合法規要求</li>
+                    <li>• 此頁目前不開放修改法定倍率與上限，避免設定值與實際薪資計算脫鉤</li>
                   </ul>
                 </div>
               </div>

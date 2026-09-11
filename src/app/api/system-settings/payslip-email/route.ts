@@ -9,6 +9,7 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { safeParseJSON } from '@/lib/validation';
+import { logSystemSettingsChange } from '@/lib/system-settings-audit';
 
 const DEFAULT_PAYSLIP_EMAIL_SETTINGS = {
   id: 0,
@@ -254,13 +255,25 @@ export async function PUT(request: NextRequest) {
       });
     }
 
+    const safeSettings = {
+      ...settings,
+      smtpPassword: settings.smtpPassword ? '********' : null
+    };
+
+    await logSystemSettingsChange({
+      request,
+      user,
+      settingKey: 'payslip-email',
+      description: '薪資條 Email 設定變更',
+      oldValue: existing,
+      newValue: safeSettings,
+      targetId: settings.id,
+    });
+
     return NextResponse.json({
       success: true,
       message: '設定已儲存',
-      settings: {
-        ...settings,
-        smtpPassword: settings.smtpPassword ? '********' : null
-      }
+      settings: safeSettings
     });
 
   } catch (error) {

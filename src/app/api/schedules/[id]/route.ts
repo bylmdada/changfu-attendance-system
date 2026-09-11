@@ -9,6 +9,10 @@ import {
 } from '@/lib/schedule-management-permissions';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
+import { buildScheduleFieldsFromShiftDefinition } from '@/lib/shift-definition-service';
+import { invalidateConfirmation } from '@/lib/schedule-confirm-service';
+import { isScheduleHourConsistent } from '@/lib/shift-definition-utils';
+import { checkAttendanceFreeze, getAttendanceFreezeError } from '@/lib/attendance-freeze';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -20,42 +24,6 @@ function parseHour(value: unknown) {
   }
 
   return Math.round(value * 100) / 100;
-}
-
-// 班表變更後，失效該員工該月的確認
-async function invalidateScheduleConfirmation(employeeId: number, workDate: string) {
-  try {
-    const yearMonth = workDate.substring(0, 7); // 取得 YYYY-MM
-    
-    // 查詢該月的發布記錄
-    const release = await prisma.scheduleMonthlyRelease.findFirst({
-      where: { yearMonth, status: 'PUBLISHED' }
-    });
-    
-    if (release) {
-      // 更新發布版本並失效確認
-      await prisma.scheduleMonthlyRelease.update({
-        where: { id: release.id },
-        data: {
-          version: { increment: 1 },
-          lastModified: new Date()
-        }
-      });
-      
-      // 將該員工的確認標記為無效
-      await prisma.scheduleConfirmation.updateMany({
-        where: {
-          employeeId,
-          releaseId: release.id,
-          isValid: true
-        },
-        data: { isValid: false }
-      });
-    }
-  } catch (error) {
-    console.error('失效班表確認失敗:', error);
-    // 不拋出錯誤，讓主要操作繼續
-  }
 }
 
 // GET: 取得單一排程
@@ -195,7 +163,15 @@ export async function PUT(
     const updatedScheduleResult = await prisma.$transaction(async (tx) => {
       const scheduleToUpdate = await tx.schedule.findUnique({
         where: { id: scheduleId },
-        select: { employeeId: true, shiftType: true }
+        select: {
+          employeeId: true,
+          workDate: true,
+          shiftType: true,
+          startTime: true,
+          endTime: true,
+          breakTime: true,
+          workHours: true,
+        }
       });
 
       if (!scheduleToUpdate) {
@@ -204,6 +180,13 @@ export async function PUT(
           status: 404,
           body: { error: '找不到排程' }
         };
+      }
+
+      const freezeError = getAttendanceFreezeError(
+        await checkAttendanceFreeze(new Date(`${scheduleToUpdate.workDate}T00:00:00+08:00`))
+      );
+      if (freezeError) {
+        return { ok: false as const, status: 409, body: { error: freezeError } };
       }
 
       const canManage = await canManageScheduleEmployee(user, scheduleToUpdate.employeeId, new Date(), tx);
@@ -232,10 +215,9 @@ export async function PUT(
       }
 
       const shiftTypeChanged = shiftType !== undefined && shiftType !== scheduleToUpdate.shiftType;
-      const requestedShiftType = shiftType ?? scheduleToUpdate.shiftType;
       const shiftDefinition = shiftTypeChanged
-        ? await tx.shiftDefinition.findFirst({ where: { code: requestedShiftType, isActive: true } })
-        : await tx.shiftDefinition.findUnique({ where: { code: requestedShiftType } });
+        ? await tx.shiftDefinition.findFirst({ where: { code: shiftType, isActive: true } })
+        : null;
 
       if (shiftTypeChanged && !shiftDefinition) {
         return {
@@ -245,48 +227,50 @@ export async function PUT(
         };
       }
 
-      if (shiftType) {
+      if (shiftDefinition) {
+        Object.assign(updateData, buildScheduleFieldsFromShiftDefinition(shiftDefinition));
+      } else if (shiftType !== undefined) {
         updateData.shiftType = shiftType;
       }
 
-      if (shiftDefinition && !shiftDefinition.requiresTime) {
-        updateData.startTime = '';
-        updateData.endTime = '';
-        updateData.breakTime = 0;
-        updateData.workHours = workHours ?? shiftDefinition.workHours;
-        updateData.specialLeaveHours = specialLeaveHours ?? shiftDefinition.specialLeaveHours;
-        updateData.compLeaveHours = compLeaveHours ?? shiftDefinition.compLeaveHours;
-        updateData.overtimeHours = overtimeHours ?? shiftDefinition.overtimeHours;
-      } else if (shiftDefinition?.requiresTime) {
-        updateData.startTime = startTime ?? shiftDefinition.startTime;
-        updateData.endTime = endTime ?? shiftDefinition.endTime;
-        updateData.breakTime = breakTime ?? shiftDefinition.breakTime;
-        updateData.workHours = workHours ?? shiftDefinition.workHours;
-        updateData.specialLeaveHours = specialLeaveHours ?? shiftDefinition.specialLeaveHours;
-        updateData.compLeaveHours = compLeaveHours ?? shiftDefinition.compLeaveHours;
-        updateData.overtimeHours = overtimeHours ?? shiftDefinition.overtimeHours;
-      } else {
-        if (startTime !== undefined) {
-          updateData.startTime = startTime;
-        }
-        if (endTime !== undefined) {
-          updateData.endTime = endTime;
-        }
-        if (breakTime !== undefined) {
-          updateData.breakTime = breakTime;
-        }
-        if (workHours !== undefined) {
-          updateData.workHours = workHours;
-        }
-        if (specialLeaveHours !== undefined) {
-          updateData.specialLeaveHours = specialLeaveHours;
-        }
-        if (compLeaveHours !== undefined) {
-          updateData.compLeaveHours = compLeaveHours;
-        }
-        if (overtimeHours !== undefined) {
-          updateData.overtimeHours = overtimeHours;
-        }
+      if (startTime !== undefined) {
+        updateData.startTime = startTime;
+      }
+      if (endTime !== undefined) {
+        updateData.endTime = endTime;
+      }
+      if (breakTime !== undefined) {
+        updateData.breakTime = breakTime;
+      }
+      if (workHours !== undefined) {
+        updateData.workHours = workHours;
+      }
+      if (specialLeaveHours !== undefined) {
+        updateData.specialLeaveHours = specialLeaveHours;
+      }
+      if (compLeaveHours !== undefined) {
+        updateData.compLeaveHours = compLeaveHours;
+      }
+      if (overtimeHours !== undefined) {
+        updateData.overtimeHours = overtimeHours;
+      }
+
+      const nextSchedule = { ...scheduleToUpdate, ...updateData };
+      const manuallyChangedHours = startTime !== undefined || endTime !== undefined || breakTime !== undefined || workHours !== undefined;
+      if (
+        manuallyChangedHours
+        && !isScheduleHourConsistent(
+          nextSchedule.startTime,
+          nextSchedule.endTime,
+          nextSchedule.breakTime,
+          nextSchedule.workHours
+        )
+      ) {
+        return {
+          ok: false as const,
+          status: 400,
+          body: { success: false, error: '工時與上下班時間、休息時間不一致' }
+        };
       }
 
       const schedule = await tx.schedule.update({
@@ -314,7 +298,7 @@ export async function PUT(
     }
 
     // 觸發重新確認機制
-    await invalidateScheduleConfirmation(updatedScheduleResult.schedule.employeeId, updatedScheduleResult.schedule.workDate);
+    await invalidateConfirmation(updatedScheduleResult.schedule.employeeId, updatedScheduleResult.schedule.workDate.slice(0, 7));
 
     return NextResponse.json({
       success: true,
@@ -387,6 +371,13 @@ export async function DELETE(
         };
       }
 
+      const freezeError = getAttendanceFreezeError(
+        await checkAttendanceFreeze(new Date(`${scheduleToDelete.workDate}T00:00:00+08:00`))
+      );
+      if (freezeError) {
+        return { ok: false as const, status: 409, body: { error: freezeError } };
+      }
+
       const canManage = await canManageScheduleEmployee(user, scheduleToDelete.employeeId, new Date(), tx);
       if (!canManage) {
         return {
@@ -411,7 +402,7 @@ export async function DELETE(
     }
 
     // 觸發重新確認機制
-    await invalidateScheduleConfirmation(deletedScheduleResult.schedule.employeeId, deletedScheduleResult.schedule.workDate);
+    await invalidateConfirmation(deletedScheduleResult.schedule.employeeId, deletedScheduleResult.schedule.workDate.slice(0, 7));
 
     return NextResponse.json({
       success: true,

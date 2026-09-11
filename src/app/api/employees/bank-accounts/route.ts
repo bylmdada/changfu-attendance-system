@@ -28,6 +28,12 @@ function normalizeIdNumber(value: unknown): string {
   return normalizeOptionalString(value).toUpperCase();
 }
 
+function normalizeEmployeeLookupName(value: unknown): string {
+  return normalizeOptionalString(value)
+    .replace(/[\s\u3000()（）\-－_.．]/g, '')
+    .toLowerCase();
+}
+
 function normalizeBankAccount(value: unknown): string {
   if (typeof value !== 'string' && typeof value !== 'number') {
     return '';
@@ -254,16 +260,18 @@ export async function POST(request: NextRequest) {
 
     const activeEmployees = await prisma.employee.findMany({
       where: { isActive: true },
-      select: { id: true, name: true, idNumber: true },
+      select: { id: true, name: true, idNumber: true, bankAccount: true },
       orderBy: { id: 'asc' },
     });
-    const employeeByName = new Map<string, (typeof activeEmployees)[number]>();
+    const employeesByName = new Map<string, Array<(typeof activeEmployees)[number]>>();
     const employeeByIdNumber = new Map<string, (typeof activeEmployees)[number]>();
 
     for (const employee of activeEmployees) {
-      const normalizedEmployeeName = normalizeOptionalString(employee.name);
-      if (normalizedEmployeeName && !employeeByName.has(normalizedEmployeeName)) {
-        employeeByName.set(normalizedEmployeeName, employee);
+      const normalizedEmployeeName = normalizeEmployeeLookupName(employee.name);
+      if (normalizedEmployeeName) {
+        const matchedEmployees = employeesByName.get(normalizedEmployeeName) ?? [];
+        matchedEmployees.push(employee);
+        employeesByName.set(normalizedEmployeeName, matchedEmployees);
       }
 
       if (employee.idNumber) {
@@ -272,8 +280,11 @@ export async function POST(request: NextRequest) {
     }
 
     let successCount = 0;
+    let skippedCount = 0;
     let errorCount = 0;
     const errors: { name: string; error: string }[] = [];
+    const skipped: { name: string; reason: string }[] = [];
+    const updatedEmployees: { id: number; name: string }[] = [];
 
     for (const record of records) {
       try {
@@ -285,6 +296,7 @@ export async function POST(request: NextRequest) {
 
         const { idNumber, bankAccount, name } = record as Record<string, unknown>;
         const normalizedName = normalizeOptionalString(name) || '未知';
+        const normalizedLookupName = normalizeEmployeeLookupName(name);
         const normalizedIdNumber = normalizeIdNumber(idNumber);
         const normalizedBankAccount = normalizeBankAccount(bankAccount);
 
@@ -319,31 +331,72 @@ export async function POST(request: NextRequest) {
           employee = employeeByIdNumber.get(normalizedIdNumber) ?? null;
         }
 
-        if (!employee && normalizedName !== '未知') {
-          employee = employeeByName.get(normalizedName) ?? null;
+        if (!employee && normalizedLookupName) {
+          const matchedEmployees = employeesByName.get(normalizedLookupName) ?? [];
+          if (matchedEmployees.length > 1) {
+            skipped.push({
+              name: normalizedName,
+              reason: `姓名「${normalizedName}」對應到多位員工，請補齊身分證字號後再匯入，避免匯錯帳號`
+            });
+            skippedCount++;
+            continue;
+          }
+
+          if (matchedEmployees.length === 1) {
+            employee = matchedEmployees[0];
+          } else {
+            const fuzzyMatches = activeEmployees.filter((candidate) => {
+              const candidateName = normalizeEmployeeLookupName(candidate.name);
+              return candidateName && (
+                candidateName.includes(normalizedLookupName) ||
+                normalizedLookupName.includes(candidateName)
+              );
+            });
+
+            if (fuzzyMatches.length === 1) {
+              employee = fuzzyMatches[0];
+            } else if (fuzzyMatches.length > 1) {
+              skipped.push({
+                name: normalizedName,
+                reason: `姓名「${normalizedName}」可對應多位相近員工，請補齊身分證字號後再匯入`
+              });
+              skippedCount++;
+              continue;
+            }
+          }
         }
 
         if (!employee) {
-          errors.push({ name: normalizedName || normalizedIdNumber || '未知', error: '找不到對應員工' });
-          errorCount++;
+          skipped.push({ name: normalizedName || normalizedIdNumber || '未知', reason: '找不到可唯一對應的員工，已自動略過避免匯錯資料' });
+          skippedCount++;
           continue;
         }
 
         // 更新資料
         const updateData: Record<string, string | null> = {};
-        
+        const existingIdNumber = employee.idNumber ? decrypt(employee.idNumber).toUpperCase() : '';
+        const existingBankAccount = normalizeBankAccount(employee.bankAccount);
+         
+        if (normalizedIdNumber && existingIdNumber && existingIdNumber !== normalizedIdNumber) {
+          errors.push({ name: employee.name || normalizedName, error: '匯入的身分證字號與系統現有資料不一致，已停止更新以避免覆蓋錯誤資料' });
+          errorCount++;
+          continue;
+        }
+
         if (normalizedIdNumber && !employee.idNumber) {
           updateData.idNumber = encrypt(normalizedIdNumber);
         }
-        
-        if (normalizedBankAccount) {
+         
+        if (normalizedBankAccount && existingBankAccount && existingBankAccount !== normalizedBankAccount) {
+          updateData.bankAccount = normalizedBankAccount;
+          updateData.bankCode = '806';  // 元大銀行
+        } else if (normalizedBankAccount && !existingBankAccount) {
           updateData.bankAccount = normalizedBankAccount;
           updateData.bankCode = '806';  // 元大銀行
         }
 
         if (Object.keys(updateData).length === 0) {
-          errors.push({ name: employee.name || normalizedName, error: '沒有可更新的有效銀行帳戶資料' });
-          errorCount++;
+          skippedCount++;
           continue;
         }
 
@@ -351,6 +404,7 @@ export async function POST(request: NextRequest) {
           where: { id: employee.id },
           data: updateData
         });
+        updatedEmployees.push({ id: employee.id, name: employee.name });
         successCount++;
       } catch (err) {
         const recordName = typeof record === 'object' && record !== null && 'name' in record
@@ -363,10 +417,13 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      message: `匯入完成：成功 ${successCount} 筆，失敗 ${errorCount} 筆`,
+      message: `匯入完成：成功 ${successCount} 筆，略過 ${skippedCount} 筆，失敗 ${errorCount} 筆`,
       successCount,
+      skippedCount,
       errorCount,
-      errors: errors.slice(0, 10)  // 只返回前10個錯誤
+      errors: errors.slice(0, 10),  // 只返回前10個錯誤
+      skipped: skipped.slice(0, 10),
+      updatedEmployees
     });
   } catch (error) {
     console.error('批次匯入失敗:', error);

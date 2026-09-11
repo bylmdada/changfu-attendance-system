@@ -19,6 +19,9 @@ jest.mock('@/lib/database', () => ({
     overtimeRequest: {
       findMany: jest.fn(),
     },
+    schedule: {
+      findMany: jest.fn(),
+    },
   },
 }));
 
@@ -95,6 +98,7 @@ describe('attendance report route auth guards', () => {
 
     mockedPrisma.leaveRequest.findMany.mockResolvedValue([] as never);
     mockedPrisma.overtimeRequest.findMany.mockResolvedValue([] as never);
+    mockedPrisma.schedule.findMany.mockResolvedValue([] as never);
   });
 
   it('accepts shared token cookie extraction on GET requests', async () => {
@@ -173,6 +177,61 @@ describe('attendance report route auth guards', () => {
 
     expect(response.status).toBe(200);
     expect(data.report.employees[0].lateDays).toBe(1);
+  });
+
+  it('does not report approved weekday overtime when net actual work is only 8 hours', async () => {
+    mockedPrisma.attendanceRecord.findMany.mockResolvedValueOnce([
+      {
+        employeeId: 1,
+        workDate: new Date('2026-03-03T00:00:00.000Z'),
+        clockInTime: new Date('2026-03-03T01:00:00.000Z'),
+        clockOutTime: new Date('2026-03-03T10:00:00.000Z'),
+        regularHours: 7,
+        overtimeHours: 1,
+        clockOutOvertimeId: 21,
+        status: 'NORMAL',
+        notes: null,
+        employee: {
+          id: 1,
+          employeeId: 'EMP001',
+          name: '王小明',
+          department: 'HR',
+          position: '專員',
+        },
+      },
+    ] as never);
+    mockedPrisma.overtimeRequest.findMany.mockResolvedValueOnce([
+      {
+        id: 21,
+        employeeId: 1,
+        overtimeDate: new Date('2026-03-03T00:00:00.000Z'),
+        totalHours: 1,
+        compensationType: 'OVERTIME_PAY',
+        status: 'APPROVED',
+      },
+    ] as never);
+    mockedPrisma.schedule.findMany.mockResolvedValueOnce([
+      {
+        employeeId: 1,
+        workDate: '2026-03-03',
+        shiftType: 'B',
+        startTime: '08:00',
+        endTime: '17:00',
+        breakTime: 60,
+        workHours: 8,
+      },
+    ] as never);
+
+    const request = new NextRequest('http://localhost/api/reports/attendance?year=2026&month=3', {
+      headers: { cookie: 'token=shared-session-token' },
+    });
+
+    const response = await GET(request);
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.report.employees[0].totalOvertimeHours).toBe(0);
+    expect(data.report.summary.totalOvertimeHours).toBe(0);
   });
 
   it.each([

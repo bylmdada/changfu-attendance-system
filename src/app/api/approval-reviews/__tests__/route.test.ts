@@ -70,7 +70,7 @@ describe('approval reviews route authorization', () => {
       status: 'PENDING',
       reviews: []
     });
-    expect(mockGetApprovalWorkflow).toHaveBeenCalledWith('LEAVE');
+    expect(mockGetApprovalWorkflow).toHaveBeenCalledWith('LEAVE', { department: null });
   });
 
   it('returns 403 when the authenticated employee is neither applicant nor reviewer', async () => {

@@ -11,6 +11,7 @@ jest.mock('@/lib/database', () => ({
 
 import { prisma } from '@/lib/database';
 import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
+import { getFreezeExecutionDateForTargetMonth } from '@/lib/attendance-freeze-rules';
 
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 
@@ -43,7 +44,7 @@ describe('attendance freeze rules', () => {
       isFrozen: true,
       freezeInfo: {
         freezeDate: new Date('2026-04-05T10:00:00.000Z'),
-        description: '每月固定凍結',
+        description: '每月5日下午6點後，前一個月的考勤記錄將被凍結，無法修改。',
         creator: {
           name: '系統設定'
         }
@@ -97,5 +98,32 @@ describe('attendance freeze rules', () => {
     mockPrisma.attendanceFreeze.findFirst.mockRejectedValue(dbError as never);
 
     await expect(checkAttendanceFreeze(new Date('2026-03-15T04:00:00.000Z'))).rejects.toThrow('database unavailable');
+  });
+
+  it('does not let a future manual freeze hide an already active recurring freeze', async () => {
+    jest.setSystemTime(new Date('2026-04-05T10:30:00.000Z'));
+    mockPrisma.attendanceFreeze.findFirst.mockResolvedValue({
+      freezeDate: new Date('2026-04-20T00:00:00.000Z'),
+      description: '預約凍結',
+      creator: { name: '管理員' },
+    } as never);
+    mockPrisma.systemSettings.findFirst.mockResolvedValue({
+      key: 'attendance_freeze',
+      value: JSON.stringify({ freezeDay: 5, freezeTime: '18:00', isEnabled: true }),
+    } as never);
+
+    const result = await checkAttendanceFreeze(new Date('2026-03-15T04:00:00.000Z'));
+
+    expect(result.isFrozen).toBe(true);
+    expect(result.freezeInfo?.creator.name).toBe('系統設定');
+  });
+
+  it('falls back to 18:00 when recurring freeze time is invalid', () => {
+    expect(getFreezeExecutionDateForTargetMonth(new Date('2026-03-15T04:00:00.000Z'), {
+      freezeDay: 5,
+      freezeTime: '25:99',
+      isEnabled: true,
+      description: '',
+    })).toEqual(new Date('2026-04-05T10:00:00.000Z'));
   });
 });

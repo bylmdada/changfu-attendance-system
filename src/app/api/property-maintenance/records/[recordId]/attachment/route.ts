@@ -38,13 +38,22 @@ export async function POST(
   if (!ALLOWED.includes(file.type)) return fail('僅支援 JPG/PNG/WebP');
   if (!['photo', 'signature'].includes(field)) return fail('field 參數錯誤');
 
-  const ext = mimeToExtension(file.type);
+  const buffer = Buffer.from(await file.arrayBuffer());
+  const detectedMimeType = detectImageMimeType(buffer);
+  if (!detectedMimeType || !ALLOWED.includes(detectedMimeType)) {
+    return fail('僅支援 JPG/PNG/WebP');
+  }
+
+  const siteCode = sanitizeSiteCode(rec.site.code);
+  if (!siteCode) return fail('據點代碼格式錯誤', 500);
+
+  const ext = mimeToExtension(detectedMimeType);
   const safeRid = rid.replace(/[^A-Za-z0-9_-]/g, '_');
   const fileName = `${safeRid}.${field}.${Date.now()}.${ext}`;
-  const dir = join(process.cwd(), 'uploads', 'property-maintenance', rec.site.code);
+  const dir = join(process.cwd(), 'uploads', 'property-maintenance', siteCode);
   await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, fileName), Buffer.from(await file.arrayBuffer()));
-  const relPath = `uploads/property-maintenance/${rec.site.code}/${fileName}`;
+  await writeFile(join(dir, fileName), buffer);
+  const relPath = `uploads/property-maintenance/${siteCode}/${fileName}`;
 
   await prisma.maintenanceRecord.update({
     where: { recordId: rid },
@@ -63,6 +72,33 @@ function mimeToExtension(mimeType: string): string {
     default:
       return 'jpg';
   }
+}
+
+function sanitizeSiteCode(value: string): string | null {
+  const sanitized = value.replace(/[^A-Za-z0-9_-]/g, '');
+  return sanitized || null;
+}
+
+function detectImageMimeType(buffer: Buffer): string | null {
+  if (buffer.length < 4) return null;
+
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return 'image/jpeg';
+  }
+
+  if (buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    return 'image/png';
+  }
+
+  if (
+    buffer.length >= 12 &&
+    buffer.subarray(0, 4).equals(Buffer.from('RIFF')) &&
+    buffer.subarray(8, 12).equals(Buffer.from('WEBP'))
+  ) {
+    return 'image/webp';
+  }
+
+  return null;
 }
 
 // GET ?field=photo|signature：串流檔案供檢視

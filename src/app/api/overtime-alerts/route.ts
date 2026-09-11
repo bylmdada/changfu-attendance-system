@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
+import { calculateOvertimeRequestsEligibility } from '@/lib/overtime-eligibility';
 
 // GET - 取得加班警示（接近/超過上限員工）
 export async function GET(request: NextRequest) {
@@ -70,6 +71,7 @@ export async function GET(request: NextRequest) {
         }
       }
     });
+    const overtimeEligibility = await calculateOvertimeRequestsEligibility(approvedOvertime);
 
     // 按員工彙總
     const employeeHours: Record<number, {
@@ -86,8 +88,15 @@ export async function GET(request: NextRequest) {
           requests: 0
         };
       }
-      employeeHours[overtime.employeeId].totalHours += overtime.totalHours;
       employeeHours[overtime.employeeId].requests += 1;
+    }
+
+    for (const eligibility of overtimeEligibility.byEmployeeDate.values()) {
+      if (employeeHours[eligibility.employeeId]) {
+        employeeHours[eligibility.employeeId].totalHours = Math.round(
+          (employeeHours[eligibility.employeeId].totalHours + eligibility.effectiveHours) * 100
+        ) / 100;
+      }
     }
 
     // 分類警示

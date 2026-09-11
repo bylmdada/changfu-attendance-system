@@ -6,6 +6,7 @@ import { validateCSRF } from '@/lib/csrf';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
 import { createApprovalForRequest } from '@/lib/approval-helper';
+import { findActiveShiftDefinition } from '@/lib/shift-definition-service';
 
 jest.mock('@/lib/database', () => ({
   prisma: {
@@ -36,12 +37,17 @@ jest.mock('@/lib/approval-helper', () => ({
   createApprovalForRequest: jest.fn(),
 }));
 
+jest.mock('@/lib/shift-definition-service', () => ({
+  findActiveShiftDefinition: jest.fn(),
+}));
+
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
 const mockValidateCSRF = validateCSRF as jest.MockedFunction<typeof validateCSRF>;
 const mockCheckRateLimit = checkRateLimit as jest.MockedFunction<typeof checkRateLimit>;
 const mockCheckAttendanceFreeze = checkAttendanceFreeze as jest.MockedFunction<typeof checkAttendanceFreeze>;
 const mockCreateApprovalForRequest = createApprovalForRequest as jest.MockedFunction<typeof createApprovalForRequest>;
+const mockFindActiveShiftDefinition = findActiveShiftDefinition as jest.MockedFunction<typeof findActiveShiftDefinition>;
 
 describe('shift exchanges route guards', () => {
   beforeEach(() => {
@@ -50,6 +56,7 @@ describe('shift exchanges route guards', () => {
     mockValidateCSRF.mockResolvedValue({ valid: true } as never);
     mockCheckAttendanceFreeze.mockResolvedValue({ isFrozen: false } as never);
     mockCreateApprovalForRequest.mockResolvedValue(undefined as never);
+    mockFindActiveShiftDefinition.mockResolvedValue({ code: 'B' } as never);
   });
 
   it('rejects malformed requesterId on GET before querying Prisma', async () => {
@@ -145,5 +152,49 @@ describe('shift exchanges route guards', () => {
     expect(payload.error).toBe('無效的 JSON 格式');
     expect(mockPrisma.shiftExchangeRequest.create).not.toHaveBeenCalled();
     expect(mockCreateApprovalForRequest).not.toHaveBeenCalled();
+  });
+
+  it('stores shift data in dedicated fields and keeps the reason as plain text', async () => {
+    mockGetUserFromRequest.mockResolvedValue({
+      role: 'EMPLOYEE',
+      employeeId: 10,
+      userId: 110,
+    } as never);
+    mockPrisma.shiftExchangeRequest.create.mockResolvedValue({
+      id: 1,
+      requesterId: 10,
+      targetEmployeeId: 10,
+      originalWorkDate: '2026-07-09',
+      targetWorkDate: '2026-07-09',
+      requestReason: '家庭需求',
+      originalShiftType: 'A',
+      newShiftType: 'B',
+      leaveType: null,
+      status: 'PENDING',
+      createdAt: new Date('2026-07-09T00:00:00Z'),
+      requester: { id: 10, employeeId: 'E010', name: '測試員工', department: '測試部', position: '職員' },
+      targetEmployee: { id: 10, employeeId: 'E010', name: '測試員工', department: '測試部', position: '職員' },
+    } as never);
+
+    const response = await POST(new NextRequest('http://localhost:3000/api/shift-exchanges', {
+      method: 'POST',
+      headers: { cookie: 'token=session-token', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        shiftDate: '2026-07-09',
+        originalShiftType: 'A',
+        newShiftType: 'B',
+        reason: '家庭需求',
+      }),
+    }));
+
+    expect(response.status).toBe(201);
+    expect(mockPrisma.shiftExchangeRequest.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        requestReason: '家庭需求',
+        originalShiftType: 'A',
+        newShiftType: 'B',
+        leaveType: null,
+      }),
+    }));
   });
 });

@@ -23,6 +23,12 @@ import {
   buildInfectionControlClockData,
   parseInfectionControlInput,
 } from '@/lib/attendance-infection-control';
+import { getAttendanceRegularTimeExclusions } from '@/lib/attendance-leave-hours';
+import {
+  indexApprovedOvertimeRequests,
+  resolveAttendanceOvertimeType,
+  resolveApprovedAttendanceOvertime,
+} from '@/lib/approved-overtime';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -370,16 +376,72 @@ export async function POST(request: NextRequest) {
         if (existingAttendance.clockInTime) {
           const clockInTime = new Date(existingAttendance.clockInTime);
           const clockOutTime = new Date(currentTime);
+          const leaveRequests = await prisma.leaveRequest.findMany({
+            where: {
+              employeeId: user.employee.id,
+              voidedAt: null,
+              OR: [
+                { status: 'APPROVED' },
+                { status: 'PENDING_ADMIN', managerOpinion: 'AGREE' },
+              ],
+              startDate: { lt: todayEnd },
+              endDate: { gt: todayStart },
+            },
+            select: {
+              startDate: true,
+              endDate: true,
+              status: true,
+              managerOpinion: true,
+              voidedAt: true,
+            },
+          });
           const hours = calculateAttendanceHours(
             clockInTime,
             clockOutTime,
             todaySchedule?.workHours ?? undefined,
-            todaySchedule?.breakTime || 0
+            todaySchedule?.breakTime || 0,
+            {
+              startTime: todaySchedule?.startTime,
+              endTime: todaySchedule?.endTime,
+              workDate: todayStart,
+              regularTimeExclusions: getAttendanceRegularTimeExclusions(leaveRequests),
+            }
+          );
+          const approvedOvertimeRequests = await prisma.overtimeRequest.findMany({
+            where: {
+              employeeId: user.employee.id,
+              status: 'APPROVED',
+              overtimeDate: { gte: todayStart, lt: todayEnd },
+            },
+            select: {
+              id: true,
+              employeeId: true,
+              overtimeDate: true,
+              totalHours: true,
+              compensationType: true,
+            },
+          });
+          const resolvedOvertime = resolveApprovedAttendanceOvertime(
+            {
+              employeeId: user.employee.id,
+              workDate: todayStart,
+              regularHours: hours.regularHours,
+              actualWorkHours: hours.totalHours,
+              overtimeHours: hours.overtimeHours,
+              clockInOvertimeId: existingAttendance.clockInOvertimeId,
+              clockOutOvertimeId: existingAttendance.clockOutOvertimeId,
+              overtimeType: resolveAttendanceOvertimeType({
+                shiftType: todaySchedule?.shiftType,
+                workDate: todayStart,
+              }),
+            },
+            indexApprovedOvertimeRequests(approvedOvertimeRequests),
+            0
           );
 
           workHours = hours.totalHours;
-          regularHours = hours.regularHours;
-          overtimeHours = hours.overtimeHours;
+          regularHours = resolvedOvertime.regularHours;
+          overtimeHours = resolvedOvertime.effectiveHours;
         }
 
         // GPS 位置數據 - 已恢復功能

@@ -5,6 +5,7 @@ import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { safeParseJSON } from '@/lib/validation';
 import { safeParseSystemSettingsValue } from '@/lib/system-settings-json';
+import { logSystemSettingsChange } from '@/lib/system-settings-audit';
 
 const DEFAULT_SETTINGS = {
   enabled: false,
@@ -203,6 +204,16 @@ export async function POST(request: NextRequest) {
         }
       });
     }
+
+    await logSystemSettingsChange({
+      request,
+      user: authResult.user,
+      settingKey: 'email-notification',
+      description: 'Email 通知設定變更',
+      oldValue: baseSettings,
+      newValue: mapStoredSettings(settings),
+      targetId: settings.id,
+    });
 
     return NextResponse.json({
       success: true,

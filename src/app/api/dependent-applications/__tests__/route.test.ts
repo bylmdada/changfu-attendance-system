@@ -4,8 +4,12 @@ jest.mock('@/lib/database', () => ({
       findUnique: jest.fn(),
       updateMany: jest.fn(),
     },
+    employee: {
+      update: jest.fn(),
+    },
     healthInsuranceDependent: {
       findFirst: jest.fn(),
+      count: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
       updateMany: jest.fn(),
@@ -65,9 +69,13 @@ describe('dependent applications review body guards', () => {
       },
       healthInsuranceDependent: {
         findFirst: mockPrisma.healthInsuranceDependent.findFirst,
+        count: mockPrisma.healthInsuranceDependent.count,
         create: mockPrisma.healthInsuranceDependent.create,
         update: mockPrisma.healthInsuranceDependent.update,
         updateMany: mockPrisma.healthInsuranceDependent.updateMany,
+      },
+      employee: {
+        update: mockPrisma.employee.update,
       },
       dependentEnrollmentLog: {
         create: mockPrisma.dependentEnrollmentLog.create,
@@ -86,8 +94,10 @@ describe('dependent applications review body guards', () => {
     mockPrisma.dependentApplication.updateMany.mockResolvedValue({ count: 1 } as never);
     mockPrisma.healthInsuranceDependent.findFirst.mockResolvedValue(null as never);
     mockPrisma.healthInsuranceDependent.create.mockResolvedValue({ id: 88 } as never);
+    mockPrisma.healthInsuranceDependent.count.mockResolvedValue(1 as never);
     mockPrisma.healthInsuranceDependent.update.mockResolvedValue({ id: 88 } as never);
     mockPrisma.healthInsuranceDependent.updateMany.mockResolvedValue({ count: 1 } as never);
+    mockPrisma.employee.update.mockResolvedValue({ id: 10, dependents: 1 } as never);
     mockPrisma.dependentEnrollmentLog.create.mockResolvedValue({ id: 1 } as never);
     mockPrisma.dependentHistoryLog.create.mockResolvedValue({ id: 1 } as never);
     mockPrisma.approvalInstance.findFirst.mockResolvedValue(null as never);

@@ -14,6 +14,7 @@ import {
   Edit2
 } from 'lucide-react';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import ConfirmDialog from '@/components/ConfirmDialog';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 
 interface DisasterDayOff {
@@ -77,6 +78,7 @@ export default function DisasterDayOffPage() {
   // 新增表單
   const [showModal, setShowModal] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<DisasterDayOff | null>(null);
   const [formData, setFormData] = useState({
     disasterDate: '',
     numberOfDays: 1, // 天數（連續天災用）
@@ -213,19 +215,18 @@ export default function DisasterDayOffPage() {
   };
 
   // 刪除記錄
-  const handleDelete = async (id: number, date: string) => {
-    if (!confirm(`確定要刪除 ${date} 的天災假記錄嗎？\n\n系統將自動恢復員工原本的班別。`)) {
-      return;
-    }
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
 
     try {
-      const response = await fetchJSONWithCSRF(`/api/disaster-day-off?id=${id}`, {
+      const response = await fetchJSONWithCSRF(`/api/disaster-day-off?id=${deleteTarget.id}`, {
         method: 'DELETE'
       });
 
       const data = await response.json();
       if (response.ok) {
         showToast('success', data.message);
+        setDeleteTarget(null);
         fetchRecords();
       } else {
         showToast('error', data.error || '刪除失敗');
@@ -457,7 +458,7 @@ export default function DisasterDayOffPage() {
                     )}
                     {currentUser?.role === 'ADMIN' && (
                       <button
-                        onClick={() => handleDelete(record.id, record.disasterDate)}
+                        onClick={() => setDeleteTarget(record)}
                         className="p-2 text-red-600 hover:bg-red-50 rounded-lg"
                         title="刪除"
                       >
@@ -830,6 +831,21 @@ export default function DisasterDayOffPage() {
             {toast.message}
           </div>
         )}
+
+        <ConfirmDialog
+          open={!!deleteTarget}
+          title="刪除天災假記錄"
+          message={
+            deleteTarget
+              ? `確定要刪除 ${deleteTarget.disasterDate} 的天災假記錄嗎？\n\n系統將自動恢復員工原本的班別。`
+              : ''
+          }
+          confirmLabel="刪除"
+          cancelLabel="取消"
+          tone="danger"
+          onConfirm={handleDelete}
+          onCancel={() => setDeleteTarget(null)}
+        />
       </div>
     </AuthenticatedLayout>
   );

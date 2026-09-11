@@ -3,6 +3,15 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { getManageableDepartments } from '@/lib/schedule-management-permissions';
+import { getStoredOrCalculatedAttendanceHours } from '@/lib/work-hours';
+import { getStoredOvertimeCalculationSettings } from '@/lib/overtime-settings';
+import {
+  indexApprovedOvertimeRequests,
+  resolveAttendanceOvertimeType,
+  resolveApprovedAttendanceOvertime,
+} from '@/lib/approved-overtime';
+import { toTaiwanDateStr } from '@/lib/timezone';
+import { getAttendanceRegularTimeExclusions } from '@/lib/attendance-leave-hours';
 
 function validateIntegerQueryParam(
   value: string | null,
@@ -173,6 +182,32 @@ export async function GET(request: NextRequest) {
       }
     });
 
+    const [schedules, overtimeSettings] = await Promise.all([
+      prisma.schedule.findMany({
+        where: {
+          employeeId: employeeIdFilter,
+          workDate: {
+            gte: `${year}-${String(month).padStart(2, '0')}-01`,
+            lte: `${year}-${String(month).padStart(2, '0')}-${String(endDate.getDate()).padStart(2, '0')}`,
+          },
+        },
+        select: {
+          employeeId: true,
+          workDate: true,
+          shiftType: true,
+          startTime: true,
+          endTime: true,
+          breakTime: true,
+          workHours: true,
+        },
+      }),
+      getStoredOvertimeCalculationSettings(),
+    ]);
+    const scheduleByEmployeeDate = new Map(
+      schedules.map(schedule => [`${schedule.employeeId}-${schedule.workDate}`, schedule])
+    );
+    const approvedOvertimeIndex = indexApprovedOvertimeRequests(overtimeRequests);
+
     // 計算工作日數
     let workDays = 0;
     for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
@@ -186,7 +221,36 @@ export async function GET(request: NextRequest) {
     const reportData = employees.map(emp => {
       const empAttendance = attendanceRecords.filter(r => r.employeeId === emp.id);
       const empLeaves = leaveRequests.filter(r => r.employeeId === emp.id);
-      const empOvertime = overtimeRequests.filter(r => r.employeeId === emp.id);
+      const resolvedAttendance = empAttendance.map(record => {
+        const schedule = scheduleByEmployeeDate.get(`${record.employeeId}-${toTaiwanDateStr(record.workDate)}`);
+        const hours = getStoredOrCalculatedAttendanceHours({
+          ...record,
+          breakTime: schedule?.breakTime,
+          scheduledWorkHours: schedule?.workHours,
+          scheduledStart: schedule?.startTime,
+          scheduledEnd: schedule?.endTime,
+          regularTimeExclusions: getAttendanceRegularTimeExclusions(empLeaves),
+        });
+        const overtime = resolveApprovedAttendanceOvertime(
+          {
+            employeeId: record.employeeId,
+            workDate: record.workDate,
+            regularHours: hours.regularHours,
+            actualWorkHours: hours.totalHours,
+            overtimeHours: hours.overtimeHours,
+            clockInOvertimeId: record.clockInOvertimeId,
+            clockOutOvertimeId: record.clockOutOvertimeId,
+            overtimeType: resolveAttendanceOvertimeType({
+              shiftType: schedule?.shiftType,
+              workDate: record.workDate,
+            }),
+          },
+          approvedOvertimeIndex,
+          overtimeSettings.overtimeMinUnit
+        );
+
+        return { record, hours, overtime };
+      });
 
       // 計算出勤天數
       const attendedDays = empAttendance.filter(r => r.clockInTime).length;
@@ -206,18 +270,13 @@ export async function GET(request: NextRequest) {
       }).length;
 
       // 計算總工時（根據打卡時間計算）
-      const totalWorkHours = empAttendance.reduce((sum, r) => {
-        if (r.clockInTime && r.clockOutTime) {
-          const clockIn = new Date(r.clockInTime);
-          const clockOut = new Date(r.clockOutTime);
-          const hours = (clockOut.getTime() - clockIn.getTime()) / (1000 * 60 * 60);
-          return sum + Math.max(0, hours);
-        }
-        return sum;
-      }, 0);
+      const totalWorkHours = resolvedAttendance.reduce((sum, item) => sum + item.hours.totalHours, 0);
 
-      // 計算加班時數
-      const totalOvertimeHours = empOvertime.reduce((sum, r) => sum + r.totalHours, 0);
+      // 核准申請是上限；報表只計入實際且符合法定門檻的加班時數。
+      const totalOvertimeHours = resolvedAttendance.reduce(
+        (sum, item) => sum + item.overtime.effectiveHours,
+        0
+      );
 
       // 計算請假天數
       const totalLeaveDays = empLeaves.reduce((sum, r) => sum + (r.totalDays || 0), 0);
@@ -234,19 +293,14 @@ export async function GET(request: NextRequest) {
         totalOvertimeHours,
         totalLeaveDays,
         attendanceRate: workDays > 0 ? Math.round((attendedDays / workDays) * 100) : 0,
-        dailyRecords: empAttendance.map(r => {
-          // 計算單日工時
-          let dailyHours = 0;
-          if (r.clockInTime && r.clockOutTime) {
-            const clockIn = new Date(r.clockInTime);
-            const clockOut = new Date(r.clockOutTime);
-            dailyHours = Math.round((clockOut.getTime() - clockIn.getTime()) / (1000 * 60 * 60) * 10) / 10;
-          }
+        dailyRecords: resolvedAttendance.map(({ record: r, hours, overtime }) => {
           return {
             date: r.workDate,
             clockIn: r.clockInTime,
             clockOut: r.clockOutTime,
-            workHours: dailyHours,
+            workHours: hours.totalHours,
+            regularHours: overtime.regularHours,
+            overtimeHours: overtime.effectiveHours,
             status: r.status,
             note: r.notes
           };

@@ -1,10 +1,30 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
+import {
+  getStoredIncomeTaxManagementSettings,
+  resolvePayrollIncomeTaxDisplayAmounts,
+} from '@/lib/income-tax-settings';
 import { getEmployeePDFPassword, getPasswordHint, PDFSecurityConfig, getDefaultSecurityConfig } from '@/lib/pdf-security';
 import { LOGO_BASE64 } from '@/lib/logoBase64';
 import { escapeHtml } from '@/lib/html';
 import { parseIntegerQueryParam } from '@/lib/query-params';
+import { buildPayslipHourSummary, type PayslipHourSummary } from '@/lib/payroll-payslip-hours';
+
+interface StoredBonusDetail {
+  bonusType?: string;
+  bonusTypeName?: string;
+  amount?: number;
+}
+
+interface StoredAttendancePenaltyDetail {
+  workDate?: string;
+  status?: string;
+  deductionHours?: number;
+  hourlyWage?: number;
+  amount?: number;
+  formula?: string;
+}
 
 interface PayslipData {
   companyInfo: {
@@ -27,11 +47,16 @@ interface PayslipData {
     regular: number;
     overtime: number;
     total: number;
-  };
+  } & PayslipHourSummary;
   salary: {
     basePay: number;
     overtimePay: number;
     grossPay: number;
+    bonuses: Array<{
+      bonusType: string;
+      bonusTypeName: string;
+      amount: number;
+    }>;
     adjustments: Array<{
       id: number;
       description: string;
@@ -42,6 +67,16 @@ interface PayslipData {
     laborInsurance: number;
     healthInsurance: number;
     supplementaryInsurance: number;
+    bonusSupplementaryInsurance: number;
+    attendancePenalty: {
+      totalAmount: number;
+      details: Array<{
+        workDate: string;
+        status: string;
+        amount: number;
+        formula: string;
+      }>;
+    };
     incomeTax: number;
     total: number;
     adjustments: Array<{
@@ -52,6 +87,85 @@ interface PayslipData {
   };
   netPay: number;
   generatedAt: string;
+}
+
+function parsePayrollJsonField<T>(value: unknown, fallback: T): T {
+  if (!value) {
+    return fallback;
+  }
+
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value) as T;
+    } catch {
+      return fallback;
+    }
+  }
+
+  return value as T;
+}
+
+function getStoredBonusDetails(payrollRecord: {
+  deductionDetails?: unknown;
+}) {
+  const deductionDetails = parsePayrollJsonField<Record<string, unknown>>(payrollRecord.deductionDetails, {});
+  const rawBonusDetails = Array.isArray(deductionDetails.bonusDetails)
+    ? deductionDetails.bonusDetails
+    : [];
+  const bonusSupplementaryInsurance = typeof deductionDetails.bonusSupplementaryInsurance === 'number'
+    ? deductionDetails.bonusSupplementaryInsurance
+    : 0;
+
+  const bonusDetails = rawBonusDetails
+    .filter((detail): detail is StoredBonusDetail =>
+      typeof detail === 'object' && detail !== null
+    )
+    .map(detail => ({
+      bonusType: typeof detail.bonusType === 'string' ? detail.bonusType : 'OTHER',
+      bonusTypeName:
+        typeof detail.bonusTypeName === 'string' && detail.bonusTypeName.trim() !== ''
+          ? detail.bonusTypeName
+          : '獎金',
+      amount: typeof detail.amount === 'number' ? detail.amount : 0,
+    }))
+    .filter(detail => detail.amount !== 0);
+
+  return {
+    bonusDetails,
+    bonusSupplementaryInsurance,
+  };
+}
+
+function getStoredAttendancePenalty(payrollRecord: {
+  deductionDetails?: unknown;
+}) {
+  const deductionDetails = parsePayrollJsonField<Record<string, unknown>>(payrollRecord.deductionDetails, {});
+  const rawPenalty = deductionDetails.attendancePenalty;
+
+  if (typeof rawPenalty !== 'object' || rawPenalty === null) {
+    return { totalAmount: 0, details: [] };
+  }
+
+  const penalty = rawPenalty as { totalAmount?: unknown; details?: unknown };
+  const details = Array.isArray(penalty.details)
+    ? penalty.details
+        .filter((detail): detail is StoredAttendancePenaltyDetail =>
+          typeof detail === 'object' && detail !== null
+        )
+        .map(detail => ({
+          workDate: typeof detail.workDate === 'string' ? detail.workDate : '',
+          status: typeof detail.status === 'string' ? detail.status : '考勤異常',
+          amount: typeof detail.amount === 'number' ? detail.amount : 0,
+          formula: typeof detail.formula === 'string' ? detail.formula : '',
+        }))
+        .filter(detail => detail.amount > 0)
+    : [];
+
+  const totalAmount = typeof penalty.totalAmount === 'number'
+    ? penalty.totalAmount
+    : details.reduce((sum, detail) => sum + detail.amount, 0);
+
+  return { totalAmount, details };
 }
 
 function parsePayrollId(payrollId: string) {
@@ -120,6 +234,20 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: '無權限查看此薪資條' }, { status: 403 });
     }
 
+    const incomeTaxSettings = await getStoredIncomeTaxManagementSettings();
+    const displayAmounts = resolvePayrollIncomeTaxDisplayAmounts(
+      {
+        incomeTax: payrollRecord.incomeTax,
+        totalDeductions: payrollRecord.totalDeductions,
+        netPay: payrollRecord.netPay,
+      },
+      incomeTaxSettings
+    );
+    const { bonusDetails, bonusSupplementaryInsurance } = getStoredBonusDetails(payrollRecord);
+    const attendancePenalty = getStoredAttendancePenalty(payrollRecord);
+
+    const hourSummary = await buildPayslipHourSummary(payrollRecord);
+
     // 生成薪資條數據
     const payslipData = {
       companyInfo: {
@@ -139,12 +267,14 @@ export async function GET(request: NextRequest) {
       workHours: {
         regular: payrollRecord.regularHours,
         overtime: payrollRecord.overtimeHours,
-        total: payrollRecord.regularHours + payrollRecord.overtimeHours
+        total: payrollRecord.regularHours + payrollRecord.overtimeHours,
+        ...hourSummary,
       },
       salary: {
         basePay: payrollRecord.basePay,
         overtimePay: payrollRecord.overtimePay,
         grossPay: payrollRecord.grossPay,
+        bonuses: bonusDetails,
         adjustments: payrollRecord.adjustments
           .filter(adjustment => adjustment.type === 'SUPPLEMENT')
           .map(adjustment => ({
@@ -156,9 +286,14 @@ export async function GET(request: NextRequest) {
       deductions: {
         laborInsurance: payrollRecord.laborInsurance,
         healthInsurance: payrollRecord.healthInsurance,
-        supplementaryInsurance: payrollRecord.supplementaryInsurance,
-        incomeTax: payrollRecord.incomeTax,
-        total: payrollRecord.totalDeductions,
+        supplementaryInsurance: Math.max(
+          0,
+          payrollRecord.supplementaryInsurance - bonusSupplementaryInsurance
+        ),
+        bonusSupplementaryInsurance,
+        attendancePenalty,
+        incomeTax: displayAmounts.incomeTax,
+        total: displayAmounts.totalDeductions,
         adjustments: payrollRecord.adjustments
           .filter(adjustment => adjustment.type === 'DEDUCTION')
           .map(adjustment => ({
@@ -167,7 +302,7 @@ export async function GET(request: NextRequest) {
             amount: adjustment.amount
           }))
       },
-      netPay: payrollRecord.netPay,
+      netPay: displayAmounts.netPay,
       generatedAt: new Date().toISOString()
     };
 
@@ -233,10 +368,28 @@ function generatePayslipHTML(payslip: PayslipData) {
   const safeEmployeePosition = escapeHtml(payslip.employee.position || 'N/A');
   const safeMonthName = escapeHtml(payslip.period.monthName);
   const safeGeneratedAt = escapeHtml(new Date(payslip.generatedAt).toLocaleString('zh-TW'));
+  const formatHours = (hours: number) => `${escapeHtml(hours.toLocaleString('zh-TW', { maximumFractionDigits: 2 }))} 小時`;
+  const overtimeBreakdownRows = [
+    { label: '平日加班', value: payslip.workHours.overtimeBreakdown.weekday },
+    { label: '休息日加班', value: payslip.workHours.overtimeBreakdown.restDay },
+    { label: '國定假日加班', value: payslip.workHours.overtimeBreakdown.holiday },
+    { label: '例假日加班', value: payslip.workHours.overtimeBreakdown.mandatoryRest },
+  ]
+    .filter(item => item.value > 0)
+    .map(item => `
+               <div class="info-item sub-item"><span class="info-label">${escapeHtml(item.label)}</span><span class="info-value">${formatHours(item.value)}</span></div>
+    `)
+    .join('');
   const incomeAdjustmentRows = payslip.salary.adjustments.map(adjustment => `
               <tr>
                 <td>${escapeHtml(adjustment.description)}</td>
                 <td class="income-amount">NT$ ${adjustment.amount.toLocaleString()}</td>
+              </tr>
+  `).join('');
+  const bonusRows = payslip.salary.bonuses.map(bonus => `
+              <tr>
+                <td>${escapeHtml(bonus.bonusTypeName)}</td>
+                <td class="income-amount">NT$ ${bonus.amount.toLocaleString()}</td>
               </tr>
   `).join('');
   const deductionAdjustmentRows = payslip.deductions.adjustments.map(adjustment => `
@@ -245,6 +398,46 @@ function generatePayslipHTML(payslip: PayslipData) {
                 <td class="deduction-amount">NT$ ${adjustment.amount.toLocaleString()}</td>
               </tr>
   `).join('');
+  const overtimePayRow = payslip.salary.overtimePay > 0 ? `
+              <tr>
+                <td>加班費</td>
+                <td class="income-amount">NT$ ${payslip.salary.overtimePay.toLocaleString()}</td>
+              </tr>
+  ` : '';
+  const incomeTaxRow = payslip.deductions.incomeTax > 0 ? `
+              <tr>
+                <td>所得稅</td>
+                <td class="deduction-amount">NT$ ${payslip.deductions.incomeTax.toLocaleString()}</td>
+              </tr>
+  ` : '';
+  const salarySupplementaryInsuranceRow = payslip.deductions.supplementaryInsurance > 0 ? `
+              <tr>
+                <td>補充保費</td>
+                <td class="deduction-amount">NT$ ${payslip.deductions.supplementaryInsurance.toLocaleString()}</td>
+              </tr>
+  ` : '';
+  const bonusSupplementaryInsuranceRow = payslip.deductions.bonusSupplementaryInsurance > 0 ? `
+              <tr>
+                <td>獎金補充保費</td>
+                <td class="deduction-amount">NT$ ${payslip.deductions.bonusSupplementaryInsurance.toLocaleString()}</td>
+              </tr>
+  ` : '';
+  const attendancePenaltyRow = payslip.deductions.attendancePenalty.totalAmount > 0 ? `
+              <tr>
+                <td>考勤扣薪</td>
+                <td class="deduction-amount">NT$ ${payslip.deductions.attendancePenalty.totalAmount.toLocaleString()}</td>
+              </tr>
+  ` : '';
+  const attendancePenaltyDetails = payslip.deductions.attendancePenalty.details.length > 0 ? `
+            <div class="detail-note">
+              <div class="detail-note-title">考勤扣薪計算明細</div>
+              ${payslip.deductions.attendancePenalty.details.map(detail => `
+                <div class="detail-note-line">
+                  ${escapeHtml(detail.workDate)} ${escapeHtml(detail.status)}：${escapeHtml(detail.formula)}
+                </div>
+              `).join('')}
+            </div>
+  ` : '';
 
   return `
     <!DOCTYPE html>
@@ -339,6 +532,15 @@ function generatePayslipHTML(payslip: PayslipData) {
           padding: 3px 0;
           font-size: 11px;
         }
+        .sub-item { padding-left: 10px; font-size: 10px; }
+        .hours-note {
+          margin-top: 6px;
+          padding-top: 6px;
+          border-top: 1px dashed #d1d5db;
+          font-size: 10px;
+          line-height: 1.45;
+          color: #6b7280;
+        }
         .info-label { color: #6b7280; }
         .info-value { font-weight: 500; color: #111827; }
         /* 薪資明細區 */
@@ -403,6 +605,23 @@ function generatePayslipHTML(payslip: PayslipData) {
           font-size: 10px;
           display: inline-block;
         }
+        .detail-note {
+          margin-top: 8px;
+          padding: 8px 10px;
+          background: #fff7ed;
+          border: 1px solid #fed7aa;
+          border-radius: 6px;
+          color: #9a3412;
+          font-size: 10px;
+          line-height: 1.55;
+        }
+        .detail-note-title {
+          font-weight: 700;
+          margin-bottom: 4px;
+        }
+        .detail-note-line {
+          margin-top: 2px;
+        }
         /* 列印樣式 */
         @media print {
           body { background: white; padding: 0; margin: 0; }
@@ -440,9 +659,17 @@ function generatePayslipHTML(payslip: PayslipData) {
              </div>
             <div class="info-card">
               <h3>⏰ 工時統計</h3>
-              <div class="info-item"><span class="info-label">正常工時</span><span class="info-value">${payslip.workHours.regular} 小時</span></div>
-              <div class="info-item"><span class="info-label">加班工時</span><span class="info-value">${payslip.workHours.overtime} 小時</span></div>
-              <div class="info-item"><span class="info-label">總工時</span><span class="info-value">${payslip.workHours.total} 小時</span></div>
+              <div class="info-item"><span class="info-label">應上工時</span><span class="info-value">${formatHours(payslip.workHours.expectedWorkHours)}</span></div>
+              <div class="info-item"><span class="info-label">實際工時</span><span class="info-value">${formatHours(payslip.workHours.actualWorkHours)}</span></div>
+              <div class="info-item"><span class="info-label">特休時數</span><span class="info-value">${formatHours(payslip.workHours.specialLeaveHours)}</span></div>
+              <div class="info-item"><span class="info-label">補休時數</span><span class="info-value">${formatHours(payslip.workHours.compLeaveHours)}</span></div>
+              <div class="info-item"><span class="info-label">國定假日時數</span><span class="info-value">${formatHours(payslip.workHours.nationalHolidayHours)}</span></div>
+              <div class="info-item"><span class="info-label">排班加班</span><span class="info-value">${formatHours(payslip.workHours.scheduledOvertimeHours)}</span></div>
+              <div class="info-item"><span class="info-label">薪資計算正常工時</span><span class="info-value">${formatHours(payslip.workHours.payrollRegularHours)}</span></div>
+              <div class="info-item"><span class="info-label">薪資計算加班工時</span><span class="info-value">${formatHours(payslip.workHours.payrollOvertimeHours)}</span></div>
+              ${overtimeBreakdownRows}
+              <div class="info-item"><span class="info-label">計薪總工時</span><span class="info-value">${formatHours(payslip.workHours.payrollTotalHours)}</span></div>
+              <div class="hours-note">國定假日時數為實際工時分類，不重複加總；特休、補休已納入應上工時與薪資計算正常工時。</div>
             </div>
           </div>
 
@@ -455,10 +682,8 @@ function generatePayslipHTML(payslip: PayslipData) {
                 <td>基本薪資</td>
                 <td class="income-amount">NT$ ${payslip.salary.basePay.toLocaleString()}</td>
               </tr>
-              <tr>
-                <td>加班費</td>
-                <td class="income-amount">NT$ ${payslip.salary.overtimePay.toLocaleString()}</td>
-              </tr>
+              ${overtimePayRow}
+              ${bonusRows}
               ${incomeAdjustmentRows}
               <tr class="total-row">
                 <td>應發合計</td>
@@ -477,20 +702,17 @@ function generatePayslipHTML(payslip: PayslipData) {
                 <td>健康保險</td>
                 <td class="deduction-amount">NT$ ${payslip.deductions.healthInsurance.toLocaleString()}</td>
               </tr>
-              <tr>
-                <td>補充保費</td>
-                <td class="deduction-amount">NT$ ${payslip.deductions.supplementaryInsurance.toLocaleString()}</td>
-              </tr>
-              <tr>
-                <td>所得稅</td>
-                <td class="deduction-amount">NT$ ${payslip.deductions.incomeTax.toLocaleString()}</td>
-              </tr>
+              ${salarySupplementaryInsuranceRow}
+              ${bonusSupplementaryInsuranceRow}
+              ${incomeTaxRow}
+              ${attendancePenaltyRow}
               ${deductionAdjustmentRows}
               <tr class="total-row">
                 <td>扣除合計</td>
                 <td class="deduction-amount">NT$ ${payslip.deductions.total.toLocaleString()}</td>
               </tr>
             </table>
+            ${attendancePenaltyDetails}
           </div>
 
           <!-- 實領薪資區 -->

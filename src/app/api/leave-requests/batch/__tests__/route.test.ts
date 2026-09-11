@@ -28,6 +28,11 @@ jest.mock('@/lib/csrf', () => ({
   validateCSRF: jest.fn(),
 }));
 
+jest.mock('@/lib/attendance-freeze', () => ({
+  checkAttendanceFreeze: jest.fn().mockResolvedValue({ isFrozen: false }),
+  getAttendanceFreezeError: jest.fn().mockReturnValue(null),
+}));
+
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockedGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
 const mockedValidateCSRF = validateCSRF as jest.MockedFunction<typeof validateCSRF>;
@@ -40,13 +45,25 @@ const transactionClient = {
     updateMany: jest.fn(),
   },
   schedule: {
+    findMany: jest.fn(),
     updateMany: jest.fn(),
   },
 };
 
+
+function accountingSchedules(args: { where: { workDate: { gte: string; lte: string } } }) {
+  const rows = [];
+  for (const day = new Date(args.where.workDate.gte); day <= new Date(args.where.workDate.lte); day.setUTCDate(day.getUTCDate() + 1)) {
+    rows.push({workDate: day.toISOString().slice(0,10), startTime:'09:00', endTime:'17:00', workHours:8, breakTime:0});
+  }
+  return Promise.resolve(rows);
+}
+
 describe('leave request batch route', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    transactionClient.schedule.findMany.mockImplementation(accountingSchedules);
+    transactionClient.annualLeave.updateMany.mockResolvedValue({ count: 1 });
     mockedValidateCSRF.mockResolvedValue({ valid: true } as never);
     mockedGetUserFromRequest.mockResolvedValue({
       role: 'ADMIN',
@@ -82,8 +99,8 @@ describe('leave request batch route', () => {
       employeeId: 10,
       leaveType: 'SICK_LEAVE',
       status: 'PENDING',
-      startDate: new Date('2026-04-01T00:00:00.000Z'),
-      endDate: new Date('2026-04-01T00:00:00.000Z'),
+      startDate: new Date('2026-04-01T01:00:00.000Z'),
+      endDate: new Date('2026-04-01T09:00:00.000Z'),
       employee: { id: 10 },
     } as never);
     transactionClient.leaveRequest.update.mockResolvedValue({ id: 1 } as never);
@@ -116,8 +133,8 @@ describe('leave request batch route', () => {
       employeeId: 10,
       leaveType: 'SICK_LEAVE',
       status: 'PENDING_ADMIN',
-      startDate: new Date('2026-04-03T00:00:00.000Z'),
-      endDate: new Date('2026-04-03T00:00:00.000Z'),
+      startDate: new Date('2026-04-03T01:00:00.000Z'),
+      endDate: new Date('2026-04-03T09:00:00.000Z'),
       employee: { id: 10 },
     } as never);
     transactionClient.leaveRequest.update.mockResolvedValue({ id: 2 } as never);
@@ -140,7 +157,7 @@ describe('leave request batch route', () => {
     expect(payload.errors).toEqual([]);
     expect(transactionClient.leaveRequest.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 2 },
+        where: expect.objectContaining({ id: 2 }),
         data: expect.objectContaining({
           status: 'APPROVED',
           approvedBy: 77,
@@ -156,8 +173,8 @@ describe('leave request batch route', () => {
       employeeId: 10,
       leaveType: 'SICK_LEAVE',
       status: 'APPROVED',
-      startDate: new Date('2026-04-05T00:00:00.000Z'),
-      endDate: new Date('2026-04-05T00:00:00.000Z'),
+      startDate: new Date('2026-04-05T01:00:00.000Z'),
+      endDate: new Date('2026-04-05T09:00:00.000Z'),
       employee: { id: 10 },
     } as never);
 
@@ -206,8 +223,8 @@ describe('leave request batch route', () => {
       employeeId: 10,
       leaveType: 'SICK_LEAVE',
       status: 'PENDING',
-      startDate: new Date('2026-04-04T00:00:00.000Z'),
-      endDate: new Date('2026-04-04T00:00:00.000Z'),
+      startDate: new Date('2026-04-04T01:00:00.000Z'),
+      endDate: new Date('2026-04-04T09:00:00.000Z'),
       employee: { id: 10 },
     } as never);
     transactionClient.leaveRequest.update.mockResolvedValue({ id: 4 } as never);
@@ -228,7 +245,7 @@ describe('leave request batch route', () => {
     expect(payload.successCount).toBe(1);
     expect(transactionClient.leaveRequest.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 4 },
+        where: expect.objectContaining({ id: 4 }),
         data: expect.objectContaining({
           status: 'REJECTED',
           approvedBy: 77,
@@ -244,8 +261,8 @@ describe('leave request batch route', () => {
       employeeId: 10,
       leaveType: 'ANNUAL',
       status: 'PENDING',
-      startDate: new Date('2026-04-01T00:00:00.000Z'),
-      endDate: new Date('2026-04-02T00:00:00.000Z'),
+      startDate: new Date('2026-04-01T01:00:00.000Z'),
+      endDate: new Date('2026-04-02T09:00:00.000Z'),
       employee: { id: 10 },
     } as never);
     transactionClient.leaveRequest.update.mockResolvedValue({ id: 1 } as never);
@@ -268,39 +285,21 @@ describe('leave request batch route', () => {
     expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
     expect(mockPrisma.leaveRequest.update).not.toHaveBeenCalled();
     expect(mockPrisma.annualLeave.updateMany).not.toHaveBeenCalled();
-    expect(transactionClient.leaveRequest.update).toHaveBeenCalledTimes(1);
+    expect(transactionClient.leaveRequest.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: { annualLeaveAccounting: JSON.stringify({'2026-04-01':8, '2026-04-02':8}) },
+    }));
     expect(transactionClient.annualLeave.updateMany).toHaveBeenCalledWith({
       where: {
         employeeId: 10,
         year: 2026,
+        remainingDays: { gte: 2 },
       },
       data: {
         usedDays: { increment: 2 },
         remainingDays: { decrement: 2 },
       },
     });
-    expect(transactionClient.schedule.updateMany).toHaveBeenNthCalledWith(1, {
-      where: {
-        employeeId: 10,
-        workDate: '2026-04-01',
-      },
-      data: {
-        shiftType: 'FDL',
-        startTime: '',
-        endTime: '',
-      },
-    });
-    expect(transactionClient.schedule.updateMany).toHaveBeenNthCalledWith(2, {
-      where: {
-        employeeId: 10,
-        workDate: '2026-04-02',
-      },
-      data: {
-        shiftType: 'FDL',
-        startTime: '',
-        endTime: '',
-      },
-    });
+    expect(transactionClient.schedule.updateMany).toHaveBeenCalledWith(expect.objectContaining({ data: { specialLeaveHours: { increment: 8 } } }));
   });
 
   it('splits annual leave deductions by year in batch leave approvals that cross New Year', async () => {
@@ -309,8 +308,8 @@ describe('leave request batch route', () => {
       employeeId: 10,
       leaveType: 'ANNUAL_LEAVE',
       status: 'PENDING',
-      startDate: new Date('2026-12-31T00:00:00.000Z'),
-      endDate: new Date('2027-01-02T00:00:00.000Z'),
+      startDate: new Date('2026-12-31T01:00:00.000Z'),
+      endDate: new Date('2027-01-02T09:00:00.000Z'),
       employee: { id: 10 },
     } as never);
     transactionClient.leaveRequest.update.mockResolvedValue({ id: 3 } as never);
@@ -335,6 +334,7 @@ describe('leave request batch route', () => {
       where: {
         employeeId: 10,
         year: 2026,
+        remainingDays: { gte: 1 },
       },
       data: {
         usedDays: { increment: 1 },
@@ -345,45 +345,14 @@ describe('leave request batch route', () => {
       where: {
         employeeId: 10,
         year: 2027,
+        remainingDays: { gte: 2 },
       },
       data: {
         usedDays: { increment: 2 },
         remainingDays: { decrement: 2 },
       },
     });
-    expect(transactionClient.schedule.updateMany).toHaveBeenNthCalledWith(1, {
-      where: {
-        employeeId: 10,
-        workDate: '2026-12-31',
-      },
-      data: {
-        shiftType: 'FDL',
-        startTime: '',
-        endTime: '',
-      },
-    });
-    expect(transactionClient.schedule.updateMany).toHaveBeenNthCalledWith(2, {
-      where: {
-        employeeId: 10,
-        workDate: '2027-01-01',
-      },
-      data: {
-        shiftType: 'FDL',
-        startTime: '',
-        endTime: '',
-      },
-    });
-    expect(transactionClient.schedule.updateMany).toHaveBeenNthCalledWith(3, {
-      where: {
-        employeeId: 10,
-        workDate: '2027-01-02',
-      },
-      data: {
-        shiftType: 'FDL',
-        startTime: '',
-        endTime: '',
-      },
-    });
+    expect(transactionClient.schedule.updateMany).toHaveBeenCalledWith(expect.objectContaining({ data: { specialLeaveHours: { increment: 8 } } }));
   });
 
   it('rejects null POST bodies before processing batch payload', async () => {

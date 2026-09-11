@@ -5,6 +5,9 @@ import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
+import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
+import { getMissedClockWorkDate, removeMissedClockFromAttendance } from '@/lib/missed-clock-attendance';
+import { getPayrollImpactWarning } from '@/lib/payroll-impact-warning';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -73,19 +76,34 @@ export async function POST(
       return NextResponse.json({ error: '只能作廢已核准的申請' }, { status: 400 });
     }
 
-    await prisma.missedClockRequest.update({
-      where: { id: requestId },
-      data: {
-        status: 'VOIDED',
-        voidedBy: decoded.employeeId,
-        voidedAt: new Date(),
-        voidReason: reason.trim()
-      }
+    const freezeCheck = await checkAttendanceFreeze(getMissedClockWorkDate(missedClockRequest.workDate));
+    if (freezeCheck.isFrozen) {
+      return NextResponse.json({ error: '該月份已被凍結，無法作廢補卡申請' }, { status: 403 });
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.missedClockRequest.update({
+        where: { id: requestId },
+        data: {
+          status: 'VOIDED',
+          voidedBy: decoded.employeeId,
+          voidedAt: new Date(),
+          voidReason: reason.trim()
+        }
+      });
+
+      await removeMissedClockFromAttendance(tx, missedClockRequest);
+    });
+    const warning = await getPayrollImpactWarning(prisma, {
+      employeeId: missedClockRequest.employeeId,
+      startDate: getMissedClockWorkDate(missedClockRequest.workDate),
+      endDate: getMissedClockWorkDate(missedClockRequest.workDate),
     });
 
     return NextResponse.json({
       success: true,
-      message: '補卡申請已作廢'
+      message: '補卡申請已作廢',
+      warning,
     });
   } catch (error) {
     console.error('作廢補卡申請失敗:', error);

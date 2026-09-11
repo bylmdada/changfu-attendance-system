@@ -7,6 +7,10 @@ import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
 import { calculateOvertimePayForRequest, OvertimeType } from '@/lib/salary-utils';
 import { getTaiwanYearMonth } from '@/lib/timezone';
+import {
+  calculateOvertimeRequestEligibility,
+  getOvertimeEligibilityError,
+} from '@/lib/overtime-eligibility';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -111,6 +115,19 @@ export async function POST(request: NextRequest) {
 
     for (const overtimeRequest of reviewableRequests) {
       const approvedAt = new Date();
+      const eligibility = await calculateOvertimeRequestEligibility(overtimeRequest, {
+        overtimeType: requestedOvertimeType,
+      });
+      const eligibilityError = getOvertimeEligibilityError(eligibility);
+
+      if (eligibilityError) {
+        failedIds.push(overtimeRequest.id);
+        errors.push(`ID ${overtimeRequest.id}: ${eligibilityError}`);
+        continue;
+      }
+
+      const effectiveHours = eligibility.effectiveHours;
+      const effectiveOvertimeType = eligibility.overtimeType;
 
       if (overtimeRequest.compensationType === 'COMP_LEAVE') {
         await prisma.$transaction(async (tx) => {
@@ -120,6 +137,7 @@ export async function POST(request: NextRequest) {
               status: 'APPROVED',
               approvedBy: user.employeeId,
               approvedAt,
+              overtimeType: effectiveOvertimeType,
             }
           });
 
@@ -127,7 +145,7 @@ export async function POST(request: NextRequest) {
             data: {
               employeeId: overtimeRequest.employeeId,
               transactionType: 'EARN',
-              hours: overtimeRequest.totalHours,
+              hours: effectiveHours,
               referenceId: overtimeRequest.id,
               referenceType: 'OVERTIME',
               yearMonth: getTaiwanYearMonth(new Date(overtimeRequest.overtimeDate)),
@@ -139,11 +157,11 @@ export async function POST(request: NextRequest) {
           await tx.compLeaveBalance.upsert({
             where: { employeeId: overtimeRequest.employeeId },
             update: {
-              pendingEarn: { increment: overtimeRequest.totalHours }
+              pendingEarn: { increment: effectiveHours }
             },
             create: {
               employeeId: overtimeRequest.employeeId,
-              pendingEarn: overtimeRequest.totalHours,
+              pendingEarn: effectiveHours,
             }
           });
         });
@@ -152,18 +170,19 @@ export async function POST(request: NextRequest) {
         continue;
       }
 
-      let overtimeType: OvertimeType | undefined;
       let overtimePay: number | undefined;
       let hourlyRateUsed: number | undefined;
 
       if (overtimeRequest.compensationType === 'OVERTIME_PAY') {
-        overtimeType = requestedOvertimeType || 'WEEKDAY';
+        const payOvertimeType: OvertimeType = effectiveOvertimeType === 'MANDATORY_REST'
+          ? 'HOLIDAY'
+          : effectiveOvertimeType;
 
         const payResult = await calculateOvertimePayForRequest(
           overtimeRequest.employeeId,
           overtimeRequest.overtimeDate,
-          overtimeRequest.totalHours,
-          overtimeType
+          effectiveHours,
+          payOvertimeType
         );
 
         if (payResult.success) {
@@ -183,7 +202,7 @@ export async function POST(request: NextRequest) {
           status: 'APPROVED',
           approvedBy: user.employeeId,
           approvedAt,
-          ...(overtimeType ? { overtimeType } : {}),
+          overtimeType: effectiveOvertimeType,
           ...(overtimePay !== undefined ? { overtimePay } : {}),
           ...(hourlyRateUsed !== undefined ? { hourlyRateUsed } : {}),
         }

@@ -3,7 +3,11 @@ import { prisma } from '@/lib/database';
 import { guard, fail } from '@/lib/property-api';
 import { canAccessSite } from '@/lib/property-access';
 import { parsePositiveInt } from '@/lib/property-query';
-import { generateCode128PngBuffer, isCode128Compatible } from '@/lib/property-barcode';
+import {
+  buildPropertyBarcodeValue,
+  generateCode128PngBuffer,
+  isCode128Compatible,
+} from '@/lib/property-barcode';
 
 export async function GET(
   request: NextRequest,
@@ -17,17 +21,18 @@ export async function GET(
 
   const asset = await prisma.propertyAsset.findUnique({
     where: { id: assetId },
-    select: { siteId: true, assetCode: true },
+    select: { siteId: true, assetCode: true, site: { select: { code: true } } },
   });
   if (!asset) return fail('找不到資產', 404);
   if (!canAccessSite(g.ctx.access, asset.siteId)) return fail('無權限', 403);
-  if (!isCode128Compatible(asset.assetCode)) {
+  const barcodeValue = buildPropertyBarcodeValue(asset.site.code, asset.assetCode);
+  if (!isCode128Compatible(barcodeValue)) {
     return fail('財產編號不符合 CODE_128 條碼格式', 422);
   }
 
   let png: Buffer;
   try {
-    png = await generateCode128PngBuffer(asset.assetCode);
+    png = await generateCode128PngBuffer(barcodeValue);
   } catch (error) {
     console.error('財產條碼產生失敗:', error);
     return fail('條碼產生失敗', 500);

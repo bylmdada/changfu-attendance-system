@@ -90,6 +90,8 @@ export default function ScheduleConfirmSettingsPage() {
       });
 
       if (response.ok) {
+        const data = await response.json();
+        if (data.settings) setSettings(data.settings);
         setMessage({ type: 'success', text: '班表確認機制設定已儲存！' });
       } else {
         const error = await response.json();
@@ -120,7 +122,7 @@ export default function ScheduleConfirmSettingsPage() {
 
       <main className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* 標題 */}
-        <div className="flex items-center justify-between mb-6">
+        <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h1 className="text-3xl font-bold text-gray-900 flex items-center">
               <Calendar className="w-8 h-8 text-blue-600 mr-3" />
@@ -131,7 +133,7 @@ export default function ScheduleConfirmSettingsPage() {
           <button
             onClick={handleSave}
             disabled={saving}
-            className="flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
+            className="flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-6 py-3 text-white transition-colors hover:bg-blue-700 disabled:opacity-50 sm:w-auto"
           >
             {saving ? <Loader2 className="w-5 h-5 animate-spin" /> : <Save className="w-5 h-5" />}
             {saving ? '儲存中...' : '儲存設定'}
@@ -161,7 +163,7 @@ export default function ScheduleConfirmSettingsPage() {
               </h2>
             </div>
             <div className="p-6">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <span className="text-sm font-medium text-gray-900">啟用班表確認機制</span>
                   <p className="text-sm text-gray-500 mt-1">
@@ -170,8 +172,11 @@ export default function ScheduleConfirmSettingsPage() {
                 </div>
                 <button
                   type="button"
+                  role="switch"
+                  aria-label="啟用班表確認機制"
+                  aria-checked={settings.enabled}
                   onClick={() => setSettings({ ...settings, enabled: !settings.enabled })}
-                  className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
+                  className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out after:absolute after:-inset-x-1.5 after:-inset-y-2.5 after:content-[''] focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
                     settings.enabled ? 'bg-blue-600' : 'bg-gray-300'
                   }`}
                 >
@@ -194,7 +199,7 @@ export default function ScheduleConfirmSettingsPage() {
               </h2>
             </div>
             <div className="p-6">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <span className="text-sm font-medium text-gray-900">未確認班表阻止打卡</span>
                   <p className="text-sm text-gray-500 mt-1">
@@ -203,9 +208,16 @@ export default function ScheduleConfirmSettingsPage() {
                 </div>
                 <button
                   type="button"
-                  onClick={() => settings.enabled && setSettings({ ...settings, blockClock: !settings.blockClock })}
+                  role="switch"
+                  aria-label="未確認班表阻止打卡"
+                  aria-checked={settings.blockClock}
+                  onClick={() => settings.enabled && setSettings({
+                    ...settings,
+                    blockClock: !settings.blockClock,
+                    ...(!settings.blockClock ? { enableReminder: true } : {}),
+                  })}
                   disabled={!settings.enabled}
-                  className={`relative inline-flex h-6 w-11 flex-shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 ${
+                  className={`relative inline-flex h-6 w-11 flex-shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out after:absolute after:-inset-x-1.5 after:-inset-y-2.5 after:content-[''] focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 ${
                     !settings.enabled ? 'bg-gray-200 cursor-not-allowed' :
                     settings.blockClock ? 'bg-red-600 cursor-pointer' : 'bg-gray-300 cursor-pointer'
                   }`}
@@ -239,19 +251,22 @@ export default function ScheduleConfirmSettingsPage() {
               </h2>
             </div>
             <div className="p-6">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <span className="text-sm font-medium text-gray-900">啟用確認提醒</span>
                   <p className="text-sm text-gray-500 mt-1">
-                    在儀表板顯示班表待確認提醒訊息
+                    發送班表待確認通知；啟用打卡限制時會自動開啟
                   </p>
                 </div>
                 <button
                   type="button"
-                  onClick={() => settings.enabled && setSettings({ ...settings, enableReminder: !settings.enableReminder })}
-                  disabled={!settings.enabled}
-                  className={`relative inline-flex h-6 w-11 flex-shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
-                    !settings.enabled ? 'bg-gray-200 cursor-not-allowed' :
+                  role="switch"
+                  aria-label="啟用確認提醒"
+                  aria-checked={settings.enableReminder}
+                  onClick={() => settings.enabled && !settings.blockClock && setSettings({ ...settings, enableReminder: !settings.enableReminder })}
+                  disabled={!settings.enabled || settings.blockClock}
+                  className={`relative inline-flex h-6 w-11 flex-shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out after:absolute after:-inset-x-1.5 after:-inset-y-2.5 after:content-[''] focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
+                    !settings.enabled || settings.blockClock ? 'bg-gray-200 cursor-not-allowed' :
                     settings.enableReminder ? 'bg-blue-600 cursor-pointer' : 'bg-gray-300 cursor-pointer'
                   }`}
                 >
@@ -263,25 +278,6 @@ export default function ScheduleConfirmSettingsPage() {
                 </button>
               </div>
             </div>
-          </div>
-
-          {/* 說明區塊 */}
-          <div className="bg-blue-50 border border-blue-200 rounded-lg p-6">
-            <h3 className="text-lg font-medium text-blue-900 mb-4">功能說明</h3>
-            <ul className="space-y-2 text-sm text-blue-800">
-              <li className="flex items-start">
-                <span className="w-2 h-2 bg-blue-500 rounded-full mr-3 mt-1.5"></span>
-                <span><strong>班表確認機制</strong>：開啟後，排班管理員發布班表時會通知員工確認</span>
-              </li>
-              <li className="flex items-start">
-                <span className="w-2 h-2 bg-red-500 rounded-full mr-3 mt-1.5"></span>
-                <span><strong>阻止打卡</strong>：強制員工在打卡前必須先確認班表（建議在班表確實已發布後再開啟）</span>
-              </li>
-              <li className="flex items-start">
-                <span className="w-2 h-2 bg-yellow-500 rounded-full mr-3 mt-1.5"></span>
-                <span><strong>確認提醒</strong>：在員工儀表板顯示「班表待確認」提示訊息</span>
-              </li>
-            </ul>
           </div>
 
         </div>

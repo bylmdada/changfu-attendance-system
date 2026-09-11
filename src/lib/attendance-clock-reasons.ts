@@ -1,4 +1,6 @@
-export const DEFAULT_LATE_CLOCK_OUT_BUSINESS_REASON = 'code review、修正、收尾';
+export const DEFAULT_LATE_CLOCK_OUT_BUSINESS_REASON = '公務延後下班';
+
+const LEGACY_DEV_LATE_CLOCK_OUT_REASON = 'code review、修正、收尾';
 
 export function formatAttendanceClockReason(reason: string | null | undefined): string | null {
   if (!reason) {
@@ -9,7 +11,7 @@ export function formatAttendanceClockReason(reason: string | null | undefined): 
     return '非公務';
   }
 
-  if (reason === 'BUSINESS' || reason === 'WORK') {
+  if (reason === 'BUSINESS' || reason === 'WORK' || reason === LEGACY_DEV_LATE_CLOCK_OUT_REASON) {
     return '公務';
   }
 
@@ -21,8 +23,8 @@ export function normalizeLateClockOutReason(reason: string | null | undefined): 
     return null;
   }
 
-  if (reason === 'BUSINESS' || reason === 'WORK') {
-    return DEFAULT_LATE_CLOCK_OUT_BUSINESS_REASON;
+  if (reason === 'BUSINESS' || reason === 'WORK' || reason === LEGACY_DEV_LATE_CLOCK_OUT_REASON) {
+    return 'BUSINESS';
   }
 
   return reason;

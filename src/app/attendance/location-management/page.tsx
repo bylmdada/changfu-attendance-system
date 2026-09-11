@@ -4,6 +4,8 @@ import { useState, useEffect } from 'react';
 import { MapPin, Plus, Edit2, Trash2, Save, X, CheckCircle, XCircle } from 'lucide-react';
 import { extractApiErrorMessage } from '@/lib/api-error';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
+import ConfirmDialog from '@/components/ConfirmDialog';
+import { SimpleToast, useLocalToast } from '@/components/Toast';
 
 interface AllowedLocation {
   id: number;
@@ -29,6 +31,8 @@ export default function LocationManagement() {
   const [loading, setLoading] = useState(true);
   const [showAddForm, setShowAddForm] = useState(false);
   const [editingLocation, setEditingLocation] = useState<AllowedLocation | null>(null);
+  const [deleteConfirmLocation, setDeleteConfirmLocation] = useState<AllowedLocation | null>(null);
+  const { toast, showToast, clearToast } = useLocalToast();
   const [formData, setFormData] = useState<LocationFormData>({
     name: '',
     latitude: '',
@@ -70,7 +74,7 @@ export default function LocationManagement() {
         },
         (error) => {
           console.error('獲取位置失敗:', error);
-          alert('無法獲取當前位置，請手動輸入座標');
+          showToast('error', '無法獲取當前位置，請手動輸入座標');
         },
         {
           enableHighAccuracy: true,
@@ -79,7 +83,7 @@ export default function LocationManagement() {
         }
       );
     } else {
-      alert('瀏覽器不支援GPS定位功能');
+      showToast('error', '瀏覽器不支援GPS定位功能');
     }
   };
 
@@ -104,14 +108,14 @@ export default function LocationManagement() {
         setLocations([...locations, result.location]);
         setShowAddForm(false);
         resetForm();
-        alert('位置添加成功');
+        showToast('success', '位置添加成功');
       } else {
         const error = await response.json();
-        alert(`添加失敗: ${extractApiErrorMessage(error, '新增位置失敗')}`);
+        showToast('error', `添加失敗: ${extractApiErrorMessage(error, '新增位置失敗')}`);
       }
     } catch (error) {
       console.error('添加位置失敗:', error);
-      alert('添加位置時發生錯誤');
+      showToast('error', '添加位置時發生錯誤');
     }
   };
 
@@ -141,37 +145,42 @@ export default function LocationManagement() {
         ));
         setEditingLocation(null);
         resetForm();
-        alert('位置更新成功');
+        showToast('success', '位置更新成功');
       } else {
         const error = await response.json();
-        alert(`更新失敗: ${extractApiErrorMessage(error, '更新位置失敗')}`);
+        showToast('error', `更新失敗: ${extractApiErrorMessage(error, '更新位置失敗')}`);
       }
     } catch (error) {
       console.error('更新位置失敗:', error);
-      alert('更新位置時發生錯誤');
+      showToast('error', '更新位置時發生錯誤');
     }
   };
 
   // 刪除位置
-  const handleDeleteLocation = async (locationId: number) => {
-    if (!confirm('確定要刪除這個位置嗎？')) return;
+  const handleDeleteLocation = async (location: AllowedLocation) => {
+    setDeleteConfirmLocation(location);
+  };
+
+  const performDeleteLocation = async () => {
+    if (!deleteConfirmLocation) return;
 
     try {
       const response = await fetchJSONWithCSRF('/api/attendance/allowed-locations', {
         method: 'DELETE',
-        body: { id: locationId }
+        body: { id: deleteConfirmLocation.id }
       });
 
       if (response.ok) {
-        setLocations(locations.filter(loc => loc.id !== locationId));
-        alert('位置刪除成功');
+        setLocations(locations.filter(loc => loc.id !== deleteConfirmLocation.id));
+        showToast('success', '位置刪除成功');
+        setDeleteConfirmLocation(null);
       } else {
         const error = await response.json();
-        alert(`刪除失敗: ${extractApiErrorMessage(error, '刪除位置失敗')}`);
+        showToast('error', `刪除失敗: ${extractApiErrorMessage(error, '刪除位置失敗')}`);
       }
     } catch (error) {
       console.error('刪除位置失敗:', error);
-      alert('刪除位置時發生錯誤');
+      showToast('error', '刪除位置時發生錯誤');
     }
   };
 
@@ -284,7 +293,7 @@ export default function LocationManagement() {
                               <Edit2 className="h-4 w-4" />
                             </button>
                             <button
-                              onClick={() => handleDeleteLocation(location.id)}
+                              onClick={() => handleDeleteLocation(location)}
                               className="text-red-600 hover:text-red-700 p-1"
                             >
                               <Trash2 className="h-4 w-4" />
@@ -422,6 +431,16 @@ export default function LocationManagement() {
           </div>
         )}
       </div>
+      <ConfirmDialog
+        open={Boolean(deleteConfirmLocation)}
+        title="刪除 GPS 打卡位置"
+        message={deleteConfirmLocation ? `確定要刪除「${deleteConfirmLocation.name}」嗎？\n\n刪除後，使用者將無法再以此位置作為允許打卡範圍。` : ''}
+        tone="danger"
+        confirmLabel="刪除位置"
+        onCancel={() => setDeleteConfirmLocation(null)}
+        onConfirm={performDeleteLocation}
+      />
+      <SimpleToast toast={toast} onClose={clearToast} />
     </div>
   );
 }

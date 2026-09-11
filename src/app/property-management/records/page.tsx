@@ -7,6 +7,7 @@ import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import fetchWithCSRF from '@/lib/fetchWithCSRF';
 import { useLocalToast, SimpleToast } from '@/components/Toast';
 import { STATUS_UI, fmtDate, type DisplayStatus } from '@/lib/property-status-ui';
+import { propertyAuditStatusLabel } from '@/lib/property-audit-status';
 
 interface Rec {
   recordId: string;
@@ -28,10 +29,22 @@ interface Rec {
   asset?: { name: string; location: string | null };
 }
 
+interface PaginationState {
+  total: number;
+  page: number;
+  pageSize: number;
+  pages: number;
+}
+
 const STATUS_OPTS = ['已完成', '異常'];
-const INVENTORY_OPTS = ['帳物相符', '帳物不符', '待確認'];
+const INVENTORY_OPTS = ['財產相符', '財產不符', '待確認'];
 const CONDITION_OPTS = ['良好', '待維修', '報廢', '遺失'];
 const ITEM_OPTS = ['清潔', '功能檢查', '校正', '零件更換', '其他'];
+const RECORDS_PAGE_SIZE = 25;
+
+function normalizeInventoryResultLabel(value: string | null | undefined) {
+  return value?.replace(/帳物/g, '財產') || '';
+}
 
 export default function MyRecordsPage() {
   const { showToast, toast, clearToast } = useLocalToast();
@@ -41,9 +54,16 @@ export default function MyRecordsPage() {
   const [editing, setEditing] = useState<Rec | null>(null);
   const [saving, setSaving] = useState(false);
   const [canMaintainProperty, setCanMaintainProperty] = useState(false);
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState<PaginationState>({
+    total: 0,
+    page: 1,
+    pageSize: RECORDS_PAGE_SIZE,
+    pages: 1,
+  });
   const [form, setForm] = useState({
     status: '已完成',
-    inventoryResult: '帳物相符',
+    inventoryResult: '財產相符',
     assetCondition: '良好',
     maintenanceItem: '清潔',
     otherNote: '',
@@ -57,18 +77,35 @@ export default function MyRecordsPage() {
     try {
       const qs =
         tab === 'mine' ? 'mine=1' : tab === 'pending' ? 'status=PENDING' : 'status=DONE';
-      const res = await fetch(`/api/property-maintenance/records?${qs}&pageSize=200`, {
+      const params = new URLSearchParams(qs);
+      params.set('page', String(page));
+      params.set('pageSize', String(RECORDS_PAGE_SIZE));
+      const res = await fetch(`/api/property-maintenance/records?${params.toString()}`, {
         credentials: 'include',
       });
       const json = await res.json();
-      if (res.ok) setRows(json.data.items);
-      else showToast('error', json.error || '載入失敗');
+      if (res.ok) {
+        const nextRows = json.data.items as Rec[];
+        const total = Number(json.data.total ?? nextRows.length);
+        const pageSize = Number(json.data.pageSize ?? RECORDS_PAGE_SIZE);
+        const pages = Math.max(1, Math.ceil(total / pageSize));
+        setRows(nextRows);
+        setPagination({
+          total,
+          page: Number(json.data.page ?? page),
+          pageSize,
+          pages,
+        });
+        if (page > 1 && nextRows.length === 0) {
+          setPage((currentPage) => Math.max(1, Math.min(pages, currentPage - 1)));
+        }
+      } else showToast('error', json.error || '載入失敗');
     } catch {
       showToast('error', '載入失敗');
     } finally {
       setLoading(false);
     }
-  }, [tab, showToast]);
+  }, [page, tab, showToast]);
 
   useEffect(() => {
     const loadUser = async () => {
@@ -103,7 +140,7 @@ export default function MyRecordsPage() {
     setEditing(r);
     setForm({
       status: '已完成',
-      inventoryResult: r.inventoryResult || '帳物相符',
+      inventoryResult: normalizeInventoryResultLabel(r.inventoryResult) || '財產相符',
       assetCondition: r.assetCondition || '良好',
       maintenanceItem: r.maintenanceItem || '清潔',
       otherNote: r.otherNote || '',
@@ -112,6 +149,15 @@ export default function MyRecordsPage() {
       signaturePath: r.signaturePath || '',
     });
   };
+
+  const handleTabChange = (nextTab: typeof tab) => {
+    setTab(nextTab);
+    setPage(1);
+  };
+
+  const recordsStart =
+    pagination.total === 0 ? 0 : (pagination.page - 1) * pagination.pageSize + 1;
+  const recordsEnd = Math.min(pagination.total, pagination.page * pagination.pageSize);
 
   const uploadFile = async (file: File, field: 'photo' | 'signature') => {
     if (!editing || !canMaintainProperty) return;
@@ -179,7 +225,7 @@ export default function MyRecordsPage() {
           ].map((x) => (
             <button
               key={x.k}
-              onClick={() => setTab(x.k as typeof tab)}
+              onClick={() => handleTabChange(x.k as typeof tab)}
               className={`px-4 py-2 rounded-lg text-sm font-medium ${
                 tab === x.k ? 'bg-blue-600 text-white' : 'bg-white border border-gray-300 text-gray-700'
               }`}
@@ -190,37 +236,64 @@ export default function MyRecordsPage() {
         </div>
 
         <div className="bg-white rounded-xl border border-gray-200">
+          <div className="px-4 py-3 border-b border-gray-200 text-xs text-gray-500">
+            每頁 {RECORDS_PAGE_SIZE} 筆
+            {pagination.total > 0 ? `，目前顯示 ${recordsStart}-${recordsEnd} / ${pagination.total}` : ''}
+          </div>
           {loading ? (
             <div className="p-8 text-center text-gray-600">載入中…</div>
           ) : rows.length === 0 ? (
             <div className="p-8 text-center text-gray-600">沒有紀錄</div>
           ) : (
-            <ul className="divide-y divide-gray-100">
-              {rows.map((r) => {
-                const ds = (r.displayStatus || (r.status as DisplayStatus)) as DisplayStatus;
-                const s = STATUS_UI[ds] ?? STATUS_UI.PENDING;
-                return (
-                  <li key={r.recordId} className="flex items-center gap-3 px-4 py-3">
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium text-gray-900 truncate">
-                        {r.assetCode}　{r.asset?.name}
-                      </p>
-                      <p className="text-xs text-gray-600">
-                        應維護 {fmtDate(r.dueDate)}・完成 {fmtDate(r.completedDate)}・稽核{' '}
-                        {r.auditStatus || '—'}
-                      </p>
-                    </div>
-                    <span className={`text-xs px-2 py-1 rounded-full ${s.badge}`}>{s.label}</span>
-                    <button
-                      onClick={() => openEdit(r)}
-                      className="text-sm px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700"
-                    >
-                      {canMaintainProperty && r.status === 'PENDING' ? '維護' : '檢視'}
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
+            <>
+              <ul className="divide-y divide-gray-100">
+                {rows.map((r) => {
+                  const ds = (r.displayStatus || (r.status as DisplayStatus)) as DisplayStatus;
+                  const s = STATUS_UI[ds] ?? STATUS_UI.PENDING;
+                  return (
+                    <li key={r.recordId} className="flex items-center gap-3 px-4 py-3">
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-gray-900 truncate">
+                          {r.assetCode}　{r.asset?.name}
+                        </p>
+                        <p className="text-xs text-gray-600">
+                          應維護 {fmtDate(r.dueDate)}・完成 {fmtDate(r.completedDate)}・稽核{' '}
+                          {propertyAuditStatusLabel(r.auditStatus)}
+                        </p>
+                      </div>
+                      <span className={`text-xs px-2 py-1 rounded-full ${s.badge}`}>{s.label}</span>
+                      <button
+                        onClick={() => openEdit(r)}
+                        className="text-sm px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700"
+                      >
+                        {canMaintainProperty && r.status === 'PENDING' ? '維護' : '檢視'}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+              {pagination.pages > 1 && (
+                <div className="flex items-center justify-between gap-3 border-t border-gray-200 px-4 py-3 text-sm">
+                  <button
+                    onClick={() => setPage((currentPage) => Math.max(1, currentPage - 1))}
+                    disabled={pagination.page <= 1 || loading}
+                    className="rounded-lg border border-gray-300 px-3 py-1.5 text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    上一頁
+                  </button>
+                  <span className="text-gray-600">
+                    第 {pagination.page} / {pagination.pages} 頁
+                  </span>
+                  <button
+                    onClick={() => setPage((currentPage) => Math.min(pagination.pages, currentPage + 1))}
+                    disabled={pagination.page >= pagination.pages || loading}
+                    className="rounded-lg border border-gray-300 px-3 py-1.5 text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    下一頁
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -245,12 +318,12 @@ export default function MyRecordsPage() {
               {editing.status !== 'PENDING' || !canMaintainProperty ? (
                 <div className="text-sm text-gray-700 space-y-1">
                   <p>維護狀態：{editing.status}</p>
-                  <p>盤點結果：{editing.inventoryResult || '—'}</p>
+                  <p>盤點結果：{normalizeInventoryResultLabel(editing.inventoryResult) || '—'}</p>
                   <p>財產狀態：{editing.assetCondition || '—'}</p>
                   <p>維護項目：{editing.maintenanceItem || '—'}</p>
                   <p>說明：{editing.otherNote || '—'}</p>
                   <p>完成日期：{fmtDate(editing.completedDate)}</p>
-                  <p>稽核狀態：{editing.auditStatus || '—'}</p>
+                  <p>稽核狀態：{propertyAuditStatusLabel(editing.auditStatus)}</p>
                   {editing.status === 'PENDING' && !canMaintainProperty && (
                     <p className="text-amber-700">此紀錄尚待維護；您目前為唯讀權限。</p>
                   )}

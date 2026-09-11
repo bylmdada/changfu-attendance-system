@@ -2,6 +2,7 @@ import {
   LEAVE_TYPE_OPTIONS,
   combineLeaveReason,
   getLeaveReasonOptions,
+  isLeaveReasonOptionValid,
   normalizeLeaveTypeCode,
   splitLeaveReason,
 } from '../leave-types';
@@ -12,6 +13,7 @@ describe('leave type helpers', () => {
       expect.arrayContaining([
         { value: 'FAMILY_CARE', label: '家庭照顧假' },
         { value: 'MENSTRUAL', label: '生理假' },
+        { value: 'BUSINESS_TRIP', label: '公出' },
       ])
     );
   });
@@ -47,6 +49,22 @@ describe('leave type helpers', () => {
     expect(getLeaveReasonOptions('OFFICIAL').map((option) => option.value)).toEqual(
       expect.arrayContaining(['公出洽公', '教育訓練'])
     );
+    expect(getLeaveReasonOptions('BUSINESS_TRIP').map((option) => option.value)).toEqual(
+      expect.arrayContaining(['公出洽公', '外部會議', '機構拜訪'])
+    );
+  });
+
+  it('provides selectable, unique reason values for every leave type', () => {
+    for (const leaveType of LEAVE_TYPE_OPTIONS) {
+      const reasons = getLeaveReasonOptions(leaveType.value);
+      const values = reasons.map((reason) => reason.value);
+
+      expect(reasons.length).toBeGreaterThan(0);
+      expect(new Set(values).size).toBe(values.length);
+      for (const value of values) {
+        expect(isLeaveReasonOptionValid(leaveType.value, value)).toBe(true);
+      }
+    }
   });
 
   it('normalizes legacy leave type aliases before reading reason options', () => {

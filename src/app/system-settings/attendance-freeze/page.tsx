@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Save, AlertTriangle, Lock } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import {
+  getAttendanceFreezeDescription,
   getFreezeExecutionDateForTargetMonth,
   getNextAttendanceFreezeExecutionDate,
 } from '@/lib/attendance-freeze-rules';
@@ -44,7 +45,7 @@ export default function AttendanceFreezePage() {
     freezeDay: 5,
     freezeTime: '18:00',
     isEnabled: true,
-    description: '每月5日下午6點後，前一個月的考勤記錄將被凍結，無法修改。'
+    description: getAttendanceFreezeDescription(5, '18:00')
   });
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
@@ -259,7 +260,14 @@ export default function AttendanceFreezePage() {
               </label>
               <select
                 value={settings.freezeDay}
-                onChange={(e) => setSettings({ ...settings, freezeDay: parseInt(e.target.value) })}
+                onChange={(e) => {
+                  const freezeDay = parseInt(e.target.value);
+                  setSettings({
+                    ...settings,
+                    freezeDay,
+                    description: getAttendanceFreezeDescription(freezeDay, settings.freezeTime),
+                  });
+                }}
                 className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-gray-900"
                 disabled={!settings.isEnabled}
               >
@@ -282,7 +290,11 @@ export default function AttendanceFreezePage() {
               <input
                 type="time"
                 value={settings.freezeTime}
-                onChange={(e) => setSettings({ ...settings, freezeTime: e.target.value })}
+                onChange={(e) => setSettings({
+                  ...settings,
+                  freezeTime: e.target.value,
+                  description: getAttendanceFreezeDescription(settings.freezeDay, e.target.value),
+                })}
                 className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-gray-900"
                 disabled={!settings.isEnabled}
               />
@@ -297,15 +309,13 @@ export default function AttendanceFreezePage() {
                 規則說明
               </label>
               <textarea
-                value={settings.description}
-                onChange={(e) => setSettings({ ...settings, description: e.target.value })}
+                value={getAttendanceFreezeDescription(settings.freezeDay, settings.freezeTime)}
                 rows={3}
-                className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-gray-900"
-                disabled={!settings.isEnabled}
-                placeholder="請輸入考勤凍結規則的詳細說明..."
+                readOnly
+                className="block w-full rounded-md border-gray-300 bg-gray-50 shadow-sm text-gray-900"
               />
               <p className="mt-1 text-sm text-gray-900">
-                此說明將顯示給員工，讓他們了解考勤凍結的規則
+                此說明會依凍結日期與時間自動更新，並顯示給員工
               </p>
             </div>
 

@@ -83,6 +83,7 @@ async function validateSessionResult(payload: JWTPayload): Promise<AuthResult> {
     where: { id: payload.userId },
     select: {
       id: true,
+      role: true,
       isActive: true,
       currentSessionId: true
     }
@@ -96,7 +97,7 @@ async function validateSessionResult(payload: JWTPayload): Promise<AuthResult> {
     return { user: null, reason: 'session_invalid' };
   }
 
-  return { user: payload, reason: null };
+  return { user: { ...payload, role: user.role }, reason: null };
 }
 
 function parseCookieHeader(cookieHeader: string | null | undefined): Record<string, string> {

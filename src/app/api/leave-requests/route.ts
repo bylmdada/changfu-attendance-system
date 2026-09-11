@@ -9,7 +9,12 @@ import { createApprovalForRequest } from '@/lib/approval-helper';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
 import { getAttendancePermissionDepartments } from '@/lib/attendance-permission-scopes';
-import { isBereavementLeaveType, splitLeaveReason } from '@/lib/leave-types';
+import { isAnnualLeaveType, isBereavementLeaveType, splitLeaveReason } from '@/lib/leave-types';
+import { calculateLeaveDuration, leaveRangesOverlap } from '@/lib/leave-management-helpers';
+import { getLeaveDurationSchedules } from '@/lib/leave-duration-schedules';
+import { buildApplicationRequestNumber } from '@/lib/application-request-number';
+import { toTaiwanDateStr } from '@/lib/timezone';
+import { isValidLeaveDurationMinutes, isValidLeaveMinute } from '@/lib/leave-time-options';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -21,6 +26,22 @@ function hasRequiredBereavementReason(leaveType?: string | null, reason?: string
   }
 
   return splitLeaveReason(reason, leaveType).leaveReason.length > 0;
+}
+
+function getLeaveYear(value: Date | string): number {
+  return new Date(value).getFullYear();
+}
+
+function eachDateKey(start: Date, end: Date): string[] {
+  const keys: string[] = [];
+  const current = new Date(toTaiwanDateStr(start));
+  const last = new Date(toTaiwanDateStr(end));
+
+  for (; current <= last; current.setDate(current.getDate() + 1)) {
+    keys.push(toTaiwanDateStr(current));
+  }
+
+  return keys;
 }
 
 export async function GET(request: NextRequest) {
@@ -125,7 +146,86 @@ export async function GET(request: NextRequest) {
       }
     });
 
-    return NextResponse.json({ leaveRequests });
+    const annualLeaveKeys = Array.from(
+      new Map(
+        leaveRequests
+          .filter((leaveRequest) => isAnnualLeaveType(leaveRequest.leaveType))
+          .map((leaveRequest) => {
+            const year = getLeaveYear(leaveRequest.startDate);
+            const key = `${leaveRequest.employeeId}:${year}`;
+            return [key, { employeeId: leaveRequest.employeeId, year }] as const;
+          })
+      ).values()
+    );
+
+    const annualLeaveBalances = annualLeaveKeys.length > 0
+      ? await prisma.annualLeave.findMany({
+          where: {
+            OR: annualLeaveKeys,
+          },
+          select: {
+            employeeId: true,
+            year: true,
+            remainingDays: true,
+            expiryDate: true,
+          },
+        })
+      : [];
+
+    const annualLeaveBalanceByKey = new Map(
+      annualLeaveBalances.map((balance) => [`${balance.employeeId}:${balance.year}`, balance])
+    );
+    const scheduleKeys = leaveRequests.flatMap((leaveRequest) => (
+      eachDateKey(leaveRequest.startDate, leaveRequest.endDate)
+        .map((workDate) => ({ employeeId: leaveRequest.employeeId, workDate }))
+    ));
+    const schedules = scheduleKeys.length > 0
+      ? await prisma.schedule.findMany({
+          where: {
+            OR: scheduleKeys,
+          },
+          select: {
+            employeeId: true,
+            workDate: true,
+            shiftType: true,
+            startTime: true,
+            endTime: true,
+            breakTime: true,
+          },
+        })
+      : [];
+    const schedulesByKey = new Map(
+      schedules.map((schedule) => [`${schedule.employeeId}:${schedule.workDate}`, schedule])
+    );
+
+    const leaveRequestsWithBalances = leaveRequests.map((leaveRequest) => {
+      const requestNumber = buildApplicationRequestNumber('LR', leaveRequest.id, leaveRequest.createdAt);
+      const leaveSchedules = eachDateKey(leaveRequest.startDate, leaveRequest.endDate)
+        .map((workDate) => schedulesByKey.get(`${leaveRequest.employeeId}:${workDate}`))
+        .filter((schedule): schedule is NonNullable<typeof schedule> => Boolean(schedule));
+
+      if (!isAnnualLeaveType(leaveRequest.leaveType)) {
+        return { ...leaveRequest, requestNumber, leaveSchedules, annualLeaveBalance: null };
+      }
+
+      const year = getLeaveYear(leaveRequest.startDate);
+      const balance = annualLeaveBalanceByKey.get(`${leaveRequest.employeeId}:${year}`);
+
+      return {
+        ...leaveRequest,
+        requestNumber,
+        leaveSchedules,
+        annualLeaveBalance: balance
+          ? {
+              year: balance.year,
+              remainingDays: balance.remainingDays,
+              expiryDate: balance.expiryDate,
+            }
+          : null,
+      };
+    });
+
+    return NextResponse.json({ leaveRequests: leaveRequestsWithBalances });
   } catch (error) {
     console.error('獲取請假記錄失敗:', error);
     return NextResponse.json({ error: '系統錯誤' }, { status: 500 });
@@ -194,14 +294,13 @@ export async function POST(request: NextRequest) {
     let start: Date;
     let end: Date;
 
-    // 若前端提供時間欄位，則以時間欄位為準並嚴格套用 30 分鐘規則
+    // 若前端提供時間欄位，則以時間欄位為準並嚴格套用 5 分鐘規則
     if (startHour !== undefined && startMinute !== undefined && endHour !== undefined && endMinute !== undefined) {
-      const mmAllowed = new Set(['00', '30']);
       const sM = String(startMinute).padStart(2, '0');
       const eM = String(endMinute).padStart(2, '0');
 
-      if (!mmAllowed.has(sM) || !mmAllowed.has(eM)) {
-        return NextResponse.json({ error: '起訖時間的分鐘僅允許 00 或 30 分' }, { status: 400 });
+      if (!isValidLeaveMinute(sM) || !isValidLeaveMinute(eM)) {
+        return NextResponse.json({ error: '起訖時間的分鐘僅允許 0 至 55 分，並以 5 分鐘為增量' }, { status: 400 });
       }
 
       const sH = String(startHour).padStart(2, '0');
@@ -215,29 +314,37 @@ export async function POST(request: NextRequest) {
       if (diffMin <= 0) {
         return NextResponse.json({ error: '請假時數必須為正數' }, { status: 400 });
       }
-      if (diffMin % 30 !== 0) {
-        return NextResponse.json({ error: '請假時數需以 0.5 小時為增量（30 分鐘）' }, { status: 400 });
+      if (!isValidLeaveDurationMinutes(diffMin)) {
+        return NextResponse.json({ error: '請假時數需以 5 分鐘為增量' }, { status: 400 });
       }
 
-      // 以 8 小時為 1 天換算 totalDays（保留小數）
-      const hours = diffMin / 60;
-      const totalDays = hours / 8;
+      const schedulesByDate = await getLeaveDurationSchedules(user.employeeId, startDate, endDate);
+      const duration = calculateLeaveDuration({
+        startDate,
+        endDate,
+        startHour: sH,
+        startMinute: sM,
+        endHour: eH,
+        endMinute: eM,
+      }, schedulesByDate);
+
+      if (!duration) {
+        return NextResponse.json({ error: '請假時數必須落在有效排班時段內' }, { status: 400 });
+      }
+
+      const totalDays = duration.totalDays;
 
       // 檢查是否有重複的請假申請（以精確時間重疊判斷）
-      const existingLeave = await prisma.leaveRequest.findFirst({
+      const activeLeaves = await prisma.leaveRequest.findMany({
         where: {
           employeeId: user.employeeId,
-          status: { in: ['PENDING', 'APPROVED'] },
-          OR: [
-            {
-              startDate: { lte: end },
-              endDate: { gte: start }
-            }
-          ]
+          status: { in: ['PENDING', 'PENDING_ADMIN', 'APPROVED'] },
+          startDate: { lt: end },
+          endDate: { gt: start },
         }
       });
 
-      if (existingLeave) {
+      if (activeLeaves.some((leave) => leaveRangesOverlap(start, end, leave.startDate, leave.endDate))) {
         return NextResponse.json({ error: '該時間段已有請假申請' }, { status: 400 });
       }
 
@@ -302,20 +409,16 @@ export async function POST(request: NextRequest) {
     }
 
     // 檢查是否有重複的請假申請（日期重疊）
-    const existingLeave = await prisma.leaveRequest.findFirst({
+    const activeLeaves = await prisma.leaveRequest.findMany({
       where: {
         employeeId: user.employeeId,
-        status: { in: ['PENDING', 'APPROVED'] },
-        OR: [
-          {
-            startDate: { lte: end },
-            endDate: { gte: start }
-          }
-        ]
+        status: { in: ['PENDING', 'PENDING_ADMIN', 'APPROVED'] },
+        startDate: { lt: end },
+        endDate: { gt: start },
       }
     });
 
-    if (existingLeave) {
+    if (activeLeaves.some((leave) => leaveRangesOverlap(start, end, leave.startDate, leave.endDate))) {
       return NextResponse.json({ error: '該時間段已有請假申請' }, { status: 400 });
     }
 

@@ -16,6 +16,12 @@ jest.mock('@/lib/database', () => ({
       findFirst: jest.fn(),
       create: jest.fn(),
     },
+    annualLeave: {
+      findMany: jest.fn(),
+    },
+    schedule: {
+      findMany: jest.fn(),
+    },
   },
 }));
 
@@ -71,6 +77,9 @@ describe('leave request list guards', () => {
     mockCreateApprovalForRequest.mockResolvedValue(undefined as never);
     mockGetAttendancePermissionDepartments.mockResolvedValue(['製造部'] as never);
     mockPrisma.leaveRequest.findMany.mockResolvedValue([] as never);
+    mockPrisma.leaveRequest.findFirst.mockResolvedValue(null as never);
+    mockPrisma.annualLeave.findMany.mockResolvedValue([] as never);
+    mockPrisma.schedule.findMany.mockResolvedValue([] as never);
   });
 
   it('rejects malformed employeeId filters before querying Prisma', async () => {
@@ -127,6 +136,82 @@ describe('leave request list guards', () => {
     );
   });
 
+  it('adds annual leave balance metadata to annual leave list items', async () => {
+    mockPrisma.leaveRequest.findMany.mockResolvedValue([
+      {
+        id: 10,
+        employeeId: 8,
+        leaveType: 'ANNUAL',
+        startDate: new Date('2026-07-10T00:00:00.000Z'),
+        endDate: new Date('2026-07-11T00:00:00.000Z'),
+        totalDays: 2,
+        totalHours: null,
+        reason: null,
+        status: 'PENDING',
+        approvedBy: null,
+        approvedAt: null,
+        createdAt: new Date('2026-07-01T00:00:00.000Z'),
+        employee: {
+          id: 8,
+          employeeId: 'EMP008',
+          name: '王小明',
+          department: '製造部',
+          position: '技術員',
+        },
+        approver: null,
+      },
+    ] as never);
+    mockPrisma.annualLeave.findMany.mockResolvedValue([
+      {
+        employeeId: 8,
+        year: 2026,
+        remainingDays: 1,
+        expiryDate: new Date('2026-12-31T00:00:00.000Z'),
+      },
+    ] as never);
+    mockPrisma.schedule.findMany.mockResolvedValue([
+      {
+        employeeId: 8,
+        workDate: '2026-07-10',
+        shiftType: 'B',
+        startTime: '08:00',
+        endTime: '17:00',
+        breakTime: 60,
+      },
+    ] as never);
+
+    const response = await GET(new NextRequest('http://localhost:3000/api/leave-requests'));
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(mockPrisma.annualLeave.findMany).toHaveBeenCalledWith({
+      where: {
+        OR: [{ employeeId: 8, year: 2026 }],
+      },
+      select: {
+        employeeId: true,
+        year: true,
+        remainingDays: true,
+        expiryDate: true,
+      },
+    });
+    expect(payload.leaveRequests[0].annualLeaveBalance).toEqual({
+      year: 2026,
+      remainingDays: 1,
+      expiryDate: '2026-12-31T00:00:00.000Z',
+    });
+    expect(payload.leaveRequests[0].leaveSchedules).toEqual([
+      {
+        employeeId: 8,
+        workDate: '2026-07-10',
+        shiftType: 'B',
+        startTime: '08:00',
+        endTime: '17:00',
+        breakTime: 60,
+      },
+    ]);
+  });
+
   it('rejects malformed JSON bodies before evaluating leave request payload fields', async () => {
     const request = new NextRequest('http://localhost:3000/api/leave-requests', {
       method: 'POST',
@@ -171,5 +256,132 @@ describe('leave request list guards', () => {
     expect(mockCheckAttendanceFreeze).not.toHaveBeenCalled();
     expect(mockValidateLeaveRequest).not.toHaveBeenCalled();
     expect(mockPrisma.leaveRequest.create).not.toHaveBeenCalled();
+  });
+
+  it('deducts scheduled break time before validating and creating timed leave requests', async () => {
+    mockPrisma.schedule.findMany.mockResolvedValue([
+      {
+        workDate: '2026-07-02',
+        shiftType: 'B',
+        startTime: '08:00',
+        endTime: '17:00',
+        breakTime: 60,
+        workHours: 8,
+      },
+    ] as never);
+    mockPrisma.leaveRequest.create.mockResolvedValue({
+      id: 12,
+      employee: {
+        id: 1,
+        name: '員工甲',
+        department: '製造部',
+      },
+    } as never);
+
+    const request = new NextRequest('http://localhost:3000/api/leave-requests', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        leaveType: 'BUSINESS_TRIP',
+        startDate: '2026-07-02',
+        endDate: '2026-07-02',
+        startHour: '08',
+        startMinute: '00',
+        endHour: '17',
+        endMinute: '00',
+        reason: '外部會議',
+      }),
+    });
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(200);
+    expect(mockPrisma.schedule.findMany).toHaveBeenCalledWith({
+      where: {
+        employeeId: 1,
+        workDate: {
+          gte: '2026-07-02',
+          lte: '2026-07-02',
+        },
+      },
+      select: {
+        workDate: true,
+        shiftType: true,
+        startTime: true,
+        endTime: true,
+        breakTime: true,
+        workHours: true,
+      },
+    });
+    expect(mockValidateLeaveRequest).toHaveBeenCalledWith(1, 'BUSINESS_TRIP', 1, 2026);
+    expect(mockPrisma.leaveRequest.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          totalDays: 1,
+        }),
+      })
+    );
+  });
+
+  it('accepts five-minute leave times and uses the employee department workflow', async () => {
+    mockPrisma.schedule.findMany.mockResolvedValue([
+      {
+        workDate: '2026-08-18',
+        shiftType: 'B',
+        startTime: '08:00',
+        endTime: '17:00',
+        breakTime: 60,
+        workHours: 8,
+      },
+    ] as never);
+    mockPrisma.leaveRequest.create.mockResolvedValue({
+      id: 18,
+      employee: {
+        id: 1,
+        name: '溪北員工',
+        department: '溪北輔具中心',
+      },
+    } as never);
+
+    const request = new NextRequest('http://localhost:3000/api/leave-requests', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        leaveType: 'SICK',
+        startDate: '2026-08-18',
+        endDate: '2026-08-18',
+        startHour: '08',
+        startMinute: '05',
+        endHour: '09',
+        endMinute: '10',
+        reason: '就醫治療',
+      }),
+    });
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(200);
+    expect(mockPrisma.leaveRequest.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          startDate: expect.any(Date),
+          endDate: expect.any(Date),
+        }),
+      })
+    );
+    const createArgs = mockPrisma.leaveRequest.create.mock.calls[0][0] as {
+      data: { startDate: Date; endDate: Date };
+    };
+    expect(createArgs.data.startDate.getMinutes()).toBe(5);
+    expect(createArgs.data.endDate.getMinutes()).toBe(10);
+    expect(mockCreateApprovalForRequest).toHaveBeenCalledWith({
+      requestType: 'LEAVE',
+      requestId: 18,
+      applicantId: 1,
+      applicantName: '溪北員工',
+      department: '溪北輔具中心',
+    });
   });
 });

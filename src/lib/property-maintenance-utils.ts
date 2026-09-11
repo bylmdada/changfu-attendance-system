@@ -96,8 +96,8 @@ export function ymd(d: Date): string {
 
 export function monthRange(year: number, month: number): { start: Date; end: Date } {
   return {
-    start: new Date(Date.UTC(year, month - 1, 1)),
-    end: new Date(Date.UTC(year, month, 1)),
+    start: taipeiMidnight(year, month, 1),
+    end: taipeiMidnight(year, month + 1, 1),
   };
 }
 

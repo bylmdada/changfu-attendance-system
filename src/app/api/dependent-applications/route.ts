@@ -10,6 +10,7 @@ import { getUserFromRequest } from '@/lib/auth';
 import { toTaiwanDateStr } from '@/lib/timezone';
 import { validateCSRF } from '@/lib/csrf';
 import { safeParseJSON } from '@/lib/validation';
+import { syncEmployeeDependentsCount } from '@/lib/health-insurance-dependent-sync';
 
 const DEPENDENT_ID_NUMBER_REGEX = /^[A-Z][0-9]{9}$/;
 const ALLOWED_UPDATE_FIELDS = new Set(['dependentName', 'relationship', 'idNumber', 'birthDate']);
@@ -116,7 +117,7 @@ export async function GET(request: NextRequest) {
           fileType: att.fileType,
           fileTypeName: FILE_TYPE_NAMES[att.fileType] || att.fileType,
           fileName: att.fileName,
-          filePath: att.filePath,
+          filePath: `/api/my-dependents/attachments/${att.id}`,
           fileSize: att.fileSize,
           mimeType: att.mimeType
         }))
@@ -306,6 +307,8 @@ export async function PUT(request: NextRequest) {
             createdBy: user.username
           }
         });
+
+        await syncEmployeeDependentsCount(tx, application.employeeId);
       } else if (application.applicationType === 'REMOVE' && application.dependentId) {
         const updatedDependent = await tx.healthInsuranceDependent.updateMany({
           where: {
@@ -334,6 +337,8 @@ export async function PUT(request: NextRequest) {
             createdBy: user.username
           }
         });
+
+        await syncEmployeeDependentsCount(tx, application.employeeId);
       } else if (application.applicationType === 'UPDATE' && application.dependentId && application.changeField) {
         if (!ALLOWED_UPDATE_FIELDS.has(application.changeField)) {
           throw new Error('不支援的眷屬變更欄位');

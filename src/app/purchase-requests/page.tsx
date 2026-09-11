@@ -10,6 +10,7 @@ import {
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import ApprovalProgress, { ApprovalReviewRecord } from '@/components/ApprovalProgress';
+import { useActiveEmployeeDepartments } from '@/components/EmployeeListSelect';
 
 
 interface Employee {
@@ -170,6 +171,7 @@ export default function PurchaseRequestsPage() {
   });
 
   const isAdmin = user?.role === 'ADMIN' || user?.role === 'HR';
+  const { departments } = useActiveEmployeeDepartments();
 
   // Toast 狀態
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -226,9 +228,6 @@ export default function PurchaseRequestsPage() {
         return 0;
     }
   });
-
-  // 取得所有部門列表
-  const departments = [...new Set(requests.map(r => r.department))].filter(Boolean).sort();
 
   // 匹出 CSV
   const exportToCSV = () => {
@@ -593,7 +592,7 @@ export default function PurchaseRequestsPage() {
 
   return (
     <AuthenticatedLayout>
-      <div className="max-w-7xl mx-auto px-4 py-8">
+      <div className="w-full max-w-none px-4 py-8 sm:px-6 lg:px-8">
         {/* 標題 */}
         <div className="mb-8">
           <div className="flex items-center justify-between">
@@ -764,6 +763,7 @@ export default function PurchaseRequestsPage() {
               <p className="text-gray-500">{requests.length === 0 ? '目前沒有請購單' : '目前篩選條件下沒有請購單'}</p>
             </div>
           ) : (
+            <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
                 <tr>
@@ -886,6 +886,7 @@ export default function PurchaseRequestsPage() {
                 ))}
               </tbody>
             </table>
+            </div>
           )}
         </div>
       </div>

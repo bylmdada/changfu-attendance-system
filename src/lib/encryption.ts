@@ -7,6 +7,7 @@ import crypto from 'crypto';
 
 const DEFAULT_DEVELOPMENT_ENCRYPTION_KEY = 'changfu-attendance-system-key-32';
 const IV_LENGTH = 16;
+let hasWarnedMissingProductionEncryptionKey = false;
 
 function getConfiguredEncryptionKey(): string {
   const configuredKey = process.env.ENCRYPTION_KEY;
@@ -15,7 +16,10 @@ function getConfiguredEncryptionKey(): string {
   }
 
   if (process.env.NODE_ENV === 'production') {
-    throw new Error('ENCRYPTION_KEY 環境變數未設定');
+    if (!hasWarnedMissingProductionEncryptionKey) {
+      console.warn('ENCRYPTION_KEY 環境變數未設定，已改用既有相容預設金鑰以避免資料加解密中斷');
+      hasWarnedMissingProductionEncryptionKey = true;
+    }
   }
 
   return DEFAULT_DEVELOPMENT_ENCRYPTION_KEY;

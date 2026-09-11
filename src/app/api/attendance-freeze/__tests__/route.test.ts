@@ -1,8 +1,11 @@
 jest.mock('@/lib/database', () => ({
   prisma: {
     attendanceFreeze: {
+      findMany: jest.fn(),
       findFirst: jest.fn(),
+      findUnique: jest.fn(),
       create: jest.fn(),
+      update: jest.fn(),
     },
     employee: {
       findMany: jest.fn(),
@@ -25,7 +28,7 @@ import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
-import { POST } from '../route';
+import { GET, PATCH, POST } from '../route';
 
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
@@ -42,7 +45,10 @@ describe('attendance freeze csrf guard', () => {
     } as never);
     mockValidateCSRF.mockResolvedValue({ valid: true } as never);
     mockPrisma.attendanceFreeze.findFirst.mockResolvedValue(null as never);
+    mockPrisma.attendanceFreeze.findMany.mockResolvedValue([] as never);
+    mockPrisma.attendanceFreeze.findUnique.mockResolvedValue(null as never);
     mockPrisma.attendanceFreeze.create.mockResolvedValue({ id: 1 } as never);
+    mockPrisma.attendanceFreeze.update.mockResolvedValue({ id: 1, isActive: false } as never);
     mockPrisma.employee.findMany.mockResolvedValue([] as never);
     mockPrisma.payrollRecord.findMany.mockResolvedValue([] as never);
   });
@@ -220,5 +226,48 @@ describe('attendance freeze csrf guard', () => {
     expect(response.status).toBe(403);
     expect(payload).toEqual({ error: '權限不足' });
     expect(mockPrisma.attendanceFreeze.create).not.toHaveBeenCalled();
+  });
+
+  it('allows admins to toggle a freeze with an audit reason', async () => {
+    mockPrisma.attendanceFreeze.findUnique.mockResolvedValue({
+      id: 7,
+      targetMonth: 4,
+      targetYear: 2026,
+      isActive: true,
+    } as never);
+    mockPrisma.attendanceFreeze.update.mockResolvedValue({ id: 7, isActive: false } as never);
+
+    const request = new NextRequest('http://localhost/api/attendance-freeze', {
+      method: 'PATCH',
+      headers: {
+        'content-type': 'application/json',
+        cookie: 'auth-token=session-token',
+      },
+      body: JSON.stringify({ id: 7, isActive: false, reason: '誤選月份' }),
+    });
+
+    const response = await PATCH(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.success).toBe(true);
+    expect(mockPrisma.attendanceFreeze.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 7 },
+      data: { isActive: false },
+    }));
+  });
+
+  it('labels future active freezes as scheduled instead of active', async () => {
+    mockPrisma.attendanceFreeze.findMany.mockResolvedValue([{
+      id: 8,
+      isActive: true,
+      freezeDate: new Date(Date.now() + 60 * 60 * 1000),
+    }] as never);
+
+    const response = await GET(new NextRequest('http://localhost/api/attendance-freeze'));
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.freezes[0].status).toBe('SCHEDULED');
   });
 });

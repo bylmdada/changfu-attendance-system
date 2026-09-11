@@ -5,8 +5,11 @@ import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
-import { getAnnualLeaveYearBreakdown } from '@/lib/annual-leave';
-import { isAnnualLeaveType } from '@/lib/leave-types';
+import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
+import { reverseCompensatoryLeaveUse } from '@/lib/compensatory-leave-accounting';
+import { getPayrollImpactWarning } from '@/lib/payroll-impact-warning';
+import { getTaiwanTodayStart } from '@/lib/timezone';
+import { reverseApprovedAnnualLeaveAccounting } from '@/lib/annual-leave-schedule-accounting';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -30,10 +33,12 @@ async function approveCancellation(leaveRequest: {
   leaveType?: string | null;
   startDate?: Date | string | null;
   endDate?: Date | string | null;
+  annualLeaveAccounting?: string | null;
 }, approverId: number, note: string | null) {
+
   await prisma.$transaction(async (tx) => {
     await tx.leaveRequest.update({
-      where: { id: leaveRequest.id },
+      where: { id: leaveRequest.id, status: 'APPROVED' },
       data: {
         status: 'CANCELLED',
         cancellationStatus: 'APPROVED',
@@ -43,22 +48,9 @@ async function approveCancellation(leaveRequest: {
       }
     });
 
-    if (isAnnualLeaveType(leaveRequest.leaveType) && leaveRequest.startDate && leaveRequest.endDate) {
-      const startDate = new Date(leaveRequest.startDate);
-      const endDate = new Date(leaveRequest.endDate);
-      for (const { year, days } of getAnnualLeaveYearBreakdown(startDate, endDate)) {
-        await tx.annualLeave.updateMany({
-          where: {
-            employeeId: leaveRequest.employeeId,
-            year,
-          },
-          data: {
-            usedDays: { decrement: days },
-            remainingDays: { increment: days },
-          },
-        });
-      }
-    }
+    await reverseApprovedAnnualLeaveAccounting(tx, leaveRequest);
+
+    await reverseCompensatoryLeaveUse(tx, leaveRequest, 'LEAVE_CANCEL');
   });
 }
 
@@ -133,6 +125,13 @@ export async function POST(
     // 檢查狀態是否為已核准
     if (leaveRequest.status !== 'APPROVED') {
       return NextResponse.json({ error: '只能撤銷已核准的申請' }, { status: 400 });
+    }
+
+    if (new Date(leaveRequest.endDate) < getTaiwanTodayStart()) {
+      return NextResponse.json(
+        { error: '已結束的歷史請假不可自行撤銷，請聯絡管理員作廢' },
+        { status: 400 }
+      );
     }
 
     // 檢查是否已有撤銷申請
@@ -258,49 +257,28 @@ export async function PUT(
       });
     }
 
-    // Admin 決核
-    if (user.role === 'ADMIN' && leaveRequest.cancellationStatus === 'PENDING_ADMIN') {
+    // Admin 決核；保留管理員直接處理 PENDING_MANAGER 的既有權限。
+    if (
+      user.role === 'ADMIN'
+      && ['PENDING_ADMIN', 'PENDING_MANAGER'].includes(leaveRequest.cancellationStatus)
+    ) {
       if (!['APPROVE', 'REJECT'].includes(action ?? '')) {
         return NextResponse.json({ error: '請選擇核准或駁回' }, { status: 400 });
       }
 
       if (action === 'APPROVE') {
+        const freezeCheck = await checkAttendanceFreeze(new Date(leaveRequest.startDate));
+        if (freezeCheck.isFrozen) {
+          return NextResponse.json({ error: '該月份已被凍結，無法核准請假撤銷' }, { status: 403 });
+        }
+
         await approveCancellation(leaveRequest, user.employeeId, note || null);
+        const warning = await getPayrollImpactWarning(prisma, leaveRequest);
 
         return NextResponse.json({
           success: true,
-          message: '撤銷申請已核准，請假已取消'
-        });
-      } else {
-        await prisma.leaveRequest.update({
-          where: { id: leaveId },
-          data: {
-            cancellationStatus: 'REJECTED',
-            cancellationAdminApproverId: user.employeeId,
-            cancellationAdminNote: note || null,
-            cancellationApprovedAt: new Date()
-          }
-        });
-
-        return NextResponse.json({
-          success: true,
-          message: '撤銷申請已駁回'
-        });
-      }
-    }
-
-    // Admin 也可以直接審核 PENDING_MANAGER 狀態
-    if (user.role === 'ADMIN' && leaveRequest.cancellationStatus === 'PENDING_MANAGER') {
-      if (!['APPROVE', 'REJECT'].includes(action ?? '')) {
-        return NextResponse.json({ error: '請選擇核准或駁回' }, { status: 400 });
-      }
-
-      if (action === 'APPROVE') {
-        await approveCancellation(leaveRequest, user.employeeId, note || null);
-
-        return NextResponse.json({
-          success: true,
-          message: '撤銷申請已核准，請假已取消'
+          message: '撤銷申請已核准，請假已取消',
+          warning,
         });
       } else {
         await prisma.leaveRequest.update({

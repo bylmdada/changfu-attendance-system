@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Calendar, Plus, Trash2, Save, Download, CloudDownload, X, Check, Edit2, RefreshCw } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import SystemNavbar from '@/components/SystemNavbar';
+import ConfirmDialog from '@/components/ConfirmDialog';
 
 interface Holiday {
   id: number;
@@ -42,6 +43,7 @@ export default function HolidaysPage() {
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [showAddForm, setShowAddForm] = useState(false);
   const [newHoliday, setNewHoliday] = useState({ date: '', name: '', description: '' });
+  const [deleteConfirmHoliday, setDeleteConfirmHoliday] = useState<Holiday | null>(null);
   
   // 政府行事曆匯入相關狀態
   const [showImportModal, setShowImportModal] = useState(false);
@@ -129,16 +131,20 @@ export default function HolidaysPage() {
     }
   };
 
-  const handleDeleteHoliday = async (id: number) => {
-    if (!confirm('確定要刪除此假日？')) return;
+  const handleDeleteHoliday = async (holiday: Holiday) => {
+    setDeleteConfirmHoliday(holiday);
+  };
 
+  const performDeleteHoliday = async () => {
+    if (!deleteConfirmHoliday) return;
     try {
-      const response = await fetchJSONWithCSRF(`/api/system-settings/holidays?id=${id}`, {
+      const response = await fetchJSONWithCSRF(`/api/system-settings/holidays?id=${deleteConfirmHoliday.id}`, {
         method: 'DELETE'
       });
 
       if (response.ok) {
         showToast('success', '假日已刪除');
+        setDeleteConfirmHoliday(null);
         await loadHolidays();
       } else {
         showToast('error', '刪除失敗');
@@ -467,7 +473,7 @@ export default function HolidaysPage() {
                     <td className="px-6 py-4 text-gray-600">{holiday.description || '-'}</td>
                     <td className="px-6 py-4 text-right">
                       <button
-                        onClick={() => handleDeleteHoliday(holiday.id)}
+                        onClick={() => handleDeleteHoliday(holiday)}
                         className="text-red-600 hover:text-red-800"
                         title="刪除"
                       >
@@ -593,6 +599,15 @@ export default function HolidaysPage() {
           </div>
         </div>
       )}
+      <ConfirmDialog
+        open={Boolean(deleteConfirmHoliday)}
+        title="刪除假日"
+        message={deleteConfirmHoliday ? `確定要刪除「${deleteConfirmHoliday.name}」嗎？` : ''}
+        tone="danger"
+        confirmLabel="刪除假日"
+        onCancel={() => setDeleteConfirmHoliday(null)}
+        onConfirm={performDeleteHoliday}
+      />
     </div>
   );
 }

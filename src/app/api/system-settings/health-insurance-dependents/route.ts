@@ -4,6 +4,8 @@ import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { safeParseJSON } from '@/lib/validation';
+import { syncEmployeeDependentsCount } from '@/lib/health-insurance-dependent-sync';
+import { logSystemSettingsChange } from '@/lib/system-settings-audit';
 
 function parsePositiveInteger(value: unknown) {
   if (typeof value === 'number') {
@@ -70,12 +72,20 @@ export async function GET(request: NextRequest) {
 
     // 取得所有員工資料
     const employees = await prisma.employee.findMany({
+      where: {
+        isActive: true
+      },
       select: {
         id: true,
         employeeId: true,
         name: true,
         department: true,
-        position: true
+        position: true,
+        isActive: true,
+        baseSalary: true,
+        insuredBase: true,
+        dependents: true,
+        healthInsuranceActive: true
       },
       orderBy: [
         { department: 'asc' },
@@ -94,11 +104,18 @@ export async function GET(request: NextRequest) {
     // 組合員工與眷屬資料
     const dependentSummaries = employees.map(employee => {
       const dependents = allDependents.filter(dep => dep.employeeId === employee.id);
+      const activeDependentCount = dependents.filter(dep => dep.isActive).length;
       return {
         employeeId: employee.id,
+        employeeNumber: employee.employeeId,
         employeeName: employee.name,
         department: employee.department,
-        dependentCount: dependents.filter(dep => dep.isActive).length,
+        baseSalary: employee.baseSalary,
+        insuredBase: employee.insuredBase,
+        dependentCount: activeDependentCount,
+        payrollDependentCount: employee.dependents ?? 0,
+        isDependentCountSynced: (employee.dependents ?? 0) === activeDependentCount,
+        healthInsuranceActive: employee.healthInsuranceActive !== false,
         dependents: dependents.map(dep => ({
           id: dep.id,
           employeeId: dep.employeeId,
@@ -257,6 +274,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if (employee.isActive === false) {
+      return NextResponse.json(
+        { error: '此員工已停用，不能新增或更新健保眷屬資料' },
+        { status: 400 }
+      );
+    }
+
     // 驗證身分證號格式
     const idNumberRegex = /^[A-Z][0-9]{9}$/;
     if (!idNumberRegex.test(normalizedIdNumber)) {
@@ -300,7 +324,9 @@ export async function POST(request: NextRequest) {
     };
 
     let savedDependent;
+    let auditOldDependent: unknown = null;
     const changedBy = user.username;
+    const employeeIdsToSync = new Set<number>([parsedEmployeeId]);
 
     if (parsedId) {
       // 取得舊資料用於記錄變更
@@ -315,6 +341,9 @@ export async function POST(request: NextRequest) {
           { status: 404 }
         );
       }
+      auditOldDependent = oldDependent;
+
+      employeeIdsToSync.add(oldDependent.employeeId);
       
       // 更新現有眷屬
       savedDependent = await prisma.healthInsuranceDependent.update({
@@ -353,6 +382,7 @@ export async function POST(request: NextRequest) {
       }
     } else {
       if (shouldReactivateExistingDependent && existingDependent) {
+        auditOldDependent = existingDependent;
         savedDependent = await prisma.healthInsuranceDependent.update({
           where: { id: existingDependent.id },
           data: {
@@ -394,8 +424,27 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    const syncedDependentsCounts: Record<number, number> = {};
+    for (const employeeIdToSync of employeeIdsToSync) {
+      syncedDependentsCounts[employeeIdToSync] = await syncEmployeeDependentsCount(
+        prisma,
+        employeeIdToSync
+      );
+    }
+
+    await logSystemSettingsChange({
+      request,
+      user,
+      settingKey: 'health-insurance-dependents',
+      description: parsedId ? '健保眷屬資料變更' : '健保眷屬資料新增',
+      oldValue: auditOldDependent,
+      newValue: savedDependent,
+      targetId: savedDependent.id,
+    });
+
     return NextResponse.json({
       success: true,
+      syncedDependentsCounts,
       dependent: {
         id: savedDependent.id,
         employeeId: savedDependent.employeeId,
@@ -515,9 +564,22 @@ export async function DELETE(request: NextRequest) {
       })
     ]);
 
+    const syncedDependentCount = await syncEmployeeDependentsCount(prisma, dependent.employeeId);
+
+    await logSystemSettingsChange({
+      request,
+      user,
+      settingKey: 'health-insurance-dependents',
+      description: '健保眷屬資料刪除',
+      oldValue: dependent,
+      newValue: null,
+      targetId: id,
+    });
+
     return NextResponse.json({
       success: true,
-      message: '眷屬資料已刪除'
+      message: '眷屬資料已刪除',
+      syncedDependentCount
     });
 
   } catch (error) {

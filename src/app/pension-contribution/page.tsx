@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { 
   Wallet, 
   TrendingUp, 
@@ -14,6 +14,8 @@ import {
   FileText
 } from 'lucide-react';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import EmployeeListSelect, { useActiveEmployeeDepartments } from '@/components/EmployeeListSelect';
+import { SimpleToast, useLocalToast } from '@/components/Toast';
 import { formatPensionContributionEffectiveDatePreview } from '@/lib/pension-contribution';
 
 interface CurrentInfo {
@@ -67,12 +69,16 @@ const STATUS_LABELS: Record<string, { label: string; color: string; icon: React.
 const PENSION_RATE_OPTIONS = Array.from({ length: 13 }, (_, index) => index * 0.5);
 
 export default function PensionContributionPage() {
+  const { toast, showToast, clearToast } = useLocalToast();
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [currentInfo, setCurrentInfo] = useState<CurrentInfo | null>(null);
   const [applications, setApplications] = useState<Application[]>([]);
   const [hasPending, setHasPending] = useState(false);
   const [pendingApplications, setPendingApplications] = useState<Application[]>([]);
+  const [selectedDepartment, setSelectedDepartment] = useState('');
+  const [selectedEmployeeId, setSelectedEmployeeId] = useState('');
+  const { departments } = useActiveEmployeeDepartments();
   
   // 申請表單
   const [showApplyModal, setShowApplyModal] = useState(false);
@@ -106,6 +112,15 @@ export default function PensionContributionPage() {
   }, []);
 
   const isAdminOrHR = user?.role === 'ADMIN' || user?.role === 'HR';
+  const filteredPendingApplications = useMemo(
+    () =>
+      pendingApplications.filter((app) => {
+        if (selectedDepartment && app.employee?.department !== selectedDepartment) return false;
+        if (selectedEmployeeId && String(app.employee?.id || '') !== selectedEmployeeId) return false;
+        return true;
+      }),
+    [pendingApplications, selectedDepartment, selectedEmployeeId]
+  );
 
   // 取得資料
   const fetchData = useCallback(async () => {
@@ -147,7 +162,7 @@ export default function PensionContributionPage() {
   // 提交申請
   const handleSubmit = async () => {
     if (requestedRate === currentInfo?.currentRate) {
-      alert('新比例與目前相同，無需申請');
+      showToast('warning', '新比例與目前相同，無需申請');
       return;
     }
     
@@ -167,15 +182,15 @@ export default function PensionContributionPage() {
 
       const data = await res.json();
       if (data.success) {
-        alert(data.message);
+        showToast('success', data.message);
         setShowApplyModal(false);
         setReason('');
         fetchData();
       } else {
-        alert(data.error);
+        showToast('error', data.error);
       }
     } catch {
-      alert('提交失敗');
+      showToast('error', '提交失敗');
     } finally {
       setSubmitting(false);
     }
@@ -200,15 +215,15 @@ export default function PensionContributionPage() {
 
       const data = await res.json();
       if (data.success) {
-        alert(data.message);
+        showToast('success', data.message);
         setReviewingApp(null);
         setReviewNote('');
         fetchData();
       } else {
-        alert(data.error);
+        showToast('error', data.error);
       }
     } catch {
-      alert('審核失敗');
+      showToast('error', '審核失敗');
     }
   };
 
@@ -231,15 +246,15 @@ export default function PensionContributionPage() {
 
       const data = await res.json();
       if (data.success) {
-        alert(data.message);
+        showToast('success', data.message);
         setReviewingApp(null);
         setReviewNote('');
         fetchData();
       } else {
-        alert(data.error);
+        showToast('error', data.error);
       }
     } catch {
-      alert('決核失敗');
+      showToast('error', '決核失敗');
     }
   };
 
@@ -320,10 +335,37 @@ export default function PensionContributionPage() {
               <div className="bg-white rounded-xl border shadow-sm p-6">
               <h2 className="text-lg font-semibold mb-4 flex items-center gap-2 text-gray-900">
                   <Users className="w-5 h-5 text-orange-600" />
-                  待審核申請 ({pendingApplications.length})
+                  待審核申請 ({filteredPendingApplications.length})
                 </h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">部門</label>
+                    <select
+                      value={selectedDepartment}
+                      onChange={(event) => {
+                        setSelectedDepartment(event.target.value);
+                        setSelectedEmployeeId('');
+                      }}
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-gray-900"
+                    >
+                      <option value="">全部部門</option>
+                      {departments.map((department) => (
+                        <option key={department} value={department}>{department}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <EmployeeListSelect
+                    label="員工"
+                    value={selectedEmployeeId}
+                    onChange={(value) => setSelectedEmployeeId(value)}
+                    emptyLabel="全部員工"
+                    valueField="id"
+                    departmentFilter={selectedDepartment}
+                    selectClassName="w-full border border-gray-300 rounded-lg px-3 py-2 text-gray-900 disabled:bg-gray-100"
+                  />
+                </div>
                 <div className="space-y-3">
-                  {pendingApplications.map(app => (
+                  {filteredPendingApplications.map(app => (
                     <div 
                       key={app.id}
                       className="border rounded-lg p-4 hover:bg-gray-50 cursor-pointer"
@@ -490,24 +532,24 @@ export default function PensionContributionPage() {
         {/* 審核 Modal */}
         {reviewingApp && (
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-xl p-6 w-full max-w-md mx-4">
-              <h3 className="text-lg font-bold mb-4">
+            <div className="bg-white rounded-xl p-6 w-full max-w-md mx-4 text-gray-900">
+              <h3 className="text-lg font-bold text-gray-900 mb-4">
                 {user?.role === 'HR' ? 'HR 審核' : '管理員決核'}
               </h3>
               
               <div className="mb-4 p-4 bg-gray-50 rounded-lg">
-                <p className="font-medium">{reviewingApp.employee?.name}</p>
-                <p className="text-sm text-gray-500">
+                <p className="font-medium text-gray-900">{reviewingApp.employee?.name}</p>
+                <p className="text-sm text-gray-900">
                   {reviewingApp.employee?.department} · {reviewingApp.employee?.position}
                 </p>
                 <div className="mt-2 flex items-center gap-2">
-                  <span className="text-lg font-bold">{reviewingApp.currentRate}%</span>
-                  <span>→</span>
+                  <span className="text-lg font-bold text-gray-900">{reviewingApp.currentRate}%</span>
+                  <span className="text-gray-900">→</span>
                   <span className="text-lg font-bold text-blue-600">{reviewingApp.requestedRate}%</span>
                 </div>
-                <p className="text-sm text-gray-600 mt-1">生效日：{reviewingApp.effectiveDate}</p>
+                <p className="text-sm text-gray-900 mt-1">生效日：{reviewingApp.effectiveDate}</p>
                 {reviewingApp.reason && (
-                  <p className="text-sm text-gray-600">原因：{reviewingApp.reason}</p>
+                  <p className="text-sm text-gray-900">原因：{reviewingApp.reason}</p>
                 )}
               </div>
 
@@ -518,19 +560,19 @@ export default function PensionContributionPage() {
                     HR {reviewingApp.hrReviewer?.name}：{reviewingApp.hrOpinion === 'AGREE' ? '同意' : '不同意'}
                   </p>
                   {reviewingApp.hrNote && (
-                    <p className="text-sm text-gray-600 mt-1">{reviewingApp.hrNote}</p>
+                    <p className="text-sm text-gray-900 mt-1">{reviewingApp.hrNote}</p>
                   )}
                 </div>
               )}
 
               <div className="mb-4">
-                <label className="block text-sm font-medium text-gray-700 mb-1">
+                <label className="block text-sm font-medium text-gray-900 mb-1">
                   {user?.role === 'HR' ? '審核意見' : '決核備註'}（選填）
                 </label>
                 <textarea
                   value={reviewNote}
                   onChange={e => setReviewNote(e.target.value)}
-                  className="w-full border rounded-lg px-3 py-2 text-sm"
+                  className="w-full border rounded-lg px-3 py-2 text-sm text-gray-900 border-gray-300 placeholder:text-gray-500"
                   rows={2}
                 />
               </div>
@@ -538,7 +580,7 @@ export default function PensionContributionPage() {
               <div className="flex gap-3">
                 <button
                   onClick={() => setReviewingApp(null)}
-                  className="flex-1 py-2 border rounded-lg text-gray-700 hover:bg-gray-50"
+                  className="flex-1 py-2 border rounded-lg text-gray-900 hover:bg-gray-50"
                 >
                   取消
                 </button>
@@ -578,6 +620,7 @@ export default function PensionContributionPage() {
           </div>
         )}
       </div>
+      <SimpleToast toast={toast} onClose={clearToast} />
     </AuthenticatedLayout>
   );
 }

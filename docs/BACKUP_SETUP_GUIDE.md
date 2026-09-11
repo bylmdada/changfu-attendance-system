@@ -44,6 +44,8 @@ scp scripts/backup-database.sh deploy@YOUR_SERVER_IP:/home/deploy/backup-databas
 ssh deploy@YOUR_SERVER_IP 'chmod +x /home/deploy/backup-database.sh && bash -n /home/deploy/backup-database.sh'
 ```
 
+目前正式腳本會使用 SQLite `.backup` 產生一致性備份，壓縮後再執行 `PRAGMA integrity_check;`。rclone 未設定時會保留本機備份並記錄警告；若要強制雲端同步成功才視為備份成功，可加 `RCLONE_REQUIRED=1`。
+
 ---
 
 ## 三、設定 Google Drive
@@ -92,7 +94,7 @@ crontab -e
 
 ```bash
 # 每天台灣時間凌晨 3:00 執行備份（UTC 19:00）
-0 19 * * * /home/deploy/backup-database.sh
+0 19 * * * DB_PATH=/home/deploy/apps/changfu-attendance/prisma/prod.db BACKUP_DIR=/home/deploy/backups LOG_FILE=/home/deploy/backup.log /home/deploy/apps/changfu-attendance/scripts/backup-database.sh
 
 # 如需調整策略，先更新 repo 的 scripts/backup-database.sh，再重新同步
 ```
@@ -111,10 +113,13 @@ ssh deploy@YOUR_SERVER_IP 'chmod +x /home/deploy/backup-database.sh'
 
 ```bash
 # 執行備份
-ssh deploy@YOUR_SERVER_IP '/home/deploy/backup-database.sh'
+ssh deploy@YOUR_SERVER_IP 'DB_PATH=/home/deploy/apps/changfu-attendance/prisma/prod.db BACKUP_DIR=/home/deploy/backups LOG_FILE=/home/deploy/backup.log /home/deploy/apps/changfu-attendance/scripts/backup-database.sh'
 
 # 檢查本地備份
 ssh deploy@YOUR_SERVER_IP 'ls -la /home/deploy/backups/'
+
+# 驗證最新備份完整性
+ssh deploy@YOUR_SERVER_IP 'LATEST=$(ls -t /home/deploy/backups/attendance_*.db.gz | head -n 1); gunzip -c "$LATEST" > /tmp/attendance-restore-check.db; sqlite3 /tmp/attendance-restore-check.db "PRAGMA integrity_check;"; rm -f /tmp/attendance-restore-check.db'
 
 # 檢查 Google Drive
 ssh deploy@YOUR_SERVER_IP 'rclone ls gdrive1:changfu-backups/'
@@ -127,17 +132,20 @@ ssh your_user@192.168.1.100 "ls -la /volume1/backups/attendance/"
 ### 還原測試
 
 ```bash
-# 下載備份
-cp /home/deploy/backups/local/attendance_backup_*.tar.gz /tmp/
+# 停止服務
+pm2 stop attendance
 
-# 解壓縮
-cd /tmp && tar -xzf attendance_backup_*.tar.gz
+# 存目前 DB
+cp /home/deploy/apps/changfu-attendance/prisma/prod.db /home/deploy/apps/changfu-attendance/prisma/prod.db.broken-$(date +%Y%m%d-%H%M%S)
 
 # 還原資料庫
-cp prod.db /home/deploy/app/prisma/prod.db
+gunzip -c /home/deploy/backups/attendance_YYYYMMDD_HHMMSS.db.gz > /home/deploy/apps/changfu-attendance/prisma/prod.db
+
+# 完整性檢查
+sqlite3 /home/deploy/apps/changfu-attendance/prisma/prod.db "PRAGMA integrity_check;"
 
 # 重啟應用
-pm2 restart attendance
+pm2 start attendance
 ```
 
 ---

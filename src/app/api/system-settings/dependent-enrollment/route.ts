@@ -10,6 +10,7 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { safeParseJSON } from '@/lib/validation';
+import { logSystemSettingsChange } from '@/lib/system-settings-audit';
 
 const VALID_ENROLLMENT_TYPES = new Set(['ENROLL', 'WITHDRAW']);
 const VALID_REPORT_STATUSES = new Set(['PENDING', 'REPORTED', 'COMPLETED']);
@@ -178,6 +179,16 @@ export async function POST(request: NextRequest) {
       }
     });
 
+    await logSystemSettingsChange({
+      request,
+      user,
+      settingKey: 'dependent-enrollment',
+      description: type === 'ENROLL' ? '眷屬加保記錄新增' : '眷屬退保記錄新增',
+      oldValue: null,
+      newValue: log,
+      targetId: log.id,
+    });
+
     return NextResponse.json({
       success: true,
       message: type === 'ENROLL' ? '加保記錄已新增' : '退保記錄已新增',
@@ -241,9 +252,23 @@ export async function PUT(request: NextRequest) {
       updateData.reportDate = parsedReportDate;
     }
 
+    const oldLog = await prisma.dependentEnrollmentLog.findUnique({
+      where: { id: parsedId }
+    });
+
     const log = await prisma.dependentEnrollmentLog.update({
       where: { id: parsedId },
       data: updateData
+    });
+
+    await logSystemSettingsChange({
+      request,
+      user,
+      settingKey: 'dependent-enrollment',
+      description: '眷屬加退保申報狀態變更',
+      oldValue: oldLog,
+      newValue: log,
+      targetId: log.id,
     });
 
     return NextResponse.json({

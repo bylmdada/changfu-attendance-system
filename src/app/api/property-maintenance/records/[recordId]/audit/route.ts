@@ -23,11 +23,7 @@ export async function POST(
   });
   if (!rec) return fail('找不到紀錄', 404);
   if (!canSuperviseSite(g.ctx.access, rec.siteId)) return fail('僅主管可稽核', 403);
-  if (rec.auditStatus !== '待主管稽核') return fail('此紀錄目前不在待稽核狀態', 409);
-  if (rec.maintainerEmployeeId && rec.maintainerEmployeeId === g.ctx.user.employeeId) {
-    return fail('送出財產掃碼維護者不可審核自己的紀錄，請由其他主管/稽核人員審核', 403);
-  }
-
+  if (rec.auditStatus !== 'PENDING') return fail('此紀錄目前不在待稽核狀態', 409);
   const body = await request.json().catch(() => null);
   const decision = String(body?.decision ?? '').toUpperCase();
   if (!['APPROVE', 'REJECT'].includes(decision)) return fail('decision 必須為 APPROVE 或 REJECT');
@@ -38,8 +34,15 @@ export async function POST(
     where: { id: g.ctx.user.employeeId },
     select: { name: true },
   });
+  const reviewerName = (me?.name ?? g.ctx.user.username).trim();
+  if (
+    rec.maintainerEmployeeId === g.ctx.user.employeeId
+    || rec.maintainerRaw?.trim() === reviewerName
+  ) {
+    return fail('送出財產掃碼維護者不可審核自己的紀錄，請由其他主管/稽核人員審核', 403);
+  }
   const now = new Date();
-  const auditStatus = decision === 'APPROVE' ? '已通過' : '退回補正';
+  const auditStatus = decision === 'APPROVE' ? 'APPROVED' : 'REJECTED';
   const supervisorSignaturePath =
     body?.signaturePath === undefined
       ? rec.supervisorSignaturePath
@@ -48,7 +51,7 @@ export async function POST(
 
   const auditData = {
     auditStatus: decision === 'APPROVE' ? 'APPROVED' : 'REJECTED',
-    supervisorName: me?.name ?? g.ctx.user.username,
+    supervisorName: reviewerName,
     supervisorUserId: g.ctx.user.userId,
     supervisorAuditDate: now,
     supervisorSignaturePath,
@@ -60,14 +63,14 @@ export async function POST(
       const updateResult = await tx.maintenanceRecord.updateMany({
         where: {
           recordId: rec.recordId,
-          auditStatus: '待主管稽核',
+          auditStatus: 'PENDING',
           ...(rec.maintainerEmployeeId
             ? { NOT: { maintainerEmployeeId: g.ctx.user.employeeId } }
             : {}),
         },
         data: {
           auditStatus,
-          supervisorName: me?.name ?? g.ctx.user.username,
+          supervisorName: reviewerName,
           supervisorAuditDate: now,
           rejectReason: decision === 'REJECT' ? rejectReason : null,
           completedDate: decision === 'REJECT' ? null : rec.completedDate,
@@ -82,14 +85,12 @@ export async function POST(
         where: { recordId: rec.recordId },
       });
 
-      const audit = await tx.auditApproval.findFirst({ where: { recordId: rec.recordId } });
-      if (audit) {
-        await tx.auditApproval.update({ where: { id: audit.id }, data: auditData });
-      } else {
-        await tx.auditApproval.create({
-          data: { recordId: rec.recordId, assetCode: rec.assetCode, submittedAt: now, ...auditData },
-        });
-      }
+      const audit = await tx.auditApproval.findFirst({
+        where: { recordId: rec.recordId, auditStatus: 'PENDING' },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (!audit) throw new Error(AUDIT_ALREADY_PROCESSED);
+      await tx.auditApproval.update({ where: { id: audit.id }, data: auditData });
 
       return maintenanceRecord;
     });

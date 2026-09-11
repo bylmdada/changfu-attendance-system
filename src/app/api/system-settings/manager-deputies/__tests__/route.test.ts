@@ -2,6 +2,7 @@ jest.mock('@/lib/database', () => ({
   prisma: {
     managerDeputy: {
       create: jest.fn(),
+      findUnique: jest.fn(),
       update: jest.fn(),
       delete: jest.fn(),
     },
@@ -14,6 +15,10 @@ jest.mock('@/lib/auth', () => ({
 
 jest.mock('@/lib/csrf', () => ({
   validateCSRF: jest.fn(),
+}));
+
+jest.mock('@/lib/system-settings-audit', () => ({
+  logSystemSettingsChange: jest.fn(),
 }));
 
 import { NextRequest } from 'next/server';
@@ -37,6 +42,7 @@ describe('manager deputies route guards', () => {
       role: 'ADMIN',
     } as never);
     mockPrisma.managerDeputy.create.mockResolvedValue({ id: 1 } as never);
+    mockPrisma.managerDeputy.findUnique.mockResolvedValue({ id: 1 } as never);
     mockPrisma.managerDeputy.update.mockResolvedValue({ id: 1 } as never);
     mockPrisma.managerDeputy.delete.mockResolvedValue({ id: 1 } as never);
   });

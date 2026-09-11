@@ -34,10 +34,26 @@ interface CurrentUser {
   canManageProperty?: boolean;
 }
 
+interface PaginationState {
+  total: number;
+  page: number;
+  pageSize: number;
+  pages: number;
+}
+
+const PROPERTY_HOME_PAGE_SIZE = 25;
+
 export default function PropertyDashboardPage() {
   const [loading, setLoading] = useState(true);
   const [summary, setSummary] = useState({ overdue: 0, today: 0, weekDone: 0 });
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [taskPage, setTaskPage] = useState(1);
+  const [taskPagination, setTaskPagination] = useState<PaginationState>({
+    total: 0,
+    page: 1,
+    pageSize: PROPERTY_HOME_PAGE_SIZE,
+    pages: 1,
+  });
   const [error, setError] = useState('');
   const [currentUser, setCurrentUser] = useState<CurrentUser>({});
   const canMaintainProperty = !!currentUser.canMaintainProperty;
@@ -47,7 +63,8 @@ export default function PropertyDashboardPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/property-maintenance/dashboard', { credentials: 'include' });
+      const params = new URLSearchParams({ page: String(taskPage) });
+      const res = await fetch(`/api/property-maintenance/dashboard?${params.toString()}`, { credentials: 'include' });
       const json = await res.json();
       if (!res.ok) {
         setError(json.error || '載入失敗');
@@ -55,13 +72,23 @@ export default function PropertyDashboardPage() {
       }
       setSummary(json.data.summary);
       setTasks(json.data.tasks);
+      const pagination = json.data.pagination || {
+        total: json.data.tasks.length,
+        page: taskPage,
+        pageSize: PROPERTY_HOME_PAGE_SIZE,
+        pages: 1,
+      };
+      setTaskPagination(pagination);
+      if (taskPage > pagination.pages) {
+        setTaskPage(pagination.pages || 1);
+      }
       setError('');
     } catch {
       setError('載入失敗');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [taskPage]);
 
   useEffect(() => {
     const loadUser = async () => {
@@ -75,6 +102,11 @@ export default function PropertyDashboardPage() {
     };
     void Promise.all([load(), loadUser()]);
   }, [load]);
+
+  const taskStart = taskPagination.total === 0
+    ? 0
+    : (taskPagination.page - 1) * taskPagination.pageSize + 1;
+  const taskEnd = Math.min(taskPagination.total, taskPagination.page * taskPagination.pageSize);
 
   const cards = [
     {
@@ -235,43 +267,72 @@ export default function PropertyDashboardPage() {
         )}
 
         <div className="bg-white rounded-xl border border-gray-200">
-          <div className="px-5 py-3 border-b border-gray-200">
-            <h2 className="font-semibold text-gray-900">
-              {canMaintainProperty ? '今日待辦任務（逾期優先）' : '待維護紀錄（逾期優先）'}
-            </h2>
+          <div className="px-5 py-3 border-b border-gray-200 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="font-semibold text-gray-900">
+                {canMaintainProperty ? '今日待辦任務（逾期優先）' : '待維護紀錄（逾期優先）'}
+              </h2>
+              <p className="text-xs text-gray-500">
+                每頁 {PROPERTY_HOME_PAGE_SIZE} 筆
+                {taskPagination.total > 0 ? `，目前顯示 ${taskStart}-${taskEnd} / ${taskPagination.total}` : ''}
+              </p>
+            </div>
           </div>
           {loading ? (
             <div className="p-8 text-center text-gray-600">載入中…</div>
           ) : tasks.length === 0 ? (
             <div className="p-8 text-center text-gray-600">今日沒有待辦任務 🎉</div>
           ) : (
-            <ul className="divide-y divide-gray-100">
-              {tasks.map((t) => {
-                const s = STATUS_UI[t.displayStatus];
-                return (
-                  <li key={t.recordId} className={`flex items-center gap-3 px-4 py-3 ${s.row}`}>
-                    <span className={`w-2.5 h-2.5 rounded-full ${s.dot} shrink-0`} />
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium text-gray-900 truncate">
-                        {t.assetCode}　{t.assetName}
-                      </p>
-                      <p className="text-xs text-gray-600 truncate">
-                        {t.siteName}・{t.location || '—'}・應維護 {fmtDate(t.dueDate)}
-                      </p>
-                    </div>
-                    <span className={`text-xs px-2 py-1 rounded-full ${s.badge}`}>{s.label}</span>
-                    <Link
-                      href={canMaintainProperty
-                        ? `/property-management/scan?code=${encodeURIComponent(t.assetCode)}&recordId=${encodeURIComponent(t.recordId)}&assessment=1`
-                        : `/property-management/records?focus=${encodeURIComponent(t.recordId)}`}
-                      className="text-sm px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 shrink-0"
-                    >
-                      {canMaintainProperty ? '開始維護' : '檢視'}
-                    </Link>
-                  </li>
-                );
-              })}
-            </ul>
+            <>
+              <ul className="divide-y divide-gray-100">
+                {tasks.map((t) => {
+                  const s = STATUS_UI[t.displayStatus];
+                  return (
+                    <li key={t.recordId} className={`flex items-center gap-3 px-4 py-3 ${s.row}`}>
+                      <span className={`w-2.5 h-2.5 rounded-full ${s.dot} shrink-0`} />
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-gray-900 truncate">
+                          {t.assetCode}　{t.assetName}
+                        </p>
+                        <p className="text-xs text-gray-600 truncate">
+                          {t.siteName}・{t.location || '—'}・應維護 {fmtDate(t.dueDate)}
+                        </p>
+                      </div>
+                      <span className={`text-xs px-2 py-1 rounded-full ${s.badge}`}>{s.label}</span>
+                      <Link
+                        href={canMaintainProperty
+                          ? `/property-management/scan?code=${encodeURIComponent(t.assetCode)}&recordId=${encodeURIComponent(t.recordId)}&assessment=1`
+                          : `/property-management/records?focus=${encodeURIComponent(t.recordId)}`}
+                        className="text-sm px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 shrink-0"
+                      >
+                        {canMaintainProperty ? '開始維護' : '檢視'}
+                      </Link>
+                    </li>
+                  );
+                })}
+              </ul>
+              {taskPagination.pages > 1 && (
+                <div className="flex items-center justify-between gap-3 border-t border-gray-200 px-4 py-3 text-sm">
+                  <button
+                    onClick={() => setTaskPage((page) => Math.max(1, page - 1))}
+                    disabled={taskPagination.page <= 1 || loading}
+                    className="rounded-lg border border-gray-300 px-3 py-1.5 text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    上一頁
+                  </button>
+                  <span className="text-gray-600">
+                    第 {taskPagination.page} / {taskPagination.pages} 頁
+                  </span>
+                  <button
+                    onClick={() => setTaskPage((page) => Math.min(taskPagination.pages, page + 1))}
+                    disabled={taskPagination.page >= taskPagination.pages || loading}
+                    className="rounded-lg border border-gray-300 px-3 py-1.5 text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    下一頁
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>

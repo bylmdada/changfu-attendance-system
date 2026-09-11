@@ -19,7 +19,9 @@ import {
   Settings,
   Bell,
   Smartphone,
-  CreditCard
+  CreditCard,
+  Receipt,
+  Search
 } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import {
@@ -28,9 +30,11 @@ import {
 } from '@/lib/admin-session-client';
 import SystemNavbar from '@/components/SystemNavbar';
 import ResponsiveSidebar from '@/components/ResponsiveSidebar';
+import EmptyState from '@/components/EmptyState';
 
 export default function SystemSettingsPage() {
   const router = useRouter();
+  const appVersion = process.env.NEXT_PUBLIC_APP_VERSION || 'dev';
   const [user, setUser] = useState<{
     id: number;
     username: string;
@@ -44,6 +48,7 @@ export default function SystemSettingsPage() {
     };
   } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [searchTerm, setSearchTerm] = useState('');
 
   useEffect(() => {
     const fetchUser = async () => {
@@ -251,6 +256,18 @@ export default function SystemSettingsPage() {
           icon: FileText
         },
         {
+          name: '所得稅管理',
+          path: '/system-settings/income-tax-management',
+          description: '設定薪資試算、薪資條是否扣除與顯示所得稅項目',
+          icon: Receipt
+        },
+        {
+          name: '出勤扣薪控管',
+          path: '/system-settings/attendance-salary-deduction',
+          description: '設定遲到、早退、缺勤是否納入新薪資試算與薪資條扣薪',
+          icon: Clock
+        },
+        {
           name: '薪資條發送設定',
           path: '/system-settings/payslip-email',
           description: '薪資條 Email 發送郵件範本設定',
@@ -366,6 +383,25 @@ export default function SystemSettingsPage() {
     return colorMap[color as keyof typeof colorMap] || colorMap.blue;
   };
 
+  const normalizedSearchTerm = searchTerm.trim().toLowerCase();
+  const filteredCategories = settingsCategories
+    .map((category) => {
+      const categoryMatches =
+        !normalizedSearchTerm ||
+        `${category.title} ${category.description}`.toLowerCase().includes(normalizedSearchTerm);
+      const items = category.items.filter((item) => {
+        if (categoryMatches) return true;
+
+        return `${item.name} ${item.description} ${item.path}`
+          .toLowerCase()
+          .includes(normalizedSearchTerm);
+      });
+
+      return { ...category, items };
+    })
+    .filter((category) => category.items.length > 0);
+  const visibleSettingCount = filteredCategories.reduce((sum, category) => sum + category.items.length, 0);
+
   return (
     <div className="min-h-screen bg-gray-50">
       {/* 響應式側邊欄 */}
@@ -385,18 +421,67 @@ export default function SystemSettingsPage() {
               <p className="text-sm text-yellow-700 mt-1">
                 系統設定將影響整個薪資計算系統，請謹慎操作。建議在非上班時間進行重要參數調整，並事先備份相關資料。
               </p>
+              <Link
+                href="/audit-logs?targetType=SystemSettings&action=SETTINGS_UPDATE"
+                className="mt-3 inline-flex min-h-11 items-center rounded-lg border border-yellow-300 bg-white px-3 text-sm font-medium text-yellow-800 hover:bg-yellow-100"
+              >
+                <FileText className="mr-2 h-4 w-4" />
+                設定變更紀錄
+              </Link>
             </div>
+          </div>
+        </div>
+
+        <div className="mb-8 rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="relative w-full lg:max-w-md">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-400" />
+              <input
+                type="search"
+                value={searchTerm}
+                onChange={(event) => setSearchTerm(event.target.value)}
+                placeholder="搜尋設定名稱、說明或路徑"
+                className="h-11 w-full rounded-lg border border-gray-300 bg-white pl-10 pr-3 text-sm text-gray-900 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+              />
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {filteredCategories.map((category, categoryIndex) => {
+                const colors = getColorClasses(category.color);
+
+                return (
+                  <a
+                    key={category.title}
+                    href={`#setting-category-${categoryIndex}`}
+                    className={`inline-flex min-h-11 items-center rounded-lg border px-3 text-sm font-medium ${colors.bg} ${colors.border} ${colors.text} ${colors.hover}`}
+                  >
+                    {category.title}
+                  </a>
+                );
+              })}
+            </div>
+          </div>
+          <div className="mt-3 flex items-center justify-between text-sm text-gray-600">
+            <span>目前顯示 {visibleSettingCount} 個設定</span>
+            {searchTerm && (
+              <button
+                type="button"
+                onClick={() => setSearchTerm('')}
+                className="min-h-11 rounded-lg px-3 font-medium text-blue-700 hover:bg-blue-50"
+              >
+                清除搜尋
+              </button>
+            )}
           </div>
         </div>
 
         {/* 設定分類 */}
         <div className="space-y-8">
-          {settingsCategories.map((category, categoryIndex) => {
+          {filteredCategories.map((category, categoryIndex) => {
             const colors = getColorClasses(category.color);
             const IconComponent = category.icon;
             
             return (
-              <div key={categoryIndex} className="bg-white rounded-lg shadow-sm border border-gray-200">
+              <div id={`setting-category-${categoryIndex}`} key={category.title} className="scroll-mt-24 bg-white rounded-lg shadow-sm border border-gray-200">
                 <div className={`px-6 py-4 border-b border-gray-200 ${colors.bg}`}>
                   <div className="flex items-center space-x-3">
                     <IconComponent className={`h-6 w-6 ${colors.icon}`} />
@@ -436,6 +521,13 @@ export default function SystemSettingsPage() {
               </div>
             );
           })}
+          {filteredCategories.length === 0 && (
+            <EmptyState
+              icon={<Search className="h-10 w-10" />}
+              title={`找不到符合「${searchTerm}」的系統設定`}
+              description="請改用設定名稱、分類或路徑關鍵字搜尋。"
+            />
+          )}
         </div>
 
         {/* 系統資訊 */}
@@ -444,7 +536,7 @@ export default function SystemSettingsPage() {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
             <div>
               <span className="text-gray-700">系統版本：</span>
-              <span className="font-medium text-gray-700">v2.1.0</span>
+              <span className="font-medium text-gray-700">{appVersion}</span>
             </div>
             <div>
               <span className="text-gray-700">最後更新：</span>

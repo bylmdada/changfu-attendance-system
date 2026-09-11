@@ -4,6 +4,7 @@ import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { safeParseJSON } from '@/lib/validation';
+import { logSystemSettingsChange } from '@/lib/system-settings-audit';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -277,6 +278,10 @@ export async function POST(request: NextRequest) {
       paymentSchedule: normalizedPaymentSchedule ? JSON.stringify(normalizedPaymentSchedule) : undefined
     };
 
+    const oldBonusType = typeof normalizedId === 'number'
+      ? await prisma.bonusConfiguration.findUnique({ where: { id: normalizedId } })
+      : null;
+
     let result;
     if (typeof normalizedId === 'number') {
       // 更新現有獎金類型
@@ -290,6 +295,16 @@ export async function POST(request: NextRequest) {
         data: bonusData
       });
     }
+
+    await logSystemSettingsChange({
+      request,
+      user,
+      settingKey: 'bonus-management',
+      description: typeof normalizedId === 'number' ? '獎金類型設定變更' : '獎金類型新增',
+      oldValue: oldBonusType,
+      newValue: result,
+      targetId: result.id,
+    });
 
     // 安全地解析 JSON 欄位
     return NextResponse.json({
@@ -380,6 +395,16 @@ export async function DELETE(request: NextRequest) {
 
     await prisma.bonusConfiguration.delete({
       where: { id: normalizedId }
+    });
+
+    await logSystemSettingsChange({
+      request,
+      user,
+      settingKey: 'bonus-management',
+      description: '獎金類型刪除',
+      oldValue: bonusTypeToDelete,
+      newValue: null,
+      targetId: normalizedId,
     });
 
     return NextResponse.json({

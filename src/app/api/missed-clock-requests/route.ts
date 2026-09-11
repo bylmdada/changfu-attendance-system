@@ -7,6 +7,9 @@ import { createApprovalForRequest } from '@/lib/approval-helper';
 import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
+import { buildApplicationRequestNumber } from '@/lib/application-request-number';
+import { applyMissedClockToAttendance, getMissedClockWorkDate } from '@/lib/missed-clock-attendance';
+import { getApprovalWorkflow } from '@/lib/approval-workflow';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -100,7 +103,12 @@ export async function GET(request: NextRequest) {
       }
     });
 
-    return NextResponse.json({ requests });
+    return NextResponse.json({
+      requests: requests.map((item) => ({
+        ...item,
+        requestNumber: buildApplicationRequestNumber('MC', item.id, item.createdAt),
+      })),
+    });
   } catch (error) {
     console.error('獲取忘打卡申請失敗:', error);
     return NextResponse.json(
@@ -358,6 +366,7 @@ export async function PUT(request: NextRequest) {
         }
       }
     };
+    const workflow = await getApprovalWorkflow('MISSED_CLOCK', { department: request_data.employee?.department });
 
     if (user.role === 'MANAGER') {
       if (!opinion || !['AGREE', 'DISAGREE'].includes(opinion)) {
@@ -371,6 +380,12 @@ export async function PUT(request: NextRequest) {
         return NextResponse.json(
           { error: '申請已被處理' },
           { status: 400 }
+        );
+      }
+      if (!workflow?.requireManager) {
+        return NextResponse.json(
+          { error: '此忘打卡流程不需主管審核，請由管理員直接決核' },
+          { status: 409 }
         );
       }
 
@@ -421,6 +436,12 @@ export async function PUT(request: NextRequest) {
         { status: 400 }
       );
     }
+    if (workflow?.requireManager && request_data.status === 'PENDING') {
+      return NextResponse.json(
+        { error: '此忘打卡申請需先由部門主管審核，管理員或 HR 不可略過主管流程' },
+        { status: 409 }
+      );
+    }
 
     const approvedAt = new Date();
 
@@ -434,6 +455,11 @@ export async function PUT(request: NextRequest) {
     let updatedRequest;
 
     if (status === 'APPROVED') {
+      const freezeCheck = await checkAttendanceFreeze(getMissedClockWorkDate(request_data.workDate));
+      if (freezeCheck.isFrozen) {
+        return NextResponse.json({ error: '該月份已被凍結，無法核准補卡申請' }, { status: 403 });
+      }
+
       updatedRequest = await prisma.$transaction(async (tx) => {
         const requestUpdate = await tx.missedClockRequest.update({
           where: { id: requestId },
@@ -441,48 +467,7 @@ export async function PUT(request: NextRequest) {
           include: includeApprovalContext,
         });
 
-        const attendanceRecord = await tx.attendanceRecord.findFirst({
-          where: {
-            employeeId: request_data.employeeId,
-            workDate: new Date(request_data.workDate)
-          }
-        });
-
-        if (attendanceRecord) {
-          const updateData: { clockInTime?: string; clockOutTime?: string } = {};
-          if (request_data.clockType === 'CLOCK_IN') {
-            updateData.clockInTime = request_data.requestedTime;
-          } else if (request_data.clockType === 'CLOCK_OUT') {
-            updateData.clockOutTime = request_data.requestedTime;
-          }
-
-          await tx.attendanceRecord.update({
-            where: { id: attendanceRecord.id },
-            data: updateData
-          });
-        } else {
-          const attendanceData: {
-            employeeId: number;
-            workDate: Date;
-            status: string;
-            clockInTime?: string;
-            clockOutTime?: string;
-          } = {
-            employeeId: request_data.employeeId,
-            workDate: new Date(request_data.workDate),
-            status: 'PRESENT'
-          };
-
-          if (request_data.clockType === 'CLOCK_IN') {
-            attendanceData.clockInTime = request_data.requestedTime;
-          } else if (request_data.clockType === 'CLOCK_OUT') {
-            attendanceData.clockOutTime = request_data.requestedTime;
-          }
-
-          await tx.attendanceRecord.create({
-            data: attendanceData
-          });
-        }
+        await applyMissedClockToAttendance(tx, request_data);
 
         return requestUpdate;
       });

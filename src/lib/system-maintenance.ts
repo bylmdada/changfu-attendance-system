@@ -14,7 +14,6 @@
  */
 
 import { notificationSystem, sendNotification } from '@/lib/realtime-notifications';
-import { apiGateway } from '@/lib/api-gateway';
 import { CacheManager } from '@/lib/intelligent-cache';
 
 // 系統健康狀態定義
@@ -36,7 +35,7 @@ export interface SystemHealthStatus {
 }
 
 export interface ComponentHealth {
-  status: 'healthy' | 'warning' | 'critical' | 'offline';
+  status: 'healthy' | 'warning' | 'critical' | 'offline' | 'unknown';
   score: number;
   responseTime: number;
   errorRate: number;
@@ -91,74 +90,11 @@ export class SystemMaintenanceMonitor {
 
   // 初始化預設維護任務
   private initializeDefaultTasks(): void {
-    const defaultTasks: Omit<MaintenanceTask, 'id'>[] = [
-      {
-        name: '資料庫清理',
-        type: 'routine',
-        category: 'database',
-        description: '清理過期的資料庫記錄和日誌',
-        schedule: '0 2 * * *', // 每日凌晨2點
-        nextRun: this.getNextRunTime('0 2 * * *'),
-        status: 'pending',
-        autoRun: true,
-        priority: 'normal'
-      },
-      {
-        name: '緩存優化',
-        type: 'routine',
-        category: 'cache',
-        description: '清理過期緩存並優化緩存配置',
-        schedule: '0 */6 * * *', // 每6小時
-        nextRun: this.getNextRunTime('0 */6 * * *'),
-        status: 'pending',
-        autoRun: true,
-        priority: 'normal'
-      },
-      {
-        name: '安全掃描',
-        type: 'scheduled',
-        category: 'security',
-        description: '執行安全漏洞掃描和威脅檢測',
-        schedule: '0 0 * * 0', // 每週日午夜
-        nextRun: this.getNextRunTime('0 0 * * 0'),
-        status: 'pending',
-        autoRun: true,
-        priority: 'high'
-      },
-      {
-        name: '日誌歸檔',
-        type: 'routine',
-        category: 'logs',
-        description: '歸檔舊日誌文件並清理磁盤空間',
-        schedule: '0 1 * * *', // 每日凌晨1點
-        nextRun: this.getNextRunTime('0 1 * * *'),
-        status: 'pending',
-        autoRun: true,
-        priority: 'low'
-      },
-      {
-        name: '性能監控報告',
-        type: 'scheduled',
-        category: 'performance',
-        description: '生成性能監控報告並分析趨勢',
-        schedule: '0 8 * * 1', // 每週一早上8點
-        nextRun: this.getNextRunTime('0 8 * * 1'),
-        status: 'pending',
-        autoRun: true,
-        priority: 'normal'
-      },
-      {
-        name: '資料備份',
-        type: 'routine',
-        category: 'backup',
-        description: '執行系統資料完整備份',
-        schedule: '0 3 * * *', // 每日凌晨3點
-        nextRun: this.getNextRunTime('0 3 * * *'),
-        status: 'pending',
-        autoRun: true,
-        priority: 'high'
-      }
-    ];
+    const defaultTasks: Omit<MaintenanceTask, 'id'>[] = [{
+      name: '緩存清理', type: 'routine', category: 'cache',
+      description: '清理過期快取', schedule: '0 */6 * * *',
+      nextRun: this.getNextRunTime('0 */6 * * *'), status: 'pending', autoRun: true, priority: 'normal',
+    }];
 
     defaultTasks.forEach((task, index) => {
       const taskWithId = {
@@ -306,16 +242,16 @@ export class SystemMaintenanceMonitor {
       let status: ComponentHealth['status'] = 'healthy';
       
       if (responseTime < 200) {
-        score = 95 + Math.random() * 5; // 95-100分
+        score = 100; // 95-100分
         status = 'healthy';
       } else if (responseTime < 500) {
-        score = 80 + Math.random() * 10; // 80-90分  
+        score = 85; // 80-90分
         status = 'healthy';
       } else if (responseTime < 1000) {
-        score = 60 + Math.random() * 15; // 60-75分
+        score = 65; // 60-75分
         status = 'warning';
       } else {
-        score = 30 + Math.random() * 20; // 30-50分
+        score = 40; // 30-50分
         status = 'critical';
       }
       
@@ -323,15 +259,14 @@ export class SystemMaintenanceMonitor {
         status,
         score: Math.round(score),
         responseTime,
-        errorRate: responseTime > 500 ? Math.random() * 5 : 0,
+        errorRate: 0,
         lastCheck: new Date(),
         details: {
           connectionPool: 'optimized',
           queryPerformance: responseTime < 200 ? 'excellent' : responseTime < 500 ? 'good' : 'slow',
           userCount,
           employeeCount,
-          walMode: 'enabled',
-          cacheSize: '10MB',
+          errorRateMeasured: false,
           responseTime: `${responseTime}ms`
         }
       };
@@ -386,34 +321,8 @@ export class SystemMaintenanceMonitor {
 
   // 檢查 API 健康
   private async checkAPIHealth(): Promise<ComponentHealth> {
-    const startTime = Date.now();
-    
-    try {
-      const apiStats = apiGateway.getStats();
-      const responseTime = Date.now() - startTime;
-      
-      return {
-        status: apiStats.totalRoutes > 0 ? 'healthy' : 'warning',
-        score: Math.min(100, apiStats.totalRoutes * 5),
-        responseTime,
-        errorRate: Math.random() * 5, // 模擬 API 錯誤率
-        lastCheck: new Date(),
-        details: {
-          totalRoutes: apiStats.totalRoutes,
-          activeRoutes: apiStats.routes.length,
-          gatewayStatus: 'operational'
-        }
-      };
-    } catch (error) {
-      return {
-        status: 'offline',
-        score: 0,
-        responseTime: Date.now() - startTime,
-        errorRate: 100,
-        lastCheck: new Date(),
-        details: { error: error instanceof Error ? error.message : 'API Gateway unavailable' }
-      };
-    }
+    return { status: 'unknown', score: 0, responseTime: 0, errorRate: 0,
+      lastCheck: new Date(), details: { measured: false, message: '尚未量測 API 錯誤率' } };
   }
 
   // 檢查通知系統健康
@@ -455,38 +364,8 @@ export class SystemMaintenanceMonitor {
 
   // 檢查安全健康
   private async checkSecurityHealth(): Promise<ComponentHealth> {
-    const startTime = Date.now();
-    
-    try {
-      // 模擬安全檢查
-      await new Promise(resolve => setTimeout(resolve, Math.random() * 30));
-      
-      const responseTime = Date.now() - startTime;
-      const securityScore = 95 + Math.random() * 5; // 模擬安全評分
-      
-      return {
-        status: securityScore > 90 ? 'healthy' : securityScore > 70 ? 'warning' : 'critical',
-        score: securityScore,
-        responseTime,
-        errorRate: Math.max(0, 100 - securityScore),
-        lastCheck: new Date(),
-        details: {
-          threatLevel: 'low',
-          lastScan: new Date().toISOString(),
-          vulnerabilities: 0,
-          securityScore
-        }
-      };
-    } catch (error) {
-      return {
-        status: 'offline',
-        score: 0,
-        responseTime: Date.now() - startTime,
-        errorRate: 100,
-        lastCheck: new Date(),
-        details: { error: error instanceof Error ? error.message : 'Security system unavailable' }
-      };
-    }
+    return { status: 'unknown', score: 0, responseTime: 0, errorRate: 0,
+      lastCheck: new Date(), details: { measured: false, message: '尚未執行安全檢查' } };
   }
 
   // 檢查性能健康
@@ -538,11 +417,14 @@ export class SystemMaintenanceMonitor {
     };
 
     let totalScore = 0;
+    let measuredWeight = 0;
     Object.entries(components).forEach(([key, component]) => {
+      if (component.status === 'unknown') return;
+      measuredWeight += weights[key as keyof typeof weights];
       totalScore += component.score * weights[key as keyof typeof weights];
     });
 
-    return Math.round(totalScore);
+    return measuredWeight ? Math.round(totalScore / measuredWeight) : 0;
   }
 
   // 獲取整體狀態
@@ -668,6 +550,10 @@ export class SystemMaintenanceMonitor {
     if (!task) {
       return false;
     }
+    if (task.category !== 'cache') {
+      task.status = 'disabled';
+      return false;
+    }
 
     console.log(`🔧 執行維護任務: ${task.name}`);
     
@@ -708,90 +594,8 @@ export class SystemMaintenanceMonitor {
 
   // 執行維護動作
   private async performMaintenanceAction(task: MaintenanceTask): Promise<void> {
-    switch (task.category) {
-      case 'database':
-        await this.performDatabaseMaintenance();
-        break;
-      case 'cache':
-        await this.performCacheMaintenance();
-        break;
-      case 'logs':
-        await this.performLogMaintenance();
-        break;
-      case 'security':
-        await this.performSecurityMaintenance();
-        break;
-      case 'backup':
-        await this.performBackupMaintenance();
-        break;
-      case 'performance':
-        await this.performPerformanceMaintenance();
-        break;
-      default:
-        throw new Error(`未知的維護類型: ${task.category}`);
-    }
-  }
-
-  // 資料庫維護
-  private async performDatabaseMaintenance(): Promise<void> {
-    console.log('🗄️  執行資料庫維護...');
-    
-    // 模擬資料庫清理操作
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    
-    console.log('✅ 資料庫維護完成');
-  }
-
-  // 緩存維護
-  private async performCacheMaintenance(): Promise<void> {
-    console.log('💾 執行緩存維護...');
-    
-    // 執行緩存清理
+    if (task.category !== 'cache') throw new Error('此維護工作尚未實作');
     CacheManager.cleanupAll();
-    
-    console.log('✅ 緩存維護完成');
-  }
-
-  // 日誌維護
-  private async performLogMaintenance(): Promise<void> {
-    console.log('📋 執行日誌維護...');
-    
-    // 模擬日誌清理
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
-    console.log('✅ 日誌維護完成');
-  }
-
-  // 安全維護
-  private async performSecurityMaintenance(): Promise<void> {
-    console.log('🔒 執行安全維護...');
-    
-    // 模擬安全掃描
-    await new Promise(resolve => setTimeout(resolve, 3000));
-    
-    console.log('✅ 安全維護完成');
-  }
-
-  // 備份維護
-  private async performBackupMaintenance(): Promise<void> {
-    console.log('💿 執行備份維護...');
-    
-    // 模擬資料備份
-    await new Promise(resolve => setTimeout(resolve, 5000));
-    
-    console.log('✅ 備份維護完成');
-  }
-
-  // 性能維護
-  private async performPerformanceMaintenance(): Promise<void> {
-    console.log('⚡ 執行性能維護...');
-    
-    // 模擬性能優化
-    if (global.gc) {
-      global.gc();
-    }
-    
-    console.log('✅ 性能維護完成');
   }
 
   // 發送維護警報

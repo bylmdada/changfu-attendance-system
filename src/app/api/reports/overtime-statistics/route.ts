@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
+import { calculateOvertimeRequestsEligibility } from '@/lib/overtime-eligibility';
 
 function validateIntegerQueryParam(
   value: string | null,
@@ -125,6 +126,7 @@ export async function GET(request: NextRequest) {
       },
       orderBy: { overtimeDate: 'asc' }
     });
+    const overtimeEligibility = await calculateOvertimeRequestsEligibility(overtimeRequests);
 
     // ==================== 統計計算 ====================
 
@@ -157,7 +159,6 @@ export async function GET(request: NextRequest) {
     for (const overtime of overtimeRequests) {
       const empId = overtime.employeeId;
       const dept = overtime.employee.department || '未指定部門';
-      const month = new Date(overtime.overtimeDate).getMonth() + 1;
 
       // 員工統計
       if (!employeeStats[empId]) {
@@ -167,7 +168,6 @@ export async function GET(request: NextRequest) {
           requestCount: 0
         };
       }
-      employeeStats[empId].totalHours += overtime.totalHours;
       employeeStats[empId].requestCount += 1;
 
       // 部門統計
@@ -179,13 +179,23 @@ export async function GET(request: NextRequest) {
           requestCount: 0
         };
       }
-      departmentStats[dept].totalHours += overtime.totalHours;
       departmentStats[dept].employeeCount.add(empId);
       departmentStats[dept].requestCount += 1;
 
-      // 月度趨勢
-      monthlyTrend[month].totalHours += overtime.totalHours;
-      monthlyTrend[month].requestCount += 1;
+      const requestMonth = new Date(overtime.overtimeDate).getMonth() + 1;
+      monthlyTrend[requestMonth].requestCount += 1;
+    }
+
+    // 實際有效時數以員工＋日期為單位彙總，避免同日多張單重複計算。
+    for (const eligibility of overtimeEligibility.byEmployeeDate.values()) {
+      const employee = overtimeRequests.find(item => item.employeeId === eligibility.employeeId)?.employee;
+      if (!employee) continue;
+
+      const dept = employee.department || '未指定部門';
+      const month = Number(eligibility.workDate.slice(5, 7));
+      employeeStats[eligibility.employeeId].totalHours += eligibility.effectiveHours;
+      departmentStats[dept].totalHours += eligibility.effectiveHours;
+      monthlyTrend[month].totalHours += eligibility.effectiveHours;
     }
 
     // 整理輸出格式
@@ -205,7 +215,7 @@ export async function GET(request: NextRequest) {
     const monthlyTrendArray = Object.values(monthlyTrend);
 
     // 總計
-    const totalHours = overtimeRequests.reduce((sum, r) => sum + r.totalHours, 0);
+    const totalHours = overtimeEligibility.totalEffectiveHours;
     const totalRequests = overtimeRequests.length;
     const uniqueEmployees = new Set(overtimeRequests.map(r => r.employeeId)).size;
 

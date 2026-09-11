@@ -5,8 +5,10 @@ import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
-import { getAnnualLeaveYearBreakdown } from '@/lib/annual-leave';
-import { isAnnualLeaveType } from '@/lib/leave-types';
+import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
+import { reverseCompensatoryLeaveUse } from '@/lib/compensatory-leave-accounting';
+import { getPayrollImpactWarning } from '@/lib/payroll-impact-warning';
+import { reverseApprovedAnnualLeaveAccounting } from '@/lib/annual-leave-schedule-accounting';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -72,10 +74,15 @@ export async function POST(
       return NextResponse.json({ error: '只能作廢已核准的申請' }, { status: 400 });
     }
 
+    const freezeCheck = await checkAttendanceFreeze(new Date(leaveRequest.startDate));
+    if (freezeCheck.isFrozen) {
+      return NextResponse.json({ error: '該月份已被凍結，無法作廢請假申請' }, { status: 403 });
+    }
+
     // 直接作廢
     await prisma.$transaction(async (tx) => {
       await tx.leaveRequest.update({
-        where: { id: leaveId },
+        where: { id: leaveId, status: 'APPROVED' },
         data: {
           status: 'VOIDED',
           voidedBy: user.employeeId,
@@ -84,27 +91,16 @@ export async function POST(
         }
       });
 
-      if (isAnnualLeaveType(leaveRequest.leaveType)) {
-        const startDate = new Date(leaveRequest.startDate);
-        const endDate = new Date(leaveRequest.endDate);
-        for (const { year, days } of getAnnualLeaveYearBreakdown(startDate, endDate)) {
-          await tx.annualLeave.updateMany({
-            where: {
-              employeeId: leaveRequest.employeeId,
-              year,
-            },
-            data: {
-              usedDays: { decrement: days },
-              remainingDays: { increment: days },
-            },
-          });
-        }
-      }
+    await reverseApprovedAnnualLeaveAccounting(tx, leaveRequest);
+
+    await reverseCompensatoryLeaveUse(tx, leaveRequest, 'LEAVE_VOID');
     });
+    const warning = await getPayrollImpactWarning(prisma, leaveRequest);
 
     return NextResponse.json({
       success: true,
-      message: '請假申請已作廢'
+      message: '請假申請已作廢',
+      warning,
     });
   } catch (error) {
     console.error('作廢請假申請失敗:', error);

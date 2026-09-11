@@ -5,6 +5,7 @@ import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
 import { canAccessAttendanceDepartment } from '@/lib/attendance-permission-scopes';
+import { getApprovalWorkflow } from '@/lib/approval-workflow';
 
 jest.mock('@/lib/database', () => ({
   prisma: {
@@ -36,11 +37,16 @@ jest.mock('@/lib/attendance-permission-scopes', () => ({
   canAccessAttendanceDepartment: jest.fn(),
 }));
 
+jest.mock('@/lib/approval-workflow', () => ({
+  getApprovalWorkflow: jest.fn(),
+}));
+
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockedGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
 const mockValidateCSRF = validateCSRF as jest.MockedFunction<typeof validateCSRF>;
 const mockCheckAttendanceFreeze = checkAttendanceFreeze as jest.MockedFunction<typeof checkAttendanceFreeze>;
 const mockCanAccessAttendanceDepartment = canAccessAttendanceDepartment as jest.MockedFunction<typeof canAccessAttendanceDepartment>;
+const mockGetApprovalWorkflow = getApprovalWorkflow as jest.MockedFunction<typeof getApprovalWorkflow>;
 
 const transactionClient = {
   shiftExchangeRequest: {
@@ -57,6 +63,7 @@ describe('shift exchange authorization guards', () => {
     jest.clearAllMocks();
     mockValidateCSRF.mockResolvedValue({ valid: true });
     mockCheckAttendanceFreeze.mockResolvedValue({ isFrozen: false } as never);
+    mockGetApprovalWorkflow.mockResolvedValue({ requireManager: true } as never);
     mockPrisma.$transaction.mockImplementation(async (callback) => callback(transactionClient as never) as never);
     mockedGetUserFromRequest.mockResolvedValue({
       role: 'MANAGER',
@@ -323,6 +330,24 @@ describe('shift exchange authorization guards', () => {
       employeeId: 1,
       userId: 101,
     } as never);
+    mockPrisma.shiftExchangeRequest.findUnique.mockResolvedValue({
+      id: 5,
+      requesterId: 10,
+      targetEmployeeId: 11,
+      originalWorkDate: '2026-04-01',
+      targetWorkDate: '2026-04-01',
+      requestReason: JSON.stringify({ type: 'SELF_CHANGE', shiftDate: '2026-04-01', original: 'A', new: 'B', note: '調班' }),
+      status: 'PENDING_ADMIN',
+      createdAt: '2026-04-01T00:00:00.000Z',
+      updatedAt: '2026-04-01T00:00:00.000Z',
+      requester: {
+        id: 10,
+        department: '製造部',
+      },
+      targetEmployee: {
+        id: 11,
+      },
+    } as never);
     transactionClient.schedule.findFirst.mockResolvedValueOnce(null as never);
 
     const request = new NextRequest('http://localhost:3000/api/shift-exchanges/5', {
@@ -343,5 +368,29 @@ describe('shift exchange authorization guards', () => {
     expect(transactionClient.shiftExchangeRequest.update).not.toHaveBeenCalled();
     expect(transactionClient.schedule.update).not.toHaveBeenCalled();
     expect(mockPrisma.shiftExchangeRequest.update).not.toHaveBeenCalled();
+  });
+
+  it('blocks admins from skipping the required manager review', async () => {
+    mockedGetUserFromRequest.mockResolvedValue({
+      role: 'ADMIN',
+      employeeId: 1,
+      userId: 101,
+    } as never);
+
+    const request = new NextRequest('http://localhost:3000/api/shift-exchanges/5', {
+      method: 'PATCH',
+      headers: {
+        cookie: 'token=session-token',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ status: 'APPROVED' }),
+    });
+
+    const response = await PATCH(request, { params: Promise.resolve({ id: '5' }) });
+    const payload = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(payload.error).toContain('需先由部門主管審核');
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
   });
 });

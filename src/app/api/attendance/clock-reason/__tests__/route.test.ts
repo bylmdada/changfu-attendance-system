@@ -224,10 +224,92 @@ describe('attendance clock-reason route guards', () => {
     expect(mockPrisma.attendanceRecord.update).toHaveBeenCalledWith({
       where: { id: 123 },
       data: {
-        clockOutReason: 'code review、修正、收尾',
+        clockOutReason: 'BUSINESS',
         clockOutOvertimeId: 777,
       },
     });
+  });
+
+  it('stores all linked overtime minutes after the configured minimum is met', async () => {
+    mockGetUserFromRequest.mockResolvedValue({
+      userId: 5,
+      employeeId: 55,
+      username: 'employee',
+      role: 'EMPLOYEE',
+    });
+    mockPrisma.attendanceRecord.findUnique.mockResolvedValue({
+      id: 123,
+      employeeId: 55,
+      workDate: new Date('2026-04-11T00:00:00.000Z'),
+      employee: { id: 55, name: '員工甲' },
+    } as never);
+    mockPrisma.user.findFirst.mockResolvedValue({ id: 5 } as never);
+    mockPrisma.overtimeRequest.create.mockResolvedValue({ id: 778 } as never);
+    mockPrisma.attendanceRecord.update.mockResolvedValue({ id: 123 } as never);
+
+    const request = new NextRequest('http://localhost/api/attendance/clock-reason', {
+      method: 'POST',
+      body: JSON.stringify({
+        recordId: 123,
+        clockType: 'out',
+        reason: 'BUSINESS',
+        newOvertimeRequest: {
+          startTime: '18:00',
+          endTime: '18:31',
+          overtimeReason: '補 31 分鐘'
+        }
+      }),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.success).toBe(true);
+    expect(mockPrisma.overtimeRequest.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        totalHours: 0.52,
+        reason: '補 31 分鐘',
+      })
+    });
+  });
+
+  it('rejects a linked overtime request below the configured minimum', async () => {
+    mockGetUserFromRequest.mockResolvedValue({
+      userId: 5,
+      employeeId: 55,
+      username: 'employee',
+      role: 'EMPLOYEE',
+    });
+    mockPrisma.attendanceRecord.findUnique.mockResolvedValue({
+      id: 123,
+      employeeId: 55,
+      workDate: new Date('2026-04-11T00:00:00.000Z'),
+      employee: { id: 55, name: '員工甲' },
+    } as never);
+    mockPrisma.user.findFirst.mockResolvedValue({ id: 5 } as never);
+
+    const response = await POST(new NextRequest('http://localhost/api/attendance/clock-reason', {
+      method: 'POST',
+      body: JSON.stringify({
+        recordId: 123,
+        clockType: 'out',
+        reason: 'BUSINESS',
+        newOvertimeRequest: {
+          startTime: '18:00',
+          endTime: '18:29',
+          overtimeReason: '不足半小時',
+        },
+      }),
+      headers: { 'content-type': 'application/json' },
+    }));
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload.error).toBe('加班時數最少0.5小時');
+    expect(mockPrisma.overtimeRequest.create).not.toHaveBeenCalled();
+    expect(mockPrisma.attendanceRecord.update).not.toHaveBeenCalled();
   });
 
   it('allows quick-auth submissions to update early clock-in reasons without a session user', async () => {

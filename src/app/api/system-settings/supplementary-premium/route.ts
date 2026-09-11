@@ -10,6 +10,7 @@ import {
   type SupplementaryPremiumSettings,
 } from '@/lib/supplementary-premium-config';
 import { getStoredSupplementaryPremiumSettings } from '@/lib/supplementary-premium-settings';
+import { logSystemSettingsChange } from '@/lib/system-settings-audit';
 
 async function verifyAdmin(request: NextRequest) {
   const user = await getUserFromRequest(request);
@@ -94,6 +95,7 @@ export async function POST(request: NextRequest) {
     if (authError) {
       return authError;
     }
+    const user = await getUserFromRequest(request);
 
     const csrfResult = await validateCSRF(request);
     if (!csrfResult.valid) {
@@ -147,6 +149,15 @@ export async function POST(request: NextRequest) {
         value: JSON.stringify(settings),
         description: '補充保費計算設定',
       },
+    });
+
+    await logSystemSettingsChange({
+      request,
+      user: user!,
+      settingKey: SUPPLEMENTARY_PREMIUM_SETTINGS_KEY,
+      description: '補充保費設定變更',
+      oldValue: existingSettings,
+      newValue: settings,
     });
 
     return NextResponse.json({

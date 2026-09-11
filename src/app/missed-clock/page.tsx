@@ -2,21 +2,24 @@
 
 import React from 'react';
 import { useState, useEffect, useCallback } from 'react';
-import { Clock, Plus, Search, Filter, CheckCircle, XCircle, Trash2, Calendar, User, AlertTriangle, X, ChevronDown, ChevronUp, Eye } from 'lucide-react';
+import { Clock, Plus, Filter, CheckCircle, XCircle, Trash2, Calendar, User, AlertTriangle, X, ChevronDown, ChevronUp, Eye } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import BatchApproveBar from '@/components/BatchApproveBar';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import EmployeeListSelect from '@/components/EmployeeListSelect';
 import ApprovalProgress, { ApprovalReviewRecord } from '@/components/ApprovalProgress';
+import PromptDialog from '@/components/PromptDialog';
 
 
 interface MissedClockRequest {
   id: number;
+  requestNumber?: string;
   employeeId: number;
   workDate: string;
   clockType: 'CLOCK_IN' | 'CLOCK_OUT';
   requestedTime: string;
   reason: string;
-  status: 'PENDING' | 'APPROVED' | 'REJECTED';
+  status: 'PENDING' | 'PENDING_ADMIN' | 'APPROVED' | 'REJECTED' | 'CANCELLED' | 'VOIDED';
   approvedBy?: number;
   approvedAt?: string;
   createdAt: string;
@@ -51,14 +54,20 @@ interface User {
 
 const STATUS_LABELS = {
   PENDING: '待審核',
+  PENDING_ADMIN: '待管理員決核',
   APPROVED: '已批准',
-  REJECTED: '已拒絕'
+  REJECTED: '已拒絕',
+  CANCELLED: '已撤銷',
+  VOIDED: '已作廢'
 };
 
 const STATUS_COLORS = {
   PENDING: 'bg-yellow-100 text-yellow-800',
+  PENDING_ADMIN: 'bg-blue-100 text-blue-800',
   APPROVED: 'bg-green-100 text-green-800', 
-  REJECTED: 'bg-red-100 text-red-800'
+  REJECTED: 'bg-red-100 text-red-800',
+  CANCELLED: 'bg-gray-100 text-gray-700',
+  VOIDED: 'bg-gray-100 text-gray-700'
 };
 
 const CLOCK_TYPE_LABELS = {
@@ -100,6 +109,8 @@ export default function MissedClockPage() {
   
   // 確認框狀態
   const [deleteConfirm, setDeleteConfirm] = useState<{ id: number; name: string } | null>(null);
+  const [reasonPrompt, setReasonPrompt] = useState<{ type: 'cancel' | 'void'; id: number; name: string } | null>(null);
+  const [reasonPromptLoading, setReasonPromptLoading] = useState(false);
   const [rejectModal, setRejectModal] = useState<{ id: number; name: string } | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   
@@ -108,7 +119,7 @@ export default function MissedClockPage() {
   
   // 分頁狀態
   const [currentPage, setCurrentPage] = useState(1);
-  const itemsPerPage = 15;
+  const [itemsPerPage, setItemsPerPage] = useState(15);
 
   // 展開審核進度
   const [expandedId, setExpandedId] = useState<number | null>(null);
@@ -271,7 +282,14 @@ export default function MissedClockPage() {
       case 'date':
         return (new Date(a.workDate).getTime() - new Date(b.workDate).getTime()) * direction;
       case 'status': {
-        const statusOrder = { PENDING: 0, APPROVED: 1, REJECTED: 2 };
+        const statusOrder: Record<MissedClockRequest['status'], number> = {
+          PENDING: 0,
+          PENDING_ADMIN: 1,
+          APPROVED: 2,
+          REJECTED: 3,
+          CANCELLED: 4,
+          VOIDED: 5,
+        };
         return ((statusOrder[a.status] || 0) - (statusOrder[b.status] || 0)) * direction;
       }
       default:
@@ -280,7 +298,7 @@ export default function MissedClockPage() {
   });
 
   // 分頁
-  const totalPages = Math.ceil(sortedRequests.length / itemsPerPage);
+  const totalPages = Math.max(1, Math.ceil(sortedRequests.length / itemsPerPage));
   const paginatedRequests = sortedRequests.slice(
     (currentPage - 1) * itemsPerPage,
     currentPage * itemsPerPage
@@ -289,6 +307,14 @@ export default function MissedClockPage() {
   useEffect(() => {
     filterRequests();
   }, [filterRequests]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [filters.status, filters.clockType, filters.department, filters.startDate, filters.endDate, searchTerm]);
+
+  useEffect(() => {
+    setCurrentPage((prev) => Math.min(prev, Math.max(totalPages, 1)));
+  }, [totalPages]);
 
   const fetchCurrentUser = async () => {
     try {
@@ -543,6 +569,21 @@ export default function MissedClockPage() {
     }
   };
 
+  const submitReasonPrompt = async (reason: string) => {
+    if (!reasonPrompt) return;
+    setReasonPromptLoading(true);
+    try {
+      if (reasonPrompt.type === 'cancel') {
+        await handleCancelRequest(reasonPrompt.id, reason);
+      } else {
+        await handleVoidRequest(reasonPrompt.id, reason);
+      }
+      setReasonPrompt(null);
+    } finally {
+      setReasonPromptLoading(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -558,7 +599,7 @@ export default function MissedClockPage() {
 
   return (
     <AuthenticatedLayout>
-      <div className="max-w-7xl mx-auto px-4 py-8">
+      <div className="w-full max-w-none px-4 py-8 sm:px-6 lg:px-8">
         {/* 標題區 */}
         <div className="mb-8">
           <div className="flex items-center justify-between">
@@ -582,16 +623,15 @@ export default function MissedClockPage() {
         {/* 搜索和篩選區 */}
         <div className="bg-white rounded-lg shadow-sm p-6 mb-6">
           <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-600 w-4 h-4" />
-              <input
-                type="text"
-                placeholder="搜索員工姓名、工號或原因"
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-transparent text-gray-900 placeholder-gray-700"
-              />
-            </div>
+            <EmployeeListSelect
+              value={searchTerm}
+              onChange={(value) => {
+                setSearchTerm(value);
+                setCurrentPage(1);
+              }}
+              emptyLabel="全部員工"
+              selectClassName="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-transparent text-gray-900 disabled:bg-gray-100"
+            />
 
             <select
               value={filters.status}
@@ -725,6 +765,9 @@ export default function MissedClockPage() {
                       <th className="px-3 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider w-12">選擇</th>
                     )}
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                      單號
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
                       員工資訊
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
@@ -769,6 +812,9 @@ export default function MissedClockPage() {
                           )}
                         </td>
                       )}
+                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                        {request.requestNumber ?? `MC-${request.id}`}
+                      </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="flex items-center">
                           <User className="w-8 h-8 text-gray-600 mr-3" />
@@ -853,12 +899,7 @@ export default function MissedClockPage() {
                           {/* 員工申請撤銷 */}
                           {request.status === 'APPROVED' && request.employeeId === currentUser?.employeeId && (
                             <button
-                              onClick={() => {
-                                const reason = prompt('請輸入撤銷原因：');
-                                if (reason && reason.trim()) {
-                                  handleCancelRequest(request.id, reason.trim());
-                                }
-                              }}
+                              onClick={() => setReasonPrompt({ type: 'cancel', id: request.id, name: request.employee.name })}
                               className="inline-flex items-center px-3 py-1 bg-orange-100 text-orange-800 rounded-full hover:bg-orange-200 transition-colors"
                             >
                               <X className="w-4 h-4 mr-1" /> 申請撤銷
@@ -867,12 +908,7 @@ export default function MissedClockPage() {
                           {/* 管理員作廢 */}
                           {request.status === 'APPROVED' && isAdmin && (
                             <button
-                              onClick={() => {
-                                const reason = prompt('請輸入作廢原因：');
-                                if (reason && reason.trim()) {
-                                  handleVoidRequest(request.id, reason.trim());
-                                }
-                              }}
+                              onClick={() => setReasonPrompt({ type: 'void', id: request.id, name: request.employee.name })}
                               className="inline-flex items-center px-3 py-1 bg-red-100 text-red-800 rounded-full hover:bg-red-200 transition-colors"
                             >
                               <X className="w-4 h-4 mr-1" /> 作廢
@@ -1046,29 +1082,70 @@ export default function MissedClockPage() {
           onClear={() => setSelectedIds([])}
           onSelectionChange={setSelectedIds}
           itemName="忽打卡申請"
+          itemSummaries={filteredRequests
+            .filter((request) => request.status === 'PENDING')
+            .map((request) => ({
+              id: request.id,
+              label: `${request.employee.name} · ${new Date(request.workDate).toLocaleDateString('zh-TW')}`,
+              sublabel: `${CLOCK_TYPE_LABELS[request.clockType]} · ${request.requestedTime}`,
+            }))}
+          allowApproveNote
         />
       )}
 
       {/* 分頁導航 */}
-      {totalPages > 1 && (
-        <div className="fixed bottom-20 left-1/2 transform -translate-x-1/2 bg-white rounded-lg shadow-lg px-6 py-3 flex items-center gap-4 z-40">
+      {sortedRequests.length > 0 && (
+        <div className="fixed bottom-20 left-1/2 z-40 flex w-[calc(100%-2rem)] max-w-3xl -translate-x-1/2 flex-col items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-lg sm:flex-row">
+          <div className="text-sm text-gray-600">
+            共 {sortedRequests.length} 筆，每頁
+            <select
+              value={itemsPerPage}
+              onChange={(e) => {
+                setItemsPerPage(Number(e.target.value));
+                setCurrentPage(1);
+              }}
+              className="mx-2 rounded-lg border border-gray-300 px-2 py-1 text-sm text-gray-900 focus:border-orange-500 focus:ring-2 focus:ring-orange-500"
+              aria-label="補打卡記錄每頁筆數"
+            >
+              {[10, 15, 25, 50].map((pageSize) => (
+                <option key={pageSize} value={pageSize}>{pageSize}</option>
+              ))}
+            </select>
+            筆
+          </div>
+
+          <div className="flex flex-wrap items-center justify-center gap-2">
           <button
             onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
             disabled={currentPage === 1}
-            className="px-3 py-1 rounded bg-gray-100 text-gray-700 disabled:opacity-50"
+            className="min-h-11 rounded bg-gray-100 px-3 py-1 text-gray-700 disabled:opacity-50"
           >
             上一頁
           </button>
-          <span className="text-sm text-gray-900">
-            第 {currentPage} / {totalPages} 頁（共 {sortedRequests.length} 筆）
-          </span>
+          <label className="flex items-center gap-2 text-sm text-gray-900">
+            第
+            <input
+              type="number"
+              min={1}
+              max={totalPages}
+              value={currentPage}
+              onChange={(e) => {
+                const nextPage = Number(e.target.value);
+                setCurrentPage(Number.isFinite(nextPage) ? Math.min(totalPages, Math.max(1, nextPage)) : 1);
+              }}
+              className="h-11 w-20 rounded-lg border border-gray-300 px-3 text-center text-sm text-gray-900 focus:border-orange-500 focus:ring-2 focus:ring-orange-500"
+              aria-label="跳至補打卡記錄頁碼"
+            />
+            / {totalPages} 頁
+          </label>
           <button
             onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
             disabled={currentPage === totalPages}
-            className="px-3 py-1 rounded bg-gray-100 text-gray-700 disabled:opacity-50"
+            className="min-h-11 rounded bg-gray-100 px-3 py-1 text-gray-700 disabled:opacity-50"
           >
             下一頁
           </button>
+          </div>
         </div>
       )}
 
@@ -1129,6 +1206,21 @@ export default function MissedClockPage() {
           </div>
         </div>
       )}
+
+      <PromptDialog
+        open={Boolean(reasonPrompt)}
+        title={reasonPrompt?.type === 'cancel' ? '申請撤銷補打卡' : '作廢補打卡申請'}
+        message={reasonPrompt ? `${reasonPrompt.name} 的補打卡申請將${reasonPrompt.type === 'cancel' ? '送出撤銷申請' : '被作廢'}，請填寫原因。` : ''}
+        label={reasonPrompt?.type === 'cancel' ? '撤銷原因' : '作廢原因'}
+        placeholder={reasonPrompt?.type === 'cancel' ? '請輸入撤銷原因' : '請輸入作廢原因'}
+        confirmLabel={reasonPrompt?.type === 'cancel' ? '送出撤銷' : '確認作廢'}
+        tone={reasonPrompt?.type === 'void' ? 'danger' : 'default'}
+        loading={reasonPromptLoading}
+        onCancel={() => {
+          if (!reasonPromptLoading) setReasonPrompt(null);
+        }}
+        onConfirm={submitReasonPrompt}
+      />
 
       {/* Toast 通知 */}
       {toast && (

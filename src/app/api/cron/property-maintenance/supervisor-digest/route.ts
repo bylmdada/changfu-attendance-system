@@ -5,6 +5,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getUserFromRequest } from '@/lib/auth';
 import { hasValidCronSecret, sendSupervisorDigest } from '@/lib/property-cron-service';
+import { systemLogger } from '@/lib/logger';
 
 export const maxDuration = 120;
 
@@ -19,7 +20,9 @@ async function handle(request: NextRequest) {
     const result = await sendSupervisorDigest();
     return NextResponse.json({ success: true, ...result });
   } catch (error) {
-    console.error('supervisor-digest cron 失敗:', error);
+    systemLogger.error('supervisor-digest cron 失敗', {
+      error: error instanceof Error ? error : new Error(String(error)),
+    });
     return NextResponse.json({ error: '系統錯誤' }, { status: 500 });
   }
 }

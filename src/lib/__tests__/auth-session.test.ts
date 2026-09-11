@@ -31,10 +31,19 @@ describe('auth session validation', () => {
     jest.clearAllMocks();
   });
 
+  it('uses the current database role after an administrator is demoted', async () => {
+    jest.spyOn(jwt, 'verify').mockReturnValue(payload as never);
+    mockPrisma.user.findUnique.mockResolvedValue({
+      id: 1, role: 'EMPLOYEE', isActive: true, currentSessionId: 'session-1',
+    });
+    await expect(getUserFromToken('old-admin-token')).resolves.toEqual({ ...payload, role: 'EMPLOYEE' });
+  });
+
   it('accepts a token when the current session matches', async () => {
     jest.spyOn(jwt, 'verify').mockReturnValue(payload as never);
     mockPrisma.user.findUnique.mockResolvedValue({
       id: 1,
+      role: 'ADMIN',
       isActive: true,
       currentSessionId: 'session-1'
     });
@@ -46,6 +55,7 @@ describe('auth session validation', () => {
     jest.spyOn(jwt, 'verify').mockReturnValue(payload as never);
     mockPrisma.user.findUnique.mockResolvedValue({
       id: 1,
+      role: 'ADMIN',
       isActive: true,
       currentSessionId: 'session-2'
     });
@@ -57,6 +67,7 @@ describe('auth session validation', () => {
     jest.spyOn(jwt, 'verify').mockReturnValue(payload as never);
     mockPrisma.user.findUnique.mockResolvedValue({
       id: 1,
+      role: 'ADMIN',
       isActive: true,
       currentSessionId: 'session-1'
     });
@@ -72,6 +83,7 @@ describe('auth session validation', () => {
       where: { id: 1 },
       select: {
         id: true,
+        role: true,
         isActive: true,
         currentSessionId: true
       }
@@ -82,6 +94,7 @@ describe('auth session validation', () => {
     jest.spyOn(jwt, 'verify').mockReturnValue(payload as never);
     mockPrisma.user.findUnique.mockResolvedValue({
       id: 1,
+      role: 'ADMIN',
       isActive: true,
       currentSessionId: 'session-2'
     });

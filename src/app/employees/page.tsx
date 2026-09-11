@@ -4,7 +4,14 @@ import { useState, useEffect, useRef } from 'react';
 import { Users, Search, Plus, Edit, Trash2, Eye, Upload, Download, X, CheckCircle, XCircle } from 'lucide-react';
 import { DEPARTMENT_OPTIONS, getPositionsByDepartment, type Department } from '@/constants/departments';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
+import {
+  calculateMonthlySalaryHourlyRateInput,
+  MONTHLY_BASE_HOURS,
+} from '@/lib/hourly-rate';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import EmptyState from '@/components/EmptyState';
+import ConfirmDialog from '@/components/ConfirmDialog';
+import { SimpleToast, useLocalToast } from '@/components/Toast';
 
 interface Employee {
   id: number;
@@ -44,6 +51,11 @@ const ROLE_LABELS: Record<string, string> = {
   EMPLOYEE: '員工'
 };
 
+type EmployeeConfirmAction =
+  | { type: 'deactivate'; employee: Employee }
+  | { type: 'permanentDelete'; employee: Employee }
+  | null;
+
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 interface User {
   id: number;
@@ -62,6 +74,7 @@ export default function EmployeesPage() {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [loading, setLoading] = useState(true);
   const [updatingStatusId, setUpdatingStatusId] = useState<number | null>(null);
+  const [deletingEmployeeId, setDeletingEmployeeId] = useState<number | null>(null);
   const [pagination, setPagination] = useState({
     page: 1,
     limit: 10,
@@ -78,6 +91,8 @@ export default function EmployeesPage() {
   const [showModal, setShowModal] = useState(false);
   const [showBatchModal, setShowBatchModal] = useState(false);
   const [selectedEmployee, setSelectedEmployee] = useState<Employee | null>(null);
+  const [employeeConfirmAction, setEmployeeConfirmAction] = useState<EmployeeConfirmAction>(null);
+  const { toast, showToast, clearToast } = useLocalToast();
 
   useEffect(() => {
     // 設定頁面標題
@@ -125,23 +140,64 @@ export default function EmployeesPage() {
     setFilters(prev => ({ ...prev, page: 1 }));
   };
 
-  const handleDelete = async (id: number) => {
-    if (!confirm('確定要停用此員工嗎？')) return;
+  const handleDeactivate = (employee: Employee) => {
+    setEmployeeConfirmAction({ type: 'deactivate', employee });
+  };
 
+  const performDeactivate = async (employee: Employee) => {
     try {
-      const response = await fetchJSONWithCSRF(`/api/employees/${id}`, {
+      setDeletingEmployeeId(employee.id);
+      const response = await fetchJSONWithCSRF(`/api/employees/${employee.id}`, {
         method: 'DELETE'
       });
 
       if (response.ok) {
-        alert('員工已停用');
+        showToast('success', '員工已停用');
+        setEmployeeConfirmAction(null);
         loadEmployees();
       } else {
-        alert('停用失敗');
+        showToast('error', '停用失敗');
       }
     } catch (error) {
       console.error('員工操作失敗:', error);
-      alert('系統錯誤');
+      showToast('error', '系統錯誤');
+    } finally {
+      setDeletingEmployeeId(null);
+    }
+  };
+
+  const handlePermanentDelete = (employee: Employee) => {
+    setEmployeeConfirmAction({ type: 'permanentDelete', employee });
+  };
+
+  const performPermanentDelete = async (employee: Employee) => {
+    try {
+      setDeletingEmployeeId(employee.id);
+      const response = await fetchJSONWithCSRF(`/api/employees/${employee.id}?mode=permanent`, {
+        method: 'DELETE',
+        body: {
+          confirmationEmployeeId: employee.employeeId,
+          confirmationName: employee.name,
+        },
+      });
+
+      if (response.ok) {
+        showToast('success', '員工已永久刪除');
+        setEmployeeConfirmAction(null);
+        loadEmployees();
+        return;
+      }
+
+      const payload = await response.json().catch(() => null);
+      const blockers = Array.isArray(payload?.blockers) && payload.blockers.length > 0
+        ? `\n\n關聯資料：\n${payload.blockers.map((item: string) => `- ${item}`).join('\n')}${payload.totalBlockers > payload.blockers.length ? `\n...另有 ${payload.totalBlockers - payload.blockers.length} 類關聯資料` : ''}`
+        : '';
+      showToast('error', `${payload?.error || '永久刪除失敗'}${blockers}`, 8000);
+    } catch (error) {
+      console.error('永久刪除員工失敗:', error);
+      showToast('error', '系統錯誤');
+    } finally {
+      setDeletingEmployeeId(null);
     }
   };
 
@@ -261,14 +317,18 @@ export default function EmployeesPage() {
             </div>
 
             {loading ? (
-              <div className="p-8 text-center">
-                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div>
-                <p className="mt-2 text-gray-600">載入中...</p>
+              <div className="space-y-3 p-6">
+                {Array.from({ length: 5 }).map((_, index) => (
+                  <div key={index} className="h-14 animate-pulse rounded bg-gray-100" />
+                ))}
               </div>
             ) : employees.length === 0 ? (
-              <div className="p-8 text-center">
-                <Users className="w-12 h-12 text-gray-400 mx-auto mb-3" />
-                <p className="text-gray-600">沒有找到員工</p>
+              <div className="p-6">
+                <EmptyState
+                  icon={<Users className="h-12 w-12" />}
+                  title="沒有找到員工"
+                  description="請調整搜尋、部門或狀態條件。"
+                />
               </div>
             ) : (
               <>
@@ -380,12 +440,13 @@ export default function EmployeesPage() {
                                     body: { isActive: newStatus }
                                   });
                                   if (response.ok) {
+                                    showToast('success', `員工狀態已更新為${newStatus ? '在職' : '停用'}`);
                                     loadEmployees();
                                   } else {
-                                    alert('更新狀態失敗');
+                                    showToast('error', '更新狀態失敗');
                                   }
                                 } catch {
-                                  alert('系統錯誤');
+                                  showToast('error', '系統錯誤');
                                 } finally {
                                   setUpdatingStatusId(null);
                                 }
@@ -401,27 +462,43 @@ export default function EmployeesPage() {
                             </select>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                            <div className="flex space-x-2">
+                            <div className="flex flex-wrap gap-2">
                               <button
                                 onClick={() => setSelectedEmployee(employee)}
-                                className="text-blue-600 hover:text-blue-900"
+                                className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-900"
+                                title="查看員工詳情"
                               >
                                 <Eye className="w-4 h-4" />
+                                <span className="sr-only">查看</span>
                               </button>
                               <button
                                 onClick={() => {
                                   setSelectedEmployee(employee);
                                   setShowModal(true);
                                 }}
-                                className="text-green-600 hover:text-green-900"
+                                className="inline-flex items-center gap-1 text-green-600 hover:text-green-900"
+                                title="編輯員工"
                               >
                                 <Edit className="w-4 h-4" />
+                                <span className="sr-only">編輯</span>
                               </button>
                               <button
-                                onClick={() => handleDelete(employee.id)}
-                                className="text-red-600 hover:text-red-900"
+                                onClick={() => handleDeactivate(employee)}
+                                disabled={!employee.isActive || deletingEmployeeId === employee.id}
+                                className="inline-flex items-center gap-1 text-orange-600 hover:text-orange-800 disabled:text-gray-300 disabled:cursor-not-allowed"
+                                title={employee.isActive ? '停用員工' : '員工已停用'}
+                              >
+                                <XCircle className="w-4 h-4" />
+                                <span className="hidden 2xl:inline">停用</span>
+                              </button>
+                              <button
+                                onClick={() => handlePermanentDelete(employee)}
+                                disabled={deletingEmployeeId === employee.id}
+                                className="inline-flex items-center gap-1 text-red-600 hover:text-red-900 disabled:text-gray-300 disabled:cursor-not-allowed"
+                                title="永久刪除員工"
                               >
                                 <Trash2 className="w-4 h-4" />
+                                <span className="hidden 2xl:inline">刪除</span>
                               </button>
                             </div>
                           </td>
@@ -495,6 +572,40 @@ export default function EmployeesPage() {
           onSuccess={loadEmployees}
         />
       )}
+
+      <SimpleToast toast={toast} onClose={clearToast} />
+
+      <ConfirmDialog
+        open={Boolean(employeeConfirmAction)}
+        title={employeeConfirmAction?.type === 'permanentDelete' ? '永久刪除員工' : '停用員工'}
+        message={
+          employeeConfirmAction?.type === 'permanentDelete'
+            ? `永久刪除「${employeeConfirmAction.employee.name}（${employeeConfirmAction.employee.employeeId}）」？\n\n此操作只適合刪除誤建且沒有任何歷史資料的員工，成功後無法復原。已有薪資、考勤、排班等資料者會被系統阻擋。`
+            : employeeConfirmAction
+              ? `確定要將「${employeeConfirmAction.employee.name}（${employeeConfirmAction.employee.employeeId}）」狀態改為停用嗎？\n\n停用後會保留所有薪資、考勤、排班與稽核歷史資料。`
+              : ''
+        }
+        tone="danger"
+        confirmLabel={employeeConfirmAction?.type === 'permanentDelete' ? '永久刪除' : '停用員工'}
+        confirmationText={
+          employeeConfirmAction?.type === 'permanentDelete'
+            ? `${employeeConfirmAction.employee.employeeId} ${employeeConfirmAction.employee.name}`
+            : undefined
+        }
+        confirmationPlaceholder="輸入員編與姓名"
+        loading={deletingEmployeeId === employeeConfirmAction?.employee.id}
+        onCancel={() => {
+          if (!deletingEmployeeId) setEmployeeConfirmAction(null);
+        }}
+        onConfirm={() => {
+          if (!employeeConfirmAction) return;
+          if (employeeConfirmAction.type === 'permanentDelete') {
+            void performPermanentDelete(employeeConfirmAction.employee);
+            return;
+          }
+          void performDeactivate(employeeConfirmAction.employee);
+        }}
+      />
     </AuthenticatedLayout>
   );
 }
@@ -640,6 +751,7 @@ function EmployeeModal({ employee, onClose, onSave }: {
   onClose: () => void; 
   onSave: () => void; 
 }) {
+  const { toast, showToast, clearToast } = useLocalToast();
   // 生成員工編號的邏輯函數
   const generateEmployeeId = () => {
     const now = new Date();
@@ -677,16 +789,17 @@ function EmployeeModal({ employee, onClose, onSave }: {
   });
   const [saving, setSaving] = useState(false);
   const [availablePositions, setAvailablePositions] = useState<string[]>([]);
-  const [autoCalculateHourlyRate, setAutoCalculateHourlyRate] = useState(!employee); // 新增時默認自動計算
+  const [autoCalculateHourlyRate, setAutoCalculateHourlyRate] = useState(() => {
+    if (!employee) return true;
+    if (employee.employeeType === 'HOURLY') return false;
 
-  // 月基本工時（台灣勞基法：30天 x 8小時）
-  const MONTHLY_BASE_HOURS = 240;
+    const expectedHourlyRate = calculateMonthlySalaryHourlyRateInput(employee.baseSalary);
+    return expectedHourlyRate !== null && expectedHourlyRate === Math.round(employee.hourlyRate);
+  });
 
   // 自動計算時薪
   const calculateHourlyRate = (baseSalary: string) => {
-    const salary = parseFloat(baseSalary);
-    if (isNaN(salary) || salary <= 0) return '';
-    return Math.round(salary / MONTHLY_BASE_HOURS).toString();
+    return calculateMonthlySalaryHourlyRateInput(baseSalary)?.toString() || '';
   };
 
   // 處理底薪變更
@@ -747,7 +860,7 @@ function EmployeeModal({ employee, onClose, onSave }: {
       const csrfToken = csrfData.csrfToken;
 
       if (!csrfToken) {
-        alert('無法獲取安全令牌，請刷新頁面重試');
+        showToast('error', '無法獲取安全令牌，請刷新頁面重試');
         setSaving(false);
         return;
       }
@@ -764,18 +877,22 @@ function EmployeeModal({ employee, onClose, onSave }: {
         credentials: 'include',
         body: JSON.stringify(formData)
       });
+      const data = await response.json();
 
       if (response.ok) {
-        alert(employee ? '員工資料已更新' : '員工已新增');
+        if (data.payrollWarning) {
+          showToast('warning', `員工資料已更新。${data.payrollWarning}`, 8000);
+        } else {
+          showToast('success', employee ? '員工資料已更新' : '員工已新增');
+        }
         onSave();
         onClose();
       } else {
-        const data = await response.json();
-        alert(data.error || '操作失敗');
+        showToast('error', data.error || '操作失敗');
       }
     } catch (error) {
       console.error('操作失敗:', error);
-      alert('系統錯誤');
+      showToast('error', '系統錯誤');
     } finally {
       setSaving(false);
     }
@@ -958,7 +1075,7 @@ function EmployeeModal({ employee, onClose, onSave }: {
                     }}
                     className="mr-1"
                   />
-                  自動計算（底薪÷240）
+                  自動計算（底薪÷{MONTHLY_BASE_HOURS}，四捨五入）
                 </label>
               </div>
               <input
@@ -974,7 +1091,7 @@ function EmployeeModal({ employee, onClose, onSave }: {
               />
               {autoCalculateHourlyRate && formData.baseSalary && (
                 <p className="mt-1 text-xs text-green-600">
-                  ✓ 自動計算：{formData.baseSalary} ÷ 240 = {formData.hourlyRate} 元/小時
+                  ✓ 自動計算：{formData.baseSalary} ÷ {MONTHLY_BASE_HOURS}，四捨五入 = {formData.hourlyRate} 元/小時
                 </p>
               )}
             </div>
@@ -1168,6 +1285,7 @@ function EmployeeModal({ employee, onClose, onSave }: {
           </div>
         </form>
       </div>
+      <SimpleToast toast={toast} onClose={clearToast} />
     </div>
   );
 }
@@ -1220,11 +1338,11 @@ function BatchImportModal({ onClose, onSuccess }: { onClose: () => void; onSucce
         a.click();
         window.URL.revokeObjectURL(url);
       } else {
-        alert('下載範本失敗');
+        setError('下載範本失敗');
       }
     } catch (err) {
       console.error('下載範本失敗:', err);
-      alert('下載範本失敗');
+      setError('下載範本失敗');
     }
   };
 

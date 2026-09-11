@@ -2,6 +2,7 @@ export {
   PROPERTY_ASSESSMENT_ALLOWED_MIME_TYPES,
   PROPERTY_ASSESSMENT_MAX_FILE_SIZE,
   PROPERTY_ASSESSMENT_MAX_FILES,
+  PROPERTY_ASSESSMENT_UPLOAD_CHUNK_SIZE,
 } from '@/lib/property-maintenance-attachment-constants';
 
 export function getPropertyAssessmentFileExtension(mimeType: string): string | null {

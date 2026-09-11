@@ -35,6 +35,7 @@ export default function EmailNotificationPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [settings, setSettings] = useState<NotificationSettings>(DEFAULT_SETTINGS);
+  const [savedSettings, setSavedSettings] = useState<NotificationSettings | null>(null);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [smtpConfigured, setSmtpConfigured] = useState(false);
   const [user, setUser] = useState<{
@@ -72,13 +73,15 @@ export default function EmailNotificationPage() {
         if (response.ok) {
           const data = await response.json();
           if (data.settings) {
-            setSettings({
+            const loadedSettings = {
               enabled: data.settings.enabled || false,
               notifyLeaveApproval: data.settings.notifyLeaveApproval ?? true,
               notifyOvertimeApproval: data.settings.notifyOvertimeApproval ?? true,
               notifyShiftApproval: data.settings.notifyShiftApproval ?? true,
               notifyAnnualLeaveExpiry: data.settings.notifyAnnualLeaveExpiry ?? true
-            });
+            };
+            setSettings(loadedSettings);
+            setSavedSettings(loadedSettings);
           }
         } else if (response.status === 401 || response.status === 403) {
         router.push('/login');
@@ -124,13 +127,17 @@ export default function EmailNotificationPage() {
 
       if (response.ok) {
         if (data.settings) {
-          setSettings({
+          const saved = {
             enabled: data.settings.enabled || false,
             notifyLeaveApproval: data.settings.notifyLeaveApproval ?? true,
             notifyOvertimeApproval: data.settings.notifyOvertimeApproval ?? true,
             notifyShiftApproval: data.settings.notifyShiftApproval ?? true,
             notifyAnnualLeaveExpiry: data.settings.notifyAnnualLeaveExpiry ?? true
-          });
+          };
+          setSettings(saved);
+          setSavedSettings(saved);
+        } else {
+          setSavedSettings(settings);
         }
         setMessage({ type: 'success', text: data.message || '設定已儲存' });
       } else {
@@ -151,6 +158,10 @@ export default function EmailNotificationPage() {
       </div>
     );
   }
+
+  const hasUnsavedChanges = savedSettings
+    ? JSON.stringify(settings) !== JSON.stringify(savedSettings)
+    : false;
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -320,10 +331,13 @@ export default function EmailNotificationPage() {
         </div>
 
         {/* 儲存按鈕 */}
-        <div className="flex justify-end">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
+          <div className="text-sm text-gray-600">
+            {saving ? '儲存中...' : hasUnsavedChanges ? '有未儲存變更' : '已儲存'}
+          </div>
           <button
             onClick={handleSave}
-            disabled={saving}
+            disabled={saving || !hasUnsavedChanges}
             className="inline-flex items-center px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
           >
             <Save className="w-4 h-4 mr-2" />

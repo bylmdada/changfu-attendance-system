@@ -32,11 +32,16 @@ jest.mock('@/lib/labor-law-config', () => ({
   getStoredLaborLawConfig: jest.fn(),
 }));
 
+jest.mock('@/lib/income-tax-settings', () => ({
+  getStoredIncomeTaxManagementSettings: jest.fn(),
+}));
+
 import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { checkRateLimit } from '@/lib/rate-limit';
+import { getStoredIncomeTaxManagementSettings } from '@/lib/income-tax-settings';
 import { getStoredLaborLawConfig } from '@/lib/labor-law-config';
 import { calculatePayrollTotals } from '@/lib/payroll-calculator';
 import { buildEmployeePayrollInfo } from '@/lib/payroll-processing';
@@ -46,6 +51,7 @@ const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
 const mockValidateCSRF = validateCSRF as jest.MockedFunction<typeof validateCSRF>;
 const mockCheckRateLimit = checkRateLimit as jest.MockedFunction<typeof checkRateLimit>;
+const mockGetStoredIncomeTaxManagementSettings = getStoredIncomeTaxManagementSettings as jest.MockedFunction<typeof getStoredIncomeTaxManagementSettings>;
 const mockGetStoredLaborLawConfig = getStoredLaborLawConfig as jest.MockedFunction<typeof getStoredLaborLawConfig>;
 const mockCalculatePayrollTotals = calculatePayrollTotals as jest.MockedFunction<typeof calculatePayrollTotals>;
 const mockBuildEmployeePayrollInfo = buildEmployeePayrollInfo as jest.MockedFunction<typeof buildEmployeePayrollInfo>;
@@ -67,9 +73,14 @@ describe('payroll item route guards', () => {
       dependents: 0,
       laborPensionSelfRate: 3,
     } as never);
+    mockGetStoredIncomeTaxManagementSettings.mockResolvedValue({
+      withholdingEnabled: true,
+      description: 'tax enabled',
+    });
     mockGetStoredLaborLawConfig.mockResolvedValue({
       basicWage: 29500,
       laborInsuranceRate: 0.12,
+      employmentInsuranceRate: 0.01,
       laborInsuranceMax: 45800,
       laborEmployeeRate: 0.2,
     });
@@ -261,8 +272,18 @@ describe('payroll item route guards', () => {
       {
         basicWage: 29500,
         laborInsuranceRate: 0.12,
+        employmentInsuranceRate: 0.01,
         laborInsuranceMax: 45800,
         laborEmployeeRate: 0.2,
+      },
+      {
+        incomeTaxEnabled: true,
+        healthInsuranceConfig: expect.objectContaining({
+          premiumRate: 0.0517,
+          employeeContributionRatio: 0.3,
+          companyContributionRatio: 0.6,
+          governmentSubsidyRatio: 0.1,
+        }),
       }
     );
     expect(mockPrisma.payrollRecord.update).toHaveBeenCalledWith(

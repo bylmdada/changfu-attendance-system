@@ -5,8 +5,13 @@
 
 import { prisma } from '@/lib/database';
 import { updateRequestStatus, WorkflowType } from '@/lib/approval-helper';
-import { notifyApplicant, notifyReviewers } from '@/lib/approval-notifications';
+import { notifyApplicant, notifyBeforeFreeze, notifyReviewers } from '@/lib/approval-notifications';
 import { sendNotification } from '@/lib/realtime-notifications';
+import {
+  getAttendanceFreezeSettings,
+} from '@/lib/attendance-freeze';
+import { getNextAttendanceFreezeExecutionDate } from '@/lib/attendance-freeze-rules';
+import { getTaiwanDateParts, getTaiwanTimeParts } from '@/lib/timezone';
 
 // 逾期處理設定介面
 interface OverdueSettings {
@@ -75,12 +80,68 @@ interface ProcessOverdueApprovalOptions {
   forceRun?: boolean;
 }
 
+function parseReminderTime(value: string) {
+  const match = /^(\d{2}):(\d{2})$/.exec(value);
+  if (!match) return null;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  return hour <= 23 && minute <= 59 ? { hour, minute } : null;
+}
+
+function calendarDaysUntil(now: Date, target: Date) {
+  const current = getTaiwanDateParts(now);
+  const targetParts = getTaiwanDateParts(target);
+  const currentUtc = Date.UTC(current.year, current.month - 1, current.day);
+  const targetUtc = Date.UTC(targetParts.year, targetParts.month - 1, targetParts.day);
+  return Math.round((targetUtc - currentUtc) / (24 * 60 * 60 * 1000));
+}
+
+async function processFreezeReminders(now: Date) {
+  try {
+    const [freezeSettings, reminder] = await Promise.all([
+      getAttendanceFreezeSettings(),
+      prisma.approvalFreezeReminder.findFirst(),
+    ]);
+    if (!freezeSettings.isEnabled || !reminder) return 0;
+
+    const reminderTime = parseReminderTime(reminder.freezeDayReminderTime);
+    if (!reminderTime) return 0;
+
+    const executionDate = getNextAttendanceFreezeExecutionDate(freezeSettings, now);
+    if (!executionDate) return 0;
+
+    const nowTime = getTaiwanTimeParts(now);
+    const afterReminderTime = nowTime.hour > reminderTime.hour
+      || (nowTime.hour === reminderTime.hour && nowTime.minute >= reminderTime.minute);
+    if (!afterReminderTime) return 0;
+
+    const daysUntilFreeze = calendarDaysUntil(now, executionDate);
+    const reminderDays = Array.from(new Set([
+      reminder.daysBeforeFreeze1,
+      reminder.daysBeforeFreeze2,
+    ])).filter((days) => days >= 0);
+    let sentCount = 0;
+    for (const daysBeforeFreeze of reminderDays) {
+      if (daysUntilFreeze !== daysBeforeFreeze) continue;
+      const target = getTaiwanDateParts(executionDate);
+      const reminderKey = `${target.year}-${String(target.month).padStart(2, '0')}-${String(target.day).padStart(2, '0')}-${daysBeforeFreeze}`;
+      const result = await notifyBeforeFreeze(daysBeforeFreeze, reminderKey);
+      sentCount += result.sentCount ?? 0;
+    }
+    return sentCount;
+  } catch (error) {
+    console.error('處理凍結前提醒失敗:', error);
+    return 0;
+  }
+}
+
 /**
  * 處理逾期項目主函數
  * 建議由 cron job 每小時或每日執行
  */
 export async function processOverdueApprovals(options: ProcessOverdueApprovalOptions = {}) {
   const settings = await getOverdueSettings();
+  const freezeRemindersSent = await processFreezeReminders(new Date());
 
   // 如果功能未啟用，直接返回
   if (!settings.enabled && !options.forceRun) {
@@ -90,7 +151,8 @@ export async function processOverdueApprovals(options: ProcessOverdueApprovalOpt
       reason: '功能未啟用',
       escalated: 0, 
       rejected: 0, 
-      reportSent: false 
+      reportSent: false,
+      freezeRemindersSent,
     };
   }
 
@@ -231,6 +293,7 @@ export async function processOverdueApprovals(options: ProcessOverdueApprovalOpt
     escalated: escalatedCount,
     rejected: rejectedCount,
     reportSent,
+    freezeRemindersSent,
     processedAt: now.toISOString()
   };
 

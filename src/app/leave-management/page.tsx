@@ -1,16 +1,21 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Calendar, Plus, Search, CheckCircle, XCircle, AlertCircle, Pencil, Trash2, X, ChevronDown, ChevronUp, Eye } from 'lucide-react';
+import { Calendar, Plus, CheckCircle, XCircle, AlertCircle, Pencil, Trash2, X, ChevronDown, ChevronUp, Eye } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import BatchApproveBar from '@/components/BatchApproveBar';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import PageSkeleton from '@/components/PageSkeleton';
+import EmptyState from '@/components/EmptyState';
+import EmployeeListSelect from '@/components/EmployeeListSelect';
 import ApprovalProgress, { ApprovalReviewRecord } from '@/components/ApprovalProgress';
+import PromptDialog from '@/components/PromptDialog';
 import {
   LEAVE_TYPE_OPTIONS,
   combineLeaveReason,
   getLeaveReasonOptions,
   getLeaveTypeLabel,
+  isAnnualLeaveType,
   isBereavementLeaveType,
   isLeaveReasonOptionValid,
   normalizeLeaveTypeCode,
@@ -18,10 +23,22 @@ import {
 } from '@/lib/leave-types';
 import {
   buildLeaveReviewRequestBody,
+  calculateLeaveDuration,
+  deriveLeaveHours,
   extractLeaveDatePart,
   formatLeaveDisplayDate,
+  formatLeaveDays,
+  formatLeaveDurationSummary,
+  formatLeaveHours,
   getLeaveStatusSortOrder,
+  type LeaveDurationSchedule,
 } from '@/lib/leave-management-helpers';
+import { formatShiftDisplay } from '@/lib/shift-display';
+import {
+  LEAVE_MINUTE_OPTIONS,
+  isValidLeaveDurationMinutes,
+  isValidLeaveMinute,
+} from '@/lib/leave-time-options';
 
 interface Employee {
   id: number;
@@ -54,11 +71,13 @@ interface User {
 
 interface LeaveRequest {
   id: number;
+  requestNumber?: string;
   employeeId: number;
   leaveType: string;
   startDate: string;
   endDate: string;
   totalDays: number;
+  totalHours?: number | null;
   reason: string | null;
   status: string;
   approvedBy: number | null;
@@ -72,6 +91,18 @@ interface LeaveRequest {
     department: string;
     position: string;
   } | null;
+  annualLeaveBalance?: {
+    year: number;
+    remainingDays: number;
+    expiryDate: string;
+  } | null;
+  leaveSchedules?: Array<{
+    workDate: string;
+    shiftType: string | null;
+    startTime: string | null;
+    endTime: string | null;
+    breakTime?: number | null;
+  }>;
 }
 
 // 假別法規與制度說明
@@ -154,6 +185,12 @@ const LEAVE_RULE_SUMMARIES = {
     salary: '有薪',
     requirements: '需檢附醫生證明'
   },
+  BUSINESS_TRIP: {
+    description: '因公務需要外出洽公、會議、拜訪或辦理指派事項',
+    days: '依核准公出時段',
+    salary: '有薪',
+    requirements: '需填寫公出事由，並依公司規定提供相關證明或主管核准'
+  },
   OFFICIAL: {
     description: '公假',
     days: '依事由而定',
@@ -221,6 +258,43 @@ function isReviewableStatus(status: string) {
   return status === 'PENDING' || status === 'PENDING_ADMIN';
 }
 
+function getAnnualLeaveBalanceStatus(request: LeaveRequest) {
+  if (!isAnnualLeaveType(request.leaveType) || !request.annualLeaveBalance) {
+    return null;
+  }
+
+  const { remainingDays, expiryDate } = request.annualLeaveBalance;
+  const overDays = Math.max(0, request.totalDays - remainingDays);
+  const expiryTime = new Date(expiryDate).getTime();
+  const daysUntilExpiry = Number.isFinite(expiryTime)
+    ? Math.ceil((expiryTime - Date.now()) / 86400000)
+    : null;
+
+  return {
+    remainingDays,
+    expiryDate,
+    overDays,
+    daysUntilExpiry,
+    isExhausted: remainingDays <= 0,
+    isExpiringSoon: remainingDays > 0 && daysUntilExpiry !== null && daysUntilExpiry >= 0 && daysUntilExpiry <= 30,
+  };
+}
+
+function formatAnnualLeaveBalanceSummary(request: LeaveRequest) {
+  const status = getAnnualLeaveBalanceStatus(request);
+  if (!status) return null;
+
+  const parts = [`特休剩餘 ${formatLeaveDays(status.remainingDays)}`];
+
+  if (status.overDays > 0) {
+    parts.push(`超出 ${formatLeaveDays(status.overDays)}`);
+  } else if (status.isExpiringSoon && status.daysUntilExpiry !== null) {
+    parts.push(`${status.daysUntilExpiry} 天內到期`);
+  }
+
+  return parts.join(' · ');
+}
+
 export default function LeaveManagementPage() {
   const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>([]);
   const [filteredRequests, setFilteredRequests] = useState<LeaveRequest[]>([]);
@@ -237,13 +311,15 @@ export default function LeaveManagementPage() {
   
   // 確認框狀態
   const [deleteConfirm, setDeleteConfirm] = useState<{ id: number; name: string } | null>(null);
+  const [reasonPrompt, setReasonPrompt] = useState<{ type: 'cancel' | 'void'; id: number; name: string } | null>(null);
+  const [reasonPromptLoading, setReasonPromptLoading] = useState(false);
   
   // 排序狀態
   const [sortConfig, setSortConfig] = useState<{ field: 'employee' | 'date' | 'status' | 'type'; direction: 'asc' | 'desc' }>({ field: 'date', direction: 'desc' });
   
   // 分頁狀態
   const [currentPage, setCurrentPage] = useState(1);
-  const itemsPerPage = 15;
+  const [itemsPerPage, setItemsPerPage] = useState(15);
   
   // 展開審核進度的列 ID
   const [expandedId, setExpandedId] = useState<number | null>(null);
@@ -282,7 +358,7 @@ export default function LeaveManagementPage() {
 
   // 匯出 CSV
   const exportToCSV = () => {
-    const headers = ['員工編號', '姓名', '部門', '請假類型', '開始日期', '結束日期', '天數', '狀態', '申請原因'];
+    const headers = ['員工編號', '姓名', '部門', '請假類型', '開始日期', '結束日期', '當日班別', '天數', '時數', '狀態', '申請原因'];
     const csvData = [
       headers.join(','),
       ...sortedRequests.map(r => [
@@ -292,7 +368,9 @@ export default function LeaveManagementPage() {
         getLeaveTypeLabel(r.leaveType),
         extractLeaveDatePart(r.startDate),
         extractLeaveDatePart(r.endDate),
-        r.totalDays,
+        formatLeaveSchedules(r),
+        formatLeaveDays(r.totalDays),
+        formatLeaveHours(r.totalHours ?? deriveLeaveHours(r.totalDays)),
         getStatusLabel(r.status),
         r.reason || ''
       ].join(','))
@@ -310,7 +388,7 @@ export default function LeaveManagementPage() {
 
   // 匯出 Excel
   const exportToExcel = () => {
-    const headers = ['員工編號', '姓名', '部門', '請假類型', '開始日期', '結束日期', '天數', '狀態', '申請原因'];
+    const headers = ['員工編號', '姓名', '部門', '請假類型', '開始日期', '結束日期', '當日班別', '天數', '時數', '狀態', '申請原因'];
     const excelData = [
       headers.join('\t'),
       ...sortedRequests.map(r => [
@@ -320,7 +398,9 @@ export default function LeaveManagementPage() {
         getLeaveTypeLabel(r.leaveType),
         extractLeaveDatePart(r.startDate),
         extractLeaveDatePart(r.endDate),
-        r.totalDays,
+        formatLeaveSchedules(r),
+        formatLeaveDays(r.totalDays),
+        formatLeaveHours(r.totalHours ?? deriveLeaveHours(r.totalDays)),
         getStatusLabel(r.status),
         r.reason || ''
       ].join('\t'))
@@ -364,6 +444,7 @@ export default function LeaveManagementPage() {
 
   // 添加状态來存储排班信息
   const [scheduleInfo, setScheduleInfo] = useState<{[key: string]: string}>({});
+  const [scheduleDetails, setScheduleDetails] = useState<{[key: string]: LeaveDurationSchedule | undefined}>({});
   const newLeaveReasonOptions = getLeaveReasonOptions(newRequest.leaveType);
   const editLeaveReasonOptions = getLeaveReasonOptions(editForm.leaveType);
   const newRequestNeedsStructuredBereavementReason = isBereavementLeaveType(newRequest.leaveType);
@@ -393,15 +474,28 @@ export default function LeaveManagementPage() {
         const data = await response.json();
         if (data.schedules && data.schedules.length > 0) {
           const schedule = data.schedules[0];
-          const shiftInfo = `${schedule.shiftType}班(${schedule.startTime}-${schedule.endTime})`;
+          const breakInfo = schedule.breakTime > 0 ? `，休息${schedule.breakTime}分鐘` : '';
+          const shiftInfo = `${schedule.shiftType}班(${schedule.startTime}-${schedule.endTime}${breakInfo})`;
           setScheduleInfo(prev => ({ ...prev, [date]: shiftInfo }));
+          setScheduleDetails(prev => ({
+            ...prev,
+            [date]: {
+              shiftType: schedule.shiftType,
+              startTime: schedule.startTime,
+              endTime: schedule.endTime,
+              breakTime: schedule.breakTime,
+              workHours: schedule.workHours,
+            },
+          }));
         } else {
           setScheduleInfo(prev => ({ ...prev, [date]: '無排班' }));
+          setScheduleDetails(prev => ({ ...prev, [date]: undefined }));
         }
       }
     } catch (error) {
       console.error('獲取班別資訊失敗:', error);
       setScheduleInfo(prev => ({ ...prev, [date]: '獲取失敗' }));
+      setScheduleDetails(prev => ({ ...prev, [date]: undefined }));
     }
   };
 
@@ -436,29 +530,8 @@ export default function LeaveManagementPage() {
       leaveReason: isLeaveReasonOptionValid(leaveType, current.leaveReason) ? current.leaveReason : '',
     }));
   };
-
-  // 計算請假時數
-  const calculateLeaveHours = () => {
-    if (!newRequest.startDate || !newRequest.endDate || !newRequest.startHour || !newRequest.startMinute || !newRequest.endHour || !newRequest.endMinute) {
-      return 0;
-    }
-
-    const startTime = `${newRequest.startHour.padStart(2, '0')}:${newRequest.startMinute.padStart(2, '0')}`;
-    const endTime = `${newRequest.endHour.padStart(2, '0')}:${newRequest.endMinute.padStart(2, '0')}`;
-    
-    const startDateTime = new Date(`${newRequest.startDate}T${startTime}`);
-    const endDateTime = new Date(`${newRequest.endDate}T${endTime}`);
-    
-    if (endDateTime <= startDateTime) {
-      return 0;
-    }
-
-    const diffInMs = endDateTime.getTime() - startDateTime.getTime();
-    const diffInMin = diffInMs / (1000 * 60);
-
-    // 不做四捨五入，直接轉小時；提交時會強制 30 分鐘倍數
-    return diffInMin / 60;
-  };
+  const newRequestDuration = calculateLeaveDuration(newRequest, scheduleDetails);
+  const editRequestDuration = calculateLeaveDuration(editForm, scheduleDetails);
 
   const filterRequests = useCallback(() => {
     let filtered = leaveRequests;
@@ -516,7 +589,7 @@ export default function LeaveManagementPage() {
   });
 
   // 分頁計算
-  const totalPages = Math.ceil(sortedRequests.length / itemsPerPage);
+  const totalPages = Math.max(1, Math.ceil(sortedRequests.length / itemsPerPage));
   const paginatedRequests = sortedRequests.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
 
   useEffect(() => {
@@ -588,7 +661,7 @@ export default function LeaveManagementPage() {
   const handleSubmitRequest = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    // 強制驗證：分鐘 0..59；總時數 > 0 且以 0.5 小時為增量
+    // 強制驗證：分鐘 0..55；總時數 > 0 且以 5 分鐘為增量
     const sm = Number(newRequest.startMinute);
     const em = Number(newRequest.endMinute);
     const sh = Number(newRequest.startHour);
@@ -598,8 +671,8 @@ export default function LeaveManagementPage() {
       showToast('error', '請輸入有效的起訖時間');
       return;
     }
-    if (sm < 0 || sm > 59 || em < 0 || em > 59) {
-      showToast('error', '分鐘僅允許 0 ~ 59');
+    if (!isValidLeaveMinute(sm) || !isValidLeaveMinute(em)) {
+      showToast('error', '分鐘僅允許 0 至 55 分，並以 5 分鐘為增量');
       return;
     }
 
@@ -611,8 +684,8 @@ export default function LeaveManagementPage() {
       showToast('error', '請假時數必須為正數');
       return;
     }
-    if (diffMin % 30 !== 0) {
-      showToast('error', '請假時數需以 0.5 小時為增量');
+    if (!isValidLeaveDurationMinutes(diffMin)) {
+      showToast('error', '請假時數需以 5 分鐘為增量');
       return;
     }
 
@@ -724,6 +797,10 @@ export default function LeaveManagementPage() {
       leaveReason,
       reason: detail
     });
+    const startDate = extractLeaveDatePart(r.startDate);
+    const endDate = extractLeaveDatePart(r.endDate);
+    if (startDate) fetchScheduleForDate(startDate);
+    if (endDate && endDate !== startDate) fetchScheduleForDate(endDate);
     setShowEditModal(true);
   };
 
@@ -731,7 +808,7 @@ export default function LeaveManagementPage() {
     e.preventDefault();
     if (!editingRequest) return;
 
-    // 與新增一致的驗證（分鐘 0..59，30 分增量）
+    // 與新增一致的驗證（分鐘 0..55，5 分鐘增量）
     const sm = Number(editForm.startMinute);
     const em = Number(editForm.endMinute);
     const sh = Number(editForm.startHour);
@@ -741,8 +818,8 @@ export default function LeaveManagementPage() {
       showToast('error', '請輸入有效的起訖時間');
       return;
     }
-    if (sm < 0 || sm > 59 || em < 0 || em > 59) {
-      showToast('error', '分鐘僅允許 0 ~ 59');
+    if (!isValidLeaveMinute(sm) || !isValidLeaveMinute(em)) {
+      showToast('error', '分鐘僅允許 0 至 55 分，並以 5 分鐘為增量');
       return;
     }
     const start = new Date(`${editForm.startDate}T${String(sh).padStart(2,'0')}:${String(sm).padStart(2,'0')}:00`);
@@ -752,8 +829,8 @@ export default function LeaveManagementPage() {
       showToast('error', '請假時數必須為正數');
       return;
     }
-    if (diffMin % 30 !== 0) {
-      showToast('error', '請假時數需以 0.5 小時為增量');
+    if (!isValidLeaveDurationMinutes(diffMin)) {
+      showToast('error', '請假時數需以 5 分鐘為增量');
       return;
     }
 
@@ -830,6 +907,21 @@ export default function LeaveManagementPage() {
     }
   };
 
+  const submitReasonPrompt = async (reason: string) => {
+    if (!reasonPrompt) return;
+    setReasonPromptLoading(true);
+    try {
+      if (reasonPrompt.type === 'cancel') {
+        await handleCancelRequest(reasonPrompt.id, reason);
+      } else {
+        await handleVoidRequest(reasonPrompt.id, reason);
+      }
+      setReasonPrompt(null);
+    } finally {
+      setReasonPromptLoading(false);
+    }
+  };
+
   const resetForm = () => {
     setNewRequest({ leaveType: '', startDate: '', endDate: '', startHour: '', startMinute: '', endHour: '', endMinute: '', leaveReason: '', reason: '' });
   };
@@ -881,12 +973,37 @@ export default function LeaveManagementPage() {
     return formatLeaveDisplayDate(dateString);
   };
 
+  const formatTime = (dateString: string) => {
+    return new Date(dateString).toLocaleTimeString('zh-TW', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+  };
+
+  const formatLeavePeriod = (request: LeaveRequest) => {
+    const startDate = formatDate(request.startDate);
+    const endDate = formatDate(request.endDate);
+    const timeRange = `${formatTime(request.startDate)}-${formatTime(request.endDate)}`;
+
+    if (extractLeaveDatePart(request.startDate) === extractLeaveDatePart(request.endDate)) {
+      return `${startDate} ${timeRange}`;
+    }
+
+    return `${startDate} ${formatTime(request.startDate)} - ${endDate} ${formatTime(request.endDate)}`;
+  };
+
+  const formatLeaveSchedules = (request: LeaveRequest) => {
+    const schedules = request.leaveSchedules ?? [];
+    if (schedules.length === 0) return '無排班';
+
+    return schedules
+      .map((schedule) => `${schedule.workDate} ${formatShiftDisplay(schedule)}`)
+      .join('、');
+  };
+
   if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-      </div>
-    );
+    return <PageSkeleton title="請假管理載入中" />;
   }
 
   const canFinalApprove = user?.role === 'ADMIN' || user?.role === 'HR';
@@ -897,10 +1014,26 @@ export default function LeaveManagementPage() {
     || Boolean(user?.attendancePermissions?.leaveRequests?.length);
   const canPrivilegedEdit = user?.role === 'ADMIN' || user?.role === 'HR';
   const reviewableRequests = filteredRequests.filter((request) => isReviewableStatus(request.status));
+  const batchApproveSummaries = reviewableRequests.map((request) => {
+    const totalHours = typeof request.totalHours === 'number'
+      ? request.totalHours
+      : deriveLeaveHours(request.totalDays);
+    const balanceSummary = formatAnnualLeaveBalanceSummary(request);
+
+    return {
+      id: request.id,
+      label: `${request.employee.name} · ${getLeaveTypeLabel(request.leaveType)}`,
+      sublabel: [
+        `${formatDate(request.startDate)} - ${formatDate(request.endDate)}`,
+        formatLeaveDurationSummary(totalHours),
+        balanceSummary,
+      ].filter(Boolean).join(' · '),
+    };
+  });
 
   return (
     <AuthenticatedLayout>
-      <div className="max-w-7xl mx-auto p-6">
+      <div className="w-full max-w-none p-4 sm:p-6 lg:p-8">
         {/* 頁面標題 */}
         <div className="mb-8">
           <div className="flex items-center justify-between">
@@ -921,19 +1054,13 @@ export default function LeaveManagementPage() {
           {/* 篩選區域 */}
         <div className="bg-white rounded-lg shadow-sm p-6 mb-6">
           <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">搜尋</label>
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
-                <input
-                  type="text"
-                  placeholder="員工姓名/工號"
-                  value={filters.search}
-                  onChange={(e) => setFilters({ ...filters, search: e.target.value })}
-                  className="pl-10 w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900"
-                />
-              </div>
-            </div>
+            <EmployeeListSelect
+              label="員工"
+              value={filters.search}
+              onChange={(value) => setFilters({ ...filters, search: value })}
+              emptyLabel="全部員工"
+              selectClassName="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 disabled:bg-gray-100"
+            />
 
             {/* 部門篩選 */}
             <div>
@@ -1082,6 +1209,9 @@ export default function LeaveManagementPage() {
                     </th>
                   )}
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    單號
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     員工資訊
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -1091,7 +1221,13 @@ export default function LeaveManagementPage() {
                     請假期間
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    當日班別
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     天數
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    時數
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     狀態
@@ -1110,6 +1246,8 @@ export default function LeaveManagementPage() {
               <tbody className="bg-white divide-y divide-gray-200">
                 {paginatedRequests.map((request) => {
                   const StatusIcon = STATUS_ICONS[request.status as keyof typeof STATUS_ICONS];
+                  const requestTotalHours = request.totalHours ?? deriveLeaveHours(request.totalDays);
+                  const annualLeaveBalanceStatus = getAnnualLeaveBalanceStatus(request);
                   const isOwner = user?.employee?.id && request.employee.id === user.employee.id;
                   const canReviewThisRequest =
                     (canManagerReview && request.status === 'PENDING') ||
@@ -1135,10 +1273,23 @@ export default function LeaveManagementPage() {
                           )}
                         </td>
                       )}
+                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                        {request.requestNumber ?? `LR-${request.id}`}
+                      </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div>
                           <div className="text-sm font-medium text-gray-900">
                             {request.employee.name}
+                            {annualLeaveBalanceStatus?.isExhausted && (
+                              <span className="ml-2 inline-flex rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">
+                                特休已用盡
+                              </span>
+                            )}
+                            {!annualLeaveBalanceStatus?.isExhausted && annualLeaveBalanceStatus?.isExpiringSoon && (
+                              <span className="ml-2 inline-flex rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700">
+                                特休將過期
+                              </span>
+                            )}
                           </div>
                           <div className="text-sm text-gray-500">
                             {request.employee.employeeId} • {request.employee.department}
@@ -1146,17 +1297,31 @@ export default function LeaveManagementPage() {
                         </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
-                        <span className="text-sm text-gray-900">
+                        <div className="text-sm text-gray-900">
                           {getLeaveTypeLabel(request.leaveType)}
-                        </span>
+                        </div>
+                        {annualLeaveBalanceStatus && (
+                          <div className={`mt-1 text-xs ${annualLeaveBalanceStatus.overDays > 0 ? 'font-medium text-red-600' : 'text-gray-500'}`}>
+                            剩餘 {formatLeaveDays(annualLeaveBalanceStatus.remainingDays)}
+                            {annualLeaveBalanceStatus.overDays > 0 && `，超出 ${formatLeaveDays(annualLeaveBalanceStatus.overDays)}`}
+                          </div>
+                        )}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="text-sm text-gray-900">
-                          {formatDate(request.startDate)} - {formatDate(request.endDate)}
+                          {formatLeavePeriod(request)}
                         </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
-                        <span className="text-sm text-gray-900">{request.totalDays} 天</span>
+                        <div className="max-w-xs truncate text-sm text-gray-900" title={formatLeaveSchedules(request)}>
+                          {formatLeaveSchedules(request)}
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <span className="text-sm text-gray-900">{formatLeaveDays(request.totalDays)}</span>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <span className="text-sm text-gray-900">{formatLeaveHours(requestTotalHours)}</span>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium ${STATUS_COLORS[request.status as keyof typeof STATUS_COLORS]}`}>
@@ -1233,12 +1398,7 @@ export default function LeaveManagementPage() {
                             </div>
                           ) : request.status === 'APPROVED' ? (
                             <button
-                              onClick={() => {
-                                const reason = prompt('請輸入撤銷原因：');
-                                if (reason && reason.trim()) {
-                                  handleCancelRequest(request.id, reason.trim());
-                                }
-                              }}
+                              onClick={() => setReasonPrompt({ type: 'cancel', id: request.id, name: request.employee.name })}
                               className="inline-flex items-center gap-1 text-orange-600 hover:text-orange-800"
                             >
                               <X className="w-4 h-4" /> 申請撤銷
@@ -1250,12 +1410,7 @@ export default function LeaveManagementPage() {
                         {/* 管理員作廢已核准申請 */}
                         {canPrivilegedEdit && request.status === 'APPROVED' && (
                           <button
-                            onClick={() => {
-                              const reason = prompt('請輸入作廢原因：');
-                              if (reason && reason.trim()) {
-                                handleVoidRequest(request.id, reason.trim());
-                              }
-                            }}
+                            onClick={() => setReasonPrompt({ type: 'void', id: request.id, name: request.employee.name })}
                             className="inline-flex items-center gap-1 text-red-600 hover:text-red-800 ml-2"
                           >
                             <X className="w-4 h-4" /> 作廢
@@ -1275,7 +1430,7 @@ export default function LeaveManagementPage() {
                     {/* 展開的審核進度區域 */}
                     {expandedId === request.id && (
                       <tr>
-                        <td colSpan={canBatchApprove ? 9 : 8} className="px-6 py-4 bg-gray-50">
+                        <td colSpan={canBatchApprove ? 10 : 9} className="px-6 py-4 bg-gray-50">
                           {approvalData ? (
                             <ApprovalProgress
                               currentLevel={approvalData.currentLevel}
@@ -1299,9 +1454,12 @@ export default function LeaveManagementPage() {
             </table>
 
             {filteredRequests.length === 0 && (
-              <div className="text-center py-12">
-                <Calendar className="mx-auto h-12 w-12 text-gray-400 mb-4" />
-                <p className="text-gray-500">暫無請假記錄</p>
+              <div className="p-4">
+                <EmptyState
+                  icon={<Calendar className="h-12 w-12" />}
+                  title="暫無請假記錄"
+                  description="目前條件下沒有請假申請。"
+                />
               </div>
             )}
           </div>
@@ -1310,30 +1468,32 @@ export default function LeaveManagementPage() {
 
       {/* 新增請假申請表單 */}
       {showNewRequestForm && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-lg max-w-md w-full p-6">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-gray-900">申請請假</h3>
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-start sm:items-center justify-center overflow-y-auto px-3 py-4 sm:p-4 z-50">
+          <div className="bg-white rounded-2xl max-w-4xl w-full max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain p-5 pb-[calc(env(safe-area-inset-bottom)+1.25rem)] shadow-2xl sm:p-8">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-2xl font-semibold text-gray-900">申請請假</h3>
               <button
+                type="button"
+                aria-label="關閉申請請假視窗"
                 onClick={() => {
                   setShowNewRequestForm(false);
                   resetForm();
                 }}
-                className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                className="flex h-11 w-11 items-center justify-center text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-xl transition-colors"
               >
                 <X className="w-6 h-6" />
               </button>
             </div>
             
-            <form onSubmit={handleSubmitRequest} className="space-y-4">
+            <form onSubmit={handleSubmitRequest} className="space-y-6 text-base">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
+                <label className="block text-base font-medium text-gray-700 mb-2">
                   請假類型 *
                 </label>
                 <select
                   value={newRequest.leaveType}
                   onChange={(e) => handleNewLeaveTypeChange(e.target.value)}
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
+                  className="min-h-12 w-full border border-gray-300 rounded-xl px-4 py-3 text-base focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
                   required
                 >
                   <option value="">請選擇請假類型</option>
@@ -1344,12 +1504,12 @@ export default function LeaveManagementPage() {
                 
                 {/* 假別法規與制度說明 */}
                 {newRequest.leaveType && LEAVE_RULE_SUMMARIES[newRequest.leaveType as keyof typeof LEAVE_RULE_SUMMARIES] && (
-                  <div className="mt-2 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                  <div className="mt-3 p-4 bg-blue-50 border border-blue-200 rounded-xl">
                     <div className="flex items-start">
                       <AlertCircle className="h-4 w-4 text-blue-600 mt-0.5 mr-2" />
-                      <div className="text-sm text-blue-800">
+                      <div className="text-base text-blue-800">
                         <p className="font-medium">法規／制度重點：</p>
-                        <div className="mt-1 space-y-1 text-xs">
+                        <div className="mt-2 space-y-1 text-sm leading-6">
                           <p><strong>說明：</strong>{LEAVE_RULE_SUMMARIES[newRequest.leaveType as keyof typeof LEAVE_RULE_SUMMARIES].description}</p>
                           <p><strong>天數：</strong>{LEAVE_RULE_SUMMARIES[newRequest.leaveType as keyof typeof LEAVE_RULE_SUMMARIES].days}</p>
                           <p><strong>薪資：</strong>{LEAVE_RULE_SUMMARIES[newRequest.leaveType as keyof typeof LEAVE_RULE_SUMMARIES].salary}</p>
@@ -1361,27 +1521,27 @@ export default function LeaveManagementPage() {
                 )}
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                  <label className="block text-base font-medium text-gray-700 mb-2">
                     開始日期 *
                   </label>
                   <input
                     type="date"
                     value={newRequest.startDate}
                     onChange={(e) => handleStartDateChange(e.target.value)}
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
+                    className="min-h-12 w-full border border-gray-300 rounded-xl px-4 py-3 text-base focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
                     required
                   />
                   {newRequest.startDate && scheduleInfo[newRequest.startDate] && (
-                    <p className="text-xs text-blue-600 mt-1">
+                    <p className="text-sm text-blue-700 mt-2">
                       排班：{scheduleInfo[newRequest.startDate]}
                     </p>
                   )}
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                  <label className="block text-base font-medium text-gray-700 mb-2">
                     開始時間 *
                   </label>
                   <div className="grid grid-cols-2 gap-2">
@@ -1389,7 +1549,7 @@ export default function LeaveManagementPage() {
                       <select
                         value={newRequest.startHour}
                         onChange={(e) => setNewRequest({ ...newRequest, startHour: e.target.value })}
-                        className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
+                        className="min-h-12 w-full border border-gray-300 rounded-xl px-4 py-3 text-base focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
                         required
                       >
                         <option value="">時</option>
@@ -1401,46 +1561,44 @@ export default function LeaveManagementPage() {
                       </select>
                     </div>
                     <div>
-                      <input
-                        type="number"
-                        min={0}
-                        max={59}
-                        step={1}
+                      <select
                         value={newRequest.startMinute}
-                        onChange={(e) => {
-                          const v = e.target.value.replace(/[^0-9]/g, '');
-                          const num = Math.max(0, Math.min(59, Number(v || '0')));
-                          setNewRequest({ ...newRequest, startMinute: String(num).padStart(2,'0') });
-                        }}
-                        className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
+                        onChange={(e) => setNewRequest({ ...newRequest, startMinute: e.target.value })}
+                        className="min-h-12 w-full border border-gray-300 rounded-xl px-4 py-3 text-base focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
                         required
-                      />
+                        aria-label="開始分鐘"
+                      >
+                        <option value="">分</option>
+                        {LEAVE_MINUTE_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
                     </div>
                   </div>
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                  <label className="block text-base font-medium text-gray-700 mb-2">
                     結束日期 *
                   </label>
                   <input
                     type="date"
                     value={newRequest.endDate}
                     onChange={(e) => handleEndDateChange(e.target.value)}
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
+                    className="min-h-12 w-full border border-gray-300 rounded-xl px-4 py-3 text-base focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
                     required
                   />
                   {newRequest.endDate && scheduleInfo[newRequest.endDate] && (
-                    <p className="text-xs text-blue-600 mt-1">
+                    <p className="text-sm text-blue-700 mt-2">
                       排班：{scheduleInfo[newRequest.endDate]}
                     </p>
                   )}
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                  <label className="block text-base font-medium text-gray-700 mb-2">
                     結束時間 *
                   </label>
                   <div className="grid grid-cols-2 gap-2">
@@ -1448,7 +1606,7 @@ export default function LeaveManagementPage() {
                       <select
                         value={newRequest.endHour}
                         onChange={(e) => setNewRequest({ ...newRequest, endHour: e.target.value })}
-                        className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
+                        className="min-h-12 w-full border border-gray-300 rounded-xl px-4 py-3 text-base focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
                         required
                       >
                         <option value="">時</option>
@@ -1460,42 +1618,51 @@ export default function LeaveManagementPage() {
                       </select>
                     </div>
                     <div>
-                      <input
-                        type="number"
-                        min={0}
-                        max={59}
-                        step={1}
+                      <select
                         value={newRequest.endMinute}
-                        onChange={(e) => {
-                          const v = e.target.value.replace(/[^0-9]/g, '');
-                          const num = Math.max(0, Math.min(59, Number(v || '0')));
-                          setNewRequest({ ...newRequest, endMinute: String(num).padStart(2,'0') });
-                        }}
-                        className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
+                        onChange={(e) => setNewRequest({ ...newRequest, endMinute: e.target.value })}
+                        className="min-h-12 w-full border border-gray-300 rounded-xl px-4 py-3 text-base focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
                         required
-                      />
+                        aria-label="結束分鐘"
+                      >
+                        <option value="">分</option>
+                        {LEAVE_MINUTE_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
                     </div>
                   </div>
                 </div>
               </div>
 
-              {/* 顯示計算的請假時數 */}
-              {newRequest.startDate && newRequest.endDate && newRequest.startHour && newRequest.startMinute && newRequest.endHour && newRequest.endMinute && (
-                <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-                  <p className="text-sm text-blue-800">
-                    請假時數：{calculateLeaveHours()} 小時
+              {/* 顯示計算的請假天數與時數 */}
+              {newRequestDuration && (
+                <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
+                  <p className="text-base font-medium text-blue-800">請假試算</p>
+                  <div className="mt-2 grid grid-cols-2 gap-3">
+                    <div>
+                      <p className="text-sm text-blue-700">天數</p>
+                      <p className="text-base font-semibold text-blue-900">{formatLeaveDays(newRequestDuration.totalDays)}</p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-blue-700">時數</p>
+                      <p className="text-base font-semibold text-blue-900">{formatLeaveHours(newRequestDuration.totalHours)}</p>
+                    </div>
+                  </div>
+                  <p className="mt-2 text-sm text-blue-800">
+                    合計：{formatLeaveDurationSummary(newRequestDuration.totalHours)}
                   </p>
                 </div>
               )}
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
+                <label className="block text-base font-medium text-gray-700 mb-2">
                   {newRequestNeedsStructuredBereavementReason ? '亡故親屬關係 *' : '申請原因'}
                 </label>
                 <select
                   value={newRequest.leaveReason}
                   onChange={(e) => setNewRequest({ ...newRequest, leaveReason: e.target.value })}
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
+                  className="min-h-12 w-full border border-gray-300 rounded-xl px-4 py-3 text-base focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black disabled:bg-gray-100 disabled:text-gray-500"
                   disabled={!newRequest.leaveType}
                   required={newRequestNeedsStructuredBereavementReason}
                 >
@@ -1511,7 +1678,7 @@ export default function LeaveManagementPage() {
                   ))}
                 </select>
                 {newRequest.leaveType && (
-                  <p className="mt-1 text-xs text-gray-500">
+                  <p className="mt-2 text-sm leading-6 text-gray-600">
                     {newRequestNeedsStructuredBereavementReason
                       ? '喪假需以 2026 勞工請假規則的法定親屬關係為申請依據，死亡日起 100 日內可分次請畢；繼父母相關需符合扶養或共居條件。'
                       : `已依「${getLeaveTypeLabel(newRequest.leaveType)}」篩出對應原因，可再於下方補充說明。`}
@@ -1520,32 +1687,32 @@ export default function LeaveManagementPage() {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
+                <label className="block text-base font-medium text-gray-700 mb-2">
                   {newRequestNeedsStructuredBereavementReason ? '補充說明' : '請假說明'}
                 </label>
                 <textarea
                   value={newRequest.reason}
                   onChange={(e) => setNewRequest({ ...newRequest, reason: e.target.value })}
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
-                  rows={3}
+                  className="w-full border border-gray-300 rounded-xl px-4 py-3 text-base focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
+                  rows={4}
                   placeholder="請填寫詳細說明（選填）"
                 />
               </div>
 
-              <div className="flex gap-3 pt-4">
+              <div className="flex flex-col-reverse gap-3 pt-3 sm:flex-row">
                 <button
                   type="button"
                   onClick={() => {
                     setShowNewRequestForm(false);
                     resetForm();
                   }}
-                  className="flex-1 border border-gray-300 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-50 transition-colors"
+                  className="min-h-12 flex-1 border border-gray-300 text-gray-700 px-5 py-3 text-base font-medium rounded-xl hover:bg-gray-50 transition-colors"
                 >
                   取消
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
+                  className="min-h-12 flex-1 bg-blue-600 text-white px-5 py-3 text-base font-medium rounded-xl hover:bg-blue-700 transition-colors"
                 >
                   提交申請
                 </button>
@@ -1557,24 +1724,26 @@ export default function LeaveManagementPage() {
 
       {/* 編輯請假申請表單 */}
       {showEditModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-lg max-w-md w-full p-6">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-gray-900">編輯請假申請</h3>
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-start sm:items-center justify-center overflow-y-auto px-3 py-4 sm:p-4 z-50">
+          <div className="bg-white rounded-2xl max-w-4xl w-full max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain p-5 pb-[calc(env(safe-area-inset-bottom)+1.25rem)] shadow-2xl sm:p-8">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-2xl font-semibold text-gray-900">編輯請假申請</h3>
               <button
+                type="button"
+                aria-label="關閉編輯請假視窗"
                 onClick={() => { setShowEditModal(false); setEditingRequest(null); }}
-                className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                className="flex h-11 w-11 items-center justify-center text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-xl transition-colors"
               >
                 <X className="w-6 h-6" />
               </button>
             </div>
-            <form onSubmit={handleSubmitEdit} className="space-y-4">
+            <form onSubmit={handleSubmitEdit} className="space-y-6 text-base">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">請假類型 *</label>
+                <label className="block text-base font-medium text-gray-700 mb-2">請假類型 *</label>
                 <select
                   value={editForm.leaveType}
                   onChange={(e) => handleEditLeaveTypeChange(e.target.value)}
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
+                  className="min-h-12 w-full border border-gray-300 rounded-xl px-4 py-3 text-base focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
                   required
                 >
                   {LEAVE_TYPE_OPTIONS.map((option) => (
@@ -1598,24 +1767,32 @@ export default function LeaveManagementPage() {
                 )}
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">開始日期 *</label>
+                  <label className="block text-base font-medium text-gray-700 mb-2">開始日期 *</label>
                   <input
                     type="date"
                     value={editForm.startDate}
-                    onChange={(e) => setEditForm({ ...editForm, startDate: e.target.value })}
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
+                    onChange={(e) => {
+                      setEditForm({ ...editForm, startDate: e.target.value });
+                      if (e.target.value) fetchScheduleForDate(e.target.value);
+                    }}
+                    className="min-h-12 w-full border border-gray-300 rounded-xl px-4 py-3 text-base focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
                     required
                   />
+                  {editForm.startDate && scheduleInfo[editForm.startDate] && (
+                    <p className="text-sm text-blue-700 mt-2">
+                      排班：{scheduleInfo[editForm.startDate]}
+                    </p>
+                  )}
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">開始時間 *</label>
+                  <label className="block text-base font-medium text-gray-700 mb-2">開始時間 *</label>
                   <div className="grid grid-cols-2 gap-2">
                     <select
                       value={editForm.startHour}
                       onChange={(e) => setEditForm({ ...editForm, startHour: e.target.value })}
-                      className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
+                      className="min-h-12 w-full border border-gray-300 rounded-xl px-4 py-3 text-base focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
                       required
                     >
                       <option value="">時</option>
@@ -1623,42 +1800,48 @@ export default function LeaveManagementPage() {
                         <option key={i} value={i.toString().padStart(2, '0')}>{i.toString().padStart(2, '0')}時</option>
                       ))}
                     </select>
-                    <input
-                      type="number"
-                      min={0}
-                      max={59}
-                      step={1}
+                    <select
                       value={editForm.startMinute}
-                      onChange={(e) => {
-                        const v = e.target.value.replace(/[^0-9]/g, '');
-                        const num = Math.max(0, Math.min(59, Number(v || '0')));
-                        setEditForm({ ...editForm, startMinute: String(num).padStart(2,'0') });
-                      }}
-                      className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
+                      onChange={(e) => setEditForm({ ...editForm, startMinute: e.target.value })}
+                      className="min-h-12 w-full border border-gray-300 rounded-xl px-4 py-3 text-base focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
                       required
-                    />
+                      aria-label="開始分鐘"
+                    >
+                      <option value="">分</option>
+                      {LEAVE_MINUTE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
                   </div>
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">結束日期 *</label>
+                  <label className="block text-base font-medium text-gray-700 mb-2">結束日期 *</label>
                   <input
                     type="date"
                     value={editForm.endDate}
-                    onChange={(e) => setEditForm({ ...editForm, endDate: e.target.value })}
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
+                    onChange={(e) => {
+                      setEditForm({ ...editForm, endDate: e.target.value });
+                      if (e.target.value) fetchScheduleForDate(e.target.value);
+                    }}
+                    className="min-h-12 w-full border border-gray-300 rounded-xl px-4 py-3 text-base focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
                     required
                   />
+                  {editForm.endDate && scheduleInfo[editForm.endDate] && (
+                    <p className="text-sm text-blue-700 mt-2">
+                      排班：{scheduleInfo[editForm.endDate]}
+                    </p>
+                  )}
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">結束時間 *</label>
+                  <label className="block text-base font-medium text-gray-700 mb-2">結束時間 *</label>
                   <div className="grid grid-cols-2 gap-2">
                     <select
                       value={editForm.endHour}
                       onChange={(e) => setEditForm({ ...editForm, endHour: e.target.value })}
-                      className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
+                      className="min-h-12 w-full border border-gray-300 rounded-xl px-4 py-3 text-base focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
                       required
                     >
                       <option value="">時</option>
@@ -1666,32 +1849,49 @@ export default function LeaveManagementPage() {
                         <option key={i} value={i.toString().padStart(2, '0')}>{i.toString().padStart(2, '0')}時</option>
                       ))}
                     </select>
-                    <input
-                      type="number"
-                      min={0}
-                      max={59}
-                      step={1}
+                    <select
                       value={editForm.endMinute}
-                      onChange={(e) => {
-                        const v = e.target.value.replace(/[^0-9]/g, '');
-                        const num = Math.max(0, Math.min(59, Number(v || '0')));
-                        setEditForm({ ...editForm, endMinute: String(num).padStart(2,'0') });
-                      }}
-                      className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
+                      onChange={(e) => setEditForm({ ...editForm, endMinute: e.target.value })}
+                      className="min-h-12 w-full border border-gray-300 rounded-xl px-4 py-3 text-base focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
                       required
-                    />
+                      aria-label="結束分鐘"
+                    >
+                      <option value="">分</option>
+                      {LEAVE_MINUTE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
                   </div>
                 </div>
               </div>
 
+              {editRequestDuration && (
+                <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
+                  <p className="text-base font-medium text-blue-800">請假試算</p>
+                  <div className="mt-2 grid grid-cols-2 gap-3">
+                    <div>
+                      <p className="text-sm text-blue-700">天數</p>
+                      <p className="text-base font-semibold text-blue-900">{formatLeaveDays(editRequestDuration.totalDays)}</p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-blue-700">時數</p>
+                      <p className="text-base font-semibold text-blue-900">{formatLeaveHours(editRequestDuration.totalHours)}</p>
+                    </div>
+                  </div>
+                  <p className="mt-2 text-sm text-blue-800">
+                    合計：{formatLeaveDurationSummary(editRequestDuration.totalHours)}
+                  </p>
+                </div>
+              )}
+
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
+                <label className="block text-base font-medium text-gray-700 mb-2">
                   {editRequestNeedsStructuredBereavementReason ? '亡故親屬關係 *' : '申請原因'}
                 </label>
                 <select
                   value={editForm.leaveReason}
                   onChange={(e) => setEditForm({ ...editForm, leaveReason: e.target.value })}
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
+                  className="min-h-12 w-full border border-gray-300 rounded-xl px-4 py-3 text-base focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black disabled:bg-gray-100 disabled:text-gray-500"
                   disabled={!editForm.leaveType}
                   required={editRequestNeedsStructuredBereavementReason}
                 >
@@ -1707,7 +1907,7 @@ export default function LeaveManagementPage() {
                   ))}
                 </select>
                 {editForm.leaveType && (
-                  <p className="mt-1 text-xs text-gray-500">
+                  <p className="mt-2 text-sm leading-6 text-gray-600">
                     {editingRequestHasLegacyBereavementReason
                       ? '此筆舊資料仍使用歷史自由輸入原因；若未重新分類亡故親屬關係，可先保留原文字後儲存其他欄位。'
                       : editRequestNeedsStructuredBereavementReason
@@ -1718,29 +1918,29 @@ export default function LeaveManagementPage() {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
+                <label className="block text-base font-medium text-gray-700 mb-2">
                   {editRequestNeedsStructuredBereavementReason ? '補充說明' : '請假說明'}
                 </label>
                 <textarea
                   value={editForm.reason}
                   onChange={(e) => setEditForm({ ...editForm, reason: e.target.value })}
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
-                  rows={3}
+                  className="w-full border border-gray-300 rounded-xl px-4 py-3 text-base focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
+                  rows={4}
                   placeholder="請填寫詳細說明（選填）"
                 />
               </div>
 
-              <div className="flex gap-3 pt-2">
+              <div className="flex flex-col-reverse gap-3 pt-3 sm:flex-row">
                 <button
                   type="button"
                   onClick={() => { setShowEditModal(false); setEditingRequest(null); }}
-                  className="flex-1 border border-gray-300 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-50 transition-colors"
+                  className="min-h-12 flex-1 border border-gray-300 text-gray-700 px-5 py-3 text-base font-medium rounded-xl hover:bg-gray-50 transition-colors"
                 >
                   取消
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
+                  className="min-h-12 flex-1 bg-blue-600 text-white px-5 py-3 text-base font-medium rounded-xl hover:bg-blue-700 transition-colors"
                 >
                   儲存變更
                 </button>
@@ -1759,29 +1959,64 @@ export default function LeaveManagementPage() {
           onClear={() => setSelectedIds([])}
           onSelectionChange={setSelectedIds}
           itemName="請假申請"
+          itemSummaries={batchApproveSummaries}
+          allowApproveNote
         />
       )}
 
       {/* 分頁導航 */}
-      {totalPages > 1 && (
-        <div className="flex items-center justify-center gap-2 my-4">
+      {sortedRequests.length > 0 && (
+        <div className="my-4 flex flex-col items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm sm:flex-row">
+          <div className="text-sm text-gray-600">
+            共 {sortedRequests.length} 筆，每頁
+            <select
+              value={itemsPerPage}
+              onChange={(e) => {
+                setItemsPerPage(Number(e.target.value));
+                setCurrentPage(1);
+              }}
+              className="mx-2 rounded-lg border border-gray-300 px-2 py-1 text-sm text-gray-900 focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+              aria-label="請假記錄每頁筆數"
+            >
+              {[10, 15, 25, 50].map((pageSize) => (
+                <option key={pageSize} value={pageSize}>{pageSize}</option>
+              ))}
+            </select>
+            筆
+          </div>
+
+          <div className="flex flex-wrap items-center justify-center gap-2">
           <button
             onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
             disabled={currentPage === 1}
-            className="px-4 py-2 bg-gray-100 rounded-lg disabled:opacity-50 text-gray-700"
+            className="min-h-11 px-4 py-2 bg-gray-100 rounded-lg disabled:opacity-50 text-gray-700"
           >
             上一頁
           </button>
-          <span className="text-sm text-gray-600">
-            第 {currentPage} / {totalPages} 頁
-          </span>
+          <label className="flex items-center gap-2 text-sm text-gray-600">
+            第
+            <input
+              type="number"
+              min={1}
+              max={totalPages}
+              value={currentPage}
+              onChange={(e) => {
+                const nextPage = Number(e.target.value);
+                setCurrentPage(Number.isFinite(nextPage) ? Math.min(totalPages, Math.max(1, nextPage)) : 1);
+              }}
+              className="h-11 w-20 rounded-lg border border-gray-300 px-3 text-center text-sm text-gray-900 focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+              aria-label="跳至請假記錄頁碼"
+            />
+            / {totalPages} 頁
+          </label>
           <button
             onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
             disabled={currentPage === totalPages}
-            className="px-4 py-2 bg-gray-100 rounded-lg disabled:opacity-50 text-gray-700"
+            className="min-h-11 px-4 py-2 bg-gray-100 rounded-lg disabled:opacity-50 text-gray-700"
           >
             下一頁
           </button>
+          </div>
         </div>
       )}
 
@@ -1812,6 +2047,21 @@ export default function LeaveManagementPage() {
           </div>
         </div>
       )}
+
+      <PromptDialog
+        open={Boolean(reasonPrompt)}
+        title={reasonPrompt?.type === 'cancel' ? '申請撤銷請假' : '作廢請假申請'}
+        message={reasonPrompt ? `${reasonPrompt.name} 的請假申請將${reasonPrompt.type === 'cancel' ? '送出撤銷申請' : '被作廢'}，請填寫原因。` : ''}
+        label={reasonPrompt?.type === 'cancel' ? '撤銷原因' : '作廢原因'}
+        placeholder={reasonPrompt?.type === 'cancel' ? '請輸入撤銷原因' : '請輸入作廢原因'}
+        confirmLabel={reasonPrompt?.type === 'cancel' ? '送出撤銷' : '確認作廢'}
+        tone={reasonPrompt?.type === 'void' ? 'danger' : 'default'}
+        loading={reasonPromptLoading}
+        onCancel={() => {
+          if (!reasonPromptLoading) setReasonPrompt(null);
+        }}
+        onConfirm={submitReasonPrompt}
+      />
 
       {/* Toast 訊息 */}
       {toast && (

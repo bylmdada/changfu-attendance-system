@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Calendar, Plus, Search, Users, Clock, X, RefreshCw, CheckCircle, AlertTriangle, Upload } from 'lucide-react';
+import { Calendar, Plus, Users, Clock, X, RefreshCw, CheckCircle, AlertTriangle, Upload } from 'lucide-react';
 import { buildAuthMeRequest, buildCookieSessionRequest } from '@/lib/admin-session-client';
 import { fetchJSONWithCSRF, fetchWithCSRF } from '@/lib/fetchWithCSRF';
 import {
@@ -10,6 +10,9 @@ import {
   formatYearsOfServiceInput,
 } from '@/lib/annual-leave-rules';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import ConfirmDialog from '@/components/ConfirmDialog';
+import EmployeeListSelect, { useActiveEmployeeDepartments } from '@/components/EmployeeListSelect';
+import { SimpleToast, useLocalToast } from '@/components/Toast';
 
 interface Employee {
   id: number;
@@ -47,6 +50,7 @@ interface User {
 }
 
 export default function AnnualLeaveManagementPage() {
+  const { toast, showToast, clearToast } = useLocalToast();
   const [annualLeaves, setAnnualLeaves] = useState<AnnualLeave[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -86,7 +90,8 @@ export default function AnnualLeaveManagementPage() {
   const [selectedBatchIds, setSelectedBatchIds] = useState<Set<number>>(new Set());
   const [batchLoading, setBatchLoading] = useState(false);
   const [excludeExisting, setExcludeExisting] = useState(true);
-  const [departments, setDepartments] = useState<string[]>([]);
+  const [batchConfirmOpen, setBatchConfirmOpen] = useState(false);
+  const { departments } = useActiveEmployeeDepartments();
   const [importLoading, setImportLoading] = useState(false);
   const [importMessage, setImportMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -112,7 +117,7 @@ export default function AnnualLeaveManagementPage() {
         const annualLeavesUrl = new URL('/api/annual-leaves', window.location.origin);
         if (filters.year) annualLeavesUrl.searchParams.set('year', filters.year);
         const annualLeavesRequest = buildSessionRequest(`${annualLeavesUrl.pathname}${annualLeavesUrl.search}`);
-        const employeesRequest = buildSessionRequest('/api/employees');
+        const employeesRequest = buildSessionRequest('/api/employees?limit=1000&status=active');
         
         const [annualLeavesResponse, employeesResponse] = await Promise.all([
           fetch(annualLeavesRequest.url, annualLeavesRequest.options),
@@ -127,9 +132,6 @@ export default function AnnualLeaveManagementPage() {
         if (employeesResponse.ok) {
           const employeesData = await employeesResponse.json();
           setEmployees(employeesData.employees);
-          // 從員工資料中提取部門列表
-          const deptList = [...new Set(employeesData.employees.map((e: Employee) => e.department))] as string[];
-          setDepartments(deptList.sort());
         }
       } catch (error) {
         console.error('獲取數據失敗:', error);
@@ -179,7 +181,7 @@ export default function AnnualLeaveManagementPage() {
       window.URL.revokeObjectURL(url);
     } catch (error) {
       console.error('下載範本失敗:', error);
-      alert('下載範本失敗');
+      showToast('error', '下載範本失敗');
     }
   };
 
@@ -237,16 +239,16 @@ export default function AnnualLeaveManagementPage() {
 
       if (response.ok) {
         const data = await response.json();
-        alert(data.message);
+        showToast('success', data.message);
         setShowSetupForm(false);
         setSetupForm({ employeeId: '', year: new Date().getFullYear().toString(), yearsOfService: '' });
         fetchAnnualLeaves();
       } else {
         const error = await response.json();
-        alert(error.error);
+        showToast('error', error.error);
       }
     } catch {
-      alert('設定失敗，請稍後再試');
+      showToast('error', '設定失敗，請稍後再試');
     }
   };
 
@@ -316,14 +318,14 @@ export default function AnnualLeaveManagementPage() {
   // 處理批量設定
   const handleBatchSetup = async () => {
     if (selectedBatchIds.size === 0) {
-      alert('請選擇至少一位員工');
+      showToast('warning', '請選擇至少一位員工');
       return;
     }
 
-    if (!confirm(`確定要為 ${selectedBatchIds.size} 位員工設定特休假嗎？`)) {
-      return;
-    }
+    setBatchConfirmOpen(true);
+  };
 
+  const performBatchSetup = async () => {
     setBatchLoading(true);
     try {
       const response = await fetchJSONWithCSRF('/api/annual-leaves/batch', {
@@ -336,17 +338,18 @@ export default function AnnualLeaveManagementPage() {
 
       if (response.ok) {
         const data = await response.json();
-        alert(data.message);
+        showToast('success', data.message);
+        setBatchConfirmOpen(false);
         setShowBatchModal(false);
         setSelectedBatchIds(new Set());
         fetchAnnualLeaves();
       } else {
         const error = await response.json();
-        alert(error.error || '批量設定失敗');
+        showToast('error', error.error || '批量設定失敗');
       }
     } catch (error) {
       console.error('批量設定失敗:', error);
-      alert('批量設定失敗，請稍後再試');
+      showToast('error', '批量設定失敗，請稍後再試');
     } finally {
       setBatchLoading(false);
     }
@@ -419,14 +422,9 @@ export default function AnnualLeaveManagementPage() {
     if (filters.department && leave.employee.department !== filters.department) {
       return false;
     }
-    // 搜尋篩選
+    // 員工篩選
     if (filters.search) {
-      const searchLower = filters.search.toLowerCase();
-      return (
-        leave.employee.name.toLowerCase().includes(searchLower) ||
-        leave.employee.employeeId.toLowerCase().includes(searchLower) ||
-        leave.employee.department.toLowerCase().includes(searchLower)
-      );
+      return leave.employee.employeeId === filters.search;
     }
     return true;
   });
@@ -445,7 +443,7 @@ export default function AnnualLeaveManagementPage() {
 
   return (
     <AuthenticatedLayout>
-      <div className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
+      <div className="w-full max-w-none py-6 sm:px-6 lg:px-8">
         <div className="px-4 py-6 sm:px-0">
           {/* 頁面標題 */}
           <div className="mb-8">
@@ -541,7 +539,7 @@ export default function AnnualLeaveManagementPage() {
               <label className="block text-sm font-medium text-gray-700 mb-2">部門</label>
               <select
                 value={filters.department}
-                onChange={(e) => setFilters({ ...filters, department: e.target.value })}
+                onChange={(e) => setFilters({ ...filters, department: e.target.value, search: '' })}
                 className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900"
               >
                 <option value="">全部部門</option>
@@ -551,19 +549,14 @@ export default function AnnualLeaveManagementPage() {
               </select>
             </div>
             
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">搜尋</label>
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
-                <input
-                  type="text"
-                  placeholder="員工姓名或工號"
-                  value={filters.search}
-                  onChange={(e) => setFilters({ ...filters, search: e.target.value })}
-                  className="pl-10 w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900"
-                />
-              </div>
-            </div>
+            <EmployeeListSelect
+              label="員工"
+              value={filters.search}
+              onChange={(value) => setFilters({ ...filters, search: value })}
+              emptyLabel="全部員工"
+              departmentFilter={filters.department}
+              selectClassName="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 disabled:bg-gray-100"
+            />
 
             <div className="flex items-end">
               <div className="text-sm text-gray-600">
@@ -1058,6 +1051,19 @@ export default function AnnualLeaveManagementPage() {
         </div>
       )}
       </div>
+      <ConfirmDialog
+        open={batchConfirmOpen}
+        title="批量設定特休假"
+        message={`確定要為 ${selectedBatchIds.size} 位員工設定 ${batchYear} 年特休假嗎？`}
+        confirmLabel="確認設定"
+        cancelLabel="取消"
+        loading={batchLoading}
+        onConfirm={performBatchSetup}
+        onCancel={() => {
+          if (!batchLoading) setBatchConfirmOpen(false);
+        }}
+      />
+      <SimpleToast toast={toast} onClose={clearToast} />
     </AuthenticatedLayout>
   );
 }

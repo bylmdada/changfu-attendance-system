@@ -10,6 +10,10 @@ jest.mock('@/lib/database', () => ({
     },
     overtimeRequest: {
       findFirst: jest.fn(),
+      findMany: jest.fn(),
+    },
+    leaveRequest: {
+      findMany: jest.fn(),
     },
     schedule: {
       findFirst: jest.fn(),
@@ -140,6 +144,8 @@ describe('webauthn auth-verify account status guard', () => {
     } as never);
     mockGetActiveAllowedLocations.mockResolvedValue([] as never);
     mockValidateGpsClockLocation.mockReturnValue({ ok: true } as never);
+    mockPrisma.overtimeRequest.findMany.mockResolvedValue([] as never);
+    mockPrisma.leaveRequest.findMany.mockResolvedValue([] as never);
     mockCookies.mockResolvedValue({
       get: jest.fn((name: string) => {
         if (name === 'webauthn_auth_challenge') return { value: 'challenge-1' };
@@ -277,7 +283,10 @@ describe('webauthn auth-verify account status guard', () => {
       mockPrisma.schedule.findFirst.mockResolvedValue({
         employeeId: 20,
         workDate: '2026-04-08',
+        startTime: '08:00',
         endTime: '17:00',
+        breakTime: 60,
+        workHours: 8,
         shiftType: 'DAY',
       } as never);
       mockPrisma.attendanceRecord.findFirst.mockResolvedValue({
@@ -319,6 +328,15 @@ describe('webauthn auth-verify account status guard', () => {
         scheduledTime: '17:00',
         recordId: 88,
       });
+      expect(mockPrisma.attendanceRecord.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 88 },
+          data: expect.objectContaining({
+            regularHours: 8,
+            overtimeHours: 0,
+          }),
+        })
+      );
     } finally {
       jest.useRealTimers();
     }

@@ -19,6 +19,10 @@ jest.mock('@/lib/csrf', () => ({
   validateCSRF: jest.fn(),
 }));
 
+jest.mock('@/lib/system-settings-audit', () => ({
+  logSystemSettingsChange: jest.fn(),
+}));
+
 import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
@@ -80,13 +84,16 @@ describe('overtime calculation route guards', () => {
     expect(response.status).toBe(200);
     expect(payload.settings).toMatchObject({
       weekdayFirstTwoHoursRate: 1.34,
+      restDayFirstTwoHoursRate: 4 / 3,
+      restDayHours3To8Rate: 5 / 3,
+      restDayAfterEightHoursRate: 8 / 3,
       holidayRate: 2,
       overtimeMinUnit: 30,
       compensationMode: 'COMP_LEAVE_ONLY',
     });
   });
 
-  it('preserves existing overtime settings when POST omits unrelated fields', async () => {
+  it('only updates overtime settings that are wired to calculation flows', async () => {
     mockGetUserFromRequest.mockResolvedValue({
       userId: 1,
       employeeId: 1,
@@ -99,6 +106,8 @@ describe('overtime calculation route guards', () => {
         weekdayFirstTwoHoursRate: 1.5,
         weekdayAfterTwoHoursRate: 1.9,
         restDayFirstEightHoursRate: 1.4,
+        restDayFirstTwoHoursRate: 9,
+        restDayHours3To8Rate: 9,
         restDayAfterEightHoursRate: 1.8,
         holidayRate: 2.2,
         mandatoryRestRate: 2.1,
@@ -122,8 +131,13 @@ describe('overtime calculation route guards', () => {
         'content-type': 'application/json',
       },
       body: JSON.stringify({
+        weekdayFirstTwoHoursRate: 2.5,
         holidayRate: 2.5,
         isEnabled: false,
+        monthlyBasicHours: 0,
+        overtimeMinUnit: 60,
+        compensationMode: 'OVERTIME_PAY_ONLY',
+        description: 'updated',
       }),
     });
 
@@ -134,13 +148,50 @@ describe('overtime calculation route guards', () => {
     expect(payload.settings).toMatchObject({
       weekdayFirstTwoHoursRate: 1.5,
       weekdayAfterTwoHoursRate: 1.9,
-      holidayRate: 2.5,
-      overtimeMinUnit: 15,
-      compensationMode: 'EMPLOYEE_CHOICE',
+      restDayFirstTwoHoursRate: 4 / 3,
+      restDayHours3To8Rate: 5 / 3,
+      restDayAfterEightHoursRate: 8 / 3,
+      holidayRate: 2.2,
+      monthlyBasicHours: 230,
+      overtimeMinUnit: 60,
+      compensationMode: 'OVERTIME_PAY_ONLY',
       settleOnResignation: false,
-      isEnabled: false,
-      description: 'custom overtime',
+      isEnabled: true,
+      description: 'updated',
     });
+    expect(payload.settings).not.toHaveProperty('restDayFirstEightHoursRate');
+  });
+
+  it.each([
+    ['字串', '60'],
+    ['非白名單數值', 7],
+    ['小數', 60.5],
+  ])('rejects an invalid minimum application unit: %s', async (_name, overtimeMinUnit) => {
+    mockGetUserFromRequest.mockResolvedValue({
+      userId: 1,
+      employeeId: 1,
+      username: 'admin',
+      role: 'ADMIN',
+    } as never);
+
+    const request = new NextRequest('http://localhost/api/system-settings/overtime-calculation', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ overtimeMinUnit }),
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload).toEqual({
+      success: false,
+      message: '最低申請時數必須為 1、5、15、30 或 60 分鐘',
+    });
+    expect(mockPrisma.systemSettings.findUnique).not.toHaveBeenCalled();
+    expect(mockPrisma.systemSettings.upsert).not.toHaveBeenCalled();
   });
 
   it('rejects null bodies before validating overtime settings fields', async () => {

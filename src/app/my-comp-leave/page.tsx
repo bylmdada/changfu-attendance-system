@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Clock, Timer, ArrowUp, ArrowDown, Calendar, TrendingUp, TrendingDown } from 'lucide-react';
 import ResponsiveSidebar from '@/components/ResponsiveSidebar';
+import EmployeeListSelect, { useActiveEmployeeDepartments } from '@/components/EmployeeListSelect';
 
 interface CompLeaveBalance {
   id: number;
@@ -47,6 +48,11 @@ export default function MyCompLeavePage() {
   const [balance, setBalance] = useState<CompLeaveBalance | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
+  const [selectedDepartment, setSelectedDepartment] = useState('');
+  const [selectedEmployeeId, setSelectedEmployeeId] = useState('');
+  const { departments } = useActiveEmployeeDepartments();
+
+  const isAdmin = user?.role === 'ADMIN' || user?.role === 'HR';
 
   const checkAuth = useCallback(async () => {
     try {
@@ -64,7 +70,11 @@ export default function MyCompLeavePage() {
 
   const loadBalance = useCallback(async () => {
     try {
-      const response = await fetch('/api/comp-leave/balance', { credentials: 'include' });
+      const params = new URLSearchParams();
+      if (isAdmin && selectedEmployeeId) {
+        params.set('employeeId', selectedEmployeeId);
+      }
+      const response = await fetch(`/api/comp-leave/balance?${params.toString()}`, { credentials: 'include' });
       if (response.ok) {
         const data = await response.json();
         if (data.success) {
@@ -77,7 +87,7 @@ export default function MyCompLeavePage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [isAdmin, selectedEmployeeId]);
 
   useEffect(() => {
     document.title = '補休查詢 - 長福會考勤系統';
@@ -160,6 +170,39 @@ export default function MyCompLeavePage() {
               查看您的補休時數餘額與異動紀錄
             </p>
           </div>
+
+          {isAdmin && (
+            <div className="bg-white rounded-xl p-5 shadow border border-gray-100 mb-6">
+              <h2 className="text-lg font-semibold text-gray-900 mb-4">查詢篩選</h2>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">部門</label>
+                  <select
+                    value={selectedDepartment}
+                    onChange={(event) => {
+                      setSelectedDepartment(event.target.value);
+                      setSelectedEmployeeId('');
+                    }}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-gray-900 focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="">全部部門</option>
+                    {departments.map((department) => (
+                      <option key={department} value={department}>{department}</option>
+                    ))}
+                  </select>
+                </div>
+                <EmployeeListSelect
+                  label="員工"
+                  value={selectedEmployeeId}
+                  onChange={(value) => setSelectedEmployeeId(value)}
+                  emptyLabel="本人 / 全部員工"
+                  valueField="id"
+                  departmentFilter={selectedDepartment}
+                  selectClassName="w-full border border-gray-300 rounded-lg px-3 py-2 text-gray-900 focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
+                />
+              </div>
+            </div>
+          )}
 
           {/* 餘額卡片 */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">

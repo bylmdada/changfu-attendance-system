@@ -5,6 +5,9 @@ import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
+import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
+import { getMissedClockWorkDate, removeMissedClockFromAttendance } from '@/lib/missed-clock-attendance';
+import { getPayrollImpactWarning } from '@/lib/payroll-impact-warning';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -220,20 +223,35 @@ export async function PUT(
       }
 
       if (action === 'APPROVE') {
-        await prisma.missedClockRequest.update({
-          where: { id: requestId },
-          data: {
-            status: 'CANCELLED',
-            cancellationStatus: 'APPROVED',
-            cancellationAdminApproverId: decoded.employeeId,
-            cancellationAdminNote: note || null,
-            cancellationApprovedAt: new Date()
-          }
+        const freezeCheck = await checkAttendanceFreeze(getMissedClockWorkDate(missedClockRequest.workDate));
+        if (freezeCheck.isFrozen) {
+          return NextResponse.json({ error: '該月份已被凍結，無法核准補卡撤銷' }, { status: 403 });
+        }
+
+        await prisma.$transaction(async (tx) => {
+          await tx.missedClockRequest.update({
+            where: { id: requestId },
+            data: {
+              status: 'CANCELLED',
+              cancellationStatus: 'APPROVED',
+              cancellationAdminApproverId: decoded.employeeId,
+              cancellationAdminNote: note || null,
+              cancellationApprovedAt: new Date()
+            }
+          });
+
+          await removeMissedClockFromAttendance(tx, missedClockRequest);
+        });
+        const warning = await getPayrollImpactWarning(prisma, {
+          employeeId: missedClockRequest.employeeId,
+          startDate: getMissedClockWorkDate(missedClockRequest.workDate),
+          endDate: getMissedClockWorkDate(missedClockRequest.workDate),
         });
 
         return NextResponse.json({
           success: true,
-          message: '撤銷申請已核准，補卡已取消'
+          message: '撤銷申請已核准，補卡已取消',
+          warning,
         });
       } else {
         await prisma.missedClockRequest.update({

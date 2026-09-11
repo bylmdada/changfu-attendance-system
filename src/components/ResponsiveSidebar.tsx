@@ -115,7 +115,7 @@ const menuItems: MenuItem[] = [
     icon: FileText,
   },
   {
-    name: '換班管理',
+    name: '調班管理',
     href: '/shift-exchange',
     icon: ClipboardList,
   },

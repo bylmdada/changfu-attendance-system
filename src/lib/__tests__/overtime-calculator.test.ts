@@ -61,11 +61,17 @@ describe('加班費計算 - 勞基法合規測試', () => {
   });
 
   describe('休息日加班費計算 - 勞基法第24條第2項', () => {
-    test('加班 2 小時 → 以 4 小時計費', () => {
+    test('加班 2 小時 → 核實計算 2 小時', () => {
       const result = calculateOvertime(OvertimeType.REST_DAY, 2, monthlySalary);
-      // 休息日前4小時以4小時計費（最低計費時數）
-      expect(result.hours).toBe(4); // 實際計費時數以4小時計
-      expect(result.overtimePay).toBeGreaterThan(0);
+      expect(result.hours).toBe(2);
+      expect(result.overtimePay).toBe(expectedHourlyWage * (4 / 3) * 2);
+    });
+
+    test('加班 3 小時 → 不再做1算4，前2小時4/3倍 + 第3小時5/3倍', () => {
+      const result = calculateOvertime(OvertimeType.REST_DAY, 3, monthlySalary);
+      const expected = expectedHourlyWage * (4 / 3) * 2 + expectedHourlyWage * (5 / 3);
+      expect(result.hours).toBe(3);
+      expect(result.overtimePay).toBe(expected);
     });
 
     test('加班 8 小時 → 前2小時1.34倍 + 後6小時1.67倍', () => {

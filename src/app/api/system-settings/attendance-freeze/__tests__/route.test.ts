@@ -103,7 +103,7 @@ describe('attendance freeze route guards', () => {
       freezeDay: 8,
       freezeTime: '20:30',
       isEnabled: false,
-      description: '測試更新',
+      description: '每月8日下午8點30分後，前一個月的考勤記錄將被凍結，無法修改。',
     });
   });
 
@@ -166,8 +166,25 @@ describe('attendance freeze route guards', () => {
       freezeDay: 15,
       freezeTime: '21:15',
       isEnabled: false,
-      description: '既有凍結設定',
+      description: '每月15日下午9點15分後，前一個月的考勤記錄將被凍結，無法修改。',
     });
+  });
+
+  it('regenerates stale descriptions from the active freeze rule', async () => {
+    mockedPrisma.systemSettings.findFirst.mockResolvedValue({
+      key: 'attendance_freeze',
+      value: JSON.stringify({
+        freezeDay: 1,
+        freezeTime: '10:00',
+        isEnabled: true,
+        description: '每月5日下午6點後，前一個月的考勤記錄將被凍結，無法修改。',
+      }),
+    } as never);
+
+    const response = await GET(new NextRequest('http://localhost:3000/api/system-settings/attendance-freeze'));
+    const data = await response.json();
+
+    expect(data.settings.description).toBe('每月1日上午10點後，前一個月的考勤記錄將被凍結，無法修改。');
   });
 
   it('rejects null bodies on POST before reading attendance freeze fields', async () => {

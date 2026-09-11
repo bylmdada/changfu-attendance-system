@@ -51,14 +51,26 @@ ops/comp-leave-import-validation/**/*.db-*
 ops/comp-leave-import-validation/**/*.db.gz
 
 # local databases & data (never commit real data)
-dev.db
-prisma/*.db
-prisma/*.db-journal
-*.db-journal
+*.db
+*.db-*
+*.db.*
+*.sqlite
 backups/
 
 # local reference material
 *.pdf
 
-# local AI tooling config
+# local tooling / session logs
 .claude/
+.recall/
+
+# playwright output
+/test-results/
+/playwright-report/
+
+# one-off repair scripts containing real employee data (keep local only)
+scripts/repair-july-2026-payroll-base-pay.ts
+scripts/ensure-target-permissions.cjs
+scripts/ensure-target-permissions.ts
+src/lib/target-permission-provisioning.ts
+src/lib/__tests__/target-permission-provisioning.test.ts

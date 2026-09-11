@@ -5,11 +5,16 @@ import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { getManageableDepartments } from '@/lib/schedule-management-permissions';
 import { safeParseJSON } from '@/lib/validation';
-import { getAnnualLeaveYearBreakdown } from '@/lib/annual-leave';
+import { applyApprovedLeaveAccounting } from '@/lib/annual-leave-schedule-accounting';
 import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
 import { calculateOvertimePayForRequest, OvertimeType } from '@/lib/salary-utils';
 import { getTaiwanYearMonth } from '@/lib/timezone';
-import { isAnnualLeaveType } from '@/lib/leave-types';
+import { findActiveScheduleFieldsForShift } from '@/lib/shift-definition-service';
+import { invalidateConfirmation } from '@/lib/schedule-confirm-service';
+import {
+  calculateOvertimeRequestEligibility,
+  getOvertimeEligibilityError,
+} from '@/lib/overtime-eligibility';
 
 function isReviewableStatus(status?: string | null) {
   return status === 'PENDING' || status === 'PENDING_ADMIN';
@@ -58,30 +63,15 @@ function parseSelfChangePayload(requestReason?: string | null): SelfChangePayloa
   }
 }
 
-interface PrismaWithSchedule {
-  schedule?: {
-    updateMany: (args: { where: Record<string, unknown>; data: Record<string, unknown> }) => Promise<unknown>
-  }
-}
-
 type BatchShiftExchangeApprovalClient = Pick<typeof prisma, 'shiftExchangeRequest' | 'schedule'>;
 
-function getTemplateByShift(shift: string): { startTime: string; endTime: string } {
-  const map: Record<string, { startTime: string; endTime: string }> = {
-    A: { startTime: '07:30', endTime: '16:30' },
-    B: { startTime: '08:00', endTime: '17:00' },
-    C: { startTime: '08:30', endTime: '17:30' },
-  };
+async function getScheduleUpdateDataByShift(shift: string) {
+  const scheduleFields = await findActiveScheduleFieldsForShift(shift);
+  if (!scheduleFields) {
+    throw new Error('新班別不存在或已停用，請重新整理後再試');
+  }
 
-  return map[shift] || { startTime: '', endTime: '' };
-}
-
-function toYmd(d: Date) {
-  const tw = new Date(d.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
-  const yyyy = tw.getFullYear();
-  const mm = String(tw.getMonth() + 1).padStart(2, '0');
-  const dd = String(tw.getDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
+  return scheduleFields;
 }
 
 async function applyApprovedShiftExchange(
@@ -102,7 +92,7 @@ async function applyApprovedShiftExchange(
 
   if (parsed) {
     const newShift = parsed?.new ?? 'A';
-    const template = getTemplateByShift(newShift);
+    const scheduleData = await getScheduleUpdateDataByShift(newShift);
     const requesterSchedule = await tx.schedule.findFirst({
       where: {
         employeeId: shiftExchangeRequest.requesterId,
@@ -116,11 +106,7 @@ async function applyApprovedShiftExchange(
 
     await tx.schedule.update({
       where: { id: requesterSchedule.id },
-      data: {
-        shiftType: newShift,
-        startTime: template.startTime,
-        endTime: template.endTime,
-      },
+      data: scheduleData,
     });
 
     await tx.shiftExchangeRequest.update({
@@ -291,7 +277,7 @@ export async function POST(request: NextRequest) {
             } else if (status === 'APPROVED') {
               await prisma.$transaction(async (tx) => {
                 await tx.leaveRequest.update({
-                  where: { id },
+                  where: { id, status: existing.status },
                   data: {
                     status,
                     approvedBy: decoded.employeeId,
@@ -299,41 +285,8 @@ export async function POST(request: NextRequest) {
                   }
                 });
 
-                const startDate = new Date(existing.startDate);
-                const endDate = new Date(existing.endDate);
+                await applyApprovedLeaveAccounting(tx, existing);
 
-                if (isAnnualLeaveType(existing.leaveType)) {
-                  for (const { year, days } of getAnnualLeaveYearBreakdown(startDate, endDate)) {
-                    await tx.annualLeave.updateMany({
-                      where: {
-                        employeeId: existing.employeeId,
-                        year,
-                      },
-                      data: {
-                        usedDays: { increment: days },
-                        remainingDays: { decrement: days },
-                      },
-                    });
-                  }
-                }
-
-                const txWithSchedule = tx as unknown as PrismaWithSchedule;
-
-                if (txWithSchedule.schedule) {
-                  for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
-                    await txWithSchedule.schedule.updateMany({
-                      where: {
-                        employeeId: existing.employeeId,
-                        workDate: toYmd(d),
-                      },
-                      data: {
-                        shiftType: 'FDL',
-                        startTime: '',
-                        endTime: '',
-                      },
-                    });
-                  }
-                }
               });
             } else {
               await prisma.leaveRequest.update({
@@ -381,6 +334,23 @@ export async function POST(request: NextRequest) {
               continue;
             }
 
+            let effectiveHours = existing.totalHours;
+            let overtimeType: OvertimeType | undefined;
+
+            if (!isManagerReviewStage(decoded.role, existing.status) && status === 'APPROVED') {
+              const eligibility = await calculateOvertimeRequestEligibility(existing, {
+                overtimeType: requestedOvertimeType as OvertimeType | undefined,
+              });
+              const eligibilityError = getOvertimeEligibilityError(eligibility);
+              if (eligibilityError) {
+                results.push({ id, success: false, error: eligibilityError });
+                continue;
+              }
+
+              effectiveHours = eligibility.effectiveHours;
+              overtimeType = eligibility.overtimeType;
+            }
+
             if (isManagerReviewStage(decoded.role, existing.status)) {
               await prisma.overtimeRequest.update({
                 where: { id },
@@ -401,7 +371,8 @@ export async function POST(request: NextRequest) {
                   data: {
                     status,
                     approvedBy: decoded.employeeId,
-                    approvedAt: now
+                    approvedAt: now,
+                    overtimeType,
                   }
                 });
 
@@ -409,7 +380,7 @@ export async function POST(request: NextRequest) {
                   data: {
                     employeeId: existing.employeeId,
                     transactionType: 'EARN',
-                    hours: existing.totalHours,
+                    hours: effectiveHours,
                     isFrozen: false,
                     referenceId: existing.id,
                     referenceType: 'OVERTIME',
@@ -421,14 +392,14 @@ export async function POST(request: NextRequest) {
                 await tx.compLeaveBalance.upsert({
                   where: { employeeId: existing.employeeId },
                   update: {
-                    pendingEarn: { increment: existing.totalHours }
+                    pendingEarn: { increment: effectiveHours }
                   },
                   create: {
                     employeeId: existing.employeeId,
                     totalEarned: 0,
                     totalUsed: 0,
                     balance: 0,
-                    pendingEarn: existing.totalHours,
+                    pendingEarn: effectiveHours,
                     pendingUse: 0
                   }
                 });
@@ -436,15 +407,13 @@ export async function POST(request: NextRequest) {
             } else {
               let overtimePay: number | undefined;
               let hourlyRateUsed: number | undefined;
-              let overtimeType: OvertimeType | undefined;
 
               if (status === 'APPROVED' && existing.compensationType === 'OVERTIME_PAY') {
-                overtimeType = (requestedOvertimeType as OvertimeType | undefined) || 'WEEKDAY';
                 const payResult = await calculateOvertimePayForRequest(
                   existing.employeeId,
                   existing.overtimeDate,
-                  existing.totalHours,
-                  overtimeType
+                  effectiveHours,
+                  overtimeType ?? 'WEEKDAY'
                 );
 
                 if (payResult.success) {
@@ -555,6 +524,7 @@ export async function POST(request: NextRequest) {
                   notes || null
                 );
               });
+              await invalidateConfirmation(existing.requesterId, existing.originalWorkDate.slice(0, 7));
             } else {
               await prisma.shiftExchangeRequest.update({
                 where: { id },

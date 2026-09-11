@@ -11,6 +11,7 @@ import {
   STATUS_LABEL,
   type MaintenanceStatus,
 } from '@/lib/property-maintenance-utils';
+import { propertyAuditStatusLabel } from '@/lib/property-audit-status';
 
 function d(v: Date | null | undefined): string {
   return v ? ymd(new Date(v)) : '';
@@ -25,6 +26,23 @@ function sheetFromAoa(aoa: unknown[][], colWidths?: number[], merges?: XLSX.Rang
 
 function toBuffer(wb: XLSX.WorkBook): Buffer {
   return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+}
+
+function csvEscape(value: unknown): string {
+  const raw = value === null || value === undefined ? '' : String(value);
+  return /[",\n\r]/.test(raw) ? `"${raw.replace(/"/g, '""')}"` : raw;
+}
+
+function toCsv(aoa: unknown[][]): string {
+  return aoa.map((row) => row.map(csvEscape).join(',')).join('\r\n');
+}
+
+function normalizeInventoryResultLabel(value: string | null | undefined) {
+  return value?.replace(/帳物/g, '財產') ?? '';
+}
+
+function safeFilenameSegment(value: string): string {
+  return value.replace(/[\\/:*?"<>|]/g, '_').trim() || '財產';
 }
 
 /** 安全分頁名（Excel 上限 31 字、禁用字元），並去重 */
@@ -70,7 +88,7 @@ export async function buildMonthlyReport(siteId: number, year: number, month: nu
       r.maintenanceItem ?? '',
       r.photoPath ?? '',
       r.signaturePath ?? '',
-      r.auditStatus ?? '',
+      propertyAuditStatusLabel(r.auditStatus),
       r.supervisorName ?? '',
       d(r.supervisorAuditDate),
       r.supervisorSignaturePath ?? '',
@@ -135,7 +153,7 @@ function evidenceSheetAoa(
       r.maintenanceItem ?? '',
       r.assetCondition ?? '',
       r.maintainerRaw ?? '',
-      r.auditStatus ?? '',
+      propertyAuditStatusLabel(r.auditStatus),
       r.supervisorName ?? '',
       d(r.supervisorAuditDate),
       r.note ?? '',
@@ -196,6 +214,156 @@ export async function buildEvidenceBatch(siteId: number, assetCodes?: string[]) 
     buffer: toBuffer(wb),
     filename: `佐證批次_${site.code}_${ymd(new Date())}.xlsx`,
     count: assets.length,
+  };
+}
+
+const HISTORY_HEADER = [
+  '財產編號',
+  '財產名稱',
+  '據點',
+  '放置地點',
+  '財產管理人',
+  '維護週期',
+  '取得日期',
+  '下次應維護',
+  '紀錄ID',
+  '應維護日期',
+  '維護完成日期',
+  '維護狀態',
+  '盤點結果',
+  '財產狀態',
+  '維護項目',
+  '維護人員',
+  '稽核狀態',
+  '主管稽核人',
+  '主管稽核日期',
+  '異常狀態評量',
+  '異常項目',
+  '異常說明',
+  '維護照片',
+  '維護人簽章',
+  '評量附件數',
+  '備註',
+];
+
+function parseJsonArrayText(value: string | null): string {
+  if (!value) return '';
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.map((item) => String(item)).join('、') : '';
+  } catch {
+    return '';
+  }
+}
+
+function conditionAssessmentLabel(value: string | null): string {
+  if (value === 'NO_ABNORMALITY') return '無異常';
+  if (value === 'ABNORMAL') return '有異常';
+  return value ?? '';
+}
+
+type MaintenanceHistoryReportOptions = {
+  assetId?: number;
+  siteId?: number;
+  siteWhere?: { siteId?: { in: number[] } };
+};
+
+export async function buildMaintenanceHistoryReport(options: MaintenanceHistoryReportOptions = {}) {
+  const asset = options.assetId
+    ? await prisma.propertyAsset.findUnique({
+        where: { id: options.assetId },
+        include: { site: { select: { name: true, code: true } } },
+      })
+    : null;
+
+  if (options.assetId && !asset) {
+    return null;
+  }
+
+  const where = {
+    ...(options.siteWhere ?? {}),
+    ...(options.siteId ? { siteId: options.siteId } : {}),
+    ...(asset ? { assetId: asset.id } : {}),
+  };
+
+  const records = await prisma.maintenanceRecord.findMany({
+    where,
+    orderBy: [{ assetCode: 'asc' }, { dueDate: 'asc' }, { recordId: 'asc' }],
+    include: {
+      site: { select: { name: true, code: true } },
+      asset: {
+        select: {
+          assetCode: true,
+          name: true,
+          location: true,
+          managerName: true,
+          acquiredDate: true,
+          nextMaintenanceDate: true,
+        },
+      },
+      attachments: { select: { id: true } },
+    },
+  });
+
+  const title = asset
+    ? `單項財產維護歷程總表：${asset.assetCode} ${asset.name}`
+    : '所有財產維護歷程總表';
+  const aoa: unknown[][] = [
+    [title],
+    HISTORY_HEADER,
+    ...records.map((r) => [
+      r.asset.assetCode,
+      r.asset.name,
+      r.site.name,
+      r.asset.location ?? '',
+      r.asset.managerName ?? '',
+      r.maintenanceCycle ?? '',
+      d(r.asset.acquiredDate),
+      d(r.asset.nextMaintenanceDate),
+      r.recordId,
+      d(r.dueDate),
+      d(r.completedDate),
+      r.rawStatus || STATUS_LABEL[r.status as MaintenanceStatus] || r.status,
+      normalizeInventoryResultLabel(r.inventoryResult),
+      r.assetCondition ?? '',
+      r.maintenanceItem ?? '',
+      r.maintainerRaw ?? '',
+      propertyAuditStatusLabel(r.auditStatus),
+      r.supervisorName ?? '',
+      d(r.supervisorAuditDate),
+      conditionAssessmentLabel(r.conditionAssessmentStatus),
+      parseJsonArrayText(r.abnormalConditionItems),
+      r.abnormalDescription ?? '',
+      r.photoPath ?? '',
+      r.signaturePath ?? '',
+      r.attachments.length,
+      r.note ?? '',
+    ]),
+  ];
+
+  const wb = XLSX.utils.book_new();
+  const ws = sheetFromAoa(
+    aoa,
+    [
+      18, 18, 16, 18, 14, 12, 12, 12, 24, 12, 12, 12, 12,
+      12, 12, 14, 12, 12, 12, 14, 18, 24, 18, 18, 10, 24,
+    ],
+    [{ s: { r: 0, c: 0 }, e: { r: 0, c: HISTORY_HEADER.length - 1 } }]
+  );
+  XLSX.utils.book_append_sheet(wb, ws, '維護歷程總表');
+
+  const dateSuffix = ymd(new Date());
+  const baseFilename = asset
+    ? `單項財產維護歷程總表_${safeFilenameSegment(asset.assetCode)}_${dateSuffix}`
+    : `所有財產維護歷程總表_${dateSuffix}`;
+
+  return {
+    xlsxBuffer: toBuffer(wb),
+    csvContent: toCsv([HISTORY_HEADER, ...aoa.slice(2)]),
+    xlsxFilename: `${baseFilename}.xlsx`,
+    csvFilename: `${baseFilename}.csv`,
+    count: records.length,
+    asset,
   };
 }
 

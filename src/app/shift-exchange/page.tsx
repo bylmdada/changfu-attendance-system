@@ -1,10 +1,13 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { CheckCircle, XCircle, AlertCircle, Clock, CalendarDays, User, Filter, Search, Plus, Pencil, Trash2, X } from 'lucide-react';
+import { CheckCircle, XCircle, AlertCircle, Clock, CalendarDays, User, Filter, Plus, Pencil, Trash2, X } from 'lucide-react';
 import { buildAuthMeRequest, buildCookieSessionRequest } from '@/lib/admin-session-client';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import EmployeeListSelect, { useActiveEmployeeDepartments } from '@/components/EmployeeListSelect';
+import type { ShiftDefinitionDTO } from '@/lib/shift-definition-utils';
+import PromptDialog from '@/components/PromptDialog';
 
 interface Employee {
   id: number;
@@ -36,6 +39,7 @@ interface Schedule {
 
 interface ShiftExchangeRequest {
   id: number;
+  requestNumber?: string;
   requesterId: number;
   targetEmployeeId?: number;
   shiftDate: string; // 調班日期
@@ -43,7 +47,7 @@ interface ShiftExchangeRequest {
   newShiftType: string; // 新班別
   leaveType?: string; // 請假類型（當FDL時）
   reason: string;
-  status: 'PENDING' | 'PENDING_ADMIN' | 'APPROVED' | 'REJECTED';
+  status: 'PENDING' | 'PENDING_ADMIN' | 'APPROVED' | 'REJECTED' | 'CANCELLED' | 'VOIDED';
   approvedBy?: number;
   approvedAt?: string;
   createdAt: string;
@@ -85,6 +89,11 @@ const SHIFT_TYPE_LABELS = {
   TD: 'TD (天災假)'
 };
 
+const FALLBACK_SHIFT_OPTIONS = Object.entries(SHIFT_TYPE_LABELS).map(([code, label]) => ({
+  code,
+  label,
+}));
+
 // 請假類型標籤
 const LEAVE_TYPES = {
   ANNUAL: '特休假',
@@ -96,6 +105,7 @@ const LEAVE_TYPES = {
   MATERNITY: '產假',
   PATERNITY_CHECKUP: '陪產檢及陪產假',
   PRENATAL_CHECKUP: '產檢假',
+  BUSINESS_TRIP: '公出',
   OFFICIAL: '公假',
   OCCUPATIONAL_INJURY: '公傷假'
 };
@@ -104,21 +114,27 @@ const STATUS_LABELS = {
   PENDING: '待審核',
   PENDING_ADMIN: '待管理員決核',
   APPROVED: '已批准',
-  REJECTED: '已拒絕'
+  REJECTED: '已拒絕',
+  CANCELLED: '已撤銷',
+  VOIDED: '已作廢'
 };
 
 const STATUS_COLORS = {
   PENDING: 'bg-yellow-100 text-yellow-800',
   PENDING_ADMIN: 'bg-blue-100 text-blue-800',
   APPROVED: 'bg-green-100 text-green-800',
-  REJECTED: 'bg-red-100 text-red-800'
+  REJECTED: 'bg-red-100 text-red-800',
+  CANCELLED: 'bg-gray-100 text-gray-700',
+  VOIDED: 'bg-gray-100 text-gray-700'
 };
 
 const STATUS_ICONS = {
   PENDING: AlertCircle,
   PENDING_ADMIN: Clock,
   APPROVED: CheckCircle,
-  REJECTED: XCircle
+  REJECTED: XCircle,
+  CANCELLED: X,
+  VOIDED: X
 };
 
 export default function ShiftExchangePage() {
@@ -128,6 +144,7 @@ export default function ShiftExchangePage() {
   const [loading, setLoading] = useState(true);
   const [showNewRequestForm, setShowNewRequestForm] = useState(false);
   const [userSchedules, setUserSchedules] = useState<Schedule[]>([]); // 儲存用戶班表數據
+  const [shiftDefinitions, setShiftDefinitions] = useState<ShiftDefinitionDTO[]>([]);
 
   // 申請原因選項
   const reasonOptions = [
@@ -169,14 +186,18 @@ export default function ShiftExchangePage() {
     status: '',
     startDate: '',
     endDate: '',
+    department: '',
     search: ''
   });
+  const { departments } = useActiveEmployeeDepartments();
 
   // Toast 訊息狀態
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   // 刪除確認對話框狀態
   const [deleteConfirm, setDeleteConfirm] = useState<{ id: number; requesterName: string } | null>(null);
+  const [reasonPrompt, setReasonPrompt] = useState<{ type: 'cancel' | 'void'; id: number; name: string } | null>(null);
+  const [reasonPromptLoading, setReasonPromptLoading] = useState(false);
 
   // 批量選擇狀態
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
@@ -192,6 +213,17 @@ export default function ShiftExchangePage() {
   const [rejectReason, setRejectReason] = useState('');
 
   const buildSessionRequest = (path: string) => buildCookieSessionRequest(window.location.origin, path);
+  const shiftOptions = shiftDefinitions.length > 0
+    ? shiftDefinitions.map((shift) => ({ code: shift.code, label: shift.label }))
+    : FALLBACK_SHIFT_OPTIONS;
+  const firstShiftCode = shiftOptions[0]?.code ?? 'A';
+  const getShiftLabelForCode = (code: string | null | undefined) => {
+    const normalizedCode = code || '';
+    return shiftOptions.find((shift) => shift.code === normalizedCode)?.label
+      || SHIFT_TYPE_LABELS[normalizedCode as keyof typeof SHIFT_TYPE_LABELS]
+      || normalizedCode
+      || '-';
+  };
 
   // 計算過濾後的申請列表
   useEffect(() => {
@@ -211,10 +243,12 @@ export default function ShiftExchangePage() {
 
     if (filters.search) {
       filtered = filtered.filter(req =>
-        req.requester.name.toLowerCase().includes(filters.search.toLowerCase()) ||
-        req.requester.employeeId.toLowerCase().includes(filters.search.toLowerCase()) ||
-        req.reason.toLowerCase().includes(filters.search.toLowerCase())
+        req.requester.employeeId === filters.search
       );
+    }
+
+    if (filters.department) {
+      filtered = filtered.filter(req => req.requester.department === filters.department);
     }
 
     if (filters.startDate || filters.endDate) {
@@ -241,6 +275,41 @@ export default function ShiftExchangePage() {
           console.warn('Authentication failed, redirecting to login');
           window.location.href = '/login';
           return;
+        }
+
+        try {
+          const shiftDefinitionsRequest = buildSessionRequest('/api/shift-definitions');
+          const shiftDefinitionsRes = await fetch(shiftDefinitionsRequest.url, shiftDefinitionsRequest.options);
+          if (shiftDefinitionsRes.ok) {
+            const shiftDefinitionsData = await shiftDefinitionsRes.json();
+            const activeShifts = Array.isArray(shiftDefinitionsData.shifts)
+              ? shiftDefinitionsData.shifts as ShiftDefinitionDTO[]
+              : [];
+            setShiftDefinitions(activeShifts);
+            const defaultShift = activeShifts[0]?.code;
+            if (defaultShift) {
+              setNewRequest((prev) => ({
+                ...prev,
+                originalShiftType: activeShifts.some((shift) => shift.code === prev.originalShiftType)
+                  ? prev.originalShiftType
+                  : defaultShift,
+                newShiftType: activeShifts.some((shift) => shift.code === prev.newShiftType)
+                  ? prev.newShiftType
+                  : defaultShift,
+              }));
+              setEditForm((prev) => ({
+                ...prev,
+                originalShiftType: activeShifts.some((shift) => shift.code === prev.originalShiftType)
+                  ? prev.originalShiftType
+                  : defaultShift,
+                newShiftType: activeShifts.some((shift) => shift.code === prev.newShiftType)
+                  ? prev.newShiftType
+                  : defaultShift,
+              }));
+            }
+          }
+        } catch (error) {
+          console.error('Failed to fetch shift definitions:', error);
         }
 
         // 取用戶班表
@@ -278,10 +347,10 @@ export default function ShiftExchangePage() {
 
   // 根據選定日期獲取原班別
   const getOriginalShiftType = (date: string): string => {
-    if (!date || !userSchedules.length) return 'A';
+    if (!date || !userSchedules.length) return firstShiftCode;
     
     const schedule = userSchedules.find(s => s.workDate === date);
-    return schedule ? schedule.shiftType : 'A';
+    return schedule ? schedule.shiftType : firstShiftCode;
   };
 
   // 處理調班日期變化
@@ -299,19 +368,19 @@ export default function ShiftExchangePage() {
     e.preventDefault();
     
     if (!user?.employee) {
-      alert('用戶信息錯誤');
+      showToast('error', '用戶信息錯誤');
       return;
     }
 
     // 驗證：如果選擇"其它"，詳細說明不能為空
     if (newRequest.reason === '其它' && !newRequest.reasonDetail.trim()) {
-      alert('選擇「其它」原因時，請填寫詳細說明');
+      showToast('error', '選擇「其它」原因時，請填寫詳細說明');
       return;
     }
 
     // 驗證：如果選擇FDL，必須選擇請假類型
     if (newRequest.newShiftType === 'FDL' && !newRequest.leaveType) {
-      alert('調班為全日請假時，請選擇請假類型');
+      showToast('error', '調班為全日請假時，請選擇請假類型');
       return;
     }
 
@@ -342,8 +411,8 @@ export default function ShiftExchangePage() {
         setShowNewRequestForm(false);
         setNewRequest({
           shiftDate: '',
-          originalShiftType: 'A',
-          newShiftType: 'A',
+          originalShiftType: firstShiftCode,
+          newShiftType: firstShiftCode,
           leaveType: '',
           reason: '',
           reasonDetail: ''
@@ -361,15 +430,15 @@ export default function ShiftExchangePage() {
           console.warn('Failed to refresh list after submit:', refreshError);
         }
         
-        alert('調班申請已提交！');
+        showToast('success', '調班申請已提交');
       } else {
         let msg = '提交失敗，請重試';
         try { const err = await response.json(); if (err?.error) msg = err.error; } catch {}
-        alert(msg);
+        showToast('error', msg);
       }
     } catch (error) {
       console.error('Submit failed:', error);
-      alert('提交失敗，請重試');
+      showToast('error', '提交失敗，請重試');
     }
   };
 
@@ -651,31 +720,6 @@ export default function ShiftExchangePage() {
     }));
   };
 
-  // 匯出 CSV
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const exportToCSV = () => {
-    const headers = ['申請日期', '申請人', '調班日期', '原班別', '新班別', '原因', '狀態', '審核人', '審核時間'];
-    const rows = sortedRequests.map(r => [
-      new Date(r.createdAt).toLocaleDateString('zh-TW'),
-      `${r.requester.name} (${r.requester.employeeId})`,
-      r.shiftDate,
-      SHIFT_TYPE_LABELS[r.originalShiftType as keyof typeof SHIFT_TYPE_LABELS] || r.originalShiftType,
-      SHIFT_TYPE_LABELS[r.newShiftType as keyof typeof SHIFT_TYPE_LABELS] || r.newShiftType,
-      r.reason,
-      STATUS_LABELS[r.status],
-      r.approver?.name || '-',
-      r.approvedAt ? new Date(r.approvedAt).toLocaleDateString('zh-TW') : '-'
-    ]);
-    const csvContent = '\uFEFF' + [headers, ...rows].map(row => row.join(',')).join('\n');
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `調班申請_${new Date().toISOString().slice(0,10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
   // 排序後的申請列表
   const sortedRequests = [...filteredRequests].sort((a, b) => {
     const direction = sortConfig.direction === 'asc' ? 1 : -1;
@@ -688,7 +732,9 @@ export default function ShiftExchangePage() {
           PENDING: 1,
           PENDING_ADMIN: 2,
           APPROVED: 3,
-          REJECTED: 4
+          REJECTED: 4,
+          CANCELLED: 5,
+          VOIDED: 6
         };
         return (statusOrder[a.status] - statusOrder[b.status]) * direction;
       }
@@ -733,7 +779,7 @@ export default function ShiftExchangePage() {
 
     // 驗證：如果選擇"其它"，詳細說明不能為空
     if (editForm.reason === '其它' && !editForm.reasonDetail.trim()) {
-      alert('選擇「其它」原因時，請填寫詳細說明');
+      showToast('error', '選擇「其它」原因時，請填寫詳細說明');
       return;
     }
 
@@ -751,15 +797,15 @@ export default function ShiftExchangePage() {
       });
       const data = await res.json();
       if (!res.ok) {
-        alert(data.error || '更新失敗');
+        showToast('error', data.error || '更新失敗');
         return;
       }
       setShiftExchanges(prev => prev.map(r => r.id === editingRequest.id ? data : r));
       setShowEditModal(false);
       setEditingRequest(null);
-      alert('已更新');
+      showToast('success', '已更新');
     } catch {
-      alert('更新失敗，請重試');
+      showToast('error', '更新失敗，請重試');
     }
   };
 
@@ -813,6 +859,21 @@ export default function ShiftExchangePage() {
     }
   };
 
+  const submitReasonPrompt = async (reason: string) => {
+    if (!reasonPrompt) return;
+    setReasonPromptLoading(true);
+    try {
+      if (reasonPrompt.type === 'cancel') {
+        await handleCancelRequest(reasonPrompt.id, reason);
+      } else {
+        await handleVoidRequest(reasonPrompt.id, reason);
+      }
+      setReasonPrompt(null);
+    } finally {
+      setReasonPromptLoading(false);
+    }
+  };
+
   const canManage = user?.role === 'ADMIN'
     || user?.role === 'HR'
     || user?.isDepartmentManager
@@ -832,7 +893,7 @@ export default function ShiftExchangePage() {
 
   return (
     <AuthenticatedLayout>
-      <div className="max-w-7xl mx-auto px-4 py-8">
+      <div className="w-full max-w-none px-4 py-8 sm:px-6 lg:px-8">
         {/* 標題區 */}
         <div className="mb-8">
           <div className="flex items-center justify-between">
@@ -949,13 +1010,25 @@ export default function ShiftExchangePage() {
               </div>
 
               <div className="flex items-center space-x-2">
-                <Search className="w-5 h-5 text-gray-400" />
-                <input
-                  type="text"
-                  value={filters.search}
-                  onChange={(e) => setFilters({ ...filters, search: e.target.value })}
-                  placeholder="搜尋申請者、原因..."
+                <select
+                  value={filters.department}
+                  onChange={(e) => setFilters({ ...filters, department: e.target.value, search: '' })}
                   className="px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
+                >
+                  <option value="">全部部門</option>
+                  {departments.map((department) => (
+                    <option key={department} value={department}>{department}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="min-w-65">
+                <EmployeeListSelect
+                  value={filters.search}
+                  onChange={(value) => setFilters({ ...filters, search: value })}
+                  emptyLabel="全部申請者"
+                  departmentFilter={filters.department}
+                  selectClassName="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-black disabled:bg-gray-100"
                 />
               </div>
             </div>
@@ -1047,6 +1120,9 @@ export default function ShiftExchangePage() {
                     </th>
                   )}
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    單號
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     申請者
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -1088,7 +1164,8 @@ export default function ShiftExchangePage() {
                     newShiftType?: string;
                     leaveType?: string;
                     reason?: string;
-                    status?: 'PENDING' | 'PENDING_ADMIN' | 'APPROVED' | 'REJECTED';
+                    status?: ShiftExchangeRequest['status'];
+                    requestNumber?: string;
                     approver?: { id?: number; name?: string } | null;
                     approvedAt?: string | null;
                     approvedBy?: number | null;
@@ -1130,6 +1207,9 @@ export default function ShiftExchangePage() {
                            )}
                          </td>
                        )}
+                       <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                         {r.requestNumber ?? `SE-${r.id}`}
+                       </td>
                        <td className="px-6 py-4 whitespace-nowrap">
                          <div className="flex items-center">
                            <div className="flex-none">
@@ -1154,13 +1234,13 @@ export default function ShiftExchangePage() {
                        </td>
                        <td className="px-6 py-4 whitespace-nowrap">
                          <span className="px-2 py-1 text-xs font-medium bg-blue-100 text-blue-800 rounded-full">
-                           {SHIFT_TYPE_LABELS[(r.originalShiftType || 'A') as keyof typeof SHIFT_TYPE_LABELS]}
+                           {getShiftLabelForCode(r.originalShiftType || firstShiftCode)}
                          </span>
                        </td>
                        <td className="px-6 py-4 whitespace-nowrap">
                          <div className="flex flex-col">
                            <span className="px-2 py-1 text-xs font-medium bg-green-100 text-green-800 rounded-full inline-block w-fit">
-                             {SHIFT_TYPE_LABELS[(r.newShiftType || 'A') as keyof typeof SHIFT_TYPE_LABELS]}
+                             {getShiftLabelForCode(r.newShiftType || firstShiftCode)}
                            </span>
                            {r.newShiftType === 'FDL' && r.leaveType && (
                              <span className="mt-1 text-xs text-yellow-700">
@@ -1210,12 +1290,7 @@ export default function ShiftExchangePage() {
                         {/* 管理員作廢 */}
                         {canManage && r.status === 'APPROVED' && (
                           <button
-                            onClick={() => {
-                              const reason = prompt('請輸入作廢原因：');
-                              if (reason && reason.trim()) {
-                                handleVoidRequest(r.id, reason.trim());
-                              }
-                            }}
+                            onClick={() => setReasonPrompt({ type: 'void', id: r.id, name: r.requester?.name || '申請人' })}
                             className="px-3 py-1 bg-red-600 text-white text-sm rounded-md hover:bg-red-700 transition-colors"
                           >作廢</button>
                         )}
@@ -1239,12 +1314,7 @@ export default function ShiftExchangePage() {
                               </div>
                             ) : r.status === 'APPROVED' ? (
                               <button
-                                onClick={() => {
-                                  const reason = prompt('請輸入撤銷原因：');
-                                  if (reason && reason.trim()) {
-                                    handleCancelRequest(r.id, reason.trim());
-                                  }
-                                }}
+                                onClick={() => setReasonPrompt({ type: 'cancel', id: r.id, name: r.requester?.name || '申請人' })}
                                 className="inline-flex items-center gap-1 px-3 py-1 bg-orange-100 text-orange-800 rounded-full hover:bg-orange-200 transition-colors"
                               >
                                 <X className="w-4 h-4" /> 申請撤銷
@@ -1306,7 +1376,7 @@ export default function ShiftExchangePage() {
                     <label className="block text-sm font-medium text-gray-700 mb-1">原班別</label>
                     <input
                       type="text"
-                      value={SHIFT_TYPE_LABELS[newRequest.originalShiftType as keyof typeof SHIFT_TYPE_LABELS] || ''}
+                      value={getShiftLabelForCode(newRequest.originalShiftType)}
                       readOnly
                       className="w-full px-3 py-2 border border-gray-300 rounded-md bg-gray-50 text-gray-600"
                     />
@@ -1327,8 +1397,8 @@ export default function ShiftExchangePage() {
                       className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
                       required
                     >
-                      {Object.entries(SHIFT_TYPE_LABELS).map(([key, label]) => (
-                        <option key={key} value={key}>{label}</option>
+                      {shiftOptions.map((shift) => (
+                        <option key={shift.code} value={shift.code}>{shift.label}</option>
                       ))}
                     </select>
                   </div>
@@ -1453,7 +1523,7 @@ export default function ShiftExchangePage() {
                     <label className="block text-sm font-medium text-gray-700 mb-1">原班別</label>
                     <input
                       type="text"
-                      value={SHIFT_TYPE_LABELS[editForm.originalShiftType as keyof typeof SHIFT_TYPE_LABELS] || ''}
+                      value={getShiftLabelForCode(editForm.originalShiftType)}
                       readOnly
                       className="w-full px-3 py-2 border border-gray-300 rounded-md bg-gray-50 text-gray-600"
                     />
@@ -1467,8 +1537,8 @@ export default function ShiftExchangePage() {
                       className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
                       required
                     >
-                      {Object.entries(SHIFT_TYPE_LABELS).map(([key, label]) => (
-                        <option key={key} value={key}>{label}</option>
+                      {shiftOptions.map((shift) => (
+                        <option key={shift.code} value={shift.code}>{shift.label}</option>
                       ))}
                     </select>
                   </div>
@@ -1602,6 +1672,21 @@ export default function ShiftExchangePage() {
           </div>
         </div>
       )}
+
+      <PromptDialog
+        open={Boolean(reasonPrompt)}
+        title={reasonPrompt?.type === 'cancel' ? '申請撤銷調班' : '作廢調班申請'}
+        message={reasonPrompt ? `${reasonPrompt.name} 的調班申請將${reasonPrompt.type === 'cancel' ? '送出撤銷申請' : '被作廢'}，請填寫原因。` : ''}
+        label={reasonPrompt?.type === 'cancel' ? '撤銷原因' : '作廢原因'}
+        placeholder={reasonPrompt?.type === 'cancel' ? '請輸入撤銷原因' : '請輸入作廢原因'}
+        confirmLabel={reasonPrompt?.type === 'cancel' ? '送出撤銷' : '確認作廢'}
+        tone={reasonPrompt?.type === 'void' ? 'danger' : 'default'}
+        loading={reasonPromptLoading}
+        onCancel={() => {
+          if (!reasonPromptLoading) setReasonPrompt(null);
+        }}
+        onConfirm={submitReasonPrompt}
+      />
     </AuthenticatedLayout>
   );
 }

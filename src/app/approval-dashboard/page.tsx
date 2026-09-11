@@ -17,6 +17,8 @@ import {
 } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import BatchApproveBar from '@/components/BatchApproveBar';
+import { useRowSelection } from '@/hooks/useRowSelection';
 
 interface PendingItem {
   id: number;
@@ -77,10 +79,40 @@ interface Stats {
   overdue: number;
 }
 
+interface PaginationState {
+  total: number;
+  page: number;
+  pageSize: number;
+  pages: number;
+}
+
+interface ApprovalFilters {
+  requestTypes: Array<{ value: string; label: string; count: number }>;
+  departments: string[];
+}
+
+const APPROVAL_PAGE_SIZE = 25;
+
+const DASHBOARD_BATCH_CONFIG: Record<string, { endpoint: string; resourceType?: string }> = {
+  LEAVE: { endpoint: '/api/batch-approve', resourceType: 'LEAVE' },
+  OVERTIME: { endpoint: '/api/batch-approve', resourceType: 'OVERTIME' },
+  SHIFT_CHANGE: { endpoint: '/api/batch-approve', resourceType: 'SHIFT_EXCHANGE' },
+  SHIFT_SWAP: { endpoint: '/api/batch-approve', resourceType: 'SHIFT_EXCHANGE' },
+  MISSED_CLOCK: { endpoint: '/api/missed-clock-requests/batch-approve' },
+};
+
 export default function ApprovalDashboardPage() {
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState<PendingItem[]>([]);
   const [stats, setStats] = useState<Stats>({ total: 0, urgent: 0, overdue: 0 });
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState<PaginationState>({
+    total: 0,
+    page: 1,
+    pageSize: APPROVAL_PAGE_SIZE,
+    pages: 1,
+  });
+  const [filters, setFilters] = useState<ApprovalFilters>({ requestTypes: [], departments: [] });
   const [selectedItem, setSelectedItem] = useState<PendingItem | null>(null);
   const [reviewComment, setReviewComment] = useState('');
   const [processing, setProcessing] = useState(false);
@@ -95,31 +127,66 @@ export default function ApprovalDashboardPage() {
   const [employeeSearch, setEmployeeSearch] = useState('');
   const [workflowSettings, setWorkflowSettings] = useState<{ enableForward: boolean; enableCC: boolean } | null>(null);
   
-  // 部門篩選
+  // 類別/部門篩選
+  const [filterRequestType, setFilterRequestType] = useState('');
   const [filterDepartment, setFilterDepartment] = useState('');
-  
-  // 取得部門列表
-  const departments = [...new Set(pending.map(p => p.department).filter(Boolean))] as string[];
+  const batchableItems = pending.filter((item) => Boolean(DASHBOARD_BATCH_CONFIG[item.requestType]));
+  const batchSelection = useRowSelection(batchableItems.map((item) => item.requestId));
+  const selectedBatchItems = batchableItems.filter((item) => batchSelection.selectedIds.includes(item.requestId));
+  const selectedRequestTypes = Array.from(new Set(selectedBatchItems.map((item) => item.requestType)));
+  const selectedBatchType = selectedRequestTypes.length === 1 ? selectedRequestTypes[0] : null;
+  const selectedBatchConfig = selectedBatchType ? DASHBOARD_BATCH_CONFIG[selectedBatchType] : null;
+  const batchDisabledReason = selectedRequestTypes.length > 1 ? '請選擇同一種申請類別再批次審核' : undefined;
 
-  useEffect(() => {
-    loadPending();
-  }, []);
-
-  const loadPending = async () => {
+  const loadPending = useCallback(async () => {
+    setLoading(true);
+    const params = new URLSearchParams({
+      type: 'pending',
+      page: String(page),
+      pageSize: String(APPROVAL_PAGE_SIZE),
+    });
+    if (filterRequestType) params.set('requestType', filterRequestType);
+    if (filterDepartment) params.set('department', filterDepartment);
     try {
-      const response = await fetch('/api/approval-instances?type=pending', { 
+      const response = await fetch(`/api/approval-instances?${params.toString()}`, { 
         credentials: 'include' 
       });
       if (response.ok) {
         const data = await response.json();
         setPending(data.pending || []);
         setStats(data.stats || { total: 0, urgent: 0, overdue: 0 });
+        const nextPagination = data.pagination || {
+          total: data.pending?.length || 0,
+          page,
+          pageSize: APPROVAL_PAGE_SIZE,
+          pages: 1,
+        };
+        setPagination(nextPagination);
+        setFilters(data.filters || { requestTypes: [], departments: [] });
+        if (nextPagination.page !== page) {
+          setPage(nextPagination.page);
+        }
       }
     } catch (error) {
       console.error('載入待審核項目失敗:', error);
     } finally {
       setLoading(false);
     }
+  }, [filterDepartment, filterRequestType, page]);
+
+  useEffect(() => {
+    loadPending();
+  }, [loadPending]);
+
+  const handleRequestTypeChange = (value: string) => {
+    setFilterRequestType(value);
+    setFilterDepartment('');
+    setPage(1);
+  };
+
+  const handleDepartmentChange = (value: string) => {
+    setFilterDepartment(value);
+    setPage(1);
   };
 
   // 載入員工列表
@@ -299,6 +366,10 @@ export default function ApprovalDashboardPage() {
     return '管理員決核';
   };
 
+  const pendingStart =
+    pagination.total === 0 ? 0 : (pagination.page - 1) * pagination.pageSize + 1;
+  const pendingEnd = Math.min(pagination.total, pagination.page * pagination.pageSize);
+
   if (loading) {
     return (
       <AuthenticatedLayout>
@@ -370,98 +441,184 @@ export default function ApprovalDashboardPage() {
 
         {/* 待審核列表 */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-200">
-          <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+          <div className="px-6 py-4 border-b border-gray-200 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div>
               <h2 className="text-lg font-semibold text-gray-900">待審核列表</h2>
               <p className="text-sm text-gray-500 mt-1">
-                目前顯示 {pending.filter(p => !filterDepartment || p.department === filterDepartment).length} 筆
+                每頁 {APPROVAL_PAGE_SIZE} 筆
+                {pagination.total > 0 ? `，目前顯示 ${pendingStart}-${pendingEnd} / ${pagination.total}` : ''}
               </p>
+              {batchableItems.length > 0 && (
+                <label className="mt-3 inline-flex min-h-10 items-center gap-2 text-sm font-medium text-gray-700">
+                  <input
+                    type="checkbox"
+                    checked={batchSelection.allSelected}
+                    onChange={batchSelection.toggleAll}
+                    className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  全選本頁可批次審核項目
+                </label>
+              )}
             </div>
 
-            {departments.length > 0 && (
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              {filters.requestTypes.length > 0 && (
+                <select
+                  value={filterRequestType}
+                  onChange={(e) => handleRequestTypeChange(e.target.value)}
+                  className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-900 bg-white"
+                >
+                  <option value="">全部申請類別</option>
+                  {filters.requestTypes.map((type) => (
+                    <option key={type.value} value={type.value}>
+                      {type.label}（{type.count}）
+                    </option>
+                  ))}
+                </select>
+              )}
+
+              {filters.departments.length > 0 && (
               <select
                 value={filterDepartment}
-                onChange={(e) => setFilterDepartment(e.target.value)}
+                onChange={(e) => handleDepartmentChange(e.target.value)}
                 className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-900 bg-white"
               >
                 <option value="">全部部門</option>
-                {departments.map((department) => (
+                {filters.departments.map((department) => (
                   <option key={department} value={department}>{department}</option>
                 ))}
               </select>
-            )}
+              )}
+            </div>
           </div>
           
-          {pending.filter(p => !filterDepartment || p.department === filterDepartment).length === 0 ? (
+          {pending.length === 0 ? (
             <div className="p-12 text-center text-gray-500">
               <CheckCircle className="w-12 h-12 mx-auto text-green-500 mb-4" />
               <p className="text-lg">目前沒有待審核項目</p>
             </div>
           ) : (
-            <div className="divide-y divide-gray-100">
-              {pending.filter(p => !filterDepartment || p.department === filterDepartment).map(item => (
-                <div 
-                  key={item.id}
-                  className={`p-4 hover:bg-gray-50 cursor-pointer transition ${
-                    item.isOverdue ? 'bg-red-50' : item.isUrgent ? 'bg-yellow-50' : ''
-                  }`}
-                  onClick={() => setSelectedItem(item)}
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-4">
-                      {/* 緊急標記 */}
-                      {item.isOverdue && (
-                        <span className="px-2 py-1 text-xs font-semibold bg-red-500 text-white rounded">
-                          逾期
-                        </span>
-                      )}
-                      {item.isUrgent && !item.isOverdue && (
-                        <span className="px-2 py-1 text-xs font-semibold bg-yellow-500 text-white rounded">
-                          緊急
-                        </span>
-                      )}
-                      
-                      {/* 類型標籤 */}
-                      <span className="px-3 py-1 text-sm font-medium bg-blue-100 text-blue-800 rounded-full">
-                        {item.requestTypeName}
-                      </span>
-                      
-                      {/* 申請人資訊 */}
-                      <div>
-                        <div className="flex items-center text-gray-900 font-medium">
-                          <User className="w-4 h-4 mr-1 text-gray-400" />
-                          {item.applicantName}
-                          <span className="text-gray-400 ml-2 text-sm">
-                            {item.department}
-                          </span>
-                        </div>
-                        <div className="flex items-center text-xs text-gray-500 mt-1">
-                          <Calendar className="w-3 h-3 mr-1" />
-                          {formatDate(item.createdAt)}
-                          <span className="mx-2">•</span>
-                          等待 {getWaitingTime(item.createdAt)}
-                        </div>
+            <>
+              <div className="divide-y divide-gray-100">
+                {pending.map(item => (
+                  <div 
+                    key={item.id}
+                    className={`p-4 hover:bg-gray-50 cursor-pointer transition ${
+                      item.isOverdue ? 'bg-red-50' : item.isUrgent ? 'bg-yellow-50' : ''
+                    }`}
+                    onClick={() => setSelectedItem(item)}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center space-x-4">
+                       {DASHBOARD_BATCH_CONFIG[item.requestType] && (
+                         <input
+                           type="checkbox"
+                           checked={batchSelection.isSelected(item.requestId)}
+                           onChange={(event) => {
+                             event.stopPropagation();
+                             batchSelection.toggle(item.requestId);
+                           }}
+                           onClick={(event) => event.stopPropagation()}
+                           className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                           aria-label={`選取 ${item.applicantName} 的${item.requestTypeName}`}
+                         />
+                       )}
+                       {/* 緊急標記 */}
+                       {item.isOverdue && (
+                         <span className="px-2 py-1 text-xs font-semibold bg-red-500 text-white rounded">
+                           逾期
+                         </span>
+                       )}
+                       {item.isUrgent && !item.isOverdue && (
+                         <span className="px-2 py-1 text-xs font-semibold bg-yellow-500 text-white rounded">
+                           緊急
+                         </span>
+                       )}
+                        
+                       {/* 類型標籤 */}
+                       <span className="px-3 py-1 text-sm font-medium bg-blue-100 text-blue-800 rounded-full">
+                         {item.requestTypeName}
+                       </span>
+                        
+                       {/* 申請人資訊 */}
+                       <div>
+                         <div className="flex items-center text-gray-900 font-medium">
+                           <User className="w-4 h-4 mr-1 text-gray-400" />
+                           {item.applicantName}
+                           <span className="text-gray-400 ml-2 text-sm">
+                             {item.department}
+                           </span>
+                         </div>
+                         <div className="flex items-center text-xs text-gray-500 mt-1">
+                           <Calendar className="w-3 h-3 mr-1" />
+                           {formatDate(item.createdAt)}
+                           <span className="mx-2">•</span>
+                           等待 {getWaitingTime(item.createdAt)}
+                         </div>
+                       </div>
+                      </div>
+                      <div className="flex items-center space-x-4">
+                         {/* 審核層級 */}
+                         <div className="text-right">
+                           <span className="text-sm text-gray-500">
+                             {getReviewStageLabel(item)}
+                           </span>
+                           <div className="text-xs text-gray-400">
+                             第 {item.currentLevel}/{item.maxLevel} 階
+                           </div>
+                         </div>
+                        
+                       <ChevronRight className="w-5 h-5 text-gray-400" />
                       </div>
                     </div>
-                                        <div className="flex items-center space-x-4">
-                        {/* 審核層級 */}
-                        <div className="text-right">
-                          <span className="text-sm text-gray-500">
-                            {getReviewStageLabel(item)}
-                          </span>
-                          <div className="text-xs text-gray-400">
-                            第 {item.currentLevel}/{item.maxLevel} 階
-                          </div>
-                        </div>
-                      
-                      <ChevronRight className="w-5 h-5 text-gray-400" />
-                    </div>
                   </div>
+                ))}
+              </div>
+              {pagination.pages > 1 && (
+                <div className="flex items-center justify-between gap-3 border-t border-gray-200 px-6 py-3 text-sm">
+                  <button
+                    onClick={() => setPage((currentPage) => Math.max(1, currentPage - 1))}
+                    disabled={pagination.page <= 1 || loading}
+                    className="rounded-lg border border-gray-300 px-3 py-1.5 text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    上一頁
+                  </button>
+                  <span className="text-gray-600">
+                    第 {pagination.page} / {pagination.pages} 頁
+                  </span>
+                  <button
+                    onClick={() => setPage((currentPage) => Math.min(pagination.pages, currentPage + 1))}
+                    disabled={pagination.page >= pagination.pages || loading}
+                    className="rounded-lg border border-gray-300 px-3 py-1.5 text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    下一頁
+                  </button>
                 </div>
-              ))}
-            </div>
+              )}
+            </>
           )}
         </div>
+
+        {selectedBatchItems.length > 0 && (
+          <BatchApproveBar
+            selectedIds={batchSelection.selectedIds}
+            apiEndpoint={selectedBatchConfig?.endpoint || '/api/batch-approve'}
+            onSuccess={() => {
+              void loadPending();
+            }}
+            onClear={batchSelection.clear}
+            onSelectionChange={batchSelection.setSelectedIds}
+            itemName="待審核項目"
+            itemSummaries={selectedBatchItems.map((item) => ({
+              id: item.requestId,
+              label: `${item.applicantName} · ${item.requestTypeName}`,
+              sublabel: `${item.department} · ${getReviewStageLabel(item)} · 等待 ${getWaitingTime(item.createdAt)}`,
+            }))}
+            allowApproveNote
+            extraBody={selectedBatchConfig?.resourceType ? { resourceType: selectedBatchConfig.resourceType } : undefined}
+            disabledReason={batchDisabledReason}
+          />
+        )}
 
         {/* 審核 Modal */}
         {selectedItem && (

@@ -1,15 +1,19 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { Clock, Plus, Search, Filter, CheckCircle, XCircle, Trash2, Calendar, User, Timer, Pencil, X, ChevronDown, ChevronUp, Eye } from 'lucide-react';
+import { Clock, Plus, Filter, CheckCircle, XCircle, Trash2, Calendar, User, Timer, Pencil, X, ChevronDown, ChevronUp, Eye } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import BatchApproveBar from '@/components/BatchApproveBar';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import EmployeeListSelect, { useActiveEmployeeDepartments } from '@/components/EmployeeListSelect';
 import ApprovalProgress, { ApprovalReviewRecord } from '@/components/ApprovalProgress';
+import PromptDialog from '@/components/PromptDialog';
+import { getOvertimeApprovalSteps } from '@/lib/overtime-approval-display';
 import React from 'react';
 
 interface OvertimeRequest {
   id: number;
+  requestNumber?: string;
   employeeId: number;
   overtimeDate: string;
   startTime: string;
@@ -21,6 +25,9 @@ interface OvertimeRequest {
   status: 'PENDING' | 'PENDING_ADMIN' | 'APPROVED' | 'REJECTED' | 'CANCELLED' | 'VOIDED';
   approvedBy?: number;
   approvedAt?: string;
+  managerReviewerId?: number | null;
+  managerOpinion?: 'AGREE' | 'DISAGREE' | null;
+  managerReviewedAt?: string | null;
   createdAt: string;
   employee: {
     id: number;
@@ -30,6 +37,20 @@ interface OvertimeRequest {
     position: string;
   };
   approver?: {
+    id: number;
+    employeeId: string;
+    name: string;
+    department: string;
+    position: string;
+  } | null;
+  managerReviewer?: {
+    id: number;
+    employeeId: string;
+    name: string;
+    department: string;
+    position: string;
+  } | null;
+  historyApprover?: {
     id: number;
     employeeId: string;
     name: string;
@@ -113,6 +134,7 @@ interface User {
 
 export default function OvertimeManagementPage() {
   const [overtimeRequests, setOvertimeRequests] = useState<OvertimeRequest[]>([]);
+  const [approvedEffectiveHours, setApprovedEffectiveHours] = useState(0);
   const [filteredRequests, setFilteredRequests] = useState<OvertimeRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
@@ -139,17 +161,21 @@ export default function OvertimeManagementPage() {
   const [filters, setFilters] = useState({
     status: '',
     employeeId: '',
+    department: '',
     startDate: '',
     endDate: ''
   });
 
   const [searchTerm, setSearchTerm] = useState('');
+  const { departments } = useActiveEmployeeDepartments();
 
   // Toast 狀態
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   
   // 删除確認框狀態
   const [deleteConfirm, setDeleteConfirm] = useState<{ id: number; name: string } | null>(null);
+  const [reasonPrompt, setReasonPrompt] = useState<{ type: 'cancel' | 'void'; id: number; name: string } | null>(null);
+  const [reasonPromptLoading, setReasonPromptLoading] = useState(false);
   
   // 排序狀態
   const [sortConfig, setSortConfig] = useState<{ field: 'employee' | 'date' | 'status' | 'hours'; direction: 'asc' | 'desc' }>({ field: 'date', direction: 'desc' });
@@ -269,11 +295,11 @@ export default function OvertimeManagementPage() {
     }
 
     if (searchTerm) {
-      filtered = filtered.filter(req =>
-        req.employee.name.includes(searchTerm) ||
-        req.employee.employeeId.includes(searchTerm) ||
-        req.reason.includes(searchTerm)
-      );
+      filtered = filtered.filter(req => req.employee.employeeId === searchTerm);
+    }
+
+    if (filters.department) {
+      filtered = filtered.filter(req => req.employee.department === filters.department);
     }
 
     if (filters.startDate && filters.endDate) {
@@ -315,6 +341,7 @@ export default function OvertimeManagementPage() {
       if (response.ok) {
         const data = await response.json();
         setOvertimeRequests(data.overtimeRequests);
+        setApprovedEffectiveHours(data.summary?.approvedEffectiveHours ?? 0);
       }
     } catch (error) {
       console.error('獲取加班申請失敗:', error);
@@ -488,6 +515,21 @@ export default function OvertimeManagementPage() {
     }
   };
 
+  const submitReasonPrompt = async (reason: string) => {
+    if (!reasonPrompt) return;
+    setReasonPromptLoading(true);
+    try {
+      if (reasonPrompt.type === 'cancel') {
+        await handleCancelRequest(reasonPrompt.id, reason);
+      } else {
+        await handleVoidRequest(reasonPrompt.id, reason);
+      }
+      setReasonPrompt(null);
+    } finally {
+      setReasonPromptLoading(false);
+    }
+  };
+
   // 展開/收合審核進度並取得真實資料
   const handleToggleApproval = async (requestId: number) => {
     if (expandedId === requestId) {
@@ -547,11 +589,15 @@ export default function OvertimeManagementPage() {
     || currentUser?.isDepartmentManager
     || currentUser?.isDeputyManager
     || Boolean(currentUser?.attendancePermissions?.overtimeRequests?.length);
-  const selectableRequests = filteredRequests.filter(request => isReviewableStatus(request.status));
+  const canBatchApprove = isFinalReviewer || isManager;
+  const canSelectForBatch = (request: OvertimeRequest) => isFinalReviewer
+    ? isReviewableStatus(request.status)
+    : request.status === 'PENDING';
+  const selectableRequests = filteredRequests.filter(canSelectForBatch);
 
   return (
     <AuthenticatedLayout>
-      <div className="max-w-7xl mx-auto px-4 py-8">
+      <div className="w-full max-w-none px-4 py-8 sm:px-6 lg:px-8">
         {/* 標題區 */}
         <div className="mb-8">
           <div className="flex items-center justify-between">
@@ -568,6 +614,9 @@ export default function OvertimeManagementPage() {
             </button>
           </div>
           <p className="text-gray-600 mt-2">管理員工加班申請，最少0.5小時，最多4小時</p>
+          <p className="text-sm text-amber-700 mt-2">
+            核准申請時數僅為上限；平日實際加班以扣除休息後每日工作超過 8 小時的部分為準。
+          </p>
         </div>
 
         {/* 統計卡片 */}
@@ -612,11 +661,9 @@ export default function OvertimeManagementPage() {
             <div className="flex items-center">
               <Clock className="w-8 h-8 text-blue-600" />
               <div className="ml-4">
-                <p className="text-sm font-medium text-gray-600">總時數</p>
+                <p className="text-sm font-medium text-gray-600">實際有效加班時數</p>
                 <p className="text-2xl font-bold text-gray-900">
-                  {overtimeRequests
-                    .filter(req => req.status === 'APPROVED')
-                    .reduce((sum, req) => sum + req.totalHours, 0)}h
+                  {approvedEffectiveHours}h
                 </p>
               </div>
             </div>
@@ -630,19 +677,33 @@ export default function OvertimeManagementPage() {
             <h2 className="text-lg font-semibold text-gray-900">篩選條件</h2>
           </div>
           
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-900 mb-1">搜索</label>
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
-                <input
-                  type="text"
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
-                  placeholder="搜索員工姓名或原因"
-                />
-              </div>
+              <EmployeeListSelect
+                label="員工"
+                value={searchTerm}
+                onChange={(value) => setSearchTerm(value)}
+                emptyLabel="全部員工"
+                departmentFilter={filters.department}
+                selectClassName="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-black disabled:bg-gray-100"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-900 mb-1">部門</label>
+              <select
+                value={filters.department}
+                onChange={(e) => {
+                  setFilters({ ...filters, department: e.target.value });
+                  setSearchTerm('');
+                }}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
+              >
+                <option value="">全部部門</option>
+                {departments.map((department) => (
+                  <option key={department} value={department}>{department}</option>
+                ))}
+              </select>
             </div>
 
             <div>
@@ -735,7 +796,7 @@ export default function OvertimeManagementPage() {
         <div className="bg-white rounded-lg shadow overflow-hidden mb-20">
           <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
             <h2 className="text-lg font-semibold text-gray-900">加班申請記錄</h2>
-            {isFinalReviewer && selectableRequests.length > 0 && (
+            {canBatchApprove && selectableRequests.length > 0 && (
               <label className="flex items-center gap-2 text-sm text-gray-600">
                 <input
                   type="checkbox"
@@ -758,13 +819,14 @@ export default function OvertimeManagementPage() {
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
                 <tr>
-                  {isFinalReviewer && (
+                  {canBatchApprove && (
                     <th className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-12">選擇</th>
                   )}
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">單號</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('employee')}>員工資訊 {sortConfig.field === 'employee' && (sortConfig.direction === 'asc' ? '↑' : '↓')}</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('date')}>加班日期 {sortConfig.field === 'date' && (sortConfig.direction === 'asc' ? '↑' : '↓')}</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">時間</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('hours')}>時數 {sortConfig.field === 'hours' && (sortConfig.direction === 'asc' ? '↑' : '↓')}</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('hours')}>申請時數 {sortConfig.field === 'hours' && (sortConfig.direction === 'asc' ? '↑' : '↓')}</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">申請原因</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => handleSort('status')}>狀態 {sortConfig.field === 'status' && (sortConfig.direction === 'asc' ? '↑' : '↓')}</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">批准者</th>
@@ -775,9 +837,9 @@ export default function OvertimeManagementPage() {
                 {sortedRequests.map((request) => (
                   <React.Fragment key={request.id}>
                   <tr className={`hover:bg-gray-50 ${selectedIds.includes(request.id) ? 'bg-blue-50' : ''}`}>
-                    {isFinalReviewer && (
+                    {canBatchApprove && (
                       <td className="px-3 py-4 text-center">
-                        {isReviewableStatus(request.status) && (
+                        {canSelectForBatch(request) && (
                           <input
                             type="checkbox"
                             checked={selectedIds.includes(request.id)}
@@ -793,6 +855,9 @@ export default function OvertimeManagementPage() {
                         )}
                       </td>
                     )}
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                      {request.requestNumber ?? `OT-${request.id}`}
+                    </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="flex items-center">
                         <User className="w-5 h-5 text-gray-400 mr-2" />
@@ -838,18 +903,27 @@ export default function OvertimeManagementPage() {
                       </span>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
-                      {request.approver ? (
-                        <div className="flex items-center gap-2">
-                          <div className="text-gray-900 font-medium">
-                            {request.approver.name}
+                      {(() => {
+                        const approvalSteps = getOvertimeApprovalSteps(request);
+                        return approvalSteps.length > 0 ? (
+                          <div className="space-y-1.5">
+                            {approvalSteps.map((step) => (
+                              <div key={`${step.stage}-${step.actor.id}`}>
+                                <div className="text-sm font-medium text-gray-900">
+                                  <span className="mr-1 text-xs text-gray-500">{step.stage}</span>
+                                  {step.actor.name}
+                                  <span className="ml-1 text-xs text-gray-500">（{step.decision}）</span>
+                                </div>
+                                <div className="text-xs text-gray-500">
+                                  {step.actor.employeeId} • {step.actor.position || 'N/A'}
+                                </div>
+                              </div>
+                            ))}
                           </div>
-                          <div className="text-xs text-gray-500">
-                            {request.approver.employeeId} • {request.approver.position || 'N/A'}
-                          </div>
-                        </div>
-                      ) : (
-                        <span className="text-gray-400">尚未批准</span>
-                      )}
+                        ) : (
+                          <span className="text-gray-400">尚未審核</span>
+                        );
+                      })()}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
                       <div className="flex space-x-2">
@@ -872,7 +946,7 @@ export default function OvertimeManagementPage() {
                           </>
                         )}
                         {/* 允許待審核時編輯 */}
-                        {request.status === 'PENDING' && (isFinalReviewer || currentUser?.employeeId === request.employeeId) && (
+                        {request.status === 'PENDING' && (isFinalReviewer || isManager || currentUser?.employeeId === request.employeeId) && (
                           <button
                             onClick={() => {
                               setEditing(request);
@@ -902,12 +976,7 @@ export default function OvertimeManagementPage() {
                         {/* 員工申請撤銷 */}
                         {request.status === 'APPROVED' && currentUser?.employeeId === request.employeeId && (
                           <button
-                            onClick={() => {
-                              const reason = prompt('請輸入撤銷原因：');
-                              if (reason && reason.trim()) {
-                                handleCancelRequest(request.id, reason.trim());
-                              }
-                            }}
+                            onClick={() => setReasonPrompt({ type: 'cancel', id: request.id, name: request.employee.name })}
                             className="inline-flex items-center px-3 py-1 bg-orange-100 text-orange-800 rounded-full hover:bg-orange-200 transition-colors"
                           >
                             <X className="w-4 h-4 mr-1" /> 申請撤銷
@@ -916,12 +985,7 @@ export default function OvertimeManagementPage() {
                         {/* 管理員作廢 */}
                         {request.status === 'APPROVED' && isFinalReviewer && (
                           <button
-                            onClick={() => {
-                              const reason = prompt('請輸入作廢原因：');
-                              if (reason && reason.trim()) {
-                                handleVoidRequest(request.id, reason.trim());
-                              }
-                            }}
+                            onClick={() => setReasonPrompt({ type: 'void', id: request.id, name: request.employee.name })}
                             className="inline-flex items-center px-3 py-1 bg-red-100 text-red-800 rounded-full hover:bg-red-200 transition-colors"
                           >
                             <X className="w-4 h-4 mr-1" /> 作廢
@@ -942,7 +1006,7 @@ export default function OvertimeManagementPage() {
                   {/* 展開的審核進度區域 */}
                   {expandedId === request.id && (
                     <tr>
-                      <td colSpan={isFinalReviewer ? 9 : 8} className="px-6 py-4 bg-gray-50">
+                      <td colSpan={canBatchApprove ? 11 : 10} className="px-6 py-4 bg-gray-50">
                         {approvalData ? (
                           <ApprovalProgress
                             currentLevel={approvalData.currentLevel}
@@ -1178,7 +1242,7 @@ export default function OvertimeManagementPage() {
       )}
 
       {/* 批次審核工具列 */}
-      {isFinalReviewer && (
+      {canBatchApprove && (
         <BatchApproveBar
           selectedIds={selectedIds}
           apiEndpoint="/api/overtime-requests/batch"
@@ -1186,6 +1250,14 @@ export default function OvertimeManagementPage() {
           onClear={() => setSelectedIds([])}
           onSelectionChange={setSelectedIds}
           itemName="加班申請"
+          itemSummaries={filteredRequests
+            .filter(canSelectForBatch)
+            .map((request) => ({
+              id: request.id,
+              label: `${request.employee.name} · ${new Date(request.overtimeDate).toLocaleDateString('zh-TW')}`,
+              sublabel: `${request.startTime} - ${request.endTime} · ${request.totalHours} 小時`,
+            }))}
+          allowApproveNote
           requireRejectReason={false}
         />
       )}
@@ -1213,6 +1285,21 @@ export default function OvertimeManagementPage() {
           </div>
         </div>
       )}
+
+      <PromptDialog
+        open={Boolean(reasonPrompt)}
+        title={reasonPrompt?.type === 'cancel' ? '申請撤銷加班' : '作廢加班申請'}
+        message={reasonPrompt ? `${reasonPrompt.name} 的加班申請將${reasonPrompt.type === 'cancel' ? '送出撤銷申請' : '被作廢'}，請填寫原因。` : ''}
+        label={reasonPrompt?.type === 'cancel' ? '撤銷原因' : '作廢原因'}
+        placeholder={reasonPrompt?.type === 'cancel' ? '請輸入撤銷原因' : '請輸入作廢原因'}
+        confirmLabel={reasonPrompt?.type === 'cancel' ? '送出撤銷' : '確認作廢'}
+        tone={reasonPrompt?.type === 'void' ? 'danger' : 'default'}
+        loading={reasonPromptLoading}
+        onCancel={() => {
+          if (!reasonPromptLoading) setReasonPrompt(null);
+        }}
+        onConfirm={submitReasonPrompt}
+      />
 
       {/* Toast 通知 */}
       {toast && (

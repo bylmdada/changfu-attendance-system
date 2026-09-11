@@ -4,6 +4,7 @@ import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { safeParseJSON } from '@/lib/validation';
+import { logSystemSettingsChange } from '@/lib/system-settings-audit';
 
 // 定義薪條範本類型
 interface PayslipTemplate {
@@ -166,6 +167,10 @@ export async function POST(request: NextRequest) {
     }
 
     if (type === 'settings') {
+      const oldSettingsRecord = await prisma.systemSettings.findUnique({
+        where: { key: 'payslip_settings' }
+      });
+
       // 儲存薪資條設定
       await prisma.systemSettings.upsert({
         where: { key: 'payslip_settings' },
@@ -178,6 +183,15 @@ export async function POST(request: NextRequest) {
           value: JSON.stringify(data),
           description: '薪資條系統設定'
         }
+      });
+
+      await logSystemSettingsChange({
+        request,
+        user,
+        settingKey: 'payslip_settings',
+        description: '薪資條系統設定變更',
+        oldValue: oldSettingsRecord ? JSON.parse(oldSettingsRecord.value) : null,
+        newValue: data,
       });
 
       return NextResponse.json({
@@ -236,6 +250,16 @@ export async function POST(request: NextRequest) {
           value: JSON.stringify(templates),
           description: '薪資條範本設定'
         }
+      });
+
+      await logSystemSettingsChange({
+        request,
+        user,
+        settingKey: 'payslip_templates',
+        description: templateId ? '薪資條範本變更' : '薪資條範本新增',
+        oldValue: templatesRecord ? JSON.parse(templatesRecord.value) : null,
+        newValue: templates,
+        targetId: targetTemplateId ?? undefined,
       });
 
       return NextResponse.json({
@@ -344,6 +368,16 @@ export async function PUT(request: NextRequest) {
       }
     });
 
+    await logSystemSettingsChange({
+      request,
+      user,
+      settingKey: 'payslip_templates',
+      description: '薪資條範本變更',
+      oldValue: JSON.parse(templatesRecord.value),
+      newValue: templates,
+      targetId: templateId,
+    });
+
     return NextResponse.json({
       success: true,
       template: templates[index],
@@ -427,6 +461,16 @@ export async function DELETE(request: NextRequest) {
         value: JSON.stringify(updatedTemplates),
         updatedAt: new Date()
       }
+    });
+
+    await logSystemSettingsChange({
+      request,
+      user,
+      settingKey: 'payslip_templates',
+      description: '薪資條範本刪除',
+      oldValue: templateToDelete,
+      newValue: updatedTemplates,
+      targetId: parseInt(id),
     });
 
     return NextResponse.json({

@@ -5,6 +5,11 @@ import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
+import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
+import { findActiveScheduleFieldsForShift } from '@/lib/shift-definition-service';
+import { getPayrollImpactWarning } from '@/lib/payroll-impact-warning';
+import { hasClockedAttendance } from '@/lib/shift-exchange-attendance';
+import { invalidateConfirmation } from '@/lib/schedule-confirm-service';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -26,16 +31,6 @@ function parseSelfChangePayload(requestReason: string): SelfChangePayload | null
 
 type ShiftExchangeReversalClient = Pick<typeof prisma, 'schedule'>;
 
-function getTemplateByShift(shift: string): { startTime: string; endTime: string } {
-  const map: Record<string, { startTime: string; endTime: string }> = {
-    A: { startTime: '07:30', endTime: '16:30' },
-    B: { startTime: '08:00', endTime: '17:00' },
-    C: { startTime: '08:30', endTime: '17:30' },
-  };
-
-  return map[shift] || { startTime: '', endTime: '' };
-}
-
 async function restoreApprovedShiftExchange(
   tx: ShiftExchangeReversalClient,
   shiftExchangeRequest: {
@@ -44,13 +39,18 @@ async function restoreApprovedShiftExchange(
     originalWorkDate: string;
     targetWorkDate: string;
     requestReason: string;
+    originalShiftType?: string | null;
   }
 ) {
-  const parsed = parseSelfChangePayload(shiftExchangeRequest.requestReason);
+  const originalShiftType = shiftExchangeRequest.originalShiftType
+    ?? parseSelfChangePayload(shiftExchangeRequest.requestReason)?.original;
 
-  if (parsed) {
-    const originalShift = parsed?.original ?? 'A';
-    const template = getTemplateByShift(originalShift);
+  if (originalShiftType) {
+    const scheduleFields = await findActiveScheduleFieldsForShift(originalShiftType);
+    if (!scheduleFields) {
+      throw new Error('原班別不存在或已停用，無法還原調班');
+    }
+
     const existingSchedule = await tx.schedule.findFirst({
       where: {
         employeeId: shiftExchangeRequest.requesterId,
@@ -61,11 +61,7 @@ async function restoreApprovedShiftExchange(
     if (existingSchedule) {
       await tx.schedule.update({
         where: { id: existingSchedule.id },
-        data: {
-          shiftType: originalShift,
-          startTime: template.startTime,
-          endTime: template.endTime,
-        },
+        data: scheduleFields,
       });
     }
 
@@ -289,8 +285,20 @@ export async function PUT(
       }
 
       if (action === 'APPROVE') {
-        if (!parseSelfChangePayload(shiftExchangeRequest.requestReason)) {
-          return NextResponse.json({ error: '員工互調功能已停用，無法撤銷舊互調申請' }, { status: 400 });
+        if (!shiftExchangeRequest.originalShiftType && !parseSelfChangePayload(shiftExchangeRequest.requestReason)?.original) {
+          return NextResponse.json({ error: '調班資料缺少原班別，無法撤銷' }, { status: 400 });
+        }
+
+        const freezeCheck = await checkAttendanceFreeze(new Date(shiftExchangeRequest.originalWorkDate));
+        if (freezeCheck.isFrozen) {
+          return NextResponse.json({ error: '該月份已被凍結，無法核准調班撤銷' }, { status: 403 });
+        }
+        if (await hasClockedAttendance(
+          prisma,
+          shiftExchangeRequest.requesterId,
+          shiftExchangeRequest.originalWorkDate
+        )) {
+          return NextResponse.json({ error: '該日已有打卡紀錄，無法還原調班' }, { status: 409 });
         }
 
         await prisma.$transaction(async (tx) => {
@@ -305,12 +313,19 @@ export async function PUT(
             }
           });
 
-          await restoreApprovedShiftExchange(tx, shiftExchangeRequest);
+      await restoreApprovedShiftExchange(tx, shiftExchangeRequest);
+    });
+    await invalidateConfirmation(shiftExchangeRequest.requesterId, shiftExchangeRequest.originalWorkDate.slice(0, 7));
+    const warning = await getPayrollImpactWarning(prisma, {
+          employeeId: shiftExchangeRequest.requesterId,
+          startDate: shiftExchangeRequest.originalWorkDate,
+          endDate: shiftExchangeRequest.originalWorkDate,
         });
 
         return NextResponse.json({
           success: true,
-          message: '撤銷申請已核准，調班已取消'
+          message: '撤銷申請已核准，調班已取消',
+          warning,
         });
       } else {
         await prisma.shiftExchangeRequest.update({

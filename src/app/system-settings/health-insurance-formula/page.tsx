@@ -2,18 +2,24 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Calculator, Info, Save, Loader2 } from 'lucide-react';
+import { Calculator, Info, Save, Loader2, RotateCcw } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import {
   buildAuthMeRequest,
   buildHealthInsuranceFormulaRequest,
 } from '@/lib/health-insurance-formula-client';
 import SystemNavbar from '@/components/SystemNavbar';
+import {
+  HEALTH_INSURANCE_2026_LEVELS,
+  calculateHealthInsurancePremium,
+} from '@/lib/insurance-calculator';
 
 interface HealthInsuranceConfig {
   id: number;
   premiumRate: number;
   employeeContributionRatio: number;
+  companyContributionRatio: number;
+  governmentSubsidyRatio: number;
   maxDependents: number;
   supplementaryRate: number;
   supplementaryThreshold: number;
@@ -151,34 +157,24 @@ export default function HealthInsuranceFormulaPage() {
     setSalaryLevels(updated);
   };
 
+  const apply2026SalaryLevels = () => {
+    setSalaryLevels(HEALTH_INSURANCE_2026_LEVELS.map((level) => ({ ...level })));
+  };
+
   // 計算示例
   const calculateExample = (salary: number, dependents: number) => {
     if (!config) return null;
 
-    // 找到對應的投保金額
-    const salaryLevel = salaryLevels.find(level => 
-      salary >= level.minSalary && salary <= level.maxSalary
-    );
-    
-    if (!salaryLevel) return null;
-
-    const insuredAmount = salaryLevel.insuredAmount;
-    const dependentCount = Math.min(dependents, config.maxDependents);
-    
-    // 計算健保費
-    const totalInsuredAmount = insuredAmount * (1 + dependentCount);
-    const totalPremium = totalInsuredAmount * config.premiumRate;
-    const employeePremium = totalPremium * config.employeeContributionRatio;
-    const companyPremium = totalPremium * (1 - config.employeeContributionRatio);
-
-    return {
-      insuredAmount,
-      dependentCount,
-      totalInsuredAmount,
-      totalPremium,
-      employeePremium,
-      companyPremium
-    };
+    return calculateHealthInsurancePremium({
+      salary,
+      dependents,
+      premiumRate: config.premiumRate,
+      employeeRate: config.employeeContributionRatio,
+      employerRate: config.companyContributionRatio,
+      governmentRate: config.governmentSubsidyRatio,
+      maxDependents: config.maxDependents,
+      levels: salaryLevels,
+    });
   };
 
   if (loading) {
@@ -279,7 +275,51 @@ export default function HealthInsuranceFormulaPage() {
                         className="block w-full rounded-md border-gray-300 shadow-sm focus:border-red-500 focus:ring-red-500 text-gray-900"
                       />
                       <p className="mt-1 text-xs text-gray-900">
-                        員工負擔 30%，公司負擔 70%
+                        員工負擔 30% = 0.30
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-900 mb-2">
+                        公司負擔比例 (%)
+                      </label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        max="1"
+                        value={config.companyContributionRatio}
+                        onChange={(e) => setConfig({
+                          ...config,
+                          companyContributionRatio: parseFloat(e.target.value) || 0
+                        })}
+                        className="block w-full rounded-md border-gray-300 shadow-sm focus:border-red-500 focus:ring-red-500 text-gray-900"
+                      />
+                      <p className="mt-1 text-xs text-gray-900">
+                        公司負擔 60% = 0.60
+                      </p>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-900 mb-2">
+                        政府補助比例 (%)
+                      </label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        max="1"
+                        value={config.governmentSubsidyRatio}
+                        onChange={(e) => setConfig({
+                          ...config,
+                          governmentSubsidyRatio: parseFloat(e.target.value) || 0
+                        })}
+                        className="block w-full rounded-md border-gray-300 shadow-sm focus:border-red-500 focus:ring-red-500 text-gray-900"
+                      />
+                      <p className="mt-1 text-xs text-gray-900">
+                        政府補助 10% = 0.10
                       </p>
                     </div>
                   </div>
@@ -369,17 +409,26 @@ export default function HealthInsuranceFormulaPage() {
 
             {/* 投保金額級距設定 */}
             <div className="bg-white rounded-lg shadow-sm border border-gray-200">
-              <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+              <div className="px-6 py-4 border-b border-gray-200 flex flex-wrap justify-between items-center gap-3">
                 <div>
                   <h2 className="text-lg font-medium text-gray-900">投保金額級距設定</h2>
-                  <p className="text-sm text-gray-900">設定薪資與投保金額對應表</p>
+                  <p className="text-sm text-gray-900">設定薪資與投保金額對應表，預設為 2026 年常用前 30 級</p>
                 </div>
-                <button
-                  onClick={addSalaryLevel}
-                  className="px-4 py-2 text-sm bg-red-100 text-red-700 rounded-md hover:bg-red-200"
-                >
-                  新增級距
-                </button>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={apply2026SalaryLevels}
+                    className="inline-flex items-center gap-2 px-4 py-2 text-sm bg-blue-100 text-blue-700 rounded-md hover:bg-blue-200"
+                  >
+                    <RotateCcw className="h-4 w-4" />
+                    套用 2026 前 30 級
+                  </button>
+                  <button
+                    onClick={addSalaryLevel}
+                    className="px-4 py-2 text-sm bg-red-100 text-red-700 rounded-md hover:bg-red-200"
+                  >
+                    新增級距
+                  </button>
+                </div>
               </div>
               
               <div className="p-6">
@@ -497,7 +546,8 @@ export default function HealthInsuranceFormulaPage() {
                   <ul className="space-y-1 text-xs">
                     <li>• 健保費率：5.17%</li>
                     <li>• 員工負擔：30%</li>
-                    <li>• 公司負擔：70%</li>
+                    <li>• 公司負擔：60%</li>
+                    <li>• 政府補助：10%</li>
                     <li>• 眷屬人數上限：3人</li>
                   </ul>
                 </div>
@@ -560,7 +610,7 @@ function CalculationExample({
           </div>
           <div className="flex justify-between">
             <span className="text-gray-900">總投保金額：</span>
-            <span className="font-medium text-gray-900">NT$ {result.totalInsuredAmount.toLocaleString()}</span>
+            <span className="font-medium text-gray-900">NT$ {(result.insuredAmount * result.totalPersons).toLocaleString()}</span>
           </div>
           <div className="flex justify-between">
             <span className="text-gray-900">總健保費：</span>
@@ -572,7 +622,11 @@ function CalculationExample({
           </div>
           <div className="flex justify-between">
             <span className="text-gray-900">公司負擔：</span>
-            <span className="font-bold text-green-700">NT$ {result.companyPremium.toLocaleString()}</span>
+            <span className="font-bold text-green-700">NT$ {result.employerPremium.toLocaleString()}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-gray-900">政府補助：</span>
+            <span className="font-bold text-blue-700">NT$ {result.governmentPremium.toLocaleString()}</span>
           </div>
         </div>
       ) : (

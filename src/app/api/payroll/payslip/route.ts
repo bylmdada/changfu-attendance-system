@@ -2,7 +2,121 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { buildSuccessPayload } from '@/lib/api-response';
+import {
+  getStoredIncomeTaxManagementSettings,
+  resolvePayrollIncomeTaxDisplayAmounts,
+} from '@/lib/income-tax-settings';
 import { parseIntegerQueryParam } from '@/lib/query-params';
+import { buildPayslipHourSummary } from '@/lib/payroll-payslip-hours';
+
+interface StoredBonusDetail {
+  bonusType?: string;
+  bonusTypeName?: string;
+  amount?: number;
+  source?: string;
+}
+
+interface StoredAttendancePenaltyDetail {
+  workDate?: string;
+  status?: string;
+  deductionHours?: number;
+  hourlyWage?: number;
+  amount?: number;
+  formula?: string;
+}
+
+interface StoredAttendancePenaltySummary {
+  totalAmount: number;
+  details: Array<{
+    workDate: string;
+    status: string;
+    deductionHours: number;
+    hourlyWage: number;
+    amount: number;
+    formula: string;
+  }>;
+}
+
+function parsePayrollJsonField<T>(value: unknown, fallback: T): T {
+  if (!value) {
+    return fallback;
+  }
+
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value) as T;
+    } catch {
+      return fallback;
+    }
+  }
+
+  return value as T;
+}
+
+function getStoredBonusDetails(payrollRecord: {
+  deductionDetails?: unknown;
+}) {
+  const deductionDetails = parsePayrollJsonField<Record<string, unknown>>(payrollRecord.deductionDetails, {});
+  const rawBonusDetails = Array.isArray(deductionDetails.bonusDetails)
+    ? deductionDetails.bonusDetails
+    : [];
+  const bonusSupplementaryInsurance = typeof deductionDetails.bonusSupplementaryInsurance === 'number'
+    ? deductionDetails.bonusSupplementaryInsurance
+    : 0;
+
+  const bonusDetails = rawBonusDetails
+    .filter((detail): detail is StoredBonusDetail =>
+      typeof detail === 'object' && detail !== null
+    )
+    .map(detail => ({
+      bonusType: typeof detail.bonusType === 'string' ? detail.bonusType : 'OTHER',
+      bonusTypeName:
+        typeof detail.bonusTypeName === 'string' && detail.bonusTypeName.trim() !== ''
+          ? detail.bonusTypeName
+          : '獎金',
+      amount: typeof detail.amount === 'number' ? detail.amount : 0,
+    }))
+    .filter(detail => detail.amount !== 0);
+
+  return {
+    bonusDetails,
+    bonusSupplementaryInsurance,
+  };
+}
+
+function getStoredAttendancePenalty(payrollRecord: {
+  deductionDetails?: unknown;
+}): StoredAttendancePenaltySummary {
+  const deductionDetails = parsePayrollJsonField<Record<string, unknown>>(payrollRecord.deductionDetails, {});
+  const rawPenalty = deductionDetails.attendancePenalty;
+
+  if (typeof rawPenalty !== 'object' || rawPenalty === null) {
+    return { totalAmount: 0, details: [] };
+  }
+
+  const penalty = rawPenalty as { totalAmount?: unknown; details?: unknown };
+  const details = Array.isArray(penalty.details)
+    ? penalty.details
+        .filter((detail): detail is StoredAttendancePenaltyDetail =>
+          typeof detail === 'object' && detail !== null
+        )
+        .map(detail => ({
+          workDate: typeof detail.workDate === 'string' ? detail.workDate : '',
+          status: typeof detail.status === 'string' ? detail.status : '考勤異常',
+          deductionHours: typeof detail.deductionHours === 'number' ? detail.deductionHours : 0,
+          hourlyWage: typeof detail.hourlyWage === 'number' ? detail.hourlyWage : 0,
+          amount: typeof detail.amount === 'number' ? detail.amount : 0,
+          formula: typeof detail.formula === 'string' ? detail.formula : '',
+        }))
+        .filter(detail => detail.amount > 0)
+    : [];
+
+  const totalAmount = typeof penalty.totalAmount === 'number'
+    ? penalty.totalAmount
+    : details.reduce((sum, detail) => sum + detail.amount, 0);
+
+  return { totalAmount, details };
+}
 
 function parsePayrollId(payrollId: string) {
   const parsed = parseIntegerQueryParam(payrollId, { min: 1, max: 99999999 });
@@ -66,6 +180,18 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: '無權限查看此薪資條' }, { status: 403 });
     }
 
+    const incomeTaxSettings = await getStoredIncomeTaxManagementSettings();
+    const displayAmounts = resolvePayrollIncomeTaxDisplayAmounts(
+      {
+        incomeTax: payrollRecord.incomeTax,
+        totalDeductions: payrollRecord.totalDeductions,
+        netPay: payrollRecord.netPay,
+      },
+      incomeTaxSettings
+    );
+    const { bonusDetails, bonusSupplementaryInsurance } = getStoredBonusDetails(payrollRecord);
+    const attendancePenalty = getStoredAttendancePenalty(payrollRecord);
+
     // 使用基本薪資數據創建薪資條
     const earnings = [
       {
@@ -86,6 +212,17 @@ export async function GET(request: NextRequest) {
         quantity: payrollRecord.overtimeHours,
         unitPrice: payrollRecord.overtimePay / payrollRecord.overtimeHours,
         description: '加班時數薪資'
+      });
+    }
+
+    for (const bonusDetail of bonusDetails) {
+      earnings.push({
+        code: `BONUS_${bonusDetail.bonusType}`,
+        name: bonusDetail.bonusTypeName,
+        amount: bonusDetail.amount,
+        quantity: 1,
+        unitPrice: bonusDetail.amount,
+        description: '獎金明細'
       });
     }
 
@@ -123,14 +260,54 @@ export async function GET(request: NextRequest) {
       }
     ];
 
-    if (payrollRecord.incomeTax > 0) {
+    const salarySupplementaryInsurance = Math.max(
+      0,
+      payrollRecord.supplementaryInsurance - bonusSupplementaryInsurance
+    );
+
+    if (salarySupplementaryInsurance > 0) {
+      deductions.push({
+        code: 'SUPPLEMENTARY_INSURANCE',
+        name: '補充保費',
+        amount: salarySupplementaryInsurance,
+        quantity: 1,
+        unitPrice: salarySupplementaryInsurance,
+        description: '薪資補充保費'
+      });
+    }
+
+    if (bonusSupplementaryInsurance > 0) {
+      deductions.push({
+        code: 'BONUS_SUPPLEMENTARY_INSURANCE',
+        name: '獎金補充保費',
+        amount: bonusSupplementaryInsurance,
+        quantity: 1,
+        unitPrice: bonusSupplementaryInsurance,
+        description: '獎金發放補充保費'
+      });
+    }
+
+    if (displayAmounts.incomeTax > 0) {
       deductions.push({
         code: 'INCOME_TAX',
         name: '所得稅',
-        amount: payrollRecord.incomeTax,
+        amount: displayAmounts.incomeTax,
         quantity: 1,
-        unitPrice: payrollRecord.incomeTax,
+        unitPrice: displayAmounts.incomeTax,
         description: '代扣所得稅'
+      });
+    }
+
+    if (attendancePenalty.totalAmount > 0) {
+      deductions.push({
+        code: 'ATTENDANCE_SALARY_DEDUCTION',
+        name: '考勤扣薪',
+        amount: attendancePenalty.totalAmount,
+        quantity: attendancePenalty.details.reduce((sum, detail) => sum + detail.deductionHours, 0),
+        unitPrice: attendancePenalty.details[0]?.hourlyWage || 0,
+        description: attendancePenalty.details
+          .map(detail => `${detail.workDate} ${detail.status}：${detail.formula}`)
+          .join('；')
       });
     }
 
@@ -149,6 +326,8 @@ export async function GET(request: NextRequest) {
       });
     }
 
+    const hourSummary = await buildPayslipHourSummary(payrollRecord);
+
     // 生成薪資條數據
     const payslip = {
       employee: {
@@ -166,14 +345,15 @@ export async function GET(request: NextRequest) {
       workHours: {
         regular: payrollRecord.regularHours,
         overtime: payrollRecord.overtimeHours,
-        total: payrollRecord.regularHours + payrollRecord.overtimeHours
+        total: payrollRecord.regularHours + payrollRecord.overtimeHours,
+        ...hourSummary,
       },
       earnings: earnings,
       deductions: deductions,
       summary: {
         totalEarnings: earnings.reduce((sum: number, item: {amount: number}) => sum + item.amount, 0),
         totalDeductions: deductions.reduce((sum: number, item: {amount: number}) => sum + item.amount, 0),
-        netPay: payrollRecord.netPay
+        netPay: displayAmounts.netPay
       },
       generatedAt: new Date().toISOString(),
       companyInfo: {

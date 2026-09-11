@@ -23,10 +23,12 @@ jest.mock('nodemailer', () => ({
   },
 }));
 
+import nodemailer from 'nodemailer';
 import { prisma } from '@/lib/database';
 import { sendNotification } from '@/lib/email';
 
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
+const mockCreateTransport = nodemailer.createTransport as jest.MockedFunction<typeof nodemailer.createTransport>;
 
 describe('email notification sanitization', () => {
   let consoleErrorSpy: jest.SpyInstance;
@@ -120,5 +122,24 @@ describe('email notification sanitization', () => {
       errors: ['郵件: SMTP 未設定'],
     });
     expect(sendMail).not.toHaveBeenCalled();
+  });
+
+  it('disables SMTP file and URL access on the transporter', async () => {
+    sendMail.mockResolvedValue({ messageId: 'ok' });
+
+    const result = await sendNotification({
+      type: 'ANNUAL_LEAVE_EXPIRY',
+      recipientEmployeeId: 1,
+      recipientEmail: 'employee@example.com',
+      recipientName: '王小明',
+      title: '年假即將到期提醒',
+      message: 'test message',
+    });
+
+    expect(result.emailSent).toBe(true);
+    expect(mockCreateTransport).toHaveBeenCalledWith(expect.objectContaining({
+      disableFileAccess: true,
+      disableUrlAccess: true,
+    }));
   });
 });

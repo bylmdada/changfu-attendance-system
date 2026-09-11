@@ -20,6 +20,7 @@ import {
 } from '@/lib/admin-session-client';
 import SystemNavbar from '@/components/SystemNavbar';
 import ResponsiveSidebar from '@/components/ResponsiveSidebar';
+import { calculateMonthlySalaryHourlyRateInput } from '@/lib/hourly-rate';
 
 interface Employee {
   id: number;
@@ -63,6 +64,10 @@ const ADJUSTMENT_TYPES = {
   PROMOTION: { label: '晉升', color: 'bg-blue-100 text-blue-800' },
   ADJUSTMENT: { label: '調整', color: 'bg-yellow-100 text-yellow-800' }
 };
+
+function calculateRoundedHourlyRate(baseSalary: string | number): number | null {
+  return calculateMonthlySalaryHourlyRateInput(baseSalary);
+}
 
 export default function SalaryManagementPage() {
   const router = useRouter();
@@ -220,12 +225,17 @@ export default function SalaryManagementPage() {
 
   // 篩選員工
   const filteredEmployees = employees.filter(e => {
-    const matchSearch = !searchTerm || 
-      e.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      e.employeeId.toLowerCase().includes(searchTerm.toLowerCase());
+    const normalizedSearch = searchTerm.trim().toLowerCase();
+    const matchSearch = !normalizedSearch ||
+      e.name.toLowerCase().includes(normalizedSearch) ||
+      e.employeeId.toLowerCase().includes(normalizedSearch);
     const matchDept = !filterDepartment || e.department === filterDepartment;
     return matchSearch && matchDept;
   });
+  const newHourlyRatePreview = calculateRoundedHourlyRate(adjustForm.newBaseSalary);
+  const adjustmentAmountPreview = adjustForm.newBaseSalary
+    ? Number(adjustForm.newBaseSalary) - (selectedEmployee?.baseSalary || 0)
+    : null;
 
   if (loading) {
     return (
@@ -305,27 +315,31 @@ export default function SalaryManagementPage() {
         <div className="bg-white rounded-lg shadow p-4 mb-6">
           <div className="flex flex-wrap gap-4">
             <div className="flex-1 min-w-[200px]">
+              <label className="block text-sm font-medium text-black mb-1">員工搜尋</label>
               <div className="relative">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" />
                 <input
-                  type="text"
-                  placeholder="搜尋員工姓名或工號..."
+                  type="search"
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
-                  className="w-full pl-10 pr-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  placeholder="輸入員工姓名或員工編號"
+                  className="w-full rounded-lg border bg-white py-2 pl-10 pr-4 text-black placeholder:text-gray-500 focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
                 />
               </div>
             </div>
-            <select
-              value={filterDepartment}
-              onChange={(e) => setFilterDepartment(e.target.value)}
-              className="px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-            >
-              <option value="">全部部門</option>
-              {departments.map(d => (
-                <option key={d} value={d}>{d}</option>
-              ))}
-            </select>
+            <div className="min-w-[200px]">
+              <label className="block text-sm font-medium text-black mb-1">部門</label>
+              <select
+                value={filterDepartment}
+                onChange={(e) => setFilterDepartment(e.target.value)}
+                className="w-full px-4 py-2 border rounded-lg bg-white text-black focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              >
+                <option value="">全部部門</option>
+                {departments.map(d => (
+                  <option key={d} value={d}>{d}</option>
+                ))}
+              </select>
+            </div>
           </div>
         </div>
 
@@ -443,15 +457,15 @@ export default function SalaryManagementPage() {
               <div className="px-6 py-4 bg-gray-50">
                 <div className="flex justify-between">
                   <div>
-                    <span className="text-gray-500">目前月薪：</span>
+                    <span className="text-black">目前月薪：</span>
                     <span className="font-semibold text-gray-900 ml-2">${selectedEmployee.baseSalary.toLocaleString()}</span>
                   </div>
                   <div>
-                    <span className="text-gray-500">時薪：</span>
+                    <span className="text-black">時薪：</span>
                     <span className="font-semibold text-gray-900 ml-2">${selectedEmployee.hourlyRate.toFixed(2)}</span>
                   </div>
                   <div>
-                    <span className="text-gray-500">入職日：</span>
+                    <span className="text-black">入職日：</span>
                     <span className="text-gray-900 ml-2">{selectedEmployee.hireDate}</span>
                   </div>
                 </div>
@@ -469,12 +483,12 @@ export default function SalaryManagementPage() {
                             }`}>
                               {ADJUSTMENT_TYPES[h.adjustmentType as keyof typeof ADJUSTMENT_TYPES]?.label || h.adjustmentType}
                             </span>
-                            <span className="text-sm text-gray-500 ml-2">
+                            <span className="text-sm text-black ml-2">
                               生效日期：{h.effectiveDate}
                             </span>
                           </div>
                           <div className="text-right">
-                            <div className="font-semibold">${h.baseSalary.toLocaleString()}</div>
+                            <div className="font-semibold text-black">${h.baseSalary.toLocaleString()}</div>
                             {h.adjustmentAmount && (
                               <div className={`text-sm ${h.adjustmentAmount > 0 ? 'text-green-600' : 'text-red-600'}`}>
                                 {h.adjustmentAmount > 0 ? '+' : ''}{h.adjustmentAmount.toLocaleString()}
@@ -483,9 +497,9 @@ export default function SalaryManagementPage() {
                           </div>
                         </div>
                         {h.reason && (
-                          <p className="text-sm text-gray-600 mt-2">{h.reason}</p>
+                          <p className="text-sm text-black mt-2">{h.reason}</p>
                         )}
-                        <div className="text-xs text-gray-400 mt-2">
+                        <div className="text-xs text-gray-900 mt-2">
                           核准人：{h.approvedBy} | 建立時間：{new Date(h.createdAt).toLocaleString()}
                         </div>
                       </div>
@@ -519,12 +533,12 @@ export default function SalaryManagementPage() {
               
               <div className="px-6 py-4 space-y-4">
                 <div className="bg-gray-50 rounded-lg p-3">
-                  <span className="text-gray-500">目前月薪：</span>
-                  <span className="font-semibold ml-2">${selectedEmployee.baseSalary.toLocaleString()}</span>
+                  <span className="text-black">目前月薪：</span>
+                  <span className="font-semibold text-black ml-2">${selectedEmployee.baseSalary.toLocaleString()}</span>
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                  <label className="block text-sm font-medium text-black mb-1">
                     <Calendar className="inline w-4 h-4 mr-1" />
                     生效日期
                   </label>
@@ -532,12 +546,12 @@ export default function SalaryManagementPage() {
                     type="date"
                     value={adjustForm.effectiveDate}
                     onChange={(e) => setAdjustForm({ ...adjustForm, effectiveDate: e.target.value })}
-                    className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+                    className="w-full px-3 py-2 border rounded-lg bg-white text-black focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                  <label className="block text-sm font-medium text-black mb-1">
                     <DollarSign className="inline w-4 h-4 mr-1" />
                     新月薪
                   </label>
@@ -545,30 +559,30 @@ export default function SalaryManagementPage() {
                     type="number"
                     value={adjustForm.newBaseSalary}
                     onChange={(e) => setAdjustForm({ ...adjustForm, newBaseSalary: e.target.value })}
-                    className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+                    className="w-full px-3 py-2 border rounded-lg bg-white text-black placeholder:text-gray-500 focus:ring-2 focus:ring-blue-500"
                     placeholder="輸入新月薪"
                   />
                   {adjustForm.newBaseSalary && (
-                    <div className="text-sm text-gray-500 mt-1">
+                    <div className="text-sm text-black mt-1">
                       調整金額：
-                      <span className={Number(adjustForm.newBaseSalary) > selectedEmployee.baseSalary ? 'text-green-600' : 'text-red-600'}>
-                        {Number(adjustForm.newBaseSalary) > selectedEmployee.baseSalary ? '+' : ''}
-                        {(Number(adjustForm.newBaseSalary) - selectedEmployee.baseSalary).toLocaleString()}
+                      <span className={(adjustmentAmountPreview || 0) > 0 ? 'text-green-600' : 'text-red-600'}>
+                        {(adjustmentAmountPreview || 0) > 0 ? '+' : ''}
+                        {(adjustmentAmountPreview || 0).toLocaleString()}
                       </span>
-                      {' | 新時薪：$'}
-                      {(Number(adjustForm.newBaseSalary) / 240).toFixed(2)}
+                      {' | 新時薪（四捨五入）：$'}
+                      {newHourlyRatePreview?.toLocaleString() || '-'}
                     </div>
                   )}
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                  <label className="block text-sm font-medium text-black mb-1">
                     調整類型
                   </label>
                   <select
                     value={adjustForm.adjustmentType}
                     onChange={(e) => setAdjustForm({ ...adjustForm, adjustmentType: e.target.value })}
-                    className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+                    className="w-full px-3 py-2 border rounded-lg bg-white text-black focus:ring-2 focus:ring-blue-500"
                   >
                     <option value="RAISE">調薪</option>
                     <option value="PROMOTION">晉升</option>
@@ -577,26 +591,26 @@ export default function SalaryManagementPage() {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                  <label className="block text-sm font-medium text-black mb-1">
                     調整原因
                   </label>
                   <input
                     type="text"
                     value={adjustForm.reason}
                     onChange={(e) => setAdjustForm({ ...adjustForm, reason: e.target.value })}
-                    className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+                    className="w-full px-3 py-2 border rounded-lg bg-white text-black placeholder:text-gray-500 focus:ring-2 focus:ring-blue-500"
                     placeholder="例：年度調薪、表現優異"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                  <label className="block text-sm font-medium text-black mb-1">
                     備註（選填）
                   </label>
                   <textarea
                     value={adjustForm.notes}
                     onChange={(e) => setAdjustForm({ ...adjustForm, notes: e.target.value })}
-                    className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+                    className="w-full px-3 py-2 border rounded-lg bg-white text-black placeholder:text-gray-500 focus:ring-2 focus:ring-blue-500"
                     rows={2}
                     placeholder="其他備註..."
                   />
@@ -606,7 +620,7 @@ export default function SalaryManagementPage() {
               <div className="flex justify-end gap-3 px-6 py-4 border-t">
                 <button
                   onClick={() => setShowAdjustModal(false)}
-                  className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200"
+                  className="px-4 py-2 text-black bg-gray-100 rounded-lg hover:bg-gray-200"
                 >
                   取消
                 </button>

@@ -20,6 +20,7 @@ import {
 } from '@/lib/property-maintenance-utils';
 import { normalizePropertyAttachmentPath } from '@/lib/property-attachment-paths';
 import { isCode128Compatible } from '@/lib/property-barcode';
+import { normalizePropertyAuditStatus } from '@/lib/property-audit-status';
 
 export interface ImportOptions {
   siteId?: number;
@@ -425,7 +426,7 @@ export async function importPropertyWorkbook(
         otherNote: cell(row, cm.otherNote ?? -1),
         photoPath: normalizePropertyAttachmentPath(cell(row, cm.maintPhoto ?? -1)),
         signaturePath: normalizePropertyAttachmentPath(cell(row, cm.maintSignature ?? -1)),
-        auditStatus: cell(row, cm.auditStatus ?? -1),
+        auditStatus: normalizePropertyAuditStatus(cell(row, cm.auditStatus ?? -1)),
         rejectReason: cell(row, cm.rejectReason ?? -1),
         supervisorName: cell(row, cm.supervisorName ?? -1),
         supervisorAuditDate: excelSerialToDate(row[cm.supervisorDate ?? -1]),

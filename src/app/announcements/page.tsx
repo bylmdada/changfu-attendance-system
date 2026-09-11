@@ -6,10 +6,12 @@ import {
   FileText, User, Calendar, Clock, AlertTriangle, CheckCircle,
   Eye, EyeOff, Upload, X, Building2, Pin, ChevronDown, ChevronUp
 } from 'lucide-react';
-import { DEPARTMENT_OPTIONS } from '@/constants/departments';
 import { fetchWithCSRF, fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
+import EmptyState from '@/components/EmptyState';
 import ApprovalProgress, { ApprovalReviewRecord } from '@/components/ApprovalProgress';
+import { useActiveEmployeeDepartments } from '@/components/EmployeeListSelect';
+import ConfirmDialog from '@/components/ConfirmDialog';
 
 
 interface Announcement {
@@ -164,8 +166,10 @@ export default function AnnouncementsPage() {
     priority: '',
     category: '',
     isPublished: '',
+    department: '',
     search: ''
   });
+  const { departments } = useActiveEmployeeDepartments();
 
   // 排序狀態
   const [sortConfig, setSortConfig] = useState<{
@@ -178,6 +182,8 @@ export default function AnnouncementsPage() {
 
   // 刪除確認對話框狀態
   const [deleteConfirm, setDeleteConfirm] = useState<{ id: number; title: string } | null>(null);
+  const [batchDeleteConfirmOpen, setBatchDeleteConfirmOpen] = useState(false);
+  const [batchDeleting, setBatchDeleting] = useState(false);
 
   // 預覽狀態
   const [previewAnnouncement, setPreviewAnnouncement] = useState<Announcement | null>(null);
@@ -231,6 +237,13 @@ export default function AnnouncementsPage() {
       filtered = filtered.filter(ann => 
         ann.isPublished === (filters.isPublished === 'true')
       );
+    }
+
+    if (filters.department) {
+      filtered = filtered.filter((ann) => {
+        if (ann.isGlobalAnnouncement) return true;
+        return parseTargetDepartments(ann.targetDepartments).includes(filters.department);
+      });
     }
 
     if (filters.search) {
@@ -338,7 +351,7 @@ export default function AnnouncementsPage() {
 
     // 驗證部門選擇
     if (!newAnnouncement.isGlobalAnnouncement && newAnnouncement.selectedDepartments.length === 0) {
-      alert('請至少選擇一個部門，或選擇全部部門發送通告');
+      showToast('error', '請至少選擇一個部門，或選擇全部部門發送通告');
       return;
     }
 
@@ -377,16 +390,16 @@ export default function AnnouncementsPage() {
 
       if (response.ok) {
         const data = await response.json();
-        alert(data.message);
+        showToast('success', data.message);
         setShowNewAnnouncementForm(false);
         resetForm();
         fetchAnnouncements();
       } else {
         const error = await response.json();
-        alert(error.error);
+        showToast('error', error.error);
       }
     } catch {
-      alert('提交失敗，請稍後再試');
+      showToast('error', '提交失敗，請稍後再試');
     } finally {
       setCreatingAnnouncement(false);
     }
@@ -400,7 +413,7 @@ export default function AnnouncementsPage() {
     if (editingAnnouncement.isGlobalAnnouncement === false) {
       const selectedDepts = parseTargetDepartments(editingAnnouncement.targetDepartments);
       if (selectedDepts.length === 0) {
-        alert('請至少選擇一個部門，或選擇全部部門發送通告');
+        showToast('error', '請至少選擇一個部門，或選擇全部部門發送通告');
         return;
       }
     }
@@ -425,16 +438,16 @@ export default function AnnouncementsPage() {
 
       if (response.ok) {
         const data = await response.json();
-        alert(data.message);
+        showToast('success', data.message);
         setShowEditForm(false);
         setEditingAnnouncement(null);
         fetchAnnouncements();
       } else {
         const error = await response.json();
-        alert(error.error);
+        showToast('error', error.error);
       }
     } catch {
-      alert('更新失敗，請稍後再試');
+      showToast('error', '更新失敗，請稍後再試');
     } finally {
       setUpdatingAnnouncement(false);
     }
@@ -595,16 +608,19 @@ export default function AnnouncementsPage() {
     }
   };
 
-  // 批量刪除
-  const handleBatchDelete = async () => {
+  const requestBatchDelete = () => {
     if (selectedIds.size === 0) {
       showToast('error', '請先選擇公告');
       return;
     }
 
-    if (!confirm(`確定要刪除 ${selectedIds.size} 個公告嗎？此操作無法復原。`)) return;
+    setBatchDeleteConfirmOpen(true);
+  };
 
+  // 批量刪除
+  const handleBatchDelete = async () => {
     try {
+      setBatchDeleting(true);
       const selectedIdList = Array.from(selectedIds);
       const promises = selectedIdList.map(id =>
         fetchJSONWithCSRF(`/api/announcements/${id}`, {
@@ -631,6 +647,9 @@ export default function AnnouncementsPage() {
       await fetchAnnouncements();
     } catch {
       showToast('error', '批量刪除失敗');
+    } finally {
+      setBatchDeleting(false);
+      setBatchDeleteConfirmOpen(false);
     }
   };
 
@@ -691,10 +710,10 @@ export default function AnnouncementsPage() {
         window.URL.revokeObjectURL(url);
         document.body.removeChild(a);
       } else {
-        alert('下載失敗');
+        showToast('error', '下載失敗');
       }
     } catch {
-      alert('下載失敗，請稍後再試');
+      showToast('error', '下載失敗，請稍後再試');
     }
   };
 
@@ -923,7 +942,7 @@ export default function AnnouncementsPage() {
             <h2 className="text-lg font-semibold text-gray-900">篩選條件</h2>
           </div>
           
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">搜索</label>
               <div className="relative">
@@ -980,6 +999,20 @@ export default function AnnouncementsPage() {
                 </select>
               </div>
             )}
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">部門</label>
+              <select
+                value={filters.department}
+                onChange={(e) => setFilters({ ...filters, department: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900"
+              >
+                <option value="">全部部門</option>
+                {departments.map((department) => (
+                  <option key={department} value={department}>{department}</option>
+                ))}
+              </select>
+            </div>
           </div>
         </div>
 
@@ -1040,7 +1073,7 @@ export default function AnnouncementsPage() {
                 批量取消
               </button>
               <button
-                onClick={handleBatchDelete}
+                onClick={requestBatchDelete}
                 className="px-3 py-1.5 text-sm bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors"
               >
                 批量刪除
@@ -1250,10 +1283,11 @@ export default function AnnouncementsPage() {
           ))}
 
           {filteredAnnouncements.length === 0 && (
-            <div className="text-center py-12">
-              <Megaphone className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-              <p className="text-gray-500">尚無公告記錄</p>
-            </div>
+            <EmptyState
+              icon={<Megaphone className="h-12 w-12" />}
+              title="尚無公告記錄"
+              description="目前條件下沒有可顯示的公告。"
+            />
           )}
         </div>
       </div>
@@ -1391,7 +1425,7 @@ export default function AnnouncementsPage() {
                         
                         {!newAnnouncement.isGlobalAnnouncement && (
                           <div className="mt-2 grid grid-cols-2 gap-2 p-3 border border-gray-200 rounded-md bg-gray-50">
-                            {DEPARTMENT_OPTIONS.map((department) => (
+                            {departments.map((department) => (
                               <div key={department} className="flex items-center">
                                 <input
                                   type="checkbox"
@@ -1616,7 +1650,7 @@ export default function AnnouncementsPage() {
                         
                         {editingAnnouncement.isGlobalAnnouncement === false && (
                           <div className="mt-2 grid grid-cols-2 gap-2 p-3 border border-gray-200 rounded-md bg-gray-50">
-                            {DEPARTMENT_OPTIONS.map((department) => {
+                            {departments.map((department) => {
                               const currentDepartments = parseTargetDepartments(editingAnnouncement.targetDepartments);
                               return (
                                 <div key={department} className="flex items-center">
@@ -1701,6 +1735,19 @@ export default function AnnouncementsPage() {
           {toast.message}
         </div>
       )}
+
+      <ConfirmDialog
+        open={batchDeleteConfirmOpen}
+        title="確認批量刪除公告"
+        message={`確定要刪除 ${selectedIds.size} 個公告嗎？\n\n此操作無法復原。`}
+        tone="danger"
+        confirmLabel="批量刪除"
+        loading={batchDeleting}
+        onCancel={() => {
+          if (!batchDeleting) setBatchDeleteConfirmOpen(false);
+        }}
+        onConfirm={handleBatchDelete}
+      />
 
       {/* 刪除確認對話框 */}
       {deleteConfirm && (

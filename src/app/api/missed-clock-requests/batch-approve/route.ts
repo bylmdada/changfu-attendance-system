@@ -5,6 +5,8 @@ import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
+import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
+import { applyMissedClockToAttendance, getMissedClockWorkDate } from '@/lib/missed-clock-attendance';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -167,6 +169,11 @@ export async function POST(request: NextRequest) {
         const approvedAt = new Date();
 
         if (action === 'APPROVED') {
+          const freezeCheck = await checkAttendanceFreeze(getMissedClockWorkDate(req.workDate));
+          if (freezeCheck.isFrozen) {
+            return NextResponse.json({ error: '該月份已被凍結，無法核准補卡申請', failedIds: [req.id] }, { status: 403 });
+          }
+
           await prisma.$transaction(async (tx) => {
             await tx.missedClockRequest.update({
               where: { id: req.id },
@@ -178,46 +185,7 @@ export async function POST(request: NextRequest) {
               }
             });
 
-            const existingAttendance = await tx.attendanceRecord.findFirst({
-              where: {
-                employeeId: req.employeeId,
-                workDate: new Date(req.workDate)
-              }
-            });
-
-            if (existingAttendance) {
-              const updateData: { clockInTime?: string; clockOutTime?: string } = {};
-              if (req.clockType === 'CLOCK_IN') {
-                updateData.clockInTime = req.requestedTime;
-              } else {
-                updateData.clockOutTime = req.requestedTime;
-              }
-
-              await tx.attendanceRecord.update({
-                where: { id: existingAttendance.id },
-                data: updateData
-              });
-            } else {
-              const createData: {
-                employeeId: number;
-                workDate: Date;
-                status: string;
-                clockInTime?: string;
-                clockOutTime?: string;
-              } = {
-                employeeId: req.employeeId,
-                workDate: new Date(req.workDate),
-                status: 'PRESENT'
-              };
-
-              if (req.clockType === 'CLOCK_IN') {
-                createData.clockInTime = req.requestedTime;
-              } else {
-                createData.clockOutTime = req.requestedTime;
-              }
-
-              await tx.attendanceRecord.create({ data: createData });
-            }
+            await applyMissedClockToAttendance(tx, req);
           });
         } else {
           await prisma.missedClockRequest.update({

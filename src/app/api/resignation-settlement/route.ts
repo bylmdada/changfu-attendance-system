@@ -4,6 +4,7 @@ import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { safeParseJSON } from '@/lib/validation';
+import { calculateMonthlySalaryHourlyRate } from '@/lib/hourly-rate';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -200,25 +201,7 @@ export async function POST(request: NextRequest) {
     const totalAnnualLeaveDays = annualLeaves.reduce((sum, leave) => sum + (leave.remainingDays || 0), 0);
 
     // ==================== 3. 計算結算金額 ====================
-    // 取得系統設定的每月基本工時
-    const overtimeSettings = await prisma.systemSettings.findUnique({
-      where: { key: 'overtime_calculation_settings' }
-    });
-
-    let monthlyBasicHours = 240;
-    if (overtimeSettings) {
-      try {
-        const parsed = JSON.parse(overtimeSettings.value) as { monthlyBasicHours?: unknown };
-        if (typeof parsed.monthlyBasicHours === 'number' && parsed.monthlyBasicHours > 0) {
-          monthlyBasicHours = parsed.monthlyBasicHours;
-        }
-      } catch (error) {
-        console.warn('Failed to parse overtime calculation settings for resignation settlement:', error);
-      }
-    }
-
-    // 計算時薪 = 月薪 / 每月基本工時
-    const hourlyRate = employee.baseSalary / monthlyBasicHours;
+    const hourlyRate = employee.hourlyRate || calculateMonthlySalaryHourlyRate(employee.baseSalary);
     
     // 補休結算金額 = 剩餘時數 × 時薪
     const compLeaveAmount = Math.round(totalCompLeaveHours * hourlyRate);

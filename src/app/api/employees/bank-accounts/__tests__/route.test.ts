@@ -73,12 +73,14 @@ describe('employee bank accounts route guards', () => {
         id: 10,
         name: '王小明',
         idNumber: null,
+        bankAccount: null,
       },
     ] as never);
     mockedPrisma.employee.findFirst.mockResolvedValue({
       id: 10,
       name: '王小明',
       idNumber: null,
+      bankAccount: null,
     } as never);
   });
 
@@ -290,6 +292,7 @@ describe('employee bank accounts route guards', () => {
 
     expect(response.status).toBe(200);
     expect(data.successCount).toBe(0);
+    expect(data.skippedCount).toBe(0);
     expect(data.errorCount).toBe(1);
     expect(data.errors).toEqual([
       { name: '王小明', error: '銀行帳號格式不正確（應為10-16位數字）' },
@@ -320,9 +323,96 @@ describe('employee bank accounts route guards', () => {
 
     expect(response.status).toBe(200);
     expect(data.successCount).toBe(0);
+    expect(data.skippedCount).toBe(0);
     expect(data.errorCount).toBe(1);
     expect(data.errors).toEqual([
       { name: '王小明', error: '身分證字號格式不正確（應為1個英文字母加9個數字）' },
+    ]);
+    expect(mockedPrisma.employee.update).not.toHaveBeenCalled();
+  });
+
+  it('treats unchanged import rows as skipped instead of failed', async () => {
+    mockedPrisma.employee.findMany.mockResolvedValue([
+      {
+        id: 10,
+        name: '王小明',
+        idNumber: 'A123456789',
+        bankAccount: '20592000081113',
+      },
+    ] as never);
+
+    const request = new NextRequest('http://localhost:3000/api/employees/bank-accounts', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: 'token=shared-session-token',
+        'x-csrf-token': 'csrf-token',
+      },
+      body: JSON.stringify({
+        records: [
+          {
+            name: '王小明',
+            idNumber: 'A123456789',
+            bankAccount: '20592000081113',
+          },
+        ],
+      }),
+    });
+
+    const response = await POST(request);
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.success).toBe(true);
+    expect(data.successCount).toBe(0);
+    expect(data.skippedCount).toBe(1);
+    expect(data.errorCount).toBe(0);
+    expect(mockedPrisma.employee.update).not.toHaveBeenCalled();
+  });
+
+  it('blocks name-based import when the same name matches multiple employees', async () => {
+    mockedPrisma.employee.findMany.mockResolvedValue([
+      {
+        id: 10,
+        name: '王小明',
+        idNumber: null,
+        bankAccount: null,
+      },
+      {
+        id: 11,
+        name: '王小明',
+        idNumber: null,
+        bankAccount: null,
+      },
+    ] as never);
+
+    const request = new NextRequest('http://localhost:3000/api/employees/bank-accounts', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: 'token=shared-session-token',
+        'x-csrf-token': 'csrf-token',
+      },
+      body: JSON.stringify({
+        records: [
+          {
+            name: '王小明',
+            bankAccount: '20592000081113',
+          },
+        ],
+      }),
+    });
+
+    const response = await POST(request);
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.success).toBe(true);
+    expect(data.successCount).toBe(0);
+    expect(data.skippedCount).toBe(1);
+    expect(data.errorCount).toBe(0);
+    expect(data.skipped).toEqual([
+      { name: '王小明', reason: '姓名「王小明」對應到多位員工，請補齊身分證字號後再匯入，避免匯錯帳號' },
     ]);
     expect(mockedPrisma.employee.update).not.toHaveBeenCalled();
   });

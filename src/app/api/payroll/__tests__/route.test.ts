@@ -119,4 +119,29 @@ describe('payroll route body guards', () => {
     expect(mockGetUserFromRequest).not.toHaveBeenCalled();
     expect(mockPrisma.payrollRecord.findMany).not.toHaveBeenCalled();
   });
+
+  it('rejects payroll creation for inactive employees', async () => {
+    mockPrisma.payrollRecord.findFirst.mockResolvedValue(null as never);
+    mockPrisma.employee.findUnique.mockResolvedValue({
+      id: 100,
+      isActive: false,
+    } as never);
+
+    const request = new NextRequest('http://localhost/api/payroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        employeeId: 100,
+        payYear: 2026,
+        payMonth: 6,
+      }),
+    });
+
+    const response = await POST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload.error).toBe('只能為活躍員工建立薪資記錄');
+    expect(mockPrisma.attendanceRecord.findMany).not.toHaveBeenCalled();
+  });
 });

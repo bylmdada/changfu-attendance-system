@@ -3,7 +3,7 @@ const mockPrisma = {
     findFirst: jest.fn()
   },
   approvalWorkflow: {
-    findUnique: jest.fn()
+    findMany: jest.fn()
   },
   approvalInstance: {
     create: jest.fn()
@@ -179,13 +179,19 @@ describe('approval review guards', () => {
   });
 
   it('creates direct-admin instances as single-stage level-one reviews', async () => {
-    mockPrisma.approvalWorkflow.findUnique.mockResolvedValue({
+    mockPrisma.approvalWorkflow.findMany.mockResolvedValue([{
+      workflowType: 'ANNOUNCEMENT',
+      department: 'Operations',
+      workflowName: '公告',
       approvalLevel: 3,
       requireManager: false,
       finalApprover: 'MANAGER',
       deadlineMode: 'FIXED',
-      deadlineHours: 24
-    });
+      deadlineHours: 24,
+      enableForward: false,
+      enableCC: false,
+      isActive: true
+    }]);
     mockPrisma.approvalInstance.create.mockResolvedValue({ id: 55 });
 
     await createApprovalInstance({

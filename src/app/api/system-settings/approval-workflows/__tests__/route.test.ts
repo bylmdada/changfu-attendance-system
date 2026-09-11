@@ -2,7 +2,9 @@ jest.mock('@/lib/database', () => ({
   prisma: {
     approvalWorkflow: {
       findMany: jest.fn(),
-      update: jest.fn()
+      update: jest.fn(),
+      create: jest.fn(),
+      deleteMany: jest.fn()
     },
     approvalFreezeReminder: {
       findFirst: jest.fn(),
@@ -116,7 +118,7 @@ describe('approval workflows route', () => {
     expect(mockPrisma.approvalWorkflow.update).toHaveBeenCalledWith({
       where: { id: 7 },
       data: {
-        approvalLevel: 3,
+        approvalLevel: 2,
         requireManager: true,
         deadlineMode: 'FREEZE_BASED',
         deadlineHours: 48,
@@ -129,6 +131,78 @@ describe('approval workflows route', () => {
         daysBeforeFreeze1: 5,
         daysBeforeFreeze2: 2,
         freezeDayReminderTime: '08:30'
+      }
+    });
+    expect(mockClearWorkflowCache).toHaveBeenCalled();
+  });
+
+  it('creates department-specific workflow overrides on PUT', async () => {
+    mockPrisma.approvalWorkflow.create.mockResolvedValue({ id: 12 } as never);
+
+    const request = new NextRequest('http://localhost/api/system-settings/approval-workflows', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        workflows: [
+          {
+            id: -1,
+            workflowType: 'LEAVE',
+            workflowName: '請假審核',
+            department: '溪北輔具中心',
+            approvalLevel: 1,
+            requireManager: false,
+            deadlineMode: 'FIXED',
+            deadlineHours: 12,
+            enableForward: true,
+            enableCC: true
+          }
+        ]
+      })
+    });
+
+    const response = await PUT(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.success).toBe(true);
+    expect(mockPrisma.approvalWorkflow.create).toHaveBeenCalledWith({
+      data: {
+        workflowType: 'LEAVE',
+        workflowName: '請假審核',
+        department: '溪北輔具中心',
+        approvalLevel: 1,
+        requireManager: false,
+        finalApprover: 'ADMIN',
+        deadlineMode: 'FIXED',
+        deadlineHours: 12,
+        enableForward: true,
+        enableCC: true,
+        isActive: true
+      }
+    });
+    expect(mockClearWorkflowCache).toHaveBeenCalled();
+  });
+
+  it('deletes department workflow overrides but preserves company defaults', async () => {
+    mockPrisma.approvalWorkflow.deleteMany.mockResolvedValue({ count: 2 } as never);
+
+    const request = new NextRequest('http://localhost/api/system-settings/approval-workflows', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        deletedWorkflowIds: [11, 12]
+      })
+    });
+
+    const response = await PUT(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.success).toBe(true);
+    expect(mockPrisma.approvalWorkflow.deleteMany).toHaveBeenCalledWith({
+      where: {
+        id: { in: [11, 12] },
+        department: { not: '__ALL__' }
       }
     });
     expect(mockClearWorkflowCache).toHaveBeenCalled();

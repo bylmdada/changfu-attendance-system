@@ -8,9 +8,15 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
-import { clearWorkflowCache, getEffectiveApprovalLevel } from '@/lib/approval-workflow';
+import {
+  DEFAULT_APPROVAL_WORKFLOW_DEPARTMENT,
+  clearWorkflowCache,
+  getEffectiveApprovalLevel,
+  normalizeApprovalWorkflowDepartment
+} from '@/lib/approval-workflow';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { safeParseJSON } from '@/lib/validation';
+import { logSystemSettingsChange } from '@/lib/system-settings-audit';
 
 const DEFAULT_FREEZE_REMINDER = {
   id: 0,
@@ -23,6 +29,9 @@ const DEADLINE_MODES = new Set(['FIXED', 'FREEZE_BASED']);
 
 type WorkflowUpdateInput = {
   id: number;
+  workflowType?: string;
+  workflowName?: string;
+  department: string;
   approvalLevel: number;
   requireManager: boolean;
   deadlineMode: string;
@@ -40,6 +49,7 @@ type FreezeReminderInput = {
 type WorkflowResponse = {
   id: number;
   workflowType: string;
+  department: string;
   workflowName: string;
   approvalLevel: number;
   requireManager: boolean;
@@ -67,6 +77,9 @@ function parseWorkflowUpdate(value: unknown): WorkflowUpdateInput | null {
   }
 
   const id = value.id;
+  const workflowType = value.workflowType;
+  const workflowName = value.workflowName;
+  const department = value.department;
   const approvalLevel = value.approvalLevel;
   const requireManager = value.requireManager;
   const deadlineMode = value.deadlineMode;
@@ -74,7 +87,26 @@ function parseWorkflowUpdate(value: unknown): WorkflowUpdateInput | null {
   const enableForward = value.enableForward;
   const enableCC = value.enableCC;
 
-  if (typeof id !== 'number' || !Number.isInteger(id) || id <= 0) {
+  if (typeof id !== 'number' || !Number.isInteger(id)) {
+    return null;
+  }
+
+  const isNewWorkflow = id <= 0;
+  if (isNewWorkflow) {
+    if (typeof workflowType !== 'string' || workflowType.trim().length === 0) {
+      return null;
+    }
+
+    if (typeof workflowName !== 'string' || workflowName.trim().length === 0) {
+      return null;
+    }
+  } else if (workflowType !== undefined && (typeof workflowType !== 'string' || workflowType.trim().length === 0)) {
+    return null;
+  } else if (workflowName !== undefined && (typeof workflowName !== 'string' || workflowName.trim().length === 0)) {
+    return null;
+  }
+
+  if (department !== undefined && department !== null && typeof department !== 'string') {
     return null;
   }
 
@@ -102,6 +134,9 @@ function parseWorkflowUpdate(value: unknown): WorkflowUpdateInput | null {
 
   return {
     id,
+    workflowType: typeof workflowType === 'string' ? workflowType.trim() : undefined,
+    workflowName: typeof workflowName === 'string' ? workflowName.trim() : undefined,
+    department: normalizeApprovalWorkflowDepartment(typeof department === 'string' ? department : undefined),
     approvalLevel,
     requireManager,
     deadlineMode,
@@ -109,6 +144,26 @@ function parseWorkflowUpdate(value: unknown): WorkflowUpdateInput | null {
     enableForward,
     enableCC,
   };
+}
+
+function parseDeletedWorkflowIds(value: unknown): number[] | null {
+  if (value === undefined) {
+    return [];
+  }
+
+  if (!Array.isArray(value)) {
+    return null;
+  }
+
+  const ids = value.map((item) => (
+    typeof item === 'number' && Number.isInteger(item) && item > 0 ? item : null
+  ));
+
+  if (ids.some((item) => item === null)) {
+    return null;
+  }
+
+  return Array.from(new Set(ids as number[]));
 }
 
 function parseFreezeReminder(value: unknown): FreezeReminderInput | null {
@@ -149,6 +204,7 @@ function normalizeWorkflowUpdate(input: WorkflowUpdateInput): WorkflowUpdateInpu
 function normalizeWorkflowResponse(workflow: WorkflowResponse): WorkflowResponse {
   return {
     ...workflow,
+    department: normalizeApprovalWorkflowDepartment(workflow.department),
     approvalLevel: getEffectiveApprovalLevel(workflow.approvalLevel, workflow.requireManager),
     finalApprover: workflow.requireManager ? workflow.finalApprover : 'ADMIN'
   };
@@ -173,7 +229,10 @@ export async function GET(request: NextRequest) {
 
     // 取得所有工作流程
     const workflows = await prisma.approvalWorkflow.findMany({
-      orderBy: { id: 'asc' }
+      orderBy: [
+        { department: 'asc' },
+        { id: 'asc' }
+      ]
     });
 
     // 取得凍結提醒設定
@@ -249,7 +308,7 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: '請提供有效的設定資料' }, { status: 400 });
     }
 
-    const { workflows, freezeReminder } = data;
+    const { workflows, deletedWorkflowIds, freezeReminder } = data;
 
     const workflowUpdates: WorkflowUpdateInput[] = [];
     if (workflows !== undefined) {
@@ -267,6 +326,11 @@ export async function PUT(request: NextRequest) {
       }
     }
 
+    const parsedDeletedWorkflowIds = parseDeletedWorkflowIds(deletedWorkflowIds);
+    if (!parsedDeletedWorkflowIds) {
+      return NextResponse.json({ error: '刪除工作流程設定格式不正確' }, { status: 400 });
+    }
+
     const parsedFreezeReminder = freezeReminder === undefined
       ? null
       : parseFreezeReminder(freezeReminder);
@@ -275,20 +339,49 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: '凍結提醒設定格式不正確' }, { status: 400 });
     }
 
+    const [oldWorkflows, oldFreezeReminder] = await Promise.all([
+      prisma.approvalWorkflow.findMany({ orderBy: [{ workflowType: 'asc' }, { department: 'asc' }] }),
+      prisma.approvalFreezeReminder.findFirst(),
+    ]);
+
     await prisma.$transaction(async (tx) => {
+      if (parsedDeletedWorkflowIds.length > 0) {
+        await tx.approvalWorkflow.deleteMany({
+          where: {
+            id: { in: parsedDeletedWorkflowIds },
+            department: { not: DEFAULT_APPROVAL_WORKFLOW_DEPARTMENT }
+          }
+        });
+      }
+
       if (workflowUpdates.length > 0) {
         for (const wf of workflowUpdates) {
-          await tx.approvalWorkflow.update({
-            where: { id: wf.id },
-            data: {
-              approvalLevel: wf.approvalLevel,
-              requireManager: wf.requireManager,
-              deadlineMode: wf.deadlineMode,
-              deadlineHours: wf.deadlineHours,
-              enableForward: wf.enableForward,
-              enableCC: wf.enableCC
-            }
-          });
+          const workflowData = {
+            approvalLevel: wf.approvalLevel,
+            requireManager: wf.requireManager,
+            deadlineMode: wf.deadlineMode,
+            deadlineHours: wf.deadlineHours,
+            enableForward: wf.enableForward,
+            enableCC: wf.enableCC
+          };
+
+          if (wf.id > 0) {
+            await tx.approvalWorkflow.update({
+              where: { id: wf.id },
+              data: workflowData
+            });
+          } else {
+            await tx.approvalWorkflow.create({
+              data: {
+                workflowType: wf.workflowType!,
+                workflowName: wf.workflowName!,
+                department: wf.department,
+                ...workflowData,
+                finalApprover: 'ADMIN',
+                isActive: true
+              }
+            });
+          }
         }
       }
 
@@ -315,9 +408,23 @@ export async function PUT(request: NextRequest) {
       }
     });
 
-    if (workflowUpdates.length > 0) {
+    if (workflowUpdates.length > 0 || parsedDeletedWorkflowIds.length > 0) {
       clearWorkflowCache();
     }
+
+    const [newWorkflows, newFreezeReminder] = await Promise.all([
+      prisma.approvalWorkflow.findMany({ orderBy: [{ workflowType: 'asc' }, { department: 'asc' }] }),
+      prisma.approvalFreezeReminder.findFirst(),
+    ]);
+
+    await logSystemSettingsChange({
+      request,
+      user,
+      settingKey: 'approval-workflows',
+      description: '審核流程設定變更',
+      oldValue: { workflows: oldWorkflows, freezeReminder: oldFreezeReminder },
+      newValue: { workflows: newWorkflows, freezeReminder: newFreezeReminder },
+    });
 
     return NextResponse.json({
       success: true,

@@ -1,28 +1,14 @@
+import { applyApprovedLeaveAccounting } from '@/lib/annual-leave-schedule-accounting';
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
-import { getAnnualLeaveYearBreakdown } from '@/lib/annual-leave';
-import { isAnnualLeaveType } from '@/lib/leave-types';
-
-interface PrismaWithSchedule {
-  schedule?: {
-    updateMany: (args: { where: Record<string, unknown>; data: Record<string, unknown> }) => Promise<unknown>
-  }
-}
+import { checkAttendanceFreeze, getAttendanceFreezeError } from '@/lib/attendance-freeze';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function toYmd(d: Date) {
-  const tw = new Date(d.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
-  const yyyy = tw.getFullYear();
-  const mm = String(tw.getMonth() + 1).padStart(2, '0');
-  const dd = String(tw.getDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
 }
 
 /**
@@ -116,9 +102,19 @@ export async function POST(request: NextRequest) {
           continue;
         }
 
+        const freezeError = getAttendanceFreezeError(
+          await checkAttendanceFreeze(new Date(leaveRequest.startDate))
+        );
+        if (freezeError) {
+          results.failedIds.push(leaveRequestId);
+          results.errors.push(`ID ${leaveRequestId}: ${freezeError}`);
+          results.failedCount++;
+          continue;
+        }
+
         await prisma.$transaction(async (tx) => {
           await tx.leaveRequest.update({
-            where: { id: leaveRequestId },
+            where: { id: leaveRequestId, status: leaveRequest.status },
             data: {
               status: action,
               approvedBy: user.employeeId,
@@ -127,39 +123,10 @@ export async function POST(request: NextRequest) {
             }
           });
 
-          if (action === 'APPROVED' && isAnnualLeaveType(leaveRequest.leaveType)) {
-            const startDate = new Date(leaveRequest.startDate);
-            const endDate = new Date(leaveRequest.endDate);
-            for (const { year, days } of getAnnualLeaveYearBreakdown(startDate, endDate)) {
-              await tx.annualLeave.updateMany({
-                where: {
-                  employeeId: leaveRequest.employeeId,
-                  year,
-                },
-                data: {
-                  usedDays: { increment: days },
-                  remainingDays: { decrement: days },
-                }
-              });
-            }
+        if (action === 'APPROVED') {
+          await applyApprovedLeaveAccounting(tx, leaveRequest);
+        }
 
-            const txWithSchedule = tx as unknown as PrismaWithSchedule;
-            if (txWithSchedule.schedule) {
-              for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
-                await txWithSchedule.schedule.updateMany({
-                  where: {
-                    employeeId: leaveRequest.employeeId,
-                    workDate: toYmd(d)
-                  },
-                  data: {
-                    shiftType: 'FDL',
-                    startTime: '',
-                    endTime: ''
-                  }
-                });
-              }
-            }
-          }
         });
 
         results.successCount++;

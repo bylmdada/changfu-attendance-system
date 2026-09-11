@@ -5,6 +5,7 @@ import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { safeParseSystemSettingsValue } from '@/lib/system-settings-json';
 import { safeParseJSON } from '@/lib/validation';
+import { logSystemSettingsChange } from '@/lib/system-settings-audit';
 
 const DEFAULT_SETTINGS = {
   compLeaveExpiryMonths: 6,       // 補休 6 個月內使用
@@ -175,6 +176,15 @@ export async function POST(request: NextRequest) {
         value: JSON.stringify(newSettings),
         description: '假期到期設定'
       }
+    });
+
+    await logSystemSettingsChange({
+      request,
+      user: authResult.user,
+      settingKey: 'leave_expiry_settings',
+      description: '假期到期設定變更',
+      oldValue: existingSettings,
+      newValue: newSettings,
     });
 
     return NextResponse.json({

@@ -3,6 +3,7 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { safeParseJSON } from '@/lib/validation';
+import { logSystemSettingsChange } from '@/lib/system-settings-audit';
 
 const MASKED_SMTP_PASSWORD = '********';
 
@@ -207,6 +208,16 @@ export async function POST(request: NextRequest) {
       fromName: normalizeOptionalString(settings.fromName) ?? DEFAULT_SMTP_SETTINGS.fromName,
       smtpPassword: settings.smtpPassword ? MASKED_SMTP_PASSWORD : ''
     };
+
+    await logSystemSettingsChange({
+      request,
+      user,
+      settingKey: 'smtp',
+      description: 'SMTP 設定變更',
+      oldValue: existing,
+      newValue: safeSettings,
+      targetId: settings.id,
+    });
 
     return NextResponse.json({ settings: safeSettings, message: '設定已儲存' });
   } catch (error) {

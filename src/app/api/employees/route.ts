@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import type { Prisma } from '@prisma/client';
 import { getUserFromRequest, hashPassword } from '@/lib/auth';
 import { prisma } from '@/lib/database';
 import { getManageableDepartments } from '@/lib/schedule-management-permissions';
@@ -8,6 +9,7 @@ import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
 import { evaluatePasswordStrength } from '@/lib/password-policy';
 import { getStoredPasswordPolicy } from '@/lib/password-policy-store';
+import { calculateMonthlySalaryHourlyRate } from '@/lib/hourly-rate';
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
@@ -114,9 +116,9 @@ export async function GET(request: NextRequest) {
     }
 
     const [employees, total] = await Promise.all([
-      prisma.employee.findMany({
+      prisma.employee.findMany<Prisma.EmployeeFindManyArgs>({
         where,
-        include: {
+        ...(isFullAdmin ? { include: {
           user: {
             select: {
               id: true,
@@ -134,7 +136,14 @@ export async function GET(request: NextRequest) {
               isPrimary: true
             }
           }
-        },
+        } } : { select: {
+          id: true,
+          employeeId: true,
+          name: true,
+          department: true,
+          position: true,
+          isActive: true,
+        } }),
         orderBy: { createdAt: 'desc' },
         skip,
         take: limit
@@ -257,6 +266,10 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    const effectiveHourlyRate = normalizedEmployeeType === 'MONTHLY'
+      ? calculateMonthlySalaryHourlyRate(normalizedBaseSalary)
+      : normalizedHourlyRate;
+
     // 開始事務處理
     const result = await prisma.$transaction(async (tx) => {
       // 建立員工記錄
@@ -272,12 +285,24 @@ export async function POST(request: NextRequest) {
           emergencyPhone: isNonEmptyString(emergencyPhone) ? emergencyPhone.trim() : '',
           hireDate: new Date(hireDate),
           baseSalary: normalizedBaseSalary,
-          hourlyRate: normalizedHourlyRate,
+          hourlyRate: effectiveHourlyRate,
           department: normalizedDepartment,
           position: normalizedPosition,
           employeeType: normalizedEmployeeType,
           laborInsuranceActive: laborInsuranceActive !== false
         }
+      });
+
+      await tx.salaryHistory.create({
+        data: {
+          employeeId: employee.id,
+          effectiveDate: new Date(hireDate),
+          baseSalary: normalizedBaseSalary,
+          hourlyRate: effectiveHourlyRate,
+          adjustmentType: 'INITIAL',
+          reason: '入職薪資',
+          approvedById: user.employeeId,
+        },
       });
 
       // 如果需要創建帳號

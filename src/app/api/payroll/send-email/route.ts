@@ -213,6 +213,8 @@ export async function POST(request: NextRequest) {
       host: smtpConfig.host,
       port: smtpConfig.port,
       secure: smtpConfig.secure,
+      disableFileAccess: true,
+      disableUrlAccess: true,
       auth: {
         user: smtpConfig.user,
         pass: smtpConfig.password

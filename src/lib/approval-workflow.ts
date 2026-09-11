@@ -4,9 +4,13 @@
  */
 
 import { prisma } from './database';
+import { dbLogger } from './logger';
+
+export const DEFAULT_APPROVAL_WORKFLOW_DEPARTMENT = '__ALL__';
 
 export interface ApprovalWorkflowConfig {
   workflowType: string;
+  department: string;
   workflowName: string;
   approvalLevel: number;       // 1=一階, 2=二階
   requireManager: boolean;     // 是否需主管審核
@@ -17,8 +21,13 @@ export interface ApprovalWorkflowConfig {
   enableCC: boolean;           // 是否 CC 通知 HR
 }
 
+export function normalizeApprovalWorkflowDepartment(department?: string | null): string {
+  const normalized = department?.trim();
+  return normalized ? normalized : DEFAULT_APPROVAL_WORKFLOW_DEPARTMENT;
+}
+
 export function getEffectiveApprovalLevel(approvalLevel: number, requireManager: boolean): number {
-  const normalizedLevel = Math.min(Math.max(approvalLevel, 1), 3);
+  const normalizedLevel = Math.min(Math.max(approvalLevel, 1), 2);
   return requireManager ? normalizedLevel : 1;
 }
 
@@ -33,35 +42,44 @@ export function normalizeApprovalWorkflowConfig(config: ApprovalWorkflowConfig):
 }
 
 // 快取設定，避免每次查詢資料庫
-const workflowCache: Map<string, ApprovalWorkflowConfig> = new Map();
-let cacheExpiry: number = 0;
+const workflowCache: Map<string, { config: ApprovalWorkflowConfig; expiresAt: number }> = new Map();
 const CACHE_TTL = 60 * 1000; // 1 分鐘快取
 
 /**
  * 取得指定類型的審核流程設定
  */
 export async function getApprovalWorkflow(
-  workflowType: 'LEAVE' | 'OVERTIME' | 'MISSED_CLOCK' | 'SHIFT_CHANGE' | 'SHIFT_SWAP' | string
+  workflowType: 'LEAVE' | 'OVERTIME' | 'MISSED_CLOCK' | 'SHIFT_CHANGE' | 'SHIFT_SWAP' | string,
+  options: { department?: string | null } = {}
 ): Promise<ApprovalWorkflowConfig | null> {
-  // 檢查快取是否過期
-  if (Date.now() > cacheExpiry) {
-    workflowCache.clear();
-  }
+  const department = normalizeApprovalWorkflowDepartment(options.department);
+  const cacheKey = `${workflowType}:${department}`;
 
   // 從快取取得
-  if (workflowCache.has(workflowType)) {
-    return workflowCache.get(workflowType)!;
+  const cached = workflowCache.get(cacheKey);
+  if (cached && Date.now() <= cached.expiresAt) {
+    return cached.config;
   }
+  workflowCache.delete(cacheKey);
 
   try {
-    const workflow = await prisma.approvalWorkflow.findUnique({
-      where: { workflowType }
+    const workflowDepartments = department === DEFAULT_APPROVAL_WORKFLOW_DEPARTMENT
+      ? [DEFAULT_APPROVAL_WORKFLOW_DEPARTMENT]
+      : [department, DEFAULT_APPROVAL_WORKFLOW_DEPARTMENT];
+    const workflows = await prisma.approvalWorkflow.findMany({
+      where: {
+        workflowType,
+        department: { in: workflowDepartments }
+      }
     });
+    const workflow = workflows.find((item) => item.isActive && item.department === department)
+      ?? workflows.find((item) => item.isActive && item.department === DEFAULT_APPROVAL_WORKFLOW_DEPARTMENT);
 
     if (!workflow || !workflow.isActive) {
       // 返回預設值
       return normalizeApprovalWorkflowConfig({
         workflowType,
+        department: DEFAULT_APPROVAL_WORKFLOW_DEPARTMENT,
         workflowName: workflowType,
         approvalLevel: 2,
         requireManager: true,
@@ -75,6 +93,7 @@ export async function getApprovalWorkflow(
 
     const config = normalizeApprovalWorkflowConfig({
       workflowType: workflow.workflowType,
+      department: workflow.department,
       workflowName: workflow.workflowName,
       approvalLevel: workflow.approvalLevel,
       requireManager: workflow.requireManager,
@@ -86,15 +105,21 @@ export async function getApprovalWorkflow(
     });
 
     // 存入快取
-    workflowCache.set(workflowType, config);
-    cacheExpiry = Date.now() + CACHE_TTL;
+    workflowCache.set(cacheKey, {
+      config,
+      expiresAt: Date.now() + CACHE_TTL,
+    });
 
     return config;
   } catch (error) {
-    console.error('取得審核流程設定失敗:', error);
+    dbLogger.error('取得審核流程設定失敗，已使用預設流程', {
+      error: error instanceof Error ? error : new Error(String(error)),
+      context: { workflowType, department },
+    });
     // 返回預設值
     return normalizeApprovalWorkflowConfig({
       workflowType,
+      department: DEFAULT_APPROVAL_WORKFLOW_DEPARTMENT,
       workflowName: workflowType,
       approvalLevel: 2,
       requireManager: true,
@@ -120,5 +145,4 @@ export async function isTwoLevelApproval(workflowType: string): Promise<boolean>
  */
 export function clearWorkflowCache() {
   workflowCache.clear();
-  cacheExpiry = 0;
 }

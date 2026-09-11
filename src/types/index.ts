@@ -56,6 +56,7 @@ export type LeaveType =
   | 'MARRIAGE'    // 婚假
   | 'COMPENSATORY' // 補休
   | 'MENSTRUAL'   // 生理假
+  | 'BUSINESS_TRIP' // 公出
   | 'OFFICIAL'    // 公假
   | 'FAMILY_CARE' // 家庭照顧假
   | 'OTHER';      // 其他

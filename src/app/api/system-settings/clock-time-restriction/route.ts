@@ -9,6 +9,7 @@ import {
   parseClockTimeRestrictionSettings,
   type ClockTimeRestrictionSettings,
 } from '@/lib/clock-time-restriction-settings';
+import { logSystemSettingsChange } from '@/lib/system-settings-audit';
 
 const DEFAULT_SETTINGS = DEFAULT_CLOCK_TIME_RESTRICTION_SETTINGS;
 
@@ -184,6 +185,15 @@ export async function POST(request: NextRequest) {
         value: JSON.stringify(newSettings),
         description: '打卡時間限制設定'
       }
+    });
+
+    await logSystemSettingsChange({
+      request,
+      user: authResult.user,
+      settingKey: 'clock_time_restriction',
+      description: '打卡時間限制設定變更',
+      oldValue: baseSettings,
+      newValue: newSettings,
     });
 
     return NextResponse.json({
