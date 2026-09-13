@@ -14,6 +14,7 @@ jest.mock('@/lib/database', () => ({
     approvalInstance: {
       findMany: jest.fn(),
     },
+    schedule: { findMany: jest.fn() },
     systemSettings: {
       findUnique: jest.fn(),
     }
@@ -34,7 +35,7 @@ jest.mock('@/lib/attendance-freeze', () => ({
 }));
 
 jest.mock('@/lib/timezone', () => ({
-  toTaiwanDateStr: jest.fn()
+  toTaiwanDateStr: jest.fn((date: Date) => new Date(date.getTime() + 8 * 3600000).toISOString().slice(0, 10))
 }));
 
 jest.mock('@/lib/csrf', () => ({
@@ -81,8 +82,30 @@ describe('overtime-requests quick auth account status', () => {
     mockPrisma.overtimeRequest.findFirst.mockResolvedValue(null as never);
     mockPrisma.overtimeRequest.findMany.mockResolvedValue([] as never);
     mockPrisma.employee.findMany.mockResolvedValue([] as never);
+    mockPrisma.schedule.findMany.mockResolvedValue([] as never);
     mockPrisma.approvalInstance.findMany.mockResolvedValue([] as never);
     mockPrisma.systemSettings.findUnique.mockResolvedValue(null as never);
+  });
+
+  it('loads schedules once and matches employee plus Taiwan date, including missing schedules', async () => {
+    mockGetUserFromRequest.mockResolvedValue({ role: 'ADMIN', employeeId: 1 } as never);
+    mockPrisma.overtimeRequest.findMany.mockResolvedValue([
+      { id: 1, employeeId: 10, overtimeDate: new Date('2026-09-12T16:30:00Z'), createdAt: new Date(), status: 'PENDING' },
+      { id: 2, employeeId: 20, overtimeDate: new Date('2026-09-12T16:30:00Z'), createdAt: new Date(), status: 'PENDING' },
+      { id: 3, employeeId: 10, overtimeDate: new Date('2026-09-14T00:00:00Z'), createdAt: new Date(), status: 'PENDING' },
+    ] as never);
+    mockPrisma.schedule.findMany.mockResolvedValue([
+      { employeeId: 10, workDate: '2026-09-13', shiftType: 'A', startTime: '08:00', endTime: '16:00' },
+      { employeeId: 20, workDate: '2026-09-13', shiftType: 'B', startTime: '16:00', endTime: '00:00' },
+    ] as never);
+    const response = await GET(new NextRequest('http://localhost/api/overtime-requests'));
+    expect(response.status).toBe(200);
+    const { overtimeRequests } = await response.json();
+    expect(overtimeRequests.map((item: { scheduleShiftType: string | null }) => item.scheduleShiftType)).toEqual(['A', 'B', null]);
+    expect(mockPrisma.schedule.findMany).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.schedule.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: {
+      employeeId: { in: [10, 20] }, workDate: { in: ['2026-09-13', '2026-09-14'] },
+    } }));
   });
 
   it('rejects inactive accounts from submitting overtime with username/password auth', async () => {
