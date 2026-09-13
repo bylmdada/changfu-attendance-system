@@ -18,15 +18,6 @@ import {
 } from '@/lib/overtime-hours';
 import { calculateOvertimeRequestsEligibility } from '@/lib/overtime-eligibility';
 
-// 簡易型別：避免直接耦合到 Prisma 生成客戶端
-interface ScheduleLite { shiftType: string; startTime: string; endTime: string }
-interface PrismaWithSchedule {
-  schedule?: {
-    findFirst: (args: { where: Record<string, unknown>; select: { shiftType: boolean; startTime: boolean; endTime: boolean } }) => Promise<ScheduleLite | null>
-  }
-}
-const db = prisma as unknown as PrismaWithSchedule;
-
 const SHIFT_LABEL = (t: string, s: string, e: string) => {
   const nameMap: Record<string, string> = {
     A: 'A班', B: 'B班', C: 'C班', NH: 'NH', RD: 'RD', rd: 'rd', FDL: 'FDL', OFF: 'OFF'
@@ -263,34 +254,38 @@ export async function GET(request: NextRequest) {
       overtimeRequestsRaw.filter(requestItem => requestItem.status === 'APPROVED')
     );
 
-    // 取得加班當日班別（若 Schedule 模型可用）
-    const overtimeRequests = await Promise.all(
-      overtimeRequestsRaw.map(async (req) => {
-        const requestNumber = buildApplicationRequestNumber('OT', req.id, req.createdAt);
-        const managerReviewer = req.managerReviewerId
-          ? managerReviewerById.get(req.managerReviewerId) ?? null
-          : null;
-        const historyApprover = req.approver
-          ? null
-          : historyApproverByRequestId.get(req.id) ?? null;
-        if (!db.schedule) return { ...req, requestNumber, managerReviewer, historyApprover, scheduleShiftType: null, scheduleStartTime: null, scheduleEndTime: null, scheduleShiftLabel: null };
-        const ymd = toTaiwanDateStr(new Date(req.overtimeDate)); // 我們 Schedule 使用字串 YYYY-MM-DD
-        const schedule = await db.schedule.findFirst({
-          where: { employeeId: req.employeeId, workDate: ymd },
-          select: { shiftType: true, startTime: true, endTime: true }
-        });
-        return {
-          ...req,
-          requestNumber,
-          managerReviewer,
-          historyApprover,
-          scheduleShiftType: schedule?.shiftType || null,
-          scheduleStartTime: schedule?.startTime || null,
-          scheduleEndTime: schedule?.endTime || null,
-          scheduleShiftLabel: schedule ? SHIFT_LABEL(schedule.shiftType, schedule.startTime, schedule.endTime) : null
-        };
-      })
+    const schedules = overtimeRequestsRaw.length > 0
+      ? await prisma.schedule.findMany({
+          where: {
+            employeeId: { in: [...new Set(overtimeRequestsRaw.map(req => req.employeeId))] },
+            workDate: { in: [...new Set(overtimeRequestsRaw.map(req => toTaiwanDateStr(req.overtimeDate)))] },
+          },
+          select: { employeeId: true, workDate: true, shiftType: true, startTime: true, endTime: true },
+        })
+      : [];
+    const scheduleByEmployeeDate = new Map(
+      schedules.map(schedule => [`${schedule.employeeId}-${schedule.workDate}`, schedule])
     );
+    const overtimeRequests = overtimeRequestsRaw.map((req) => {
+      const requestNumber = buildApplicationRequestNumber('OT', req.id, req.createdAt);
+      const managerReviewer = req.managerReviewerId
+        ? managerReviewerById.get(req.managerReviewerId) ?? null
+        : null;
+      const historyApprover = req.approver
+        ? null
+        : historyApproverByRequestId.get(req.id) ?? null;
+      const schedule = scheduleByEmployeeDate.get(`${req.employeeId}-${toTaiwanDateStr(req.overtimeDate)}`);
+      return {
+        ...req,
+        requestNumber,
+        managerReviewer,
+        historyApprover,
+        scheduleShiftType: schedule?.shiftType || null,
+        scheduleStartTime: schedule?.startTime || null,
+        scheduleEndTime: schedule?.endTime || null,
+        scheduleShiftLabel: schedule ? SHIFT_LABEL(schedule.shiftType, schedule.startTime, schedule.endTime) : null
+      };
+    });
 
     return NextResponse.json({
       success: true,

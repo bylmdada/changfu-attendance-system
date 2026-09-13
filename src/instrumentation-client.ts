@@ -9,7 +9,9 @@ if (process.env.NODE_ENV === 'production') {
     dsn: "https://fe776fc0634353441043ae88cb2b0358@o4510582192472064.ingest.us.sentry.io/4510582208987136",
 
     // Add optional integrations for additional features
-    integrations: [Sentry.replayIntegration()],
+    // Avoid the Replay compression worker destroy/flush race (Sentry 1W).
+    // Recording remains enabled; uncompressed replay uploads may be larger.
+    integrations: [Sentry.replayIntegration({ useCompression: false })],
 
     // Define how likely traces are sampled. Adjust this value in production, or use tracesSampler for greater control.
     tracesSampleRate: 1,

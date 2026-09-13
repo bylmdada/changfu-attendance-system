@@ -16,8 +16,9 @@ type DueAsset = {
   managerName: string | null;
 };
 
-function isUniqueConstraintError(error: unknown): boolean {
-  return !!error && typeof error === 'object' && 'code' in error && error.code === 'P2002';
+function isConcurrentTaskError(error: unknown): boolean {
+  return !!error && typeof error === 'object' && 'code' in error
+    && (error.code === 'P2002' || error.code === 'P2025');
 }
 
 export function getImmediateMaintenanceDueDate(
@@ -45,6 +46,7 @@ export async function ensureImmediateMaintenanceTasks({
       ...where,
       isActive: true,
       frequencyDays: { not: null },
+      records: { none: { status: 'PENDING' } },
     },
     select: {
       id: true,
@@ -67,45 +69,37 @@ export async function ensureImmediateMaintenanceTasks({
     }
 
     try {
-      const taskCreated = await prisma.$transaction(async (tx) => {
-        const openTask = await tx.maintenanceRecord.findFirst({
-          where: { assetId: asset.id, status: 'PENDING' },
-          select: { id: true },
-        });
-        if (openTask) return false;
-
-        const advanced = await tx.propertyAsset.updateMany({
-          where: {
-            id: asset.id,
-            isActive: true,
-            nextMaintenanceDate: asset.nextMaintenanceDate,
+      // One nested write keeps the date advance and task creation atomic without
+      // holding an interactive SQLite transaction open across JS callbacks.
+      await prisma.propertyAsset.update({
+        where: {
+          id: asset.id,
+          isActive: true,
+          nextMaintenanceDate: asset.nextMaintenanceDate,
+          records: { none: { status: 'PENDING' } },
+        },
+        data: {
+          nextMaintenanceDate: addDays(dueDate, asset.frequencyDays),
+          records: {
+            create: {
+              recordId: buildRecordId(asset.assetCode, dueDate),
+              siteId: asset.siteId,
+              assetCode: asset.assetCode,
+              maintenanceCycle: asset.maintenanceFrequency,
+              dueDate,
+              status: 'PENDING',
+              auditStatus: 'PENDING',
+              maintainerRaw: asset.managerName,
+              generatedByCron: true,
+              note: `系統即時產生待維護任務（頻率：${asset.maintenanceFrequency ?? ''}）`,
+            },
           },
-          data: { nextMaintenanceDate: addDays(dueDate, asset.frequencyDays!) },
-        });
-        if (advanced.count === 0) return false;
-
-        await tx.maintenanceRecord.create({
-          data: {
-            recordId: buildRecordId(asset.assetCode, dueDate),
-            siteId: asset.siteId,
-            assetId: asset.id,
-            assetCode: asset.assetCode,
-            maintenanceCycle: asset.maintenanceFrequency,
-            dueDate,
-            status: 'PENDING',
-            auditStatus: 'PENDING',
-            maintainerRaw: asset.managerName,
-            generatedByCron: true,
-            note: `系統即時產生待維護任務（頻率：${asset.maintenanceFrequency ?? ''}）`,
-          },
-        });
-        return true;
+        },
+        select: { id: true },
       });
-
-      if (taskCreated) created++;
-      else skipped++;
+      created++;
     } catch (error) {
-      if (!isUniqueConstraintError(error)) throw error;
+      if (!isConcurrentTaskError(error)) throw error;
       skipped++;
     }
   }

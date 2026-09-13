@@ -21,7 +21,7 @@
     "lint": "eslint src",
     "typecheck": "tsc --noEmit --project tsconfig.typecheck.json",
     "verify": "npm run lint && npm run typecheck && npm test -- --runInBand && npm run verify:debug && npm run build",
-    "verify:debug": "node scripts/verify-debug-regressions.cjs && python3 scripts/verify-migrations.py && python3 scripts/verify-release.py",
+    "verify:debug": "node scripts/verify-debug-regressions.cjs && node scripts/verify-sentry-regressions.cjs && python3 scripts/verify-migrations.py && python3 scripts/verify-release.py",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
