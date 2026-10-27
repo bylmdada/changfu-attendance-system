@@ -608,7 +608,7 @@ export default function OvertimeManagementPage() {
               申請加班
             </button>
           </div>
-          <p className="text-gray-600 mt-2">管理員工加班申請，最少0.5小時，最多4小時</p>
+          <p className="text-gray-600 mt-2">管理員工加班申請，最少0.5小時，平日最多4小時、休息日最多12小時</p>
           <p className="text-sm text-amber-700 mt-2">
             核准申請時數僅為上限；平日實際加班以扣除休息後每日工作超過 8 小時的部分為準。
           </p>
@@ -1124,8 +1124,8 @@ export default function OvertimeManagementPage() {
                   <h4 className="font-medium text-blue-900 mb-2">加班規則</h4>
                   <ul className="text-sm text-blue-800 space-y-1">
                     <li>• 最少加班時間：0.5小時</li>
-                    <li>• 最多加班時間：4小時</li>
-                    <li>• 工時超過8小時才算加班</li>
+                    <li>• 最多加班時間：平日4小時，休息日12小時</li>
+                    <li>• 平日工時超過8小時才算加班</li>
                     <li>• 一天總工作時間不能超過12小時</li>
                   </ul>
                 </div>
