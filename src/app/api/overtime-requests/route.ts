@@ -16,7 +16,7 @@ import {
   calculateActualOvertimeHoursFromTimeRange,
   getMinimumOvertimeHours,
 } from '@/lib/overtime-hours';
-import { calculateOvertimeRequestsEligibility } from '@/lib/overtime-eligibility';
+import { calculateOvertimeRequestsEligibility, resolveOvertimeDayType } from '@/lib/overtime-eligibility';
 
 const SHIFT_LABEL = (t: string, s: string, e: string) => {
   const nameMap: Record<string, string> = {
@@ -392,10 +392,10 @@ export async function POST(request: NextRequest) {
       }, { status: 403 });
     }
 
-    // 驗證開始時間（必須在17:00之後，即正常8小時工作後）
+    // 平日開始時間須在17:00之後（正常8小時工作後）；休息日、例假日、國定假日不限
     const [startHour] = startTime.split(':').map(Number);
-    if (startHour < 17) {
-      return NextResponse.json({ error: '加班開始時間必須在17:00之後（正常工作8小時後）' }, { status: 400 });
+    if (startHour < 17 && await resolveOvertimeDayType(employeeId, overtimeDateObj) === 'WEEKDAY') {
+      return NextResponse.json({ error: '平日加班開始時間必須在17:00之後（正常工作8小時後）' }, { status: 400 });
     }
 
     const overtimeSettings = await getStoredOvertimeCalculationSettings();

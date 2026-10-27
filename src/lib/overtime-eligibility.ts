@@ -39,6 +39,32 @@ export interface OvertimeEligibilityBatchResult {
   totalEffectiveHours: number;
 }
 
+/**
+ * 申請時判斷加班日型：班表 → 國定假日 → 星期（六休息日、日例假），與薪資計算同一套規則。
+ */
+export async function resolveOvertimeDayType(
+  employeeId: number,
+  overtimeDate: Date
+): Promise<AttendanceOvertimeType> {
+  const date = toTaiwanDateStr(overtimeDate);
+  const [year, month, day] = date.split('-').map(Number);
+  const [schedule, holiday] = await Promise.all([
+    prisma.schedule.findFirst({ where: { employeeId, workDate: date } }),
+    prisma.holiday.findFirst({
+      where: {
+        date: { gte: getTaiwanDayStart(year, month, day), lte: getTaiwanDayEnd(year, month, day) },
+        isActive: true,
+      },
+    }),
+  ]);
+
+  return resolveAttendanceOvertimeType({
+    shiftType: schedule?.shiftType,
+    workDate: overtimeDate,
+    isHoliday: Boolean(holiday),
+  });
+}
+
 export async function calculateOvertimeRequestEligibility(
   request: OvertimeEligibilityRequest,
   options?: {

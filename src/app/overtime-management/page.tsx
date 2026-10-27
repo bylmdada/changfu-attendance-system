@@ -353,12 +353,7 @@ export default function OvertimeManagementPage() {
   const handleSubmitRequest = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    // 驗證時間
-    const startHour = parseInt(newRequest.startTime.split(':')[0]);
-    if (startHour < 17) {
-      showToast('error', '加班開始時間必須在17:00之後（正常工作8小時後）');
-      return;
-    }
+    // ponytail: 17:00 限制只適用平日，日型需查班表與國定假日，交由後端判斷並以 toast 顯示錯誤
 
     // 驗證：如果選擇"其它"，工作內容不能為空
     if (newRequest.reason === '其它' && !newRequest.workContent.trim()) {
@@ -1075,7 +1070,7 @@ export default function OvertimeManagementPage() {
                       className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
                       required
                     />
-                    <p className="text-xs text-gray-500 mt-1">須在17:00後</p>
+                    <p className="text-xs text-gray-500 mt-1">平日須在17:00後；休息日、假日不限</p>
                   </div>
 
                   <div>

@@ -52,6 +52,7 @@ jest.mock('@/lib/overtime-eligibility', () => ({
     byEmployeeDate: new Map(),
     totalEffectiveHours: 0,
   }),
+  resolveOvertimeDayType: jest.fn(),
 }));
 
 import { NextRequest } from 'next/server';
@@ -61,6 +62,7 @@ import { checkRateLimit } from '@/lib/rate-limit';
 import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
 import { validateCSRF } from '@/lib/csrf';
 import { createApprovalForRequest } from '@/lib/approval-helper';
+import { resolveOvertimeDayType } from '@/lib/overtime-eligibility';
 import { GET, POST } from '../route';
 
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
@@ -70,6 +72,7 @@ const mockCheckRateLimit = checkRateLimit as jest.MockedFunction<typeof checkRat
 const mockCheckAttendanceFreeze = checkAttendanceFreeze as jest.MockedFunction<typeof checkAttendanceFreeze>;
 const mockValidateCSRF = validateCSRF as jest.MockedFunction<typeof validateCSRF>;
 const mockCreateApprovalForRequest = createApprovalForRequest as jest.MockedFunction<typeof createApprovalForRequest>;
+const mockResolveOvertimeDayType = resolveOvertimeDayType as jest.MockedFunction<typeof resolveOvertimeDayType>;
 
 describe('overtime-requests quick auth account status', () => {
   beforeEach(() => {
@@ -576,5 +579,37 @@ describe('overtime-requests quick auth account status', () => {
         })
       })
     );
+  });
+
+  it('applies the 17:00 start rule only on weekdays', async () => {
+    mockGetUserFromRequest.mockResolvedValue({
+      userId: 11,
+      employeeId: 99,
+      role: 'EMPLOYEE',
+      username: 'session.user'
+    } as never);
+    mockPrisma.overtimeRequest.create.mockResolvedValue({
+      id: 126,
+      employeeId: 99,
+      status: 'PENDING',
+      totalHours: 4,
+      employee: { id: 99, employeeId: 'E099', name: '一般員工', department: '製造部', position: '技術員' }
+    } as never);
+    const submit = (workDate: string) => POST(new NextRequest('http://localhost/api/overtime-requests', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workDate, startTime: '09:00', endTime: '13:00', reason: '休息日加班' })
+    }));
+
+    mockResolveOvertimeDayType.mockResolvedValueOnce('REST_DAY');
+    const restDay = await submit('2026-10-17');
+    expect(restDay.status).toBe(200);
+    expect(mockResolveOvertimeDayType).toHaveBeenCalledWith(99, new Date('2026-10-17'));
+
+    mockResolveOvertimeDayType.mockResolvedValueOnce('WEEKDAY');
+    const weekday = await submit('2026-10-16');
+    expect(weekday.status).toBe(400);
+    expect((await weekday.json()).error).toBe('平日加班開始時間必須在17:00之後（正常工作8小時後）');
+    expect(mockPrisma.overtimeRequest.create).toHaveBeenCalledTimes(1);
   });
 });

@@ -20,6 +20,7 @@ import { checkAttendanceFreeze, getAttendanceFreezeError } from '@/lib/attendanc
 import {
   calculateOvertimeRequestEligibility,
   getOvertimeEligibilityError,
+  resolveOvertimeDayType,
 } from '@/lib/overtime-eligibility';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -338,11 +339,12 @@ export async function PATCH(
       return NextResponse.json({ error: '無權限修改此申請' }, { status: 403 });
     }
 
-    // 驗證變更（若提供）
-    if (startTime) {
-      const [startHour] = startTime.split(':').map(Number);
-      if (startHour < 17) {
-        return NextResponse.json({ error: '加班開始時間必須在17:00之後（正常工作8小時後）' }, { status: 400 });
+    // 驗證變更（若提供）；平日開始時間須在17:00之後，休息日、例假日、國定假日不限
+    if (startTime || overtimeDate) {
+      const [startHour] = (startTime ?? existing.startTime).split(':').map(Number);
+      const nextOvertimeDate = overtimeDate ? new Date(overtimeDate) : existing.overtimeDate;
+      if (startHour < 17 && await resolveOvertimeDayType(existing.employeeId, nextOvertimeDate) === 'WEEKDAY') {
+        return NextResponse.json({ error: '平日加班開始時間必須在17:00之後（正常工作8小時後）' }, { status: 400 });
       }
     }
 
