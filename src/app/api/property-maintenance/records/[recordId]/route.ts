@@ -5,6 +5,7 @@ import { guard, ok, fail } from '@/lib/property-api';
 import { canAccessSite, canMaintainSite } from '@/lib/property-access';
 import {
   deriveDisplayStatus,
+  getNextMaintenanceDate,
   normalizeStatus,
   type MaintenanceStatus,
 } from '@/lib/property-maintenance-utils';
@@ -20,7 +21,9 @@ async function loadRecord(recordId: string) {
   return prisma.maintenanceRecord.findUnique({
     where: { recordId },
     include: {
-      asset: { select: { id: true, name: true, location: true } },
+      asset: {
+        select: { id: true, name: true, location: true, maintenanceFrequency: true, frequencyDays: true },
+      },
       attachments: { orderBy: { createdAt: 'asc' } },
     },
   });
@@ -121,6 +124,20 @@ export async function PUT(
         },
       });
       if (updateResult.count === 0) throw new Error(RECORD_NOT_PENDING);
+
+      // 下次應維護日從本次完成日起算，逾期完成不會立刻補產生已逾期的任務；主管退回後重送會再依新完成日重算
+      if (rec.asset.frequencyDays) {
+        await tx.propertyAsset.update({
+          where: { id: rec.asset.id },
+          data: {
+            nextMaintenanceDate: getNextMaintenanceDate(
+              now,
+              rec.asset.maintenanceFrequency,
+              rec.asset.frequencyDays
+            ),
+          },
+        });
+      }
 
       const maintenanceRecord = await tx.maintenanceRecord.findUniqueOrThrow({
         where: { recordId: rec.recordId },

@@ -31,6 +31,7 @@
     "repair:payroll-base-pay-july-2026": "tsx scripts/repair-july-2026-payroll-base-pay.ts",
     "repair:one-level-leave-states": "tsx scripts/repair-one-level-leave-approval-states.ts",
     "repair:target-permissions": "node scripts/ensure-target-permissions.cjs",
+    "repair:property-catchup-tasks": "node scripts/repair-property-catchup-tasks.cjs",
     "import:property": "tsx scripts/import-property-maintenance.ts",
     "test:e2e": "playwright test"
   },
