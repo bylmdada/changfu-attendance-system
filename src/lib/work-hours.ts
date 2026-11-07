@@ -251,7 +251,8 @@ export function calculateAttendanceHours(
   const rawHours = Math.max(0, rawMinutes) / 60;
   const hasScheduleWindow = scheduleStartMinute !== null && scheduleEndMinute !== null;
   const regularHourLimit = hasScheduleWindow ? STANDARD_REGULAR_HOURS : standardHours;
-  const regularHours = Math.min(Math.max(0, regularMinutes) / 60, regularHourLimit);
+  // 正常工時以半小時為單位，未滿半小時的零頭不計（例：08:00–13:20 扣午休後 4 小時 20 分 → 4 小時）
+  const regularHours = Math.min(Math.floor(Math.max(0, regularMinutes) / 30) / 2, regularHourLimit);
   // 平日延長工時以「實際淨工時超過每日法定 8 小時」為門檻。
   // 班表工時可能因遲到、短班或休假少於 8 小時，不能拿班表工時當加班門檻。
   const overtimeHours = Math.max(0, rawHours - STANDARD_REGULAR_HOURS);
