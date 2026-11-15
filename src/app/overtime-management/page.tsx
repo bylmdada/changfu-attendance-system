@@ -353,12 +353,7 @@ export default function OvertimeManagementPage() {
   const handleSubmitRequest = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    // 驗證時間
-    const startHour = parseInt(newRequest.startTime.split(':')[0]);
-    if (startHour < 17) {
-      showToast('error', '加班開始時間必須在17:00之後（正常工作8小時後）');
-      return;
-    }
+    // ponytail: 17:00 限制只適用平日，日型需查班表與國定假日，交由後端判斷並以 toast 顯示錯誤
 
     // 驗證：如果選擇"其它"，工作內容不能為空
     if (newRequest.reason === '其它' && !newRequest.workContent.trim()) {
@@ -613,7 +608,7 @@ export default function OvertimeManagementPage() {
               申請加班
             </button>
           </div>
-          <p className="text-gray-600 mt-2">管理員工加班申請，最少0.5小時，最多4小時</p>
+          <p className="text-gray-600 mt-2">管理員工加班申請，最少0.5小時，平日最多4小時、休息日最多12小時</p>
           <p className="text-sm text-amber-700 mt-2">
             核准申請時數僅為上限；平日實際加班以扣除休息後每日工作超過 8 小時的部分為準。
           </p>
@@ -1075,7 +1070,7 @@ export default function OvertimeManagementPage() {
                       className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
                       required
                     />
-                    <p className="text-xs text-gray-500 mt-1">須在17:00後</p>
+                    <p className="text-xs text-gray-500 mt-1">平日須在17:00後；休息日、假日不限</p>
                   </div>
 
                   <div>
@@ -1129,8 +1124,8 @@ export default function OvertimeManagementPage() {
                   <h4 className="font-medium text-blue-900 mb-2">加班規則</h4>
                   <ul className="text-sm text-blue-800 space-y-1">
                     <li>• 最少加班時間：0.5小時</li>
-                    <li>• 最多加班時間：4小時</li>
-                    <li>• 工時超過8小時才算加班</li>
+                    <li>• 最多加班時間：平日4小時，休息日12小時</li>
+                    <li>• 平日工時超過8小時才算加班</li>
                     <li>• 一天總工作時間不能超過12小時</li>
                   </ul>
                 </div>

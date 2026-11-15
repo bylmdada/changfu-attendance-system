@@ -55,6 +55,11 @@ export function resolveAttendanceOvertimeType(params: {
   return 'WEEKDAY';
 }
 
+/** 單日可申請加班上限：平日正常工時 8 + 加班 4；休息日無正常工時，依勞基法上限 12 小時。 */
+export function getMaxOvertimeHours(dayType: AttendanceOvertimeType) {
+  return dayType === 'REST_DAY' ? 12 : 4;
+}
+
 function toEmployeeDateKey(employeeId: number, workDate: Date) {
   return `${employeeId}-${toTaiwanDateStr(workDate)}`;
 }

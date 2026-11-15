@@ -184,7 +184,21 @@ describe('工時計算', () => {
       scheduledEnd: '06:00',
     });
 
-    expect(result.regularHours).toBe(5.83);
+    expect(result.regularHours).toBe(5.5);
+  });
+
+  test('未滿 8 小時的正常工時以半小時為單位，零頭不計', () => {
+    const schedule = { startTime: '08:00', endTime: '17:00', workDate: '2026-11-06T00:00:00+08:00' };
+    const at = (hm: string) => `2026-11-06T${hm}:00+08:00`;
+    const regular = (clockIn: string, clockOut: string) =>
+      calculateAttendanceHours(at(clockIn), at(clockOut), 8, 60, schedule).regularHours;
+
+    expect(regular('07:54', '13:20')).toBe(4); // 4 小時 20 分
+    expect(regular('07:51', '15:01')).toBe(6); // 6 小時 01 分
+    expect(regular('07:47', '14:00')).toBe(5);
+    expect(regular('08:00', '14:30')).toBe(5.5);
+    expect(regular('08:10', '17:00')).toBe(7.5); // 遲到 10 分
+    expect(regular('07:40', '17:00')).toBe(8);
   });
 
   test('完整打卡與班表存在時會重算，避免舊儲存工時污染顯示', () => {

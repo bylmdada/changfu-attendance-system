@@ -10,6 +10,7 @@ import { getTaiwanYearMonth, toTaiwanDateStr } from '@/lib/timezone';
 import {
   calculateOvertimeRequestEligibility,
   getOvertimeEligibilityError,
+  resolveOvertimeDayType,
 } from '@/lib/overtime-eligibility';
 
 jest.mock('@/lib/database', () => ({
@@ -79,6 +80,7 @@ jest.mock('@/lib/attendance-freeze', () => ({
 jest.mock('@/lib/overtime-eligibility', () => ({
   calculateOvertimeRequestEligibility: jest.fn(),
   getOvertimeEligibilityError: jest.fn(),
+  resolveOvertimeDayType: jest.fn().mockResolvedValue('WEEKDAY'),
 }));
 
 const mockedGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
@@ -90,6 +92,7 @@ const mockedGetTaiwanYearMonth = getTaiwanYearMonth as jest.MockedFunction<typeo
 const mockedToTaiwanDateStr = toTaiwanDateStr as jest.MockedFunction<typeof toTaiwanDateStr>;
 const mockedCalculateOvertimeRequestEligibility = calculateOvertimeRequestEligibility as jest.MockedFunction<typeof calculateOvertimeRequestEligibility>;
 const mockedGetOvertimeEligibilityError = getOvertimeEligibilityError as jest.MockedFunction<typeof getOvertimeEligibilityError>;
+const mockedResolveOvertimeDayType = resolveOvertimeDayType as jest.MockedFunction<typeof resolveOvertimeDayType>;
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 
 const transactionClient = {
@@ -264,6 +267,34 @@ describe('overtime request item csrf guards', () => {
         }),
       })
     );
+  });
+
+  it('re-validates day-type rules when only the date of a rest-day request changes', async () => {
+    mockedValidateCSRF.mockResolvedValue({ valid: true } as never);
+    mockedGetUserFromRequest.mockResolvedValue({ role: 'EMPLOYEE', employeeId: 10, userId: 110 } as never);
+    mockPrisma.overtimeRequest.findUnique.mockResolvedValue({
+      id: 6,
+      employeeId: 10,
+      status: 'PENDING',
+      totalHours: 9,
+      startTime: '09:00',
+      endTime: '18:00',
+      overtimeDate: new Date('2026-10-17T00:00:00.000Z'),
+      reason: '休息日加班',
+      employee: { id: 10, employeeId: 'E010', name: '王小明', department: '門市', position: '店員' },
+    } as never);
+    mockedResolveOvertimeDayType.mockResolvedValueOnce('WEEKDAY');
+
+    const response = await PATCH(new NextRequest('http://localhost:3000/api/overtime-requests/6', {
+      method: 'PATCH',
+      headers: { cookie: 'auth-token=legacy-auth-token', 'content-type': 'application/json' },
+      body: JSON.stringify({ overtimeDate: '2026-10-16' }),
+    }), { params: Promise.resolve({ id: '6' }) });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toBe('平日加班開始時間必須在17:00之後（正常工作8小時後）');
+    expect(mockedResolveOvertimeDayType).toHaveBeenCalledWith(10, new Date('2026-10-16'));
+    expect(mockPrisma.overtimeRequest.update).not.toHaveBeenCalled();
   });
 });
 

@@ -2,6 +2,7 @@ import {
   addDays,
   deriveDisplayStatus,
   excelSerialToDate,
+  getNextMaintenanceDate,
   isSameDay,
   monthRange,
   shiftYearMonth,
@@ -42,5 +43,15 @@ describe('property-maintenance-utils date handling', () => {
       month: 6,
     });
     expect(shiftYearMonth(2026, 1, -1)).toEqual({ year: 2025, month: 12 });
+  });
+
+  it('schedules the next maintenance from the completion date by calendar month', () => {
+    // 0106030701-0010：每月一次，2026-11-04 深夜完成 → 2026-12-04
+    expect(ymd(getNextMaintenanceDate(new Date('2026-11-04T23:30:00+08:00'), '每月一次', 28))).toBe('2026-12-04');
+    expect(ymd(getNextMaintenanceDate(new Date('2026-01-31T10:00:00+08:00'), '每月一次', 28))).toBe('2026-02-28');
+    expect(ymd(getNextMaintenanceDate(new Date('2026-11-30T10:00:00+08:00'), '每季一次', 90))).toBe('2027-02-28');
+    expect(ymd(getNextMaintenanceDate(new Date('2026-11-04T10:00:00+08:00'), '每週一次', 7))).toBe('2026-11-11');
+    expect(getNextMaintenanceDate(new Date('2026-11-04T10:00:00+08:00'), '每月一次', 28).toISOString())
+      .toBe('2026-12-03T16:00:00.000Z');
   });
 });

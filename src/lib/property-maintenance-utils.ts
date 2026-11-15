@@ -84,6 +84,28 @@ export function addDays(d: Date, days: number): Date {
   return new Date(d.getTime() + days * 24 * 60 * 60 * 1000);
 }
 
+// 以月計的頻率依日曆月順延（1/31 +1 月 → 2/28），其餘依天數
+const FREQUENCY_MONTHS: Record<string, number> = {
+  每月一次: 1,
+  每季一次: 3,
+  每半年一次: 6,
+  每年一次: 12,
+};
+
+/** 下次應維護日 = 本次完成日（台北日）+ 維護頻率；逾期或提早完成都從完成日重新起算。 */
+export function getNextMaintenanceDate(
+  completedAt: Date,
+  frequency: string | null | undefined,
+  frequencyDays: number
+): Date {
+  const months = frequency ? FREQUENCY_MONTHS[String(frequency).trim().replace(/\s+/g, '')] : undefined;
+  if (!months) return addDays(startOfDay(completedAt), frequencyDays);
+  const { year, month, day } = taipeiDateParts(completedAt);
+  const target = shiftYearMonth(year, month, months);
+  const lastDay = new Date(Date.UTC(target.year, target.month, 0)).getUTCDate();
+  return taipeiMidnight(target.year, target.month, Math.min(day, lastDay));
+}
+
 export function isSameDay(a: Date, b: Date): boolean {
   return ymd(a) === ymd(b);
 }

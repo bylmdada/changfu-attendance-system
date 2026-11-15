@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef, type FormEvent } from 'react';
 import Link from 'next/link';
 import {
   AlertTriangle,
@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import { STATUS_UI, fmtDate, type DisplayStatus } from '@/lib/property-status-ui';
+import { parsePositiveInt } from '@/lib/property-query';
 
 interface Task {
   recordId: string;
@@ -43,6 +44,14 @@ interface PaginationState {
 
 const PROPERTY_HOME_PAGE_SIZE = 25;
 
+type TaskFilter = 'all' | 'overdue' | 'today';
+
+const TASK_FILTER_EMPTY_TEXT: Record<TaskFilter, string> = {
+  all: '今日沒有待辦任務 🎉',
+  overdue: '目前沒有逾期未完成的任務 🎉',
+  today: '今日沒有待維護的任務',
+};
+
 export default function PropertyDashboardPage() {
   const [loading, setLoading] = useState(true);
   const [summary, setSummary] = useState({ overdue: 0, today: 0, weekDone: 0 });
@@ -54,6 +63,9 @@ export default function PropertyDashboardPage() {
     pageSize: PROPERTY_HOME_PAGE_SIZE,
     pages: 1,
   });
+  const [taskFilter, setTaskFilter] = useState<TaskFilter>('all');
+  const [jumpPage, setJumpPage] = useState('');
+  const loadSeq = useRef(0);
   const [error, setError] = useState('');
   const [currentUser, setCurrentUser] = useState<CurrentUser>({});
   const canMaintainProperty = !!currentUser.canMaintainProperty;
@@ -61,11 +73,15 @@ export default function PropertyDashboardPage() {
   const canManageProperty = !!currentUser.canManageProperty;
 
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
     setLoading(true);
     try {
       const params = new URLSearchParams({ page: String(taskPage) });
+      if (taskFilter !== 'all') params.set('filter', taskFilter);
       const res = await fetch(`/api/property-maintenance/dashboard?${params.toString()}`, { credentials: 'include' });
       const json = await res.json();
+      // 連續切換篩選／跳頁時，較早送出的請求可能較晚回來；只採用最新一次的結果，避免清單與篩選對不上
+      if (seq !== loadSeq.current) return;
       if (!res.ok) {
         setError(json.error || '載入失敗');
         return;
@@ -84,11 +100,11 @@ export default function PropertyDashboardPage() {
       }
       setError('');
     } catch {
-      setError('載入失敗');
+      if (seq === loadSeq.current) setError('載入失敗');
     } finally {
-      setLoading(false);
+      if (seq === loadSeq.current) setLoading(false);
     }
-  }, [taskPage]);
+  }, [taskPage, taskFilter]);
 
   useEffect(() => {
     const loadUser = async () => {
@@ -107,6 +123,28 @@ export default function PropertyDashboardPage() {
     ? 0
     : (taskPagination.page - 1) * taskPagination.pageSize + 1;
   const taskEnd = Math.min(taskPagination.total, taskPagination.page * taskPagination.pageSize);
+
+  const changeFilter = (next: TaskFilter) => {
+    if (next === taskFilter) return;
+    setTaskFilter(next);
+    setTaskPage(1);
+    setJumpPage('');
+  };
+
+  const submitJump = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const target = parsePositiveInt(jumpPage);
+    if (target === null) return;
+    setTaskPage(Math.min(target, taskPagination.pages));
+    setJumpPage('');
+  };
+
+  // 數字取自摘要（不受篩選影響），切到哪一類都看得到另一類還有幾筆
+  const filterOptions: { key: TaskFilter; label: string; count: number }[] = [
+    { key: 'all', label: '全部', count: summary.overdue + summary.today },
+    { key: 'overdue', label: '逾期未完成', count: summary.overdue },
+    { key: 'today', label: '今日待維護', count: summary.today },
+  ];
 
   const cards = [
     {
@@ -267,7 +305,7 @@ export default function PropertyDashboardPage() {
         )}
 
         <div className="bg-white rounded-xl border border-gray-200">
-          <div className="px-5 py-3 border-b border-gray-200 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+          <div className="px-5 py-3 border-b border-gray-200 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h2 className="font-semibold text-gray-900">
                 {canMaintainProperty ? '今日待辦任務（逾期優先）' : '待維護紀錄（逾期優先）'}
@@ -277,11 +315,28 @@ export default function PropertyDashboardPage() {
                 {taskPagination.total > 0 ? `，目前顯示 ${taskStart}-${taskEnd} / ${taskPagination.total}` : ''}
               </p>
             </div>
+            <div role="group" aria-label="待辦任務篩選" className="flex flex-wrap gap-2">
+              {filterOptions.map((option) => (
+                <button
+                  key={option.key}
+                  type="button"
+                  onClick={() => changeFilter(option.key)}
+                  aria-pressed={taskFilter === option.key}
+                  className={`rounded-full border px-3 py-1 text-sm ${
+                    taskFilter === option.key
+                      ? 'border-blue-600 bg-blue-600 text-white'
+                      : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50'
+                  }`}
+                >
+                  {option.label} {option.count}
+                </button>
+              ))}
+            </div>
           </div>
           {loading ? (
             <div className="p-8 text-center text-gray-600">載入中…</div>
           ) : tasks.length === 0 ? (
-            <div className="p-8 text-center text-gray-600">今日沒有待辦任務 🎉</div>
+            <div className="p-8 text-center text-gray-600">{TASK_FILTER_EMPTY_TEXT[taskFilter]}</div>
           ) : (
             <>
               <ul className="divide-y divide-gray-100">
@@ -312,24 +367,49 @@ export default function PropertyDashboardPage() {
                 })}
               </ul>
               {taskPagination.pages > 1 && (
-                <div className="flex items-center justify-between gap-3 border-t border-gray-200 px-4 py-3 text-sm">
-                  <button
-                    onClick={() => setTaskPage((page) => Math.max(1, page - 1))}
-                    disabled={taskPagination.page <= 1 || loading}
-                    className="rounded-lg border border-gray-300 px-3 py-1.5 text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    上一頁
-                  </button>
-                  <span className="text-gray-600">
-                    第 {taskPagination.page} / {taskPagination.pages} 頁
-                  </span>
-                  <button
-                    onClick={() => setTaskPage((page) => Math.min(taskPagination.pages, page + 1))}
-                    disabled={taskPagination.page >= taskPagination.pages || loading}
-                    className="rounded-lg border border-gray-300 px-3 py-1.5 text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    下一頁
-                  </button>
+                <div className="border-t border-gray-200 px-4 py-3 text-sm">
+                  <div className="flex items-center justify-between gap-3">
+                    <button
+                      onClick={() => setTaskPage((page) => Math.max(1, page - 1))}
+                      disabled={taskPagination.page <= 1 || loading}
+                      className="rounded-lg border border-gray-300 px-3 py-1.5 text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      上一頁
+                    </button>
+                    <span className="text-gray-600">
+                      第 {taskPagination.page} / {taskPagination.pages} 頁
+                    </span>
+                    <button
+                      onClick={() => setTaskPage((page) => Math.min(taskPagination.pages, page + 1))}
+                      disabled={taskPagination.page >= taskPagination.pages || loading}
+                      className="rounded-lg border border-gray-300 px-3 py-1.5 text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      下一頁
+                    </button>
+                  </div>
+                  {/* 輸入超出範圍或空白時，瀏覽器原生驗證會直接提示可輸入的頁碼範圍 */}
+                  <form onSubmit={submitJump} className="mt-3 flex items-center justify-center gap-2 text-gray-600">
+                    <label htmlFor="task-jump-page">跳至第</label>
+                    <input
+                      id="task-jump-page"
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      max={taskPagination.pages}
+                      required
+                      value={jumpPage}
+                      onChange={(event) => setJumpPage(event.target.value)}
+                      className="w-20 rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-center text-gray-900"
+                    />
+                    <span>頁</span>
+                    <button
+                      type="submit"
+                      disabled={loading}
+                      className="rounded-lg border border-gray-300 px-3 py-1.5 text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      前往
+                    </button>
+                  </form>
                 </div>
               )}
             </>

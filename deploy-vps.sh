@@ -135,6 +135,7 @@ rsync -az --rsh="$RSYNC_RSH" \
   --exclude '.git/' --exclude '.github/' --exclude '.claude/' --exclude '.recall/' \
   --exclude 'node_modules/' --exclude 'uploads/' --exclude 'data/' --exclude 'backups/' \
   --exclude 'certs/' --exclude '.env*' --exclude '*.db*' --exclude '*.tsbuildinfo' \
+  --exclude '.next/cache/' --exclude 'graphify-out/' \
   ./ "${VPS_USER}@${VPS_HOST}:${STAGE_PATH}/"
 if [[ -f "$LOCAL_ENV_FILE" ]]; then
   rsync -az --rsh="$RSYNC_RSH" "$LOCAL_ENV_FILE" "${VPS_USER}@${VPS_HOST}:${STAGE_PATH}/${REMOTE_ENV_FILE}"

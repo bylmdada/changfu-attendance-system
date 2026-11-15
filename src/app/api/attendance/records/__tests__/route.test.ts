@@ -546,9 +546,9 @@ describe('attendance records route guards', () => {
     const payload = await response.json();
 
     expect(response.status).toBe(200);
-    expect(payload.records[0].regularHours).toBe(5.53);
+    expect(payload.records[0].regularHours).toBe(5.5); // 09:00–15:32 扣午休 5 小時 32 分，零頭不計
     expect(payload.records[0].overtimeHours).toBe(0);
-    expect(payload.summary.totalRegularHours).toBe(5.53);
+    expect(payload.summary.totalRegularHours).toBe(5.5);
     expect(payload.summary.totalOvertimeHours).toBe(0);
   });
 

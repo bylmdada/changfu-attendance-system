@@ -17,9 +17,11 @@ import {
   getMinimumOvertimeHours,
 } from '@/lib/overtime-hours';
 import { checkAttendanceFreeze, getAttendanceFreezeError } from '@/lib/attendance-freeze';
+import { getMaxOvertimeHours } from '@/lib/approved-overtime';
 import {
   calculateOvertimeRequestEligibility,
   getOvertimeEligibilityError,
+  resolveOvertimeDayType,
 } from '@/lib/overtime-eligibility';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -338,20 +340,21 @@ export async function PATCH(
       return NextResponse.json({ error: '無權限修改此申請' }, { status: 403 });
     }
 
-    // 驗證變更（若提供）
-    if (startTime) {
-      const [startHour] = startTime.split(':').map(Number);
-      if (startHour < 17) {
-        return NextResponse.json({ error: '加班開始時間必須在17:00之後（正常工作8小時後）' }, { status: 400 });
-      }
-    }
-
+    // 驗證變更（若提供）；日期、時間任一變動都依新日型重驗：平日須在17:00之後，休息日上限12小時
     const overtimeSettings = await getStoredOvertimeCalculationSettings();
     const minimumOvertimeHours = getMinimumOvertimeHours(overtimeSettings.overtimeMinUnit);
     let totalHours: number | undefined = existing.totalHours;
-    if (startTime || endTime) {
+    if (startTime || endTime || overtimeDate) {
       const nextStartTime = startTime ?? existing.startTime;
       const nextEndTime = endTime ?? existing.endTime;
+      const dayType = await resolveOvertimeDayType(
+        existing.employeeId,
+        overtimeDate ? new Date(overtimeDate) : existing.overtimeDate
+      );
+      const [startHour] = nextStartTime.split(':').map(Number);
+      if (startHour < 17 && dayType === 'WEEKDAY') {
+        return NextResponse.json({ error: '平日加班開始時間必須在17:00之後（正常工作8小時後）' }, { status: 400 });
+      }
       const actualHours = calculateActualOvertimeHoursFromTimeRange(nextStartTime, nextEndTime);
       if (actualHours === null) {
         return NextResponse.json({ error: '加班時間格式無效' }, { status: 400 });
@@ -359,11 +362,9 @@ export async function PATCH(
       if (actualHours < minimumOvertimeHours) {
         return NextResponse.json({ error: `加班時數最少${minimumOvertimeHours}小時` }, { status: 400 });
       }
-      if (actualHours > 4) {
-        return NextResponse.json({ error: '單日加班時數不能超過4小時' }, { status: 400 });
-      }
-      if ((8 + actualHours) > 12) {
-        return NextResponse.json({ error: '一天工作時間不能超過12小時' }, { status: 400 });
+      const maxOvertimeHours = getMaxOvertimeHours(dayType);
+      if (actualHours > maxOvertimeHours) {
+        return NextResponse.json({ error: `單日加班時數不能超過${maxOvertimeHours}小時` }, { status: 400 });
       }
       totalHours = actualHours;
     }

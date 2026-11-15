@@ -16,7 +16,8 @@ import {
   calculateActualOvertimeHoursFromTimeRange,
   getMinimumOvertimeHours,
 } from '@/lib/overtime-hours';
-import { calculateOvertimeRequestsEligibility } from '@/lib/overtime-eligibility';
+import { calculateOvertimeRequestsEligibility, resolveOvertimeDayType } from '@/lib/overtime-eligibility';
+import { getMaxOvertimeHours } from '@/lib/approved-overtime';
 
 const SHIFT_LABEL = (t: string, s: string, e: string) => {
   const nameMap: Record<string, string> = {
@@ -392,10 +393,11 @@ export async function POST(request: NextRequest) {
       }, { status: 403 });
     }
 
-    // 驗證開始時間（必須在17:00之後，即正常8小時工作後）
+    // 平日開始時間須在17:00之後（正常8小時工作後）；休息日、例假日、國定假日不限
+    const dayType = await resolveOvertimeDayType(employeeId, overtimeDateObj);
     const [startHour] = startTime.split(':').map(Number);
-    if (startHour < 17) {
-      return NextResponse.json({ error: '加班開始時間必須在17:00之後（正常工作8小時後）' }, { status: 400 });
+    if (startHour < 17 && dayType === 'WEEKDAY') {
+      return NextResponse.json({ error: '平日加班開始時間必須在17:00之後（正常工作8小時後）' }, { status: 400 });
     }
 
     const overtimeSettings = await getStoredOvertimeCalculationSettings();
@@ -413,8 +415,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: `加班時數最少${minimumOvertimeHours}小時` }, { status: 400 });
     }
 
-    if (totalHours > 4) {
-      return NextResponse.json({ error: '單日加班時數不能超過4小時' }, { status: 400 });
+    const maxOvertimeHours = getMaxOvertimeHours(dayType);
+    if (totalHours > maxOvertimeHours) {
+      return NextResponse.json({ error: `單日加班時數不能超過${maxOvertimeHours}小時` }, { status: 400 });
     }
 
     // 檢查當天是否已有申請
@@ -428,12 +431,6 @@ export async function POST(request: NextRequest) {
 
     if (existingRequest) {
       return NextResponse.json({ error: '該日期已有加班申請' }, { status: 400 });
-    }
-
-    // 檢查總工時是否超過12小時（假設正常工時8小時 + 加班時數）
-    const totalWorkHours = 8 + totalHours;
-    if (totalWorkHours > 12) {
-      return NextResponse.json({ error: '一天工作時間不能超過12小時' }, { status: 400 });
     }
 
     // ==================== 月加班上限檢查 ====================
