@@ -15,11 +15,17 @@ import { parseBoundedPositiveInt } from '@/lib/property-query';
 const DASHBOARD_TASK_PAGE_SIZE = 25;
 const MAX_DASHBOARD_TASK_PAGE = 1000000;
 
-/** GET：財產管理首頁摘要（§6/§12）。逾期/今日/本週完成 + 排序任務清單。 */
+/** 待辦清單篩選：all＝逾期＋今日、overdue＝只看逾期、today＝只看今日；未知值一律視為 all。 */
+function parseTaskFilter(value: string | null): 'all' | 'overdue' | 'today' {
+  return value === 'overdue' || value === 'today' ? value : 'all';
+}
+
+/** GET：財產管理首頁摘要（§6/§12）。逾期/今日/本週完成 + 排序任務清單（可用 filter 篩選）。 */
 export async function GET(request: NextRequest) {
   const g = await guard(request);
   if ('res' in g) return g.res;
   const page = parseBoundedPositiveInt(request.nextUrl.searchParams.get('page'), 1, MAX_DASHBOARD_TASK_PAGE);
+  const filter = parseTaskFilter(request.nextUrl.searchParams.get('filter'));
   const pageSize = DASHBOARD_TASK_PAGE_SIZE;
   const sw = siteWhere(g.ctx.access);
   const now = new Date();
@@ -41,8 +47,14 @@ export async function GET(request: NextRequest) {
     }),
   ]);
 
-  // 待辦任務（逾期 + 今日，逾期優先），上限 100
-  const taskWhere = { ...sw, status: 'PENDING', dueDate: { lt: tomorrow } };
+  // 待辦任務（逾期 + 今日，逾期優先）。清單與筆數共用同一個條件，所以篩選後的總筆數、頁數都會跟著對
+  const dueDate =
+    filter === 'overdue'
+      ? { lt: today }
+      : filter === 'today'
+        ? { gte: today, lt: tomorrow }
+        : { lt: tomorrow };
+  const taskWhere = { ...sw, status: 'PENDING', dueDate };
   const [taskTotal, pending] = await Promise.all([
     prisma.maintenanceRecord.count({ where: taskWhere }),
     prisma.maintenanceRecord.findMany({
