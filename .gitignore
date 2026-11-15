@@ -74,3 +74,6 @@ scripts/ensure-target-permissions.cjs
 scripts/ensure-target-permissions.ts
 src/lib/target-permission-provisioning.ts
 src/lib/__tests__/target-permission-provisioning.test.ts
+
+# graphify knowledge graph output (local only; never deploy)
+/graphify-out/
