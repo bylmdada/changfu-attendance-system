@@ -32,6 +32,8 @@ export async function GET(request: NextRequest) {
 
   const now = new Date();
 
+  // 完成率只算狀態為已完成（DONE）的任務；已提交但有異常（ABNORMAL）的算「未完成」（業務確認 2026-11-24），
+  // 與評鑑總表同一口徑。abnormal 另外列出，不併入完成或待辦。
   const [total, done, abnormal, pendingRecs] = await Promise.all([
     prisma.maintenanceRecord.count({ where: baseWhere }),
     prisma.maintenanceRecord.count({ where: { ...baseWhere, status: 'DONE' } }),

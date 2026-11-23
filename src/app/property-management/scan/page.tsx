@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Camera, CameraOff, Search, X } from 'lucide-react';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import { STATUS_UI, fmtDate, taiwanDateInputValue, type DisplayStatus } from '@/lib/property-status-ui';
+import { normalizeScannedCode } from '@/lib/property-scan-code';
 import fetchWithCSRF, { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import {
   ABNORMAL_CONDITION_OPTIONS,
@@ -218,28 +219,6 @@ function getScannerAdvice(mode: ScannerMode) {
   return mode === 'qr'
     ? 'QR Code 建議完整置中、保持方形不裁切；若標籤反光或太暗，請開啟補光、稍微後退或改用手動輸入。'
     : '條碼建議保持水平並填滿掃描框，鏡頭距離條碼約 15–25 公分；若反光或太暗，請開啟補光或改用手動輸入。';
-}
-
-function normalizeScannedCode(decoded: string) {
-  const trimmed = decoded.trim();
-  if (!trimmed) return '';
-
-  try {
-    const url = new URL(trimmed);
-    const codeFromQuery = url.searchParams.get('code') || url.searchParams.get('assetCode');
-    if (codeFromQuery?.trim()) {
-      return codeFromQuery.trim();
-    }
-
-    const lastSegment = url.pathname.split('/').filter(Boolean).pop();
-    if (lastSegment?.trim()) {
-      return lastSegment.trim();
-    }
-  } catch {
-    // 非 URL 內容直接使用原始掃描值
-  }
-
-  return trimmed;
 }
 
 function buildScannerConfig(mode: ScannerMode) {

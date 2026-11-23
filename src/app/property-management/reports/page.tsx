@@ -9,6 +9,7 @@ import { useLocalToast, SimpleToast } from '@/components/Toast';
 interface Site {
   id: number;
   name: string;
+  canSupervise: boolean;
 }
 
 export default function ReportsPage() {
@@ -20,40 +21,40 @@ export default function ReportsPage() {
   const [month, setMonth] = useState(now.getMonth() + 1);
   const [assetCode, setAssetCode] = useState('');
   const [busy, setBusy] = useState('');
+  const [sitesLoaded, setSitesLoaded] = useState(false);
 
   useEffect(() => {
     (async () => {
-      const res = await fetch('/api/property-maintenance/sites', { credentials: 'include' });
-      const json = await res.json();
-      if (res.ok && json.data.length) {
-        setSites(json.data);
-        setSiteId(json.data[0].id);
+      try {
+        const res = await fetch('/api/property-maintenance/sites', { credentials: 'include' });
+        const json = await res.json();
+        if (!res.ok) {
+          showToast('error', json.error || '據點載入失敗');
+          return;
+        }
+        // 報表匯出需要該據點的主管或稽核權限；只列出有權限的據點，避免選到之後才收到 403
+        const supervisableSites = (json.data as Site[]).filter((site) => site.canSupervise);
+        setSites(supervisableSites);
+        setSiteId(supervisableSites[0]?.id ?? null);
+      } catch {
+        showToast('error', '據點載入失敗');
+      } finally {
+        setSitesLoaded(true);
       }
     })();
-  }, []);
+  }, [showToast]);
 
-  const downloadGet = (url: string, label: string) => {
+  // 一律用 fetch 下載：失敗（沒有權限、查無財產、系統錯誤）時能在頁面上顯示原因，而不是跳到一頁 JSON
+  const runDownload = async (
+    label: string,
+    request: () => Promise<Response>,
+    fallbackName: string,
+    successMessage: string
+  ) => {
     if (siteId === null) return;
     setBusy(label);
-    // 透過隱藏連結觸發下載（GET，帶 cookie）
-    const a = document.createElement('a');
-    a.href = url;
-    a.rel = 'noopener';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => setBusy(''), 1200);
-  };
-
-  const downloadBatch = async () => {
-    if (siteId === null) return;
-    setBusy('batch');
     try {
-      const res = await fetchWithCSRF('/api/property-maintenance/reports/evidence', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ siteId }),
-      });
+      const res = await request();
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
         showToast('error', j.error || '產生失敗');
@@ -62,17 +63,34 @@ export default function ReportsPage() {
       const blob = await res.blob();
       const dispo = res.headers.get('Content-Disposition') || '';
       const m = dispo.match(/filename\*=UTF-8''([^;]+)/);
-      const fname = m ? decodeURIComponent(m[1]) : 'evidence_batch.xlsx';
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
-      a.download = fname;
+      a.download = m ? decodeURIComponent(m[1]) : fallbackName;
       a.click();
       URL.revokeObjectURL(a.href);
-      showToast('success', '批次佐證已下載');
+      showToast('success', successMessage);
+    } catch {
+      showToast('error', '下載失敗，請稍後再試');
     } finally {
       setBusy('');
     }
   };
+
+  const downloadGet = (url: string, label: string, fallbackName: string, successMessage: string) =>
+    runDownload(label, () => fetch(url, { credentials: 'include' }), fallbackName, successMessage);
+
+  const downloadBatch = () =>
+    runDownload(
+      'batch',
+      () =>
+        fetchWithCSRF('/api/property-maintenance/reports/evidence', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ siteId }),
+        }),
+      'evidence_batch.xlsx',
+      '批次佐證已下載'
+    );
 
   const base = (path: string) =>
     `/api/property-maintenance/reports/${path}?siteId=${siteId}&year=${year}&month=${month}`;
@@ -83,6 +101,12 @@ export default function ReportsPage() {
         <h1 className="text-2xl font-bold text-gray-900 mb-4 flex items-center gap-2">
           <FileSpreadsheet className="w-6 h-6 text-blue-600" /> 維護報表
         </h1>
+
+        {sitesLoaded && sites.length === 0 && (
+          <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900" role="status">
+            您目前沒有可匯出報表的據點。維護報表需要該據點的主管或稽核權限，請洽管理員。
+          </div>
+        )}
 
         <div className="bg-white rounded-xl border border-gray-200 p-4 mb-4 grid grid-cols-3 gap-3">
           <div className="col-span-3">
@@ -125,15 +149,17 @@ export default function ReportsPage() {
           <h2 className="font-semibold text-gray-900">月份報表</h2>
           <div className="flex gap-2">
             <button
-              onClick={() => downloadGet(base('monthly'), 'monthly')}
-              className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+              onClick={() => downloadGet(base('monthly'), 'monthly', 'monthly.xlsx', '每月維護報表已下載')}
+              disabled={siteId === null || busy !== ''}
+              className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
             >
               {busy === 'monthly' ? <Loader2 className="w-5 h-5 animate-spin" /> : <Download className="w-5 h-5" />}
               每月維護報表
             </button>
             <button
-              onClick={() => downloadGet(base('summary'), 'summary')}
-              className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
+              onClick={() => downloadGet(base('summary'), 'summary', 'summary.xlsx', '評鑑總表已下載')}
+              disabled={siteId === null || busy !== ''}
+              className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
             >
               {busy === 'summary' ? <Loader2 className="w-5 h-5 animate-spin" /> : <Download className="w-5 h-5" />}
               評鑑總表
@@ -151,13 +177,15 @@ export default function ReportsPage() {
               className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-gray-900"
             />
             <button
-              disabled={!assetCode.trim()}
+              disabled={!assetCode.trim() || siteId === null || busy !== ''}
               onClick={() =>
                 downloadGet(
                   `/api/property-maintenance/reports/evidence?siteId=${siteId}&assetCode=${encodeURIComponent(
                     assetCode.trim()
                   )}`,
-                  'ev1'
+                  'ev1',
+                  'evidence.xlsx',
+                  '單一佐證已下載'
                 )
               }
               className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50"
@@ -167,7 +195,7 @@ export default function ReportsPage() {
           </div>
           <button
             onClick={downloadBatch}
-            disabled={busy === 'batch'}
+            disabled={siteId === null || busy !== ''}
             className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-green-700 text-white rounded-lg hover:bg-green-800 disabled:opacity-50"
           >
             {busy === 'batch' ? <Loader2 className="w-5 h-5 animate-spin" /> : <Download className="w-5 h-5" />}

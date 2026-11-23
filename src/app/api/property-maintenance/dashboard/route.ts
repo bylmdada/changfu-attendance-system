@@ -11,6 +11,7 @@ import {
 } from '@/lib/property-maintenance-utils';
 import { ensureImmediateMaintenanceTasks } from '@/lib/property-due-task-service';
 import { parseBoundedPositiveInt } from '@/lib/property-query';
+import { buildPropertyBarcodeValue } from '@/lib/property-barcode';
 
 const DASHBOARD_TASK_PAGE_SIZE = 25;
 const MAX_DASHBOARD_TASK_PAGE = 1000000;
@@ -59,7 +60,10 @@ export async function GET(request: NextRequest) {
     prisma.maintenanceRecord.count({ where: taskWhere }),
     prisma.maintenanceRecord.findMany({
       where: taskWhere,
-      include: { asset: { select: { name: true, location: true } }, site: { select: { name: true } } },
+      include: {
+        asset: { select: { name: true, location: true } },
+        site: { select: { name: true, code: true } },
+      },
       orderBy: { dueDate: 'asc' },
       skip: (page - 1) * pageSize,
       take: pageSize,
@@ -69,6 +73,8 @@ export async function GET(request: NextRequest) {
     .map((r) => ({
       recordId: r.recordId,
       assetCode: r.assetCode,
+      // 開始維護要用「據點代碼:財產編號」查詢：財產編號只在同一據點內唯一，兩個據點可能有同號資產
+      scanCode: r.site ? buildPropertyBarcodeValue(r.site.code, r.assetCode) : r.assetCode,
       assetName: r.asset?.name ?? '',
       location: r.asset?.location ?? '',
       siteName: r.site?.name ?? '',

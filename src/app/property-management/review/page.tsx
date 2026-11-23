@@ -6,6 +6,7 @@ import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import { useLocalToast, SimpleToast } from '@/components/Toast';
 import { fmtDate } from '@/lib/property-status-ui';
+import { propertyAuditStatusLabel } from '@/lib/property-audit-status';
 
 interface Rec {
   recordId: string;
@@ -23,6 +24,26 @@ interface Rec {
   asset?: { name: string };
 }
 
+interface AttachmentInfo {
+  id: number;
+  originalName: string;
+}
+
+interface AuditRound {
+  id: number;
+  auditStatus: string;
+  supervisorName: string | null;
+  supervisorAuditDate: string | null;
+  note: string | null;
+}
+
+interface RecordDetail {
+  attachments: AttachmentInfo[];
+  auditRounds: AuditRound[];
+}
+
+type DetailState = { loading: boolean; error?: string; data?: RecordDetail };
+
 interface PaginationState {
   total: number;
   page: number;
@@ -32,6 +53,73 @@ interface PaginationState {
 
 const REVIEW_PAGE_SIZE = 25;
 
+function RecordDetailPanel({ record, detail }: { record: Rec; detail?: DetailState }) {
+  if (!detail || detail.loading) {
+    return <p className="mt-2 text-xs text-gray-600">載入中…</p>;
+  }
+  if (detail.error || !detail.data) {
+    return <p className="mt-2 text-xs text-red-600">{detail.error || '載入失敗'}</p>;
+  }
+
+  const { attachments, auditRounds } = detail.data;
+  // 目前正在審的那一輪（PENDING）不列，只列已決定的歷次結果
+  const decidedRounds = auditRounds.filter((round) => round.auditStatus !== 'PENDING');
+  const hasAnyEvidence = attachments.length > 0 || !!record.photoPath || !!record.signaturePath;
+
+  return (
+    <div className="mt-2 space-y-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-700">
+      <div>
+        <p className="font-medium text-gray-900">評量附件（{attachments.length}）</p>
+        {attachments.length === 0 ? (
+          <p>無評量附件</p>
+        ) : (
+          <ul className="mt-0.5 space-y-0.5">
+            {attachments.map((attachment) => (
+              <li key={attachment.id}>
+                <a
+                  href={`/api/property-maintenance/records/${encodeURIComponent(
+                    record.recordId
+                  )}/attachments?id=${attachment.id}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-blue-600 hover:underline"
+                >
+                  {attachment.originalName}
+                </a>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      {!hasAnyEvidence && (
+        <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-amber-800">
+          此紀錄沒有任何佐證檔案（無評量附件、維護照片或簽章）。
+        </p>
+      )}
+      <div>
+        <p className="font-medium text-gray-900">審核歷程</p>
+        {decidedRounds.length === 0 ? (
+          <p>尚無歷次審核</p>
+        ) : (
+          <ol className="mt-0.5 space-y-0.5">
+            {decidedRounds.map((round) => (
+              <li key={round.id}>
+                {fmtDate(round.supervisorAuditDate)}　{round.supervisorName || '—'}　
+                {propertyAuditStatusLabel(round.auditStatus)}
+                {round.note
+                  ? `：${round.note}`
+                  : round.auditStatus === 'REJECTED'
+                    ? '（原因未記錄）'
+                    : ''}
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function ReviewPage() {
   const { showToast, toast, clearToast } = useLocalToast();
   const [rows, setRows] = useState<Rec[]>([]);
@@ -39,6 +127,8 @@ export default function ReviewPage() {
   const [rejecting, setRejecting] = useState<Rec | null>(null);
   const [reason, setReason] = useState('');
   const [currentEmployeeId, setCurrentEmployeeId] = useState<number | null>(null);
+  const [openIds, setOpenIds] = useState<Set<string>>(new Set());
+  const [details, setDetails] = useState<Record<string, DetailState>>({});
   const [page, setPage] = useState(1);
   const [pagination, setPagination] = useState<PaginationState>({
     total: 0,
@@ -92,6 +182,43 @@ export default function ReviewPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  // 展開時才載入紀錄詳情（評量附件、歷次審核），沿用既有的詳情與附件下載 API
+  const toggleDetail = async (rec: Rec) => {
+    const id = rec.recordId;
+    const willOpen = !openIds.has(id);
+    setOpenIds((prev) => {
+      const next = new Set(prev);
+      if (willOpen) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+    if (!willOpen || details[id]?.data || details[id]?.loading) return;
+
+    setDetails((prev) => ({ ...prev, [id]: { loading: true } }));
+    try {
+      const res = await fetch(`/api/property-maintenance/records/${encodeURIComponent(id)}`, {
+        credentials: 'include',
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || '載入失敗');
+      setDetails((prev) => ({
+        ...prev,
+        [id]: {
+          loading: false,
+          data: {
+            attachments: json.data?.attachments ?? [],
+            auditRounds: json.data?.auditRounds ?? [],
+          },
+        },
+      }));
+    } catch (error) {
+      setDetails((prev) => ({
+        ...prev,
+        [id]: { loading: false, error: error instanceof Error ? error.message : '載入失敗' },
+      }));
+    }
+  };
 
   const decide = async (rec: Rec, decision: 'APPROVE' | 'REJECT', rejectReason?: string) => {
     try {
@@ -186,7 +313,18 @@ export default function ReviewPage() {
                               檢視維護人簽章
                             </a>
                           )}
+                          <button
+                            type="button"
+                            onClick={() => toggleDetail(r)}
+                            aria-expanded={openIds.has(r.recordId)}
+                            className="text-xs text-blue-600 hover:underline"
+                          >
+                            {openIds.has(r.recordId) ? '收合佐證與審核歷程' : '查看佐證與審核歷程'}
+                          </button>
                         </div>
+                        {openIds.has(r.recordId) && (
+                          <RecordDetailPanel record={r} detail={details[r.recordId]} />
+                        )}
                       </div>
                       <div className="flex flex-col gap-2 shrink-0">
                         <button

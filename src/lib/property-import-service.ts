@@ -37,7 +37,14 @@ export interface ImportResult {
     site: { id: number; name: string };
     personnel: { created: number; updated: number };
     assets: { created: number; updated: number; skippedNoCode: number; duplicateInFile: number };
-    records: { created: number; updated: number; skippedNoId: number; skippedNoAsset: number };
+    records: {
+      created: number;
+      updated: number;
+      skippedNoId: number;
+      skippedNoAsset: number;
+      /** 紀錄ID 已存在、但屬於別的據點或資產，為避免被默默搬走而略過 */
+      skippedConflict: number;
+    };
   };
   preview?: {
     assets: {
@@ -53,13 +60,13 @@ export interface ImportResult {
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const CHUNK = 200;
 
-/** workbook 內以 trim 後表名尋找工作表 */
-function getSheet(wb: XLSX.WorkBook, trimmedName: string): unknown[][] | null {
+/** workbook 內以 trim 後表名尋找工作表。keepBlankRows：保留空白列，陣列索引 + 1 才會等於 Excel 列號。 */
+function getSheet(wb: XLSX.WorkBook, trimmedName: string, keepBlankRows = false): unknown[][] | null {
   const real = wb.SheetNames.find((n) => n.trim() === trimmedName);
   if (!real) return null;
   return XLSX.utils.sheet_to_json(wb.Sheets[real], {
     header: 1,
-    blankrows: false,
+    blankrows: keepBlankRows,
   }) as unknown[][];
 }
 
@@ -159,7 +166,7 @@ async function previewPropertyWorkbook(
       site,
       personnel: { created: 0, updated: 0 },
       assets: assetStat,
-      records: { created: 0, updated: 0, skippedNoId: 0, skippedNoAsset: 0 },
+      records: { created: 0, updated: 0, skippedNoId: 0, skippedNoAsset: 0, skippedConflict: 0 },
     },
     preview: {
       assets: { newSamples, updateSamples, duplicateSamples },
@@ -358,8 +365,8 @@ export async function importPropertyWorkbook(
   for (const a of assets) assetByCode.set(a.assetCode, a.id);
 
   // 4) 維護執行紀錄（分批 upsert）
-  const recStat = { created: 0, updated: 0, skippedNoId: 0, skippedNoAsset: 0 };
-  const recSheet = getSheet(wb, '維護執行紀錄');
+  const recStat = { created: 0, updated: 0, skippedNoId: 0, skippedNoAsset: 0, skippedConflict: 0 };
+  const recSheet = getSheet(wb, '維護執行紀錄', true);
   if (recSheet && recSheet.length > 1) {
     const cm = buildColMap(recSheet[0], [
       'recordId',
@@ -387,11 +394,14 @@ export async function importPropertyWorkbook(
     // 預先解析所有列 → payload，再分批寫
     const payloads: {
       recordId: string;
+      assetId: number;
+      row: number;
       create: Prisma.MaintenanceRecordUncheckedCreateInput;
       update: Prisma.MaintenanceRecordUncheckedUpdateInput;
     }[] = [];
     for (let r = 1; r < recSheet.length; r++) {
       const row = recSheet[r];
+      if (!row || row.every((v) => v == null || String(v).trim() === '')) continue; // 空白列（保留只為了列號正確）
       const recordId = cell(row, cm.recordId ?? -1);
       if (!recordId) {
         recStat.skippedNoId++;
@@ -434,21 +444,33 @@ export async function importPropertyWorkbook(
         note: cell(row, cm.note ?? -1),
         notified: notifiedRaw != null && /^(true|1|是|已通知|y)$/i.test(notifiedRaw),
       };
-      payloads.push({ recordId, create: { recordId, ...base }, update: base });
+      payloads.push({ recordId, assetId, row: r + 1, create: { recordId, ...base }, update: base });
     }
 
-    // 既有 recordId（判斷 created vs updated）
-    const existingIds = new Set(
+    // 既有 recordId（判斷 created vs updated）。紀錄ID 是全系統唯一鍵，upsert 會連同據點／資產一起更新，
+    // 若該 ID 已屬於別的據點或資產就會被默默搬走，所以寫入前先辨識歸屬衝突、略過並回報列號。
+    const existingRecords = new Map(
       (
         await prisma.maintenanceRecord.findMany({
           where: { recordId: { in: payloads.map((p) => p.recordId) } },
-          select: { recordId: true },
+          select: { recordId: true, siteId: true, assetId: true },
         })
-      ).map((x) => x.recordId)
+      ).map((x) => [x.recordId, x])
     );
+    const writable = payloads.filter((p) => {
+      const existing = existingRecords.get(p.recordId);
+      if (!existing || (existing.siteId === siteId && existing.assetId === p.assetId)) return true;
+      recStat.skippedConflict++;
+      errors.push(
+        `維護執行紀錄第 ${p.row} 列：紀錄ID「${p.recordId}」已屬於${
+          existing.siteId === siteId ? '本據點的另一件財產' : '其他據點'
+        }，為避免資料被搬移已略過`
+      );
+      return false;
+    });
 
-    for (let i = 0; i < payloads.length; i += CHUNK) {
-      const slice = payloads.slice(i, i + CHUNK);
+    for (let i = 0; i < writable.length; i += CHUNK) {
+      const slice = writable.slice(i, i + CHUNK);
       await prisma.$transaction(
         slice.map((p) =>
           prisma.maintenanceRecord.upsert({
@@ -459,7 +481,7 @@ export async function importPropertyWorkbook(
         )
       );
       for (const p of slice) {
-        if (existingIds.has(p.recordId)) recStat.updated++;
+        if (existingRecords.has(p.recordId)) recStat.updated++;
         else recStat.created++;
       }
     }
@@ -473,7 +495,9 @@ export async function importPropertyWorkbook(
 
   return {
     success: true,
-    message: `匯入完成：人員 +${personnelStat.created}/~${personnelStat.updated}、資產 +${assetStat.created}/~${assetStat.updated}、紀錄 +${recStat.created}/~${recStat.updated}`,
+    message: `匯入完成：人員 +${personnelStat.created}/~${personnelStat.updated}、資產 +${assetStat.created}/~${assetStat.updated}、紀錄 +${recStat.created}/~${recStat.updated}${
+      recStat.skippedConflict ? `、歸屬衝突略過 ${recStat.skippedConflict}` : ''
+    }`,
     results: {
       site,
       personnel: personnelStat,
