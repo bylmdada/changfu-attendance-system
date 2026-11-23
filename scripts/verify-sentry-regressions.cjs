@@ -171,7 +171,77 @@ c.close()`, database, path.join(root, 'prisma/migrations')]);
     assert.equal(secondImport.results.records.skippedConflict, 1);
     assert.equal(secondImport.results.records.skippedNoId, 0);
 
-    console.log('PASS: 24 concurrent maintenance requests, pending-task guard, atomic rollback and retry, same-code assets across sites, legacy record IDs, cron generation, import ownership conflicts');
+    // 考勤顯示狀態快取的失效：改班、刪班、修改打卡時間都必須清掉已存的狀態（舊觸發器用 datetime(work_date) 比對，
+    // 但 Prisma 存的是整數毫秒 → 永遠不成立，改班後狀態篩選會漏掉紀錄）；應用程式回填狀態本身不可觸發失效
+    const taipeiMidnight = ymd => new Date(Date.parse(`${ymd}T00:00:00Z`) - 8 * 3600000);
+    const newStaff = code => prisma.employee.create({ data: {
+      employeeId: code, name: code, birthday: new Date('1990-01-01'), hireDate: new Date('2024-01-01'), baseSalary: 1, hourlyRate: 1,
+    } });
+    const staff = await newStaff('STAT1');
+    const colleague = await newStaff('STAT2');
+    const attendanceOn = (employeeId, ymd) => prisma.attendanceRecord.create({ data: {
+      employeeId, workDate: taipeiMidnight(ymd),
+      clockInTime: new Date(taipeiMidnight(ymd).getTime() + 8 * 3600000), clockOutTime: new Date(taipeiMidnight(ymd).getTime() + 17 * 3600000),
+    } });
+    const att20 = await attendanceOn(staff.id, '2026-11-20');
+    const att21 = await attendanceOn(staff.id, '2026-11-21');
+    const colleague20 = await attendanceOn(colleague.id, '2026-11-20');
+    const statusOf = async id => (await prisma.attendanceRecord.findUniqueOrThrow({ where: { id } })).displayStatus;
+    const materialize = () => prisma.attendanceRecord.updateMany({ data: { displayStatus: '正常' } });
+    const scheduleOn = (employeeId, ymd) => prisma.schedule.create({ data: {
+      employeeId, workDate: ymd, shiftType: 'A', startTime: '08:00', endTime: '17:00', breakTime: 60, workHours: 8,
+    } });
+
+    await materialize();
+    assert.equal(await statusOf(att20.id), '正常', 'writing back display_status must not invalidate itself');
+    await scheduleOn(staff.id, '2026-11-20'); // 新增班表：只清該員工、該台北日
+    assert.equal(await statusOf(att20.id), null);
+    assert.equal(await statusOf(att21.id), '正常');
+    assert.equal(await statusOf(colleague20.id), '正常');
+
+    await materialize();
+    await prisma.schedule.updateMany({ where: { employeeId: staff.id, workDate: '2026-11-20' }, data: { startTime: '07:00' } });
+    assert.equal(await statusOf(att20.id), null, 'schedule edit must invalidate the cached status');
+    assert.equal(await statusOf(att21.id), '正常');
+
+    await materialize();
+    await prisma.schedule.updateMany({ where: { employeeId: staff.id, workDate: '2026-11-20' }, data: { workDate: '2026-11-21' } });
+    assert.equal(await statusOf(att20.id), null, 'moving a schedule must invalidate the old day');
+    assert.equal(await statusOf(att21.id), null, 'moving a schedule must invalidate the new day');
+
+    await materialize();
+    await prisma.schedule.deleteMany({ where: { employeeId: staff.id, workDate: '2026-11-21' } });
+    assert.equal(await statusOf(att21.id), null, 'schedule delete must invalidate the cached status');
+    assert.equal(await statusOf(att20.id), '正常');
+    assert.equal(await statusOf(colleague20.id), '正常');
+
+    // 補打卡／修改打卡：任何寫入路徑改到上下班時間都會清掉那一筆（包含 upsert 的更新分支）
+    await prisma.attendanceRecord.update({ where: { id: att20.id }, data: { clockOutTime: new Date('2026-11-20T10:00:00Z') } });
+    assert.equal(await statusOf(att20.id), null, 'clock-out edit must invalidate the cached status');
+    assert.equal(await statusOf(colleague20.id), '正常');
+    await materialize();
+    await prisma.attendanceRecord.upsert({
+      where: { employeeId_workDate: { employeeId: staff.id, workDate: taipeiMidnight('2026-11-20') } },
+      update: { clockInTime: new Date('2026-11-20T01:30:00Z') },
+      create: { employeeId: staff.id, workDate: taipeiMidnight('2026-11-20') },
+    });
+    assert.equal(await statusOf(att20.id), null, 'upsert update branch must invalidate the cached status');
+    await prisma.attendanceRecord.update({ where: { id: att21.id }, data: { notes: 'unrelated edit' } });
+    assert.equal(await statusOf(colleague20.id), '正常');
+
+    // migration 一次性清掉既有（可能已過期）的狀態，且可重複套用
+    await materialize();
+    execFileSync('python3', ['-c', `import sqlite3,pathlib,sys
+c=sqlite3.connect(sys.argv[1])
+c.executescript(pathlib.Path(sys.argv[2]).read_text())
+c.close()`, database, path.join(root, 'prisma/migrations/20261123_fix_attendance_display_status_invalidation/migration.sql')]);
+    assert.equal(await statusOf(att20.id), null);
+    assert.equal(await statusOf(colleague20.id), null);
+    await materialize();
+    await scheduleOn(colleague.id, '2026-11-20');
+    assert.equal(await statusOf(colleague20.id), null, 'triggers still work after re-applying the migration');
+
+    console.log('PASS: 24 concurrent maintenance requests, pending-task guard, atomic rollback and retry, same-code assets across sites, legacy record IDs, cron generation, import ownership conflicts, attendance status invalidation');
   } finally {
     await prisma.$disconnect();
     fs.rmSync(temporary, { recursive: true, force: true });
