@@ -1,10 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
-import {
-  getStoredIncomeTaxManagementSettings,
-  resolvePayrollIncomeTaxDisplayAmounts,
-} from '@/lib/income-tax-settings';
 import { getEmployeePDFPassword, getPasswordHint, PDFSecurityConfig, getDefaultSecurityConfig } from '@/lib/pdf-security';
 import { LOGO_BASE64 } from '@/lib/logoBase64';
 import { escapeHtml } from '@/lib/html';
@@ -68,6 +64,7 @@ interface PayslipData {
     healthInsurance: number;
     supplementaryInsurance: number;
     bonusSupplementaryInsurance: number;
+    laborPensionSelf: number;
     attendancePenalty: {
       totalAmount: number;
       details: Array<{
@@ -234,15 +231,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: '無權限查看此薪資條' }, { status: 403 });
     }
 
-    const incomeTaxSettings = await getStoredIncomeTaxManagementSettings();
-    const displayAmounts = resolvePayrollIncomeTaxDisplayAmounts(
-      {
-        incomeTax: payrollRecord.incomeTax,
-        totalDeductions: payrollRecord.totalDeductions,
-        netPay: payrollRecord.netPay,
-      },
-      incomeTaxSettings
-    );
+    // 薪資條一律顯示薪資紀錄當時實際扣的金額，不受「所得稅管理」設定影響（該設定只管之後新產生的薪資）
     const { bonusDetails, bonusSupplementaryInsurance } = getStoredBonusDetails(payrollRecord);
     const attendancePenalty = getStoredAttendancePenalty(payrollRecord);
 
@@ -291,9 +280,10 @@ export async function GET(request: NextRequest) {
           payrollRecord.supplementaryInsurance - bonusSupplementaryInsurance
         ),
         bonusSupplementaryInsurance,
+        laborPensionSelf: payrollRecord.laborPensionSelf || 0,
         attendancePenalty,
-        incomeTax: displayAmounts.incomeTax,
-        total: displayAmounts.totalDeductions,
+        incomeTax: payrollRecord.incomeTax,
+        total: payrollRecord.totalDeductions,
         adjustments: payrollRecord.adjustments
           .filter(adjustment => adjustment.type === 'DEDUCTION')
           .map(adjustment => ({
@@ -302,7 +292,7 @@ export async function GET(request: NextRequest) {
             amount: adjustment.amount
           }))
       },
-      netPay: displayAmounts.netPay,
+      netPay: payrollRecord.netPay,
       generatedAt: new Date().toISOString()
     };
 
@@ -420,6 +410,12 @@ function generatePayslipHTML(payslip: PayslipData) {
               <tr>
                 <td>獎金補充保費</td>
                 <td class="deduction-amount">NT$ ${payslip.deductions.bonusSupplementaryInsurance.toLocaleString()}</td>
+              </tr>
+  ` : '';
+  const laborPensionSelfRow = payslip.deductions.laborPensionSelf > 0 ? `
+              <tr>
+                <td>勞退自提</td>
+                <td class="deduction-amount">NT$ ${payslip.deductions.laborPensionSelf.toLocaleString()}</td>
               </tr>
   ` : '';
   const attendancePenaltyRow = payslip.deductions.attendancePenalty.totalAmount > 0 ? `
@@ -704,6 +700,7 @@ function generatePayslipHTML(payslip: PayslipData) {
               </tr>
               ${salarySupplementaryInsuranceRow}
               ${bonusSupplementaryInsuranceRow}
+              ${laborPensionSelfRow}
               ${incomeTaxRow}
               ${attendancePenaltyRow}
               ${deductionAdjustmentRows}

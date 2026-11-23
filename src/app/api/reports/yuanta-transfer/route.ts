@@ -56,17 +56,17 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: '無效的年份參數' }, { status: 400 });
     }
 
-    const monthResult = parseIntegerQueryParam(searchParams.get('month'), {
-      defaultValue: new Date().getMonth() + 1,
-      min: 1,
-      max: 12,
-    });
+    // 銀行檔不可默默套用「當月」，發薪月份必須由呼叫端明確指定
+    const monthResult = parseIntegerQueryParam(searchParams.get('month'), { min: 1, max: 12 });
     if (!monthResult.isValid) {
       return NextResponse.json({ error: '無效的月份參數' }, { status: 400 });
     }
+    if (monthResult.value === null) {
+      return NextResponse.json({ error: '請指定發薪月份' }, { status: 400 });
+    }
 
     const year = yearResult.value!;
-    const month = monthResult.value!;
+    const month = monthResult.value;
     const type = searchParams.get('type') || 'salary';
     const format = searchParams.get('format') || 'xls';
 
@@ -84,6 +84,10 @@ export async function GET(request: NextRequest) {
     }
 
     const transferDate = transferDateParam || `${year}${month.toString().padStart(2, '0')}25`;
+
+    // 部門／員工篩選：規則與報表管理頁預覽一致，下載的名單才會等於畫面所見
+    const departmentFilter = searchParams.get('department')?.trim() ?? '';
+    const searchFilter = searchParams.get('search')?.trim().toLowerCase() ?? '';
 
     let payrollLikeRecords: Array<{
       employeeId: number;
@@ -153,9 +157,20 @@ export async function GET(request: NextRequest) {
       }));
     }
 
+    const isFiltered = Boolean(departmentFilter || searchFilter);
+    if (isFiltered) {
+      payrollLikeRecords = payrollLikeRecords.filter(({ employee }) => {
+        if (!employee) return false;
+        if (departmentFilter && (employee.department || '未分類') !== departmentFilter) return false;
+        return !searchFilter
+          || employee.name.toLowerCase().includes(searchFilter)
+          || employee.employeeId.toLowerCase().includes(searchFilter);
+      });
+    }
+
     if (payrollLikeRecords.length === 0) {
       return NextResponse.json({
-        error: `${year}年${month}月沒有${type === 'salary' ? '薪資' : '獎金'}記錄`
+        error: `${year}年${month}月沒有${isFiltered ? '符合條件的' : ''}${type === 'salary' ? '薪資' : '獎金'}記錄`
       }, { status: 404 });
     }
 

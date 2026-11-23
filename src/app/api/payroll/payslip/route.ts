@@ -2,10 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { buildSuccessPayload } from '@/lib/api-response';
-import {
-  getStoredIncomeTaxManagementSettings,
-  resolvePayrollIncomeTaxDisplayAmounts,
-} from '@/lib/income-tax-settings';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { buildPayslipHourSummary } from '@/lib/payroll-payslip-hours';
 
@@ -180,15 +176,8 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: '無權限查看此薪資條' }, { status: 403 });
     }
 
-    const incomeTaxSettings = await getStoredIncomeTaxManagementSettings();
-    const displayAmounts = resolvePayrollIncomeTaxDisplayAmounts(
-      {
-        incomeTax: payrollRecord.incomeTax,
-        totalDeductions: payrollRecord.totalDeductions,
-        netPay: payrollRecord.netPay,
-      },
-      incomeTaxSettings
-    );
+    // 薪資條一律顯示薪資紀錄當時實際扣的金額；「所得稅管理」設定只決定之後新產生的薪資是否計入所得稅，
+    // 不可回頭改寫已產生的薪資條（否則實領會和實際薪轉金額對不上）。
     const { bonusDetails, bonusSupplementaryInsurance } = getStoredBonusDetails(payrollRecord);
     const attendancePenalty = getStoredAttendancePenalty(payrollRecord);
 
@@ -287,13 +276,25 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    if (displayAmounts.incomeTax > 0) {
+    // 勞退自提已含在已存的總扣款與實領內，明細必須列出才對得上
+    if (payrollRecord.laborPensionSelf > 0) {
+      deductions.push({
+        code: 'LABOR_PENSION_SELF',
+        name: '勞退自提',
+        amount: payrollRecord.laborPensionSelf,
+        quantity: 1,
+        unitPrice: payrollRecord.laborPensionSelf,
+        description: '勞工退休金個人自願提繳'
+      });
+    }
+
+    if (payrollRecord.incomeTax > 0) {
       deductions.push({
         code: 'INCOME_TAX',
         name: '所得稅',
-        amount: displayAmounts.incomeTax,
+        amount: payrollRecord.incomeTax,
         quantity: 1,
-        unitPrice: displayAmounts.incomeTax,
+        unitPrice: payrollRecord.incomeTax,
         description: '代扣所得稅'
       });
     }
@@ -353,7 +354,7 @@ export async function GET(request: NextRequest) {
       summary: {
         totalEarnings: earnings.reduce((sum: number, item: {amount: number}) => sum + item.amount, 0),
         totalDeductions: deductions.reduce((sum: number, item: {amount: number}) => sum + item.amount, 0),
-        netPay: displayAmounts.netPay
+        netPay: payrollRecord.netPay
       },
       generatedAt: new Date().toISOString(),
       companyInfo: {

@@ -3,6 +3,7 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { toCsvRow } from '@/lib/csv';
 import { parseIntegerQueryParam } from '@/lib/query-params';
+import { calculateMonthlyExemptOvertimePay } from '@/lib/overtime-tax-exemption';
 
 /**
  * 所得稅申報資料匯出 API
@@ -66,6 +67,7 @@ export async function GET(request: NextRequest) {
       hireDate: Date;
       totalBasePay: number;         // 底薪總額
       totalOvertimePay: number;     // 加班費總額
+      exemptOvertimePay: number;    // 免稅加班費（逐月以當月時薪計算上限）
       totalGrossPay: number;        // 所得總額
       totalLaborInsurance: number;  // 勞保自付總額
       totalHealthInsurance: number; // 健保自付總額
@@ -82,6 +84,7 @@ export async function GET(request: NextRequest) {
       if (existing) {
         existing.totalBasePay += record.basePay;
         existing.totalOvertimePay += record.overtimePay;
+        existing.exemptOvertimePay += calculateMonthlyExemptOvertimePay(record);
         existing.totalGrossPay += record.grossPay;
         existing.totalLaborInsurance += record.laborInsurance;
         existing.totalHealthInsurance += record.healthInsurance;
@@ -97,6 +100,7 @@ export async function GET(request: NextRequest) {
           hireDate: record.employee.hireDate,
           totalBasePay: record.basePay,
           totalOvertimePay: record.overtimePay,
+          exemptOvertimePay: calculateMonthlyExemptOvertimePay(record),
           totalGrossPay: record.grossPay,
           totalLaborInsurance: record.laborInsurance,
           totalHealthInsurance: record.healthInsurance,
@@ -109,8 +113,8 @@ export async function GET(request: NextRequest) {
     }
 
 
-    const records = Array.from(employeeSummary.values()).map(emp => {
-      const taxExempt = Math.min(emp.totalOvertimePay, 46 * 12 * 200);
+    const records = Array.from(employeeSummary.values()).map(({ exemptOvertimePay, ...emp }) => {
+      const taxExempt = exemptOvertimePay;
 
       return {
         ...emp,

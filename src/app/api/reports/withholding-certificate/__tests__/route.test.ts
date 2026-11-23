@@ -106,6 +106,32 @@ describe('withholding certificate HTML escaping', () => {
     expect(data.certificate.employee).not.toHaveProperty('hireDate');
   });
 
+  it('computes exempt overtime month by month from each record’s own hourly wage', async () => {
+    const record = (payMonth: number, overtimePay: number, hourlyWage: number) => ({
+      payMonth,
+      grossPay: 40000 + overtimePay,
+      basePay: 40000,
+      overtimePay,
+      laborInsurance: 0,
+      healthInsurance: 0,
+      laborPensionSelf: 0,
+      incomeTax: 0,
+      netPay: 40000 + overtimePay,
+      hourlyWage,
+    });
+    mockedPrisma.payrollRecord.findMany.mockResolvedValue([
+      record(1, 20000, 250), // 上限 46 × 250 = 11,500
+      record(2, 0, 250), // 沒用完的額度不能抵銷 1 月超出的部分
+      record(3, 10000, 133), // 調薪後的另一個時薪：上限 6,118
+    ] as never);
+
+    const request = new NextRequest('http://localhost/api/reports/withholding-certificate?year=2026');
+    const data = await (await GET(request)).json();
+
+    expect(data.certificate.totals.exemptOvertimePay).toBe(11500 + 0 + 6118);
+    expect(data.certificate.totals.taxableIncome).toBe(150000 - (11500 + 6118));
+  });
+
   it.each([
     ['http://localhost/api/reports/withholding-certificate?year=abc&employeeId=99&format=html', '無效的年份參數'],
     ['http://localhost/api/reports/withholding-certificate?year=2026&employeeId=abc&format=html', '無效的員工編號參數'],

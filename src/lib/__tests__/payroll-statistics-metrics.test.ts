@@ -35,6 +35,17 @@ describe('payroll statistics metrics', () => {
     ).toBe(150000);
   });
 
+  it('counts a month with payroll records even when its total is zero, but not a month without records', () => {
+    const trends = [
+      { employeeCount: 1, totalGrossPay: 40000 },
+      { employeeCount: 1, totalGrossPay: 0 },
+      { employeeCount: 0, totalGrossPay: 0 },
+    ];
+
+    expect(countMonthsWithPayroll(trends)).toBe(2);
+    expect(calculateAverageMonthlyGrossPay(40000, trends)).toBe(20000);
+  });
+
   it('calculates overtime pay share from actual overtime pay', () => {
     expect(calculateOvertimePayShare(12000, 80000)).toBe(15);
   });

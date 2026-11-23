@@ -125,7 +125,7 @@ describe('payroll payslip route guards', () => {
     });
   });
 
-  it('hides income tax item and adjusts displayed totals when withholding is disabled', async () => {
+  it('keeps showing the stored income tax and net pay even after withholding is switched off', async () => {
     (mockPrisma as unknown as {
       systemSettings: { findUnique: jest.Mock };
     }).systemSettings.findUnique.mockResolvedValue({
@@ -168,13 +168,61 @@ describe('payroll payslip route guards', () => {
     const payload = await response.json();
 
     expect(response.status).toBe(200);
+    // 設定只管之後新產生的薪資；這筆薪資當時已扣 300 元所得稅、實領 30,400，薪資條必須照實顯示
     expect(payload.payslip.deductions).toEqual([
       expect.objectContaining({ code: 'LABOR_INSURANCE', amount: 700 }),
       expect.objectContaining({ code: 'HEALTH_INSURANCE', amount: 500 }),
       expect.objectContaining({ code: 'SUPPLEMENTARY_INSURANCE', amount: 100 }),
+      expect.objectContaining({ code: 'INCOME_TAX', amount: 300 }),
     ]);
-    expect(payload.payslip.summary.totalDeductions).toBe(1300);
-    expect(payload.payslip.summary.netPay).toBe(30700);
+    expect(payload.payslip.summary.totalDeductions).toBe(1600);
+    expect(payload.payslip.summary.netPay).toBe(30400);
+    expect(payload.payslip.summary.totalEarnings - payload.payslip.summary.totalDeductions).toBe(30400);
+  });
+
+  it('lists labor pension self-contribution so deduction lines reconcile with the stored net pay', async () => {
+    mockPrisma.payrollRecord.findUnique.mockResolvedValue({
+      id: 4,
+      employeeId: 1,
+      payYear: 2026,
+      payMonth: 6,
+      regularHours: 160,
+      overtimeHours: 0,
+      basePay: 50000,
+      overtimePay: 0,
+      grossPay: 50000,
+      laborInsurance: 600,
+      healthInsurance: 400,
+      supplementaryInsurance: 0,
+      laborPensionSelf: 1800,
+      incomeTax: 1000,
+      totalDeductions: 3800,
+      netPay: 46200,
+      employee: {
+        id: 1,
+        employeeId: 'E001',
+        name: '測試員工',
+        department: '照護部',
+        position: '照服員',
+        baseSalary: 50000,
+        hourlyRate: 200,
+        hireDate: new Date('2025-01-01T00:00:00.000Z'),
+      },
+      adjustments: [],
+    } as never);
+    mockPrisma.schedule.findMany.mockResolvedValue([] as never);
+    mockPrisma.holiday.findMany.mockResolvedValue([] as never);
+
+    const response = await GET(new NextRequest('http://localhost/api/payroll/payslip?payrollId=4'));
+    const { payslip } = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payslip.deductions).toContainEqual(
+      expect.objectContaining({ code: 'LABOR_PENSION_SELF', name: '勞退自提', amount: 1800 })
+    );
+    expect(payslip.summary.totalDeductions).toBe(3800);
+    expect(payslip.summary.totalEarnings - payslip.summary.totalDeductions).toBe(payslip.summary.netPay);
+    expect(payslip.summary.netPay).toBe(46200);
   });
 
   it('renders stored bonus details and split bonus supplementary insurance on payslips', async () => {

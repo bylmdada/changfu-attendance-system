@@ -7,6 +7,7 @@ import { LOGO_BASE64 } from '@/lib/logoBase64';
 import { decrypt } from '@/lib/encryption';
 import { escapeHtml } from '@/lib/html';
 import { parseIntegerQueryParam } from '@/lib/query-params';
+import { sumExemptOvertimePay } from '@/lib/overtime-tax-exemption';
 
 /**
  * 年度扣繳憑單 API
@@ -60,10 +61,8 @@ async function calculateWithholdingData(employeeId: number, year: number) {
     netPay: 0
   });
 
-  // 計算免稅加班費（每月46小時以內免稅）
-  const hourlyWage = payrollRecords[0]?.hourlyWage || 0;
-  const exemptOvertimeLimit = 46 * 12 * hourlyWage; // 全年免稅加班費上限
-  const exemptOvertimePay = Math.min(totals.overtimePay, exemptOvertimeLimit);
+  // 計算免稅加班費（每月46小時以內免稅）：逐月以當月薪資紀錄的時薪計算上限，與所得稅申報報表共用同一個算法
+  const exemptOvertimePay = sumExemptOvertimePay(payrollRecords);
   
   // 應稅所得 = 總所得 - 勞保 - 健保 - 勞退自提 - 免稅加班費
   const taxableIncome = totals.grossPay - totals.laborInsurance - totals.healthInsurance - totals.laborPensionSelf - exemptOvertimePay;
