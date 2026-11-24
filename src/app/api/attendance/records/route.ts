@@ -479,7 +479,7 @@ export async function GET(request: NextRequest) {
           }
         }
       },
-      orderBy: { workDate: 'desc' as const }
+      orderBy: [{ workDate: 'desc' as const }, { id: 'asc' as const }]
     };
 
     let total = 0;
@@ -627,14 +627,12 @@ export async function GET(request: NextRequest) {
       displayStatus: string
     ) => {
       if (record.displayStatus === displayStatus) return;
-      displayStatusUpdates.set(displayStatus, [
-        ...(displayStatusUpdates.get(displayStatus) || []),
-        record.id,
-      ]);
+      const ids = displayStatusUpdates.get(displayStatus);
+      if (ids) ids.push(record.id);
+      else displayStatusUpdates.set(displayStatus, [record.id]);
     };
 
-    // 格式化記錄
-    const formattedRecords = records.map(record => {
+    const getMetrics = (record: (typeof summarySourceRecords)[number]) => {
       const workDateStr = toTaiwanDateStr(record.workDate);
       const scheduleKey = `${record.employeeId}-${workDateStr}`;
       const schedule = scheduleMap.get(scheduleKey);
@@ -673,10 +671,18 @@ export async function GET(request: NextRequest) {
         minimumWorkHoursFallback: MIN_WORK_HOURS,
       });
       queueDisplayStatusUpdate(record, displayStatus);
-      
-      // 判斷是否為管理員/HR（可查看GPS資訊）
-      const isAdmin = user.role === 'ADMIN' || user.role === 'HR';
-      
+      return {
+        totalHours,
+        regularHours: validOvertime.regularHours,
+        overtimeHours: validOvertime.effectiveHours,
+        status: displayStatus,
+        schedule,
+      };
+    };
+
+    type Metrics = ReturnType<typeof getMetrics>;
+    const formatRecord = (record: (typeof records)[number], metrics: Metrics) => {
+      const { schedule, totalHours, regularHours, overtimeHours, status } = metrics;
       return {
         id: record.id,
         employeeId: record.employeeId,
@@ -684,9 +690,9 @@ export async function GET(request: NextRequest) {
         clockInTime: record.clockInTime?.toISOString() || null,
         clockOutTime: record.clockOutTime?.toISOString() || null,
         totalHours,
-        regularHours: validOvertime.regularHours,
-        overtimeHours: validOvertime.effectiveHours,
-        status: displayStatus,
+        regularHours,
+        overtimeHours,
+        status,
         duplicated: (duplicateCounts.get(getTaiwanDuplicateKey(record)) || 0) > 1,
         createdAt: record.createdAt.toISOString(),
         employee: record.employee,
@@ -701,7 +707,7 @@ export async function GET(request: NextRequest) {
         scheduledStart: schedule?.startTime || null,
         scheduledEnd: schedule?.endTime || null,
         // 新增：GPS 資訊（僅管理員/HR 可查看）
-        ...(isAdmin ? {
+        ...(hasFullAttendanceAccess ? {
           clockInReason: formatAttendanceClockReason(record.clockInReason),
           clockOutReason: formatAttendanceClockReason(record.clockOutReason),
           clockInLatitude: record.clockInLatitude,
@@ -714,115 +720,38 @@ export async function GET(request: NextRequest) {
           clockOutAddress: record.clockOutAddress
         } : {})
       };
-    });
+    };
 
-    let finalRecords = formattedRecords;
+    let totalRegularHours = 0;
+    let totalOvertimeHours = 0;
+    const statusBreakdown: Record<string, number> = {};
+    const addToSummary = (metrics: Metrics) => {
+      totalRegularHours += metrics.regularHours;
+      totalOvertimeHours += metrics.overtimeHours;
+      statusBreakdown[metrics.status] = (statusBreakdown[metrics.status] || 0) + 1;
+    };
+
+    const finalRecords: ReturnType<typeof formatRecord>[] = [];
     if (shouldFilterInMemory) {
-      finalRecords = formattedRecords.filter(record =>
-        (!status || matchesRequestedStatus(record.status, status)) &&
-        matchesRequestedOvertimeHours(record.overtimeHours, overtimeHours)
-      );
-      total = finalRecords.length;
-      finalRecords = finalRecords.slice((page - 1) * pageSize, page * pageSize);
+      const offset = (page - 1) * pageSize;
+      for (const record of records) {
+        const metrics = getMetrics(record);
+        if ((status && !matchesRequestedStatus(metrics.status, status)) ||
+            !matchesRequestedOvertimeHours(metrics.overtimeHours, overtimeHours)) continue;
+        if (total >= offset && finalRecords.length < pageSize) {
+          finalRecords.push(formatRecord(record, metrics));
+        }
+        total++;
+        addToSummary(metrics);
+      }
+    } else {
+      for (const record of records) {
+        finalRecords.push(formatRecord(record, getMetrics(record)));
+      }
+      for (const record of summarySourceRecords) {
+        addToSummary(getMetrics(record));
+      }
     }
-
-    const summarySource = shouldFilterInMemory
-      ? formattedRecords.filter(record =>
-          (!status || matchesRequestedStatus(record.status, status)) &&
-          matchesRequestedOvertimeHours(record.overtimeHours, overtimeHours)
-        )
-      : summarySourceRecords;
-
-    const totalRegularHours = summarySource.reduce((sum, record) => {
-      if ('status' in record) {
-        return sum + record.regularHours;
-      }
-
-      const workDateStr = toTaiwanDateStr(record.workDate);
-      const schedule = scheduleMap.get(`${record.employeeId}-${workDateStr}`);
-      const hours = getStoredOrCalculatedAttendanceHours({
-        ...record,
-        breakTime: schedule?.breakTime || 0,
-        scheduledWorkHours: schedule?.workHours,
-        scheduledStart: schedule?.startTime,
-        scheduledEnd: schedule?.endTime,
-        regularTimeExclusions: getRegularTimeExclusions(record.employeeId),
-      });
-      return sum + resolveApprovedAttendanceOvertime(
-        {
-          employeeId: record.employeeId,
-          workDate: record.workDate,
-          regularHours: hours.regularHours,
-          actualWorkHours: hours.totalHours,
-          overtimeHours: hours.overtimeHours,
-          clockInOvertimeId: record.clockInOvertimeId,
-          clockOutOvertimeId: record.clockOutOvertimeId,
-          overtimeType: resolveAttendanceOvertimeType({
-            shiftType: schedule?.shiftType,
-            workDate: record.workDate,
-          }),
-        },
-        approvedOvertimeIndex,
-        overtimeSettings.overtimeMinUnit
-      ).regularHours;
-    }, 0);
-    const totalOvertimeHours = summarySource.reduce((sum, record) => {
-      if ('status' in record) {
-        return sum + record.overtimeHours;
-      }
-
-      const workDateStr = toTaiwanDateStr(record.workDate);
-      const schedule = scheduleMap.get(`${record.employeeId}-${workDateStr}`);
-      const hours = getStoredOrCalculatedAttendanceHours({
-        ...record,
-        breakTime: schedule?.breakTime || 0,
-        scheduledWorkHours: schedule?.workHours,
-        scheduledStart: schedule?.startTime,
-        scheduledEnd: schedule?.endTime,
-        regularTimeExclusions: getRegularTimeExclusions(record.employeeId),
-      });
-      const overtimeSummary = resolveApprovedAttendanceOvertime(
-        {
-          employeeId: record.employeeId,
-          workDate: record.workDate,
-          regularHours: hours.regularHours,
-          actualWorkHours: hours.totalHours,
-          overtimeHours: hours.overtimeHours,
-          clockInOvertimeId: record.clockInOvertimeId,
-          clockOutOvertimeId: record.clockOutOvertimeId,
-          overtimeType: resolveAttendanceOvertimeType({
-            shiftType: schedule?.shiftType,
-            workDate: record.workDate,
-          }),
-        },
-        approvedOvertimeIndex,
-        overtimeSettings.overtimeMinUnit
-      );
-      return sum + overtimeSummary.effectiveHours;
-    }, 0);
-    const statusBreakdown = summarySource.reduce((counts, record) => {
-      const displayStatus = 'status' in record
-        ? record.status
-        : resolveDisplayAttendanceStatus({
-            clockInTime: record.clockInTime,
-            clockOutTime: record.clockOutTime,
-            totalHours: getStoredOrCalculatedAttendanceHours({
-              ...record,
-              breakTime: scheduleMap.get(`${record.employeeId}-${toTaiwanDateStr(record.workDate)}`)?.breakTime || 0,
-              scheduledWorkHours: scheduleMap.get(`${record.employeeId}-${toTaiwanDateStr(record.workDate)}`)?.workHours,
-              scheduledStart: scheduleMap.get(`${record.employeeId}-${toTaiwanDateStr(record.workDate)}`)?.startTime,
-              scheduledEnd: scheduleMap.get(`${record.employeeId}-${toTaiwanDateStr(record.workDate)}`)?.endTime,
-            }).totalHours,
-            schedule: scheduleMap.get(`${record.employeeId}-${toTaiwanDateStr(record.workDate)}`),
-            minimumWorkHoursFallback: MIN_WORK_HOURS,
-          });
-      if (!('status' in record)) {
-        queueDisplayStatusUpdate(record, displayStatus);
-      }
-
-      counts[displayStatus] = (counts[displayStatus] || 0) + 1;
-      return counts;
-    }, {} as Record<string, number>);
 
     console.log(`✅ 返回考勤記錄: ${finalRecords.length} 筆 (總共 ${total} 筆)`);
     await persistDisplayStatusUpdates(displayStatusUpdates);
