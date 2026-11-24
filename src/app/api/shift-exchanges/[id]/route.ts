@@ -45,6 +45,7 @@ interface PrismaShiftExchangeClient {
   schedule?: {
     findFirst: (args: { where: Record<string, unknown> }) => Promise<{ id: number; shiftType: string; startTime: string; endTime: string } | null>;
     update: (args: { where: { id: number }; data: Record<string, unknown> }) => Promise<unknown>;
+    updateMany: (args: { where: Record<string, unknown>; data: Record<string, unknown> }) => Promise<{ count: number }>;
   };
   $transaction: <T>(fn: (tx: Omit<PrismaShiftExchangeClient, '$transaction'>) => Promise<T>) => Promise<T>;
 }
@@ -125,10 +126,24 @@ async function applyApprovedShiftExchange(
       throw new Error('找不到申請人的班表，無法核准調班申請');
     }
 
-    await tx.schedule.update({
-      where: { id: original.id },
-      data: scheduleData,
-    });
+    // 申請等待核准的期間，班表可能已被排班人員改過。只有現班仍是申請時的原班才改；
+    // 已經是新班別就不必再寫。其餘情況保留現況，整筆交易回滾，申請維持待審。
+    if (original.shiftType !== newShift) {
+      if (original.shiftType !== parsed.original) {
+        throw new Error(
+          `班表已變更：申請時的班別為「${parsed.original}」，目前為「${original.shiftType}」，` +
+          '請申請人重新確認後再送出，或退回此申請'
+        );
+      }
+
+      const updated = await tx.schedule.updateMany({
+        where: { id: original.id, shiftType: parsed.original },
+        data: scheduleData,
+      });
+      if (updated.count !== 1) {
+        throw new Error('班表剛被更動，請重新整理後再核准');
+      }
+    }
 
     return tx.shiftExchangeRequest.update({
       where: { id: shiftExchangeRequest.id },
