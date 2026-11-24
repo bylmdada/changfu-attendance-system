@@ -1017,6 +1017,9 @@ export default function MissedClockPage() {
                     onChange={(e) => setNewRequest({ ...newRequest, requestedTime: e.target.value })}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-orange-500 focus:border-transparent text-gray-900"
                   />
+                  <p className="mt-1 text-xs text-gray-500">
+                    夜班跨日請以上班那天為工作日期，時間照實際打卡時間填（例：11/24 06:00 下班，工作日期選 11/23）。
+                  </p>
                 </div>
 
                 <div>

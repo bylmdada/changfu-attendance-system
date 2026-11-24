@@ -194,6 +194,52 @@ describe('missed clock batch approval authorization guards', () => {
     });
   });
 
+  it('keeps an unappliable supplement pending and still approves the others in the batch', async () => {
+    mockGetUserFromRequest.mockResolvedValue({ role: 'ADMIN', employeeId: 10, userId: 1 } as never);
+    mockPrisma.missedClockRequest.findMany.mockResolvedValue([
+      {
+        id: 5,
+        employeeId: 20,
+        workDate: '2024-01-01',
+        clockType: 'CLOCK_OUT',
+        requestedTime: '07:00', // 補完下班（07:00）早於既有上班（09:00）
+      },
+      {
+        id: 6,
+        employeeId: 21,
+        workDate: '2024-01-01',
+        clockType: 'CLOCK_IN',
+        requestedTime: '09:00',
+      },
+    ] as never);
+    transactionClient.missedClockRequest.update.mockResolvedValue({ id: 6 } as never);
+    transactionClient.attendanceRecord.findFirst
+      .mockResolvedValueOnce({
+        id: 3,
+        workDate: new Date('2023-12-31T16:00:00.000Z'),
+        clockInTime: new Date('2024-01-01T01:00:00.000Z'),
+        clockOutTime: null,
+      } as never)
+      .mockResolvedValueOnce(null as never);
+    transactionClient.attendanceRecord.create.mockResolvedValue({ id: 99 } as never);
+
+    const response = await POST(
+      new NextRequest('http://localhost:3000/api/missed-clock-requests/batch-approve', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ids: [5, 6], action: 'APPROVED' }),
+      })
+    );
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.count).toBe(1);
+    expect(payload.failedIds).toEqual([5]);
+    expect(payload.message).toContain('請申請人確認');
+    expect(transactionClient.attendanceRecord.update).not.toHaveBeenCalled();
+    expect(transactionClient.attendanceRecord.create).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects final batch approval when every selected request has already been processed', async () => {
     mockGetUserFromRequest.mockResolvedValue({
       role: 'ADMIN',

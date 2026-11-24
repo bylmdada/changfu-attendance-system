@@ -8,7 +8,12 @@ import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
 import { buildApplicationRequestNumber } from '@/lib/application-request-number';
-import { applyMissedClockToAttendance, getMissedClockWorkDate } from '@/lib/missed-clock-attendance';
+import {
+  applyMissedClockToAttendance,
+  getMissedClockWorkDate,
+  MissedClockTimeError,
+  validateMissedClockRequest,
+} from '@/lib/missed-clock-attendance';
 import { getApprovalWorkflow } from '@/lib/approval-workflow';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -179,6 +184,17 @@ export async function POST(request: NextRequest) {
         { error: '無效的打卡類型' },
         { status: 400 }
       );
+    }
+
+    // 補登的時間要能套用：格式正確、夜班落在該班次的實際日期、補完下班晚於上班。
+    // 核准時會依當時的班表與考勤再檢查一次。
+    try {
+      await validateMissedClockRequest(prisma, { employeeId, workDate, clockType, requestedTime });
+    } catch (error) {
+      if (error instanceof MissedClockTimeError) {
+        return NextResponse.json({ error: error.message }, { status: 400 });
+      }
+      throw error;
     }
 
     // 檢查是否已有相同日期和類型的申請
@@ -484,6 +500,10 @@ export async function PUT(request: NextRequest) {
       request: updatedRequest 
     });
   } catch (error) {
+    if (error instanceof MissedClockTimeError) {
+      // 交易已回滾，申請維持待審；讓審核者看到原因（退回或請申請人重送）
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
     console.error('審核忘打卡申請失敗:', error);
     return NextResponse.json(
       { error: '審核處理失敗' },

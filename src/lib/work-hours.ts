@@ -34,7 +34,7 @@ function roundHours(hours: number): number {
   return Math.round(hours * 100) / 100;
 }
 
-function parseTimeToMinutes(time?: string | null): number | null {
+export function parseTimeToMinutes(time?: string | null): number | null {
   const match = /^(\d{1,2}):(\d{2})(?::\d{2})?$/.exec((time || '').trim());
   if (!match) return null;
 
