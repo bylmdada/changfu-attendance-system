@@ -34,6 +34,7 @@ import {
   type LeaveDurationSchedule,
 } from '@/lib/leave-management-helpers';
 import { formatShiftDisplay } from '@/lib/shift-display';
+import { overlapsTaiwanDateRange } from '@/lib/date-range-query';
 import {
   LEAVE_MINUTE_OPTIONS,
   isValidLeaveDurationMinutes,
@@ -549,12 +550,11 @@ export default function LeaveManagementPage() {
       filtered = filtered.filter(req => req.employee.department === filters.department);
     }
 
-    if (filters.startDate) {
-      filtered = filtered.filter(req => extractLeaveDatePart(req.startDate) >= filters.startDate);
-    }
-
-    if (filters.endDate) {
-      filtered = filtered.filter(req => extractLeaveDatePart(req.endDate) <= filters.endDate);
+    // 期間內請假＝假單與查詢期間有重疊（跨月假單兩個月都看得到）；起日、迄日可只填一個
+    if (filters.startDate || filters.endDate) {
+      filtered = filtered.filter(req =>
+        overlapsTaiwanDateRange(req.startDate, req.endDate, filters.startDate, filters.endDate)
+      );
     }
 
     if (filters.search) {

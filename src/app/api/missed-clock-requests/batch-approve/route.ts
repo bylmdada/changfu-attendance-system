@@ -6,7 +6,7 @@ import { validateCSRF } from '@/lib/csrf';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
 import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
-import { applyMissedClockToAttendance, getMissedClockWorkDate } from '@/lib/missed-clock-attendance';
+import { applyMissedClockToAttendance, getMissedClockWorkDate, MissedClockTimeError } from '@/lib/missed-clock-attendance';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -165,6 +165,10 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: '申請已被處理', failedIds: normalizedIds }, { status: 400 });
       }
 
+      // 補登時間無法套用（例如補完下班早於上班）的申請：保留待審，不擋住其他筆
+      const unappliedIds: number[] = [];
+      let firstUnappliedReason = '';
+
       for (const req of pendingRequests) {
         const approvedAt = new Date();
 
@@ -174,19 +178,26 @@ export async function POST(request: NextRequest) {
             return NextResponse.json({ error: '該月份已被凍結，無法核准補卡申請', failedIds: [req.id] }, { status: 403 });
           }
 
-          await prisma.$transaction(async (tx) => {
-            await tx.missedClockRequest.update({
-              where: { id: req.id },
-              data: {
-                status: action,
-                approvedBy: user.employeeId,
-                approvedAt,
-                rejectReason: null
-              }
-            });
+          try {
+            await prisma.$transaction(async (tx) => {
+              await tx.missedClockRequest.update({
+                where: { id: req.id },
+                data: {
+                  status: action,
+                  approvedBy: user.employeeId,
+                  approvedAt,
+                  rejectReason: null
+                }
+              });
 
-            await applyMissedClockToAttendance(tx, req);
-          });
+              await applyMissedClockToAttendance(tx, req);
+            });
+          } catch (error) {
+            if (!(error instanceof MissedClockTimeError)) throw error;
+            unappliedIds.push(req.id);
+            firstUnappliedReason ||= `申請 #${req.id}：${error.message}`;
+            continue;
+          }
         } else {
           await prisma.missedClockRequest.update({
             where: { id: req.id },
@@ -203,14 +214,20 @@ export async function POST(request: NextRequest) {
       }
 
       const processedIds = pendingRequests.map((request) => request.id);
-      const failedIds = normalizedIds.filter((id) => !processedIds.includes(id));
+      const alreadyHandledIds = normalizedIds.filter((id) => !processedIds.includes(id));
+      const failedIds = [...alreadyHandledIds, ...unappliedIds];
+      const actionText = action === 'APPROVED' ? '批准' : '拒絕';
+      const notes = [
+        alreadyHandledIds.length > 0 ? `${alreadyHandledIds.length} 筆已被處理` : '',
+        unappliedIds.length > 0 ? `${unappliedIds.length} 筆補登時間無法套用而保留待審（${firstUnappliedReason}）` : '',
+      ].filter(Boolean);
 
       return NextResponse.json({
         success: true,
         message:
-          failedIds.length > 0
-            ? `已${action === 'APPROVED' ? '批准' : '拒絕'} ${updatedCount} 筆忘打卡申請，${failedIds.length} 筆已被處理`
-            : `已${action === 'APPROVED' ? '批准' : '拒絕'} ${updatedCount} 筆忘打卡申請`,
+          notes.length > 0
+            ? `已${actionText} ${updatedCount} 筆忘打卡申請，${notes.join('，')}`
+            : `已${actionText} ${updatedCount} 筆忘打卡申請`,
         count: updatedCount,
         failedCount: failedIds.length,
         failedIds

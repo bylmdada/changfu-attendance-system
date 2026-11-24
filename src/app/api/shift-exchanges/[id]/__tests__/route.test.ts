@@ -16,9 +16,14 @@ jest.mock('@/lib/database', () => ({
     schedule: {
       findFirst: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
     },
     $transaction: jest.fn(),
   },
+}));
+
+jest.mock('@/lib/schedule-confirm-service', () => ({
+  invalidateConfirmation: jest.fn(),
 }));
 
 jest.mock('@/lib/auth', () => ({
@@ -55,6 +60,7 @@ const transactionClient = {
   schedule: {
     findFirst: jest.fn(),
     update: jest.fn(),
+    updateMany: jest.fn(),
   },
 };
 
@@ -392,5 +398,93 @@ describe('shift exchange authorization guards', () => {
     expect(response.status).toBe(409);
     expect(payload.error).toContain('需先由部門主管審核');
     expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+  });
+  describe('核准時比對現行班表', () => {
+    const approve = () =>
+      PATCH(
+        new NextRequest('http://localhost:3000/api/shift-exchanges/5', {
+          method: 'PATCH',
+          headers: { cookie: 'token=session-token', 'content-type': 'application/json' },
+          body: JSON.stringify({ status: 'APPROVED' }),
+        }),
+        { params: Promise.resolve({ id: '5' }) }
+      );
+
+    beforeEach(() => {
+      mockedGetUserFromRequest.mockResolvedValue({ role: 'ADMIN', employeeId: 1, userId: 101 } as never);
+      // 申請：A → B
+      mockPrisma.shiftExchangeRequest.findUnique.mockResolvedValue({
+        id: 5,
+        requesterId: 10,
+        targetEmployeeId: 10,
+        originalWorkDate: '2026-04-01',
+        targetWorkDate: '2026-04-01',
+        requestReason: '調班',
+        originalShiftType: 'A',
+        newShiftType: 'B',
+        status: 'PENDING_ADMIN',
+        createdAt: '2026-04-01T00:00:00.000Z',
+        updatedAt: '2026-04-01T00:00:00.000Z',
+        requester: { id: 10, department: '製造部' },
+        targetEmployee: { id: 10 },
+      } as never);
+      transactionClient.shiftExchangeRequest.update.mockResolvedValue({ id: 5, status: 'APPROVED' } as never);
+      transactionClient.schedule.updateMany.mockResolvedValue({ count: 1 } as never);
+    });
+
+    it('changes the schedule only while it is still the shift named in the request', async () => {
+      transactionClient.schedule.findFirst.mockResolvedValueOnce({ id: 77, shiftType: 'A' } as never);
+
+      const response = await approve();
+
+      expect(response.status).toBe(200);
+      expect(transactionClient.schedule.updateMany).toHaveBeenCalledWith({
+        where: { id: 77, shiftType: 'A' },
+        data: expect.objectContaining({ shiftType: 'B' }),
+      });
+      expect(transactionClient.shiftExchangeRequest.update).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ status: 'APPROVED', approvedBy: 1 }) })
+      );
+    });
+
+    it('keeps the request pending and the newer schedule when the schedule was changed after the request', async () => {
+      transactionClient.schedule.findFirst.mockResolvedValueOnce({ id: 77, shiftType: 'C' } as never);
+
+      const response = await approve();
+      const payload = await response.json();
+
+      expect(response.status).toBe(409);
+      expect(payload.error).toContain('班表已變更');
+      expect(payload.error).toContain('「A」');
+      expect(payload.error).toContain('「C」');
+      expect(transactionClient.schedule.updateMany).not.toHaveBeenCalled();
+      expect(transactionClient.schedule.update).not.toHaveBeenCalled();
+      expect(transactionClient.shiftExchangeRequest.update).not.toHaveBeenCalled();
+      expect(mockPrisma.shiftExchangeRequest.update).not.toHaveBeenCalled();
+    });
+
+    it('approves without rewriting when the schedule already has the requested shift', async () => {
+      transactionClient.schedule.findFirst.mockResolvedValueOnce({ id: 77, shiftType: 'B' } as never);
+
+      const response = await approve();
+
+      expect(response.status).toBe(200);
+      expect(transactionClient.schedule.updateMany).not.toHaveBeenCalled();
+      expect(transactionClient.shiftExchangeRequest.update).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ status: 'APPROVED' }) })
+      );
+    });
+
+    it('does not approve when the schedule changes between the check and the write', async () => {
+      transactionClient.schedule.findFirst.mockResolvedValueOnce({ id: 77, shiftType: 'A' } as never);
+      transactionClient.schedule.updateMany.mockResolvedValueOnce({ count: 0 } as never);
+
+      const response = await approve();
+      const payload = await response.json();
+
+      expect(response.status).toBe(409);
+      expect(payload.error).toContain('班表');
+      expect(transactionClient.shiftExchangeRequest.update).not.toHaveBeenCalled();
+    });
   });
 });

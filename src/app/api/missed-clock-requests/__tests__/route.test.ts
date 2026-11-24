@@ -14,6 +14,7 @@ jest.mock('@/lib/database', () => ({
     },
     missedClockRequest: {
       findUnique: jest.fn(),
+      findFirst: jest.fn(),
       update: jest.fn(),
       delete: jest.fn(),
       create: jest.fn(),
@@ -22,6 +23,9 @@ jest.mock('@/lib/database', () => ({
       findFirst: jest.fn(),
       update: jest.fn(),
       create: jest.fn(),
+    },
+    schedule: {
+      findFirst: jest.fn(),
     },
     $transaction: jest.fn(),
   },
@@ -401,5 +405,106 @@ describe('missed clock route guards', () => {
     expect(response.status).toBe(400);
     expect(payload.error).toBe('無效的 JSON 格式');
     expect(mockPrisma.missedClockRequest.findUnique).not.toHaveBeenCalled();
+  });
+  describe('補登時間套用規則', () => {
+    const submit = (body: Record<string, string>) =>
+      POST(new NextRequest('http://localhost:3000/api/missed-clock-requests', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }));
+
+    beforeEach(() => {
+      mockGetUserFromRequest.mockResolvedValue({ role: 'EMPLOYEE', employeeId: 20, userId: 2 } as never);
+      mockPrisma.missedClockRequest.findFirst.mockResolvedValue(null as never);
+      mockPrisma.missedClockRequest.create.mockResolvedValue({
+        id: 31,
+        employee: { id: 20, name: '員工', department: '照服' },
+      } as never);
+    });
+
+    it('accepts a night-shift clock-out supplement that lands on the next day', async () => {
+      mockPrisma.schedule.findFirst.mockResolvedValue({ startTime: '22:00', endTime: '06:00' } as never);
+      mockPrisma.attendanceRecord.findFirst.mockResolvedValue({
+        clockInTime: new Date('2026-11-23T14:00:00.000Z'), // 11/23 22:00 台北
+        clockOutTime: null,
+      } as never);
+
+      const response = await submit({
+        workDate: '2026-11-23',
+        clockType: 'CLOCK_OUT',
+        requestedTime: '06:00',
+        reason: '忘記打卡',
+      });
+
+      expect(response.status).toBe(200);
+      expect(mockPrisma.missedClockRequest.create).toHaveBeenCalledTimes(1);
+    });
+
+    it('asks the applicant to confirm when the supplement would end before the clock-in', async () => {
+      mockPrisma.schedule.findFirst.mockResolvedValue({ startTime: '08:00', endTime: '17:00' } as never);
+      mockPrisma.attendanceRecord.findFirst.mockResolvedValue({
+        clockInTime: new Date('2026-11-23T00:00:00.000Z'), // 08:00 台北
+        clockOutTime: null,
+      } as never);
+
+      const response = await submit({
+        workDate: '2026-11-23',
+        clockType: 'CLOCK_OUT',
+        requestedTime: '07:00',
+        reason: '忘記打卡',
+      });
+      const payload = await response.json();
+
+      expect(response.status).toBe(400);
+      expect(payload.error).toContain('請申請人確認');
+      expect(mockPrisma.missedClockRequest.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects a malformed requested time instead of saving an unapprovable request', async () => {
+      const response = await submit({
+        workDate: '2026-11-23',
+        clockType: 'CLOCK_OUT',
+        requestedTime: '25:61',
+        reason: '忘記打卡',
+      });
+      const payload = await response.json();
+
+      expect(response.status).toBe(400);
+      expect(payload.error).toBe('補卡時間格式錯誤');
+      expect(mockPrisma.missedClockRequest.create).not.toHaveBeenCalled();
+    });
+
+    it('keeps the request pending and explains why when approval cannot apply the supplement', async () => {
+      mockGetUserFromRequest.mockResolvedValue({ role: 'ADMIN', employeeId: 10, userId: 1 } as never);
+      mockPrisma.missedClockRequest.findUnique.mockResolvedValue({
+        id: 56,
+        employeeId: 20,
+        status: 'PENDING_ADMIN',
+        workDate: '2024-01-01',
+        clockType: 'CLOCK_OUT',
+        requestedTime: '07:00',
+        employee: { id: 20, name: '員工' },
+      } as never);
+      transactionClient.missedClockRequest.update.mockResolvedValue({ id: 56 } as never);
+      transactionClient.attendanceRecord.findFirst.mockResolvedValue({
+        id: 5,
+        workDate: new Date('2023-12-31T16:00:00.000Z'),
+        clockInTime: new Date('2024-01-01T01:00:00.000Z'), // 09:00 台北
+        clockOutTime: null,
+      } as never);
+
+      const response = await PUT(new NextRequest('http://localhost:3000/api/missed-clock-requests', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: 56, status: 'APPROVED' }),
+      }));
+      const payload = await response.json();
+
+      expect(response.status).toBe(409);
+      expect(payload.error).toContain('請申請人確認');
+      expect(transactionClient.attendanceRecord.update).not.toHaveBeenCalled();
+      expect(transactionClient.attendanceRecord.create).not.toHaveBeenCalled();
+    });
   });
 });

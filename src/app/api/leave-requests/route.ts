@@ -14,6 +14,7 @@ import { calculateLeaveDuration, leaveRangesOverlap } from '@/lib/leave-manageme
 import { getLeaveDurationSchedules } from '@/lib/leave-duration-schedules';
 import { buildApplicationRequestNumber } from '@/lib/application-request-number';
 import { toTaiwanDateStr } from '@/lib/timezone';
+import { parseTaiwanDayRange } from '@/lib/date-range-query';
 import { isValidLeaveDurationMinutes, isValidLeaveMinute } from '@/lib/leave-time-options';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -67,10 +68,9 @@ export async function GET(request: NextRequest) {
     const where: {
       employeeId?: number;
       status?: string;
-      startDate?: {
-        gte?: Date;
-        lte?: Date;
-      };
+      // 查詢期間內請假＝假單與期間重疊：假單結束日 ≥ 期間起日、假單開始日 ≤ 期間迄日
+      startDate?: { lte: Date };
+      endDate?: { gte: Date };
       employee?: {
         department?: { in: string[] };
       };
@@ -113,11 +113,13 @@ export async function GET(request: NextRequest) {
       where.status = status;
     }
 
-    if (startDate || endDate) {
-      where.startDate = {};
-      if (startDate) where.startDate.gte = new Date(startDate);
-      if (endDate) where.startDate.lte = new Date(endDate);
+    const startRange = startDate ? parseTaiwanDayRange(startDate) : null;
+    const endRange = endDate ? parseTaiwanDayRange(endDate) : null;
+    if ((startDate && !startRange) || (endDate && !endRange)) {
+      return NextResponse.json({ error: '日期格式錯誤，請使用 YYYY-MM-DD' }, { status: 400 });
     }
+    if (startRange) where.endDate = { gte: startRange.start };
+    if (endRange) where.startDate = { lte: endRange.end };
 
     const leaveRequests = await prisma.leaveRequest.findMany({
       where,

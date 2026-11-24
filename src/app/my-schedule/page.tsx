@@ -588,7 +588,8 @@ export default function MySchedulePage() {
       const endDate = `${selectedYear}-${selectedMonth.toString().padStart(2, '0')}-${lastDay}`;
       
       const response = await fetch(
-        `/api/overtime-requests?startDate=${startDate}&endDate=${endDate}&status=APPROVED`,
+        // mine=1：個人班表與匯出只算本人，人資／主管看的管理合計不能混進來
+        `/api/overtime-requests?mine=1&startDate=${startDate}&endDate=${endDate}&status=APPROVED`,
         { credentials: 'include' }
       );
 
