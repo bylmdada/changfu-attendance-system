@@ -21,6 +21,8 @@ import { parsePositiveInt } from '@/lib/property-query';
 interface Task {
   recordId: string;
   assetCode: string;
+  /** 「據點代碼:財產編號」，掃碼頁以它查詢，才不會在兩個據點有同號資產時開錯或查不到 */
+  scanCode?: string;
   assetName: string;
   location: string;
   siteName: string;
@@ -356,7 +358,7 @@ export default function PropertyDashboardPage() {
                       <span className={`text-xs px-2 py-1 rounded-full ${s.badge}`}>{s.label}</span>
                       <Link
                         href={canMaintainProperty
-                          ? `/property-management/scan?code=${encodeURIComponent(t.assetCode)}&recordId=${encodeURIComponent(t.recordId)}&assessment=1`
+                          ? `/property-management/scan?code=${encodeURIComponent(t.scanCode ?? t.assetCode)}&recordId=${encodeURIComponent(t.recordId)}&assessment=1`
                           : `/property-management/records?focus=${encodeURIComponent(t.recordId)}`}
                         className="text-sm px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 shrink-0"
                       >

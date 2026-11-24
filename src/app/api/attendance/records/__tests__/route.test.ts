@@ -1200,3 +1200,183 @@ describe('attendance records route guards', () => {
     expect(payload.records[0]).not.toHaveProperty('clockOutReason');
   });
 });
+
+describe('attendance records route list/summary views', () => {
+  const pageRecord = (overrides: Record<string, unknown> = {}) => ({
+    id: 21,
+    employeeId: 100,
+    workDate: new Date('2026-04-09T16:00:00.000Z'), // 台北 2026-04-10
+    clockInTime: new Date('2026-04-10T01:00:00.000Z'),
+    clockOutTime: new Date('2026-04-10T10:00:00.000Z'),
+    regularHours: 8,
+    overtimeHours: 0,
+    clockInOvertimeId: null,
+    clockOutOvertimeId: null,
+    displayStatus: '正常',
+    status: 'PRESENT',
+    createdAt: new Date('2026-04-10T10:05:00.000Z'),
+    clockInLatitude: null,
+    clockInLongitude: null,
+    clockInAccuracy: null,
+    clockInAddress: null,
+    clockOutLatitude: null,
+    clockOutLongitude: null,
+    clockOutAccuracy: null,
+    clockOutAddress: null,
+    employee: { id: 100, employeeId: 'E100', name: '員工', department: '製造部', position: 'Staff' },
+    ...overrides,
+  });
+  const summaryRow = (overrides: Record<string, unknown> = {}) => ({
+    id: 21,
+    employeeId: 100,
+    workDate: new Date('2026-04-09T16:00:00.000Z'),
+    clockInTime: new Date('2026-04-10T01:00:00.000Z'),
+    clockOutTime: new Date('2026-04-10T10:00:00.000Z'),
+    regularHours: 8,
+    overtimeHours: 0,
+    clockInOvertimeId: null,
+    clockOutOvertimeId: null,
+    displayStatus: '正常',
+    ...overrides,
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockCheckRateLimit.mockResolvedValue({ allowed: true } as never);
+    mockGetUserFromRequest.mockResolvedValue({ userId: 1, employeeId: 100, role: 'HR', username: 'hr' } as never);
+    mockPrisma.schedule.findMany.mockResolvedValue([] as never);
+    mockPrisma.overtimeRequest.findMany.mockResolvedValue([] as never);
+    mockPrisma.leaveRequest.findMany.mockResolvedValue([] as never);
+    mockPrisma.attendanceRecord.count.mockResolvedValue(0 as never);
+    mockPrisma.attendanceRecord.updateMany.mockResolvedValue({ count: 0 } as never);
+    mockPrisma.departmentManager.findMany.mockResolvedValue([] as never);
+  });
+
+  it('rejects an unknown view before querying', async () => {
+    const response = await GET(new NextRequest('http://localhost/api/attendance/records?view=everything'));
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toBe('view 參數格式無效');
+    expect(mockPrisma.attendanceRecord.findMany).not.toHaveBeenCalled();
+  });
+
+  it('orders by work date and then id so paging and chunked exports never skip or repeat same-day rows', async () => {
+    mockPrisma.attendanceRecord.findMany.mockResolvedValue([] as never);
+
+    await GET(new NextRequest('http://localhost/api/attendance/records?page=1&pageSize=10'));
+
+    expect(mockPrisma.attendanceRecord.findMany.mock.calls[0][0]).toMatchObject({
+      orderBy: [{ workDate: 'desc' }, { id: 'asc' }],
+    });
+  });
+
+  it('view=list reads only the requested page and the same-day rows of that page, never the whole history', async () => {
+    mockPrisma.attendanceRecord.count.mockResolvedValue(48000 as never);
+    mockPrisma.schedule.findMany.mockResolvedValue([
+      { employeeId: 100, workDate: '2026-04-10', shiftType: 'A', startTime: '09:00', endTime: '18:00', breakTime: 0, workHours: 8 },
+    ] as never);
+    mockPrisma.attendanceRecord.findMany
+      .mockResolvedValueOnce([pageRecord()] as never)
+      // 本頁員工同一台北日的所有紀錄：另一筆不在本頁，重複打卡仍要被標記
+      .mockResolvedValueOnce([
+        { employeeId: 100, workDate: new Date('2026-04-09T16:00:00.000Z') },
+        { employeeId: 100, workDate: new Date('2026-04-09T17:00:00.000Z') },
+      ] as never);
+
+    const response = await GET(new NextRequest('http://localhost/api/attendance/records?page=5&pageSize=10&view=list'));
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.records).toHaveLength(1);
+    expect(payload.records[0]).toMatchObject({ id: 21, status: '正常', duplicated: true });
+    expect(payload.pagination).toEqual({ current: 5, pageSize: 10, total: 48000, totalPages: 4800 });
+    expect(payload.summary).toBeUndefined();
+
+    // 只有兩次考勤查詢：本頁、本頁員工的同日紀錄
+    expect(mockPrisma.attendanceRecord.findMany).toHaveBeenCalledTimes(2);
+    expect(mockPrisma.attendanceRecord.findMany.mock.calls[0][0]).toMatchObject({ skip: 40, take: 10 });
+    const sameDayQuery = mockPrisma.attendanceRecord.findMany.mock.calls[1][0] as {
+      select: unknown;
+      where: { AND: Array<{ employeeId?: { in: number[] }; workDate?: { gte: Date; lte: Date } }> };
+    };
+    expect(sameDayQuery.select).toEqual({ employeeId: true, workDate: true });
+    expect(sameDayQuery.where.AND[1].employeeId).toEqual({ in: [100] });
+    expect(sameDayQuery.where.AND[1].workDate?.gte.toISOString()).toBe('2026-04-09T16:00:00.000Z');
+    expect(sameDayQuery.where.AND[1].workDate?.lte.toISOString()).toBe('2026-04-10T15:59:59.999Z');
+    // 班表、加班、請假也只查本頁涉及的員工與日期
+    expect(mockPrisma.schedule.findMany).toHaveBeenCalledWith({
+      where: { employeeId: { in: [100] }, workDate: { in: ['2026-04-10'] } },
+    });
+  });
+
+  it('view=list on an empty page does not run the same-day lookup', async () => {
+    mockPrisma.attendanceRecord.count.mockResolvedValue(0 as never);
+    mockPrisma.attendanceRecord.findMany.mockResolvedValue([] as never);
+
+    const response = await GET(new NextRequest('http://localhost/api/attendance/records?view=list'));
+    const payload = await response.json();
+
+    expect(payload.records).toEqual([]);
+    expect(mockPrisma.attendanceRecord.findMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('view=summary returns only the totals and never formats a page of records', async () => {
+    mockPrisma.attendanceRecord.count.mockResolvedValue(2 as never);
+    mockPrisma.attendanceRecord.findMany.mockResolvedValueOnce([
+      summaryRow({ id: 1 }),
+      summaryRow({ id: 2, employeeId: 101, clockInTime: new Date('2026-04-10T01:30:00.000Z') }), // 遲到
+    ] as never);
+    mockPrisma.schedule.findMany.mockResolvedValue([
+      { employeeId: 100, workDate: '2026-04-10', shiftType: 'A', startTime: '09:00', endTime: '18:00', breakTime: 0, workHours: 8 },
+      { employeeId: 101, workDate: '2026-04-10', shiftType: 'A', startTime: '09:00', endTime: '18:00', breakTime: 0, workHours: 8 },
+    ] as never);
+
+    const response = await GET(new NextRequest('http://localhost/api/attendance/records?view=summary'));
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.records).toBeUndefined();
+    expect(payload.pagination).toBeUndefined();
+    expect(payload.summary).toMatchObject({ totalRecords: 2, statusBreakdown: { 正常: 1, 遲到: 1 } });
+    expect(mockPrisma.attendanceRecord.findMany).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.attendanceRecord.findMany.mock.calls[0][0]).not.toHaveProperty('include');
+    expect(mockPrisma.attendanceRecord.findMany.mock.calls[0][0]).not.toHaveProperty('take');
+  });
+
+  it('the default response still carries both the page and the summary, matching the two views', async () => {
+    const rows = [summaryRow({ id: 21 })];
+    mockPrisma.attendanceRecord.count.mockResolvedValue(1 as never);
+    mockPrisma.attendanceRecord.findMany
+      .mockResolvedValueOnce([pageRecord()] as never)
+      .mockResolvedValueOnce(rows as never);
+    mockPrisma.schedule.findMany.mockResolvedValue([
+      { employeeId: 100, workDate: '2026-04-10', shiftType: 'A', startTime: '09:00', endTime: '18:00', breakTime: 0, workHours: 8 },
+    ] as never);
+
+    const payload = await (await GET(new NextRequest('http://localhost/api/attendance/records'))).json();
+
+    expect(Object.keys(payload)).toEqual(['success', 'records', 'pagination', 'summary', 'scope']);
+    expect(payload.summary.totalRecords).toBe(1);
+    expect(payload.records[0].id).toBe(21);
+  });
+
+  it('status and overtime filters are computed over the whole range, so view=list still filters before paginating', async () => {
+    mockPrisma.attendanceRecord.findMany.mockResolvedValue([
+      pageRecord({ id: 1 }),
+      pageRecord({ id: 2, employeeId: 101, clockInTime: new Date('2026-04-10T01:30:00.000Z'), employee: { id: 101, employeeId: 'E101', name: '遲到員工', department: '製造部', position: 'Staff' } }),
+    ] as never);
+    mockPrisma.schedule.findMany.mockResolvedValue([
+      { employeeId: 100, workDate: '2026-04-10', shiftType: 'A', startTime: '09:00', endTime: '18:00', breakTime: 0, workHours: 8 },
+      { employeeId: 101, workDate: '2026-04-10', shiftType: 'A', startTime: '09:00', endTime: '18:00', breakTime: 0, workHours: 8 },
+    ] as never);
+
+    const payload = await (await GET(
+      new NextRequest(`http://localhost/api/attendance/records?status=${encodeURIComponent('遲到')}&view=list`)
+    )).json();
+
+    expect(payload.records.map((record: { id: number }) => record.id)).toEqual([2]);
+    expect(payload.pagination.total).toBe(1);
+    expect(payload.summary).toBeUndefined();
+  });
+});
+

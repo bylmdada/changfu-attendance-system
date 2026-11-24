@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState, type SetStateAction } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { 
   History, Calendar, Download,
   ChevronLeft, ChevronRight, Filter, MapPin
@@ -9,6 +9,7 @@ import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import EmployeeListSelect from '@/components/EmployeeListSelect';
 import { escapeCsvValue } from '@/lib/csv';
 import { formatShiftDisplay } from '@/lib/shift-display';
+import { getPageWindow } from '@/lib/pagination-window';
 
 interface AttendanceRecord {
   id: number;
@@ -99,14 +100,6 @@ const STATUS_CARD_CONFIG = [
   { key: '缺勤', label: '缺勤', accent: 'text-slate-700 bg-slate-50 border-slate-200', dotAccent: 'bg-slate-400', barAccent: 'from-slate-400 via-slate-300 to-zinc-200' },
 ] as const;
 
-function buildRecordsQuery(filters: Record<string, string>, page: number, pageSize: number) {
-  const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
-  for (const [name, value] of Object.entries(filters)) {
-    if (value) params.set(name, value);
-  }
-  return params;
-}
-
 export default function AttendanceRecordsPage() {
   const [records, setRecords] = useState<AttendanceRecord[]>([]);
   const [user, setUser] = useState<User | null>(null);
@@ -126,7 +119,7 @@ export default function AttendanceRecordsPage() {
   });
   
   // 篩選狀態
-  const [filters, setFilters] = useState({
+  const [filters, setFiltersState] = useState({
     year: '',
     yearMonth: '',
     startDate: '',
@@ -136,12 +129,17 @@ export default function AttendanceRecordsPage() {
     status: '',
     department: ''  // 新增：部門篩選
   });
-  
-  const updateFilters = (next: SetStateAction<typeof filters>) => {
-    setFilters(next);
-    setPagination(prev => prev.current === 1 ? prev : { ...prev, current: 1 });
+  // 換篩選條件一律回到第一頁：否則在深頁縮小條件（例如只看一位員工）時，會停在不存在的頁碼而一片空白
+  const setFilters: typeof setFiltersState = (next) => {
+    setFiltersState(next);
+    setPagination(prev => (prev.current === 1 ? prev : { ...prev, current: 1 }));
   };
-
+  const [summaryLoading, setSummaryLoading] = useState(false);
+  const [jumpPage, setJumpPage] = useState('');
+  // 請求序號：較早送出的請求晚到時，不可蓋掉新條件的結果
+  const listRequestId = useRef(0);
+  const summaryRequestId = useRef(0);
+  
   // 部門列表（管理員/HR 用）
   const [departments, setDepartments] = useState<{ id: number; name: string }[]>([]);
 
@@ -221,49 +219,146 @@ export default function AttendanceRecordsPage() {
     fetchUserAndRecords();
   }, []);
 
-  const { current: currentPage, pageSize } = pagination;
+  // 篩選條件（不含頁碼）：換條件才需要重算全範圍摘要，單純翻頁不必
+  const filterQuery = useMemo(() => {
+    const params = new URLSearchParams();
+    if (filters.year) params.append('year', filters.year);
+    if (filters.yearMonth) params.append('yearMonth', filters.yearMonth);
+    if (filters.startDate) params.append('startDate', filters.startDate);
+    if (filters.endDate) params.append('endDate', filters.endDate);
+    if (filters.employeeId) params.append('employeeId', filters.employeeId);
+    if (filters.overtimeHours) params.append('overtimeHours', filters.overtimeHours);
+    if (filters.status) params.append('status', filters.status);
+    if (filters.department) params.append('department', filters.department);
+    return params.toString();
+  }, [filters]);
+
+  // 狀態、加班是逐筆算出的衍生值，後端必須整批算完才能篩選與分頁，明細與摘要一次回傳比拆成兩個請求省工
+  const hasDerivedFilter = Boolean(filters.status || filters.overtimeHours);
+
+  const buildAttendanceQueryParams = (page: number, pageSize: number) => {
+    const params = new URLSearchParams({
+      page: String(page),
+      pageSize: String(pageSize),
+    });
+    new URLSearchParams(filterQuery).forEach((value, key) => params.append(key, value));
+    return params;
+  };
+
+  // 本頁明細：翻頁或換條件都會重新取。沒有衍生篩選時只要本頁（view=list），首屏不必等全範圍摘要。
   useEffect(() => {
-    if (!user) return;
-    const controller = new AbortController();
     const fetchRecords = async () => {
-      setLoading(true);
+      if (!user) return; // 確保用戶已載入
+
+      const requestId = ++listRequestId.current;
       try {
-        const params = buildRecordsQuery(filters, currentPage, pageSize);
-        const response = await fetch(`/api/attendance/records?${params}`, {
-          credentials: 'include',
-          signal: controller.signal,
+        setLoading(true);
+        console.log('📋 準備請求數據，當前狀態:', { 
+          page: pagination.current,
+          pageSize: pagination.pageSize,
+          filters 
         });
-        if (!response.ok) {
-          if (response.status === 401) window.location.href = '/login';
-          throw new Error('載入考勤記錄失敗');
-        }
-        const data = await response.json();
-        if (controller.signal.aborted) return;
-        setRecords(data.records);
-        setPagination(prev => ({
-          ...prev,
-          total: data.pagination.total,
-          totalPages: data.pagination.totalPages,
-        }));
-        setSummary(data.summary);
-        if (!canManageAttendanceRecords && data.scope?.canViewDepartmentRecords) {
-          setDepartments(
-            (data.scope.managedDepartments || []).map((name: string, index: number) => ({
-              id: -(index + 1),
-              name,
-            }))
-          );
+
+        const params = buildAttendanceQueryParams(pagination.current, pagination.pageSize);
+        if (!hasDerivedFilter) params.set('view', 'list');
+
+        console.log('🌐 發送請求到:', `/api/attendance/records?${params.toString()}`);
+        console.log('📝 請求參數詳情:', Object.fromEntries(params));
+
+        const response = await fetch(`/api/attendance/records?${params.toString()}`, {
+          credentials: 'include'
+        });
+        if (requestId !== listRequestId.current) return;
+
+        if (response.ok) {
+          const data = await response.json();
+          if (requestId !== listRequestId.current) return;
+          console.log('✅ 收到API回應:', { 
+            recordsCount: data.records?.length, 
+            pagination: data.pagination, 
+            hasRecords: !!data.records?.length 
+          });
+          
+          setRecords(data.records);
+          // 只更新總數和總頁數，保持當前頁碼
+          setPagination(prev => ({
+            ...prev,
+            total: data.pagination.total,
+            totalPages: data.pagination.totalPages,
+            pageSize: data.pagination.pageSize
+          }));
+          if (data.summary) {
+            // 衍生篩選時摘要隨明細一起回來
+            setSummary(data.summary);
+            setSummaryLoading(false);
+          }
+          if (!canManageAttendanceRecords && data.scope?.canViewDepartmentRecords) {
+            setDepartments(
+              (data.scope.managedDepartments || []).map((name: string, index: number) => ({
+                id: -(index + 1),
+                name,
+              }))
+            );
+          }
+        } else {
+          console.error('載入考勤記錄失敗');
+          if (response.status === 401) {
+            window.location.href = '/login';
+          }
         }
       } catch (error) {
-        if (!controller.signal.aborted) console.error('獲取考勤記錄失敗:', error);
+        console.error('獲取考勤記錄失敗:', error);
       } finally {
-        if (!controller.signal.aborted) setLoading(false);
+        if (requestId === listRequestId.current) setLoading(false);
       }
     };
 
-    void fetchRecords();
-    return () => controller.abort();
-  }, [user, currentPage, pageSize, filters, canManageAttendanceRecords]);
+    fetchRecords();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, pagination.current, filterQuery]);
+
+  // 全範圍摘要（工時合計、狀態分布）：只在換條件時重算，翻頁沿用，並與本頁明細各自載入
+  useEffect(() => {
+    if (!user) return;
+
+    const requestId = ++summaryRequestId.current;
+    if (hasDerivedFilter) {
+      // 摘要已隨明細一起回傳；同時作廢尚未回來的摘要請求
+      setSummaryLoading(false);
+      return;
+    }
+
+    const fetchSummary = async () => {
+      setSummaryLoading(true);
+      try {
+        const params = buildAttendanceQueryParams(1, pagination.pageSize);
+        params.set('view', 'summary');
+        const response = await fetch(`/api/attendance/records?${params.toString()}`, {
+          credentials: 'include'
+        });
+        if (requestId !== summaryRequestId.current) return;
+
+        if (response.ok) {
+          const data = await response.json();
+          if (requestId !== summaryRequestId.current) return;
+          setSummary(data.summary);
+        } else {
+          console.error('載入考勤摘要失敗');
+          setSummary({ totalRecords: 0, totalRegularHours: 0, totalOvertimeHours: 0 });
+        }
+      } catch (error) {
+        console.error('獲取考勤摘要失敗:', error);
+        if (requestId === summaryRequestId.current) {
+          setSummary({ totalRecords: 0, totalRegularHours: 0, totalOvertimeHours: 0 });
+        }
+      } finally {
+        if (requestId === summaryRequestId.current) setSummaryLoading(false);
+      }
+    };
+
+    fetchSummary();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, filterQuery, hasDerivedFilter]);
 
   const formatDate = (dateString: string) => {
     const date = new Date(dateString);
@@ -309,7 +404,16 @@ export default function AttendanceRecordsPage() {
   );
 
   const handlePageChange = (newPage: number) => {
+    console.log('📄 分頁變更:', { from: pagination.current, to: newPage });
     setPagination(prev => ({ ...prev, current: newPage }));
+  };
+
+  const handleJumpToPage = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const target = Number.parseInt(jumpPage, 10);
+    if (!Number.isInteger(target) || pagination.totalPages < 1) return;
+    handlePageChange(Math.min(Math.max(1, target), pagination.totalPages));
+    setJumpPage('');
   };
 
   const handleDateFilter = () => {
@@ -395,17 +499,17 @@ export default function AttendanceRecordsPage() {
     () => [
       {
         label: '考勤筆數',
-        value: String(summary.totalRecords),
+        value: summaryLoading ? '…' : String(summary.totalRecords),
         tone: 'border-white/60 bg-white/75 text-slate-900',
       },
       {
         label: '正常工時',
-        value: `${summary.totalRegularHours.toFixed(1)}h`,
+        value: summaryLoading ? '…' : `${summary.totalRegularHours.toFixed(1)}h`,
         tone: 'border-emerald-200/80 bg-emerald-50/90 text-emerald-900',
       },
       {
         label: '加班工時',
-        value: `${summary.totalOvertimeHours.toFixed(1)}h`,
+        value: summaryLoading ? '…' : `${summary.totalOvertimeHours.toFixed(1)}h`,
         tone: 'border-amber-200/80 bg-amber-50/90 text-amber-900',
       },
       {
@@ -414,7 +518,7 @@ export default function AttendanceRecordsPage() {
         tone: 'border-sky-200/80 bg-sky-50/90 text-sky-900',
       },
     ],
-    [currentEmployeeCount, summary.totalOvertimeHours, summary.totalRecords, summary.totalRegularHours]
+    [currentEmployeeCount, summary.totalOvertimeHours, summary.totalRecords, summary.totalRegularHours, summaryLoading]
   );
 
   const statusBreakdownItems = useMemo(() => {
@@ -428,6 +532,8 @@ export default function AttendanceRecordsPage() {
       width: `${Math.max((statusBreakdown[config.key] / maxCount) * 100, statusBreakdown[config.key] > 0 ? 18 : 0)}%`,
     }));
   }, [statusBreakdown, summary.totalRecords]);
+
+  const buildAttendanceExportQueryParams = buildAttendanceQueryParams;
 
   const formatDateTimeForExport = (date: Date) =>
     date.toLocaleString('zh-TW', {
@@ -520,8 +626,23 @@ export default function AttendanceRecordsPage() {
     const allRecords: AttendanceRecord[] = [];
     let exportSummary = summary;
 
+    // 沒有衍生篩選時：全範圍摘要只算一次，明細用 view=list 分批取（每批不再重讀整段歷史、重算摘要）。
+    // 有衍生篩選時每批本來就要整批計算，沿用一次回傳明細與摘要的預設回應。
+    if (!hasDerivedFilter) {
+      const summaryParams = buildAttendanceExportQueryParams(1, pageSize);
+      summaryParams.set('view', 'summary');
+      const summaryResponse = await fetch(`/api/attendance/records?${summaryParams.toString()}`, {
+        credentials: 'include',
+      });
+      if (!summaryResponse.ok) {
+        throw new Error('載入匯出資料失敗');
+      }
+      exportSummary = (await summaryResponse.json()).summary || exportSummary;
+    }
+
     while (page <= totalPages) {
-      const params = buildRecordsQuery(filters, page, pageSize);
+      const params = buildAttendanceExportQueryParams(page, pageSize);
+      if (!hasDerivedFilter) params.set('view', 'list');
       const response = await fetch(`/api/attendance/records?${params.toString()}`, {
         credentials: 'include',
       });
@@ -534,7 +655,7 @@ export default function AttendanceRecordsPage() {
       const nextRecords = Array.isArray(data.records) ? data.records : [];
 
       allRecords.push(...nextRecords);
-      exportSummary = data.summary || exportSummary;
+      if (hasDerivedFilter) exportSummary = data.summary || exportSummary;
       totalPages = data.pagination?.totalPages || 0;
 
       if (totalPages === 0) {
@@ -847,7 +968,7 @@ export default function AttendanceRecordsPage() {
                   </div>
                   <div className="rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-right">
                     <div className="text-xs text-slate-400">總記錄</div>
-                    <div className="text-2xl font-black">{summary.totalRecords}</div>
+                    <div className="text-2xl font-black">{summaryLoading ? '…' : summary.totalRecords}</div>
                   </div>
                 </div>
 
@@ -860,14 +981,14 @@ export default function AttendanceRecordsPage() {
                           <span className="text-sm font-semibold text-white">{item.label}</span>
                         </div>
                         <div className="text-right">
-                          <div className="text-lg font-black text-white">{item.count}</div>
-                          <div className="text-xs text-slate-400">{item.percentage}%</div>
+                          <div className="text-lg font-black text-white">{summaryLoading ? '…' : item.count}</div>
+                          <div className="text-xs text-slate-400">{summaryLoading ? '' : `${item.percentage}%`}</div>
                         </div>
                       </div>
                       <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/10">
                         <div
                           className={`h-full rounded-full bg-gradient-to-r transition-all ${item.barAccent}`}
-                          style={{ width: item.width }}
+                          style={{ width: summaryLoading ? '0%' : item.width }}
                         />
                       </div>
                     </div>
@@ -897,7 +1018,7 @@ export default function AttendanceRecordsPage() {
                     value={filters.year}
                     onChange={(e) => {
                       const nextYear = e.target.value;
-                      updateFilters(prev => ({
+                      setFilters(prev => ({
                         ...prev,
                         year: nextYear,
                         yearMonth:
@@ -924,7 +1045,7 @@ export default function AttendanceRecordsPage() {
                     value={filters.yearMonth}
                     onChange={(e) => {
                       const nextValue = e.target.value;
-                      updateFilters(prev => ({
+                      setFilters(prev => ({
                         ...prev,
                         yearMonth: nextValue,
                         year: nextValue ? nextValue.slice(0, 4) : prev.year,
@@ -939,7 +1060,7 @@ export default function AttendanceRecordsPage() {
                   <input
                     type="date"
                     value={filters.startDate}
-                    onChange={(e) => updateFilters(prev => ({ ...prev, startDate: e.target.value }))}
+                    onChange={(e) => setFilters(prev => ({ ...prev, startDate: e.target.value }))}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-black focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
@@ -949,7 +1070,7 @@ export default function AttendanceRecordsPage() {
                   <input
                     type="date"
                     value={filters.endDate}
-                    onChange={(e) => updateFilters(prev => ({ ...prev, endDate: e.target.value }))}
+                    onChange={(e) => setFilters(prev => ({ ...prev, endDate: e.target.value }))}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-black focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
@@ -959,7 +1080,7 @@ export default function AttendanceRecordsPage() {
                     <label className="block text-sm font-medium text-gray-700 mb-1">部門</label>
                     <select
                       value={filters.department}
-                      onChange={(e) => updateFilters(prev => ({
+                      onChange={(e) => setFilters(prev => ({
                         ...prev,
                         department: e.target.value,
                         employeeId: '',
@@ -978,7 +1099,7 @@ export default function AttendanceRecordsPage() {
                   <EmployeeListSelect
                     label="員工"
                     value={filters.employeeId}
-                    onChange={(value) => updateFilters(prev => ({ ...prev, employeeId: value }))}
+                    onChange={(value) => setFilters(prev => ({ ...prev, employeeId: value }))}
                     emptyLabel="全部員工"
                     departmentFilter={filters.department}
                   />
@@ -988,7 +1109,7 @@ export default function AttendanceRecordsPage() {
                   <label className="block text-sm font-medium text-gray-700 mb-1">加班工時</label>
                   <select
                     value={filters.overtimeHours}
-                    onChange={(e) => updateFilters(prev => ({ ...prev, overtimeHours: e.target.value }))}
+                    onChange={(e) => setFilters(prev => ({ ...prev, overtimeHours: e.target.value }))}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-black focus:ring-2 focus:ring-blue-500"
                   >
                     <option value="">全部</option>
@@ -1003,7 +1124,7 @@ export default function AttendanceRecordsPage() {
                   <label className="block text-sm font-medium text-gray-700 mb-1">狀態</label>
                   <select
                     value={filters.status}
-                    onChange={(e) => updateFilters(prev => ({ ...prev, status: e.target.value }))}
+                    onChange={(e) => setFilters(prev => ({ ...prev, status: e.target.value }))}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-black focus:ring-2 focus:ring-blue-500"
                   >
                     {ATTENDANCE_STATUS_OPTIONS.map((option) => (
@@ -1023,7 +1144,7 @@ export default function AttendanceRecordsPage() {
                   </button>
                   <button
                     onClick={() => {
-                      updateFilters({
+                      setFilters({
                         year: '',
                         yearMonth: '',
                         startDate: '',
@@ -1033,6 +1154,7 @@ export default function AttendanceRecordsPage() {
                         status: '',
                         department: '',
                       });
+                      setPagination(prev => ({ ...prev, current: 1 }));
                     }}
                     className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors text-sm"
                   >
@@ -1114,6 +1236,11 @@ export default function AttendanceRecordsPage() {
               </div>
             ) : (
               <>
+                {pagination.totalPages > 1 && (
+                  <p className="px-6 pt-3 text-xs text-gray-500">
+                    表頭排序只調整目前這一頁；跨頁的次序固定為日期由新到舊。
+                  </p>
+                )}
                 <div className="overflow-x-auto">
                   <table className="min-w-full divide-y divide-gray-200">
                     <thead className="bg-gray-50">
@@ -1171,7 +1298,7 @@ export default function AttendanceRecordsPage() {
                               <button
                                 type="button"
                                 onClick={() => {
-                                  updateFilters({
+                                  setFilters({
                                     year: '',
                                     yearMonth: '',
                                     startDate: '',
@@ -1181,6 +1308,7 @@ export default function AttendanceRecordsPage() {
                                     status: '',
                                     department: '',
                                   });
+                                  setPagination(prev => ({ ...prev, current: 1 }));
                                 }}
                                 className="mt-5 min-h-11 rounded-lg bg-blue-600 px-4 text-sm font-medium text-white transition-colors hover:bg-blue-700"
                               >
@@ -1371,45 +1499,40 @@ export default function AttendanceRecordsPage() {
                           共 <span className="font-medium">{pagination.total}</span> 筆記錄
                         </p>
                       </div>
-                      <div>
-                        <nav className="relative z-0 inline-flex rounded-md shadow-sm -space-x-px">
+                      <div className="flex flex-wrap items-center gap-3">
+                        <nav className="relative z-0 inline-flex rounded-md shadow-sm -space-x-px" aria-label="分頁">
                           <button
-                            aria-label="上一頁"
                             onClick={() => handlePageChange(pagination.current - 1)}
                             disabled={pagination.current === 1}
                             className="relative inline-flex items-center px-2 py-2 rounded-l-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50"
                           >
                             <ChevronLeft className="h-5 w-5" />
                           </button>
-                          <form
-                            className="flex items-center gap-2 border border-gray-300 px-2 text-sm text-gray-700"
-                            onSubmit={event => {
-                              event.preventDefault();
-                              const page = Number(new FormData(event.currentTarget).get('page'));
-                              if (Number.isInteger(page) && page >= 1 && page <= pagination.totalPages) {
-                                handlePageChange(page);
-                              }
-                            }}
-                          >
-                            <label className="flex items-center gap-1">
-                              第
-                              <input
-                                key={pagination.current}
-                                name="page"
-                                type="number"
-                                min={1}
-                                max={pagination.totalPages}
-                                required
-                                defaultValue={pagination.current}
-                                aria-label="跳至考勤記錄頁碼"
-                                className="w-16 rounded border border-gray-300 px-1 py-1 text-center"
-                              />
-                              / {pagination.totalPages} 頁
-                            </label>
-                            <button type="submit" className="text-blue-700 hover:underline">前往</button>
-                          </form>
+                          {/* 只顯示首尾與目前頁附近，資料量再大按鈕數量也固定 */}
+                          {getPageWindow(pagination.current, pagination.totalPages).map((item, index) => (
+                            item === 'gap' ? (
+                              <span
+                                key={`gap-${index}`}
+                                className="relative inline-flex items-center px-3 py-2 border border-gray-300 bg-white text-sm text-gray-400"
+                              >
+                                …
+                              </span>
+                            ) : (
+                              <button
+                                key={item}
+                                onClick={() => handlePageChange(item)}
+                                aria-current={pagination.current === item ? 'page' : undefined}
+                                className={`relative inline-flex items-center px-4 py-2 border text-sm font-medium ${
+                                  pagination.current === item
+                                    ? 'z-10 bg-blue-50 border-blue-500 text-blue-600'
+                                    : 'bg-white border-gray-300 text-gray-500 hover:bg-gray-50'
+                                }`}
+                              >
+                                {item}
+                              </button>
+                            )
+                          ))}
                           <button
-                            aria-label="下一頁"
                             onClick={() => handlePageChange(pagination.current + 1)}
                             disabled={pagination.current === pagination.totalPages}
                             className="relative inline-flex items-center px-2 py-2 rounded-r-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50"
@@ -1417,6 +1540,26 @@ export default function AttendanceRecordsPage() {
                             <ChevronRight className="h-5 w-5" />
                           </button>
                         </nav>
+                        <form onSubmit={handleJumpToPage} noValidate className="inline-flex items-center gap-2 text-sm text-gray-700">
+                          <label htmlFor="attendance-jump-page">跳至第</label>
+                          <input
+                            id="attendance-jump-page"
+                            type="number"
+                            min={1}
+                            max={pagination.totalPages}
+                            value={jumpPage}
+                            onChange={(event) => setJumpPage(event.target.value)}
+                            className="w-20 rounded-md border border-gray-300 px-2 py-1 text-sm text-black"
+                          />
+                          <span>頁</span>
+                          <button
+                            type="submit"
+                            disabled={!jumpPage.trim()}
+                            className="rounded-md border border-gray-300 bg-white px-3 py-1 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                          >
+                            前往
+                          </button>
+                        </form>
                       </div>
                     </div>
                   </div>

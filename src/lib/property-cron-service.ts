@@ -14,6 +14,7 @@ import {
   addDays,
   buildRecordId,
   deriveDisplayStatus,
+  generatedRecordIds,
   startOfDay,
   ymd,
   type MaintenanceStatus,
@@ -174,6 +175,13 @@ export async function generateMaintenanceTasks(now: Date = new Date()) {
             });
             if (openTaskInTransaction) return false;
 
+            // 同一資產、同一到期日已產生過（含舊格式 ID）→ 視為已有任務，不重複建立
+            const alreadyGenerated = await tx.maintenanceRecord.findFirst({
+              where: { assetId: a.id, recordId: { in: generatedRecordIds(a, due) } },
+              select: { id: true },
+            });
+            if (alreadyGenerated) return false;
+
             const advanced = await tx.propertyAsset.updateMany({
               where: { id: a.id, nextMaintenanceDate: due },
               data: { nextMaintenanceDate: addDays(due, a.frequencyDays!) },
@@ -182,7 +190,7 @@ export async function generateMaintenanceTasks(now: Date = new Date()) {
 
             await tx.maintenanceRecord.create({
               data: {
-                recordId: buildRecordId(a.assetCode, due),
+                recordId: buildRecordId(a.assetCode, due, a.id),
                 siteId: site.id,
                 assetId: a.id,
                 assetCode: a.assetCode,

@@ -7,10 +7,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
-import {
-  getStoredIncomeTaxManagementSettings,
-  resolvePayrollIncomeTaxDisplayAmounts,
-} from '@/lib/income-tax-settings';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import { getEmployeePDFPassword, PDFSecurityConfig, getDefaultSecurityConfig } from '@/lib/pdf-security';
 import { parseIntegerQueryParam } from '@/lib/query-params';
@@ -42,6 +38,7 @@ interface PayslipData {
     laborInsurance: number;
     healthInsurance: number;
     supplementaryInsurance: number;
+    laborPensionSelf: number;
     attendancePenalty: {
       totalAmount: number;
       details: Array<{
@@ -214,15 +211,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: '無權限查看此薪資條' }, { status: 403 });
     }
 
-    const incomeTaxSettings = await getStoredIncomeTaxManagementSettings();
-    const displayAmounts = resolvePayrollIncomeTaxDisplayAmounts(
-      {
-        incomeTax: payrollRecord.incomeTax,
-        totalDeductions: payrollRecord.totalDeductions,
-        netPay: payrollRecord.netPay,
-      },
-      incomeTaxSettings
-    );
+    // 薪資條一律顯示薪資紀錄當時實際扣的金額，不受「所得稅管理」設定影響（該設定只管之後新產生的薪資）
 
     // 查詢安全設定
     let securityConfig: PDFSecurityConfig = getDefaultSecurityConfig();
@@ -282,11 +271,12 @@ export async function GET(request: NextRequest) {
         laborInsurance: payrollRecord.laborInsurance,
         healthInsurance: payrollRecord.healthInsurance,
         supplementaryInsurance: payrollRecord.supplementaryInsurance,
+        laborPensionSelf: payrollRecord.laborPensionSelf || 0,
         attendancePenalty,
-        incomeTax: displayAmounts.incomeTax,
-        total: displayAmounts.totalDeductions
+        incomeTax: payrollRecord.incomeTax,
+        total: payrollRecord.totalDeductions
       },
-      netPay: displayAmounts.netPay
+      netPay: payrollRecord.netPay
     };
 
     // 生成 PDF
@@ -490,6 +480,9 @@ async function generateEncryptedPDF(payslip: PayslipData, password: string | nul
   drawAmountRow('Labor Insurance:', payslip.deductions.laborInsurance, true);
   drawAmountRow('Health Insurance:', payslip.deductions.healthInsurance, true);
   drawAmountRow('Supplementary Insurance:', payslip.deductions.supplementaryInsurance, true);
+  if (payslip.deductions.laborPensionSelf > 0) {
+    drawAmountRow('Pension Self-Contribution:', payslip.deductions.laborPensionSelf, true);
+  }
   if (payslip.deductions.attendancePenalty.totalAmount > 0) {
     drawAmountRow('Attendance Deduction:', payslip.deductions.attendancePenalty.totalAmount, true);
     for (const detail of payslip.deductions.attendancePenalty.details.slice(0, 4)) {

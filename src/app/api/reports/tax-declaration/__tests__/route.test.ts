@@ -62,6 +62,7 @@ describe('tax declaration report route auth guards', () => {
         laborPensionSelf: 1800,
         incomeTax: 600,
         netPay: 28400,
+        hourlyWage: 133,
         employee: {
           employeeId: 'EMP001',
           name: '王小明',
@@ -100,6 +101,7 @@ describe('tax declaration report route auth guards', () => {
         laborPensionSelf: 1800,
         incomeTax: 600,
         netPay: 28400,
+        hourlyWage: 133,
         employee: {
           employeeId: '=EMP001',
           name: '王小明',
@@ -139,6 +141,39 @@ describe('tax declaration report route auth guards', () => {
       taxableIncome: 27000,
     });
     expect(data.summary.totalTaxableIncome).toBe(27000);
+  });
+
+  it('caps exempt overtime with each employee’s own hourly wage instead of a fixed rate', async () => {
+    const record = (payMonth: number, hourlyWage: number) => ({
+      employeeId: 1,
+      payMonth,
+      basePay: 32000,
+      overtimePay: 10000,
+      grossPay: 42000,
+      laborInsurance: 0,
+      healthInsurance: 0,
+      laborPensionSelf: 0,
+      incomeTax: 0,
+      netPay: 42000,
+      hourlyWage,
+      employee: {
+        employeeId: 'EMP001',
+        name: '王小明',
+        department: 'HR',
+        hireDate: new Date('2025-03-01T00:00:00.000Z'),
+      },
+    });
+    // 時薪 133（32,000 ÷ 240）每月上限 6,118；中途調到 200 後每月上限 9,200
+    mockedPrisma.payrollRecord.findMany.mockResolvedValueOnce([record(1, 133), record(2, 133), record(3, 200)] as never);
+
+    const request = new NextRequest('http://localhost/api/reports/tax-declaration?year=2026', {
+      headers: { cookie: 'token=shared-session-token' },
+    });
+    const data = await (await GET(request)).json();
+
+    expect(data.records[0].taxExempt).toBe(6118 + 6118 + 9200);
+    expect(data.records[0].taxableIncome).toBe(126000 - (6118 + 6118 + 9200));
+    expect(data.records[0]).not.toHaveProperty('exemptOvertimePay');
   });
 
   it('returns 400 for an invalid year query param', async () => {

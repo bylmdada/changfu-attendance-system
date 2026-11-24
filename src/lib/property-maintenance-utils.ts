@@ -169,9 +169,21 @@ export function excelSerialToDate(value: unknown): Date | null {
   return new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
 }
 
-// ── 紀錄ID：M-YYYY-MM-DD-{財產編號}（§27）
-export function buildRecordId(assetCode: string, dueDate: Date): string {
+// ── 紀錄ID（§27）
+// 舊格式 M-YYYY-MM-DD-{財產編號}：財產編號只保證「同一據點內」唯一，但紀錄ID 是全系統唯一鍵，
+// 兩個據點有同號資產又同日到期時，第二個據點的任務會被唯一鍵擋掉。舊紀錄保留原 ID，
+// 新任務改用含資產 ID 的格式（資產 ID 不會變）。
+export function buildLegacyRecordId(assetCode: string, dueDate: Date): string {
   return `M-${ymd(dueDate)}-${assetCode}`;
+}
+
+export function buildRecordId(assetCode: string, dueDate: Date, assetId: number): string {
+  return `${buildLegacyRecordId(assetCode, dueDate)}~${assetId}`;
+}
+
+/** 系統替這個資產、這個到期日產生任務時可能用過的紀錄ID（舊格式＋新格式），用來去重。 */
+export function generatedRecordIds(asset: { id: number; assetCode: string }, dueDate: Date): string[] {
+  return [buildLegacyRecordId(asset.assetCode, dueDate), buildRecordId(asset.assetCode, dueDate, asset.id)];
 }
 
 // ── 逾期 / 顯示狀態衍生（§5.3）

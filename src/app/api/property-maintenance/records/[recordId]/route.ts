@@ -40,8 +40,22 @@ export async function GET(
   const rec = await loadRecord(decodeURIComponent(recordId));
   if (!rec) return fail('找不到紀錄', 404);
   if (!canAccessSite(g.ctx.access, rec.siteId)) return fail('無權限', 403);
+  // 歷次審核輪次（含退回原因）：主紀錄的 rejectReason 只代表「目前」的退回，補正重送後會清空
+  const auditRounds = await prisma.auditApproval.findMany({
+    where: { recordId: rec.recordId },
+    orderBy: { createdAt: 'asc' },
+    select: {
+      id: true,
+      submittedAt: true,
+      auditStatus: true,
+      supervisorName: true,
+      supervisorAuditDate: true,
+      note: true,
+    },
+  });
   return ok({
     ...rec,
+    auditRounds,
     displayStatus: deriveDisplayStatus(rec.status as MaintenanceStatus, rec.dueDate),
   });
 }
@@ -92,7 +106,8 @@ export async function PUT(
         where: { recordId: rec.recordId, status: 'PENDING' },
         data: {
           status: newStatus,
-          rawStatus: body.status ?? '已完成',
+          // 掃碼評量沒有帶 body.status；狀態原文要沿用解析器算出的「無異常／有異常」，不能落到預設的「已完成」
+          rawStatus: conditionAssessment?.data.rawStatus ?? body.status ?? '已完成',
           completedDate: now,
           maintainerRaw: body.maintainerName ?? me?.name ?? rec.maintainerRaw,
           maintainerEmployeeId: me?.id ?? rec.maintainerEmployeeId,

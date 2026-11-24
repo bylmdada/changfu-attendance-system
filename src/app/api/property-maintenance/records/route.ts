@@ -54,6 +54,9 @@ export async function GET(request: NextRequest) {
     const normalizedAudit = normalizePropertyAuditStatus(audit);
     if (!normalizedAudit) return fail('audit 參數錯誤');
     where.auditStatus = normalizedAudit;
+    // 「待稽核」只含已提交維護結果的紀錄。新產生的任務 auditStatus 預設也是 PENDING，
+    // 但尚未提交、沒有審核輪次，主管看得到卻無法核決（會得到 409）。
+    if (normalizedAudit === 'PENDING') where.AND = [{ status: { not: 'PENDING' } }];
     const requestedSiteId = typeof where.siteId === 'number' ? where.siteId : null;
     if (requestedSiteId) {
       if (!canSuperviseSite(g.ctx.access, requestedSiteId)) {

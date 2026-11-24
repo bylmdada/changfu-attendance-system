@@ -3,7 +3,11 @@ import { prisma } from '@/lib/database';
 import { guard } from '@/lib/property-api';
 import { canManageSite, siteWhere } from '@/lib/property-access';
 import { parsePositiveInt } from '@/lib/property-query';
-import { generateCode128DataUrl, isCode128Compatible } from '@/lib/property-barcode';
+import {
+  buildPropertyBarcodeValue,
+  generateCode128DataUrl,
+  isCode128Compatible,
+} from '@/lib/property-barcode';
 
 export const maxDuration = 120;
 
@@ -16,6 +20,7 @@ function esc(s: string): string {
 /**
  * POST { assetIds:number[] } 或 { siteId } → 可列印 CODE_128 條碼標籤頁
  *（現場財產標籤為 CODE_128 一維條碼；瀏覽器列印）。
+ * 條碼內容為「據點代碼:財產編號」，與單張條碼一致：財產編號只在同一據點內唯一，兩個據點可能有同號資產。
  */
 export async function POST(request: NextRequest) {
   const g = await guard(request, { csrf: true });
@@ -52,12 +57,13 @@ export async function POST(request: NextRequest) {
     where,
     orderBy: { assetCode: 'asc' },
     take: 500,
-    select: { assetCode: true, name: true, location: true },
+    select: { assetCode: true, name: true, location: true, site: { select: { code: true } } },
   });
 
   const cards = await Promise.all(
     assets.map(async (a) => {
-      if (!isCode128Compatible(a.assetCode)) {
+      const barcodeValue = buildPropertyBarcodeValue(a.site.code, a.assetCode);
+      if (!isCode128Compatible(barcodeValue)) {
         return `<div class="card invalid">
           <div class="invalid-title">無法產生 CODE_128</div>
           <div class="code">${esc(a.assetCode)}</div>
@@ -67,7 +73,7 @@ export async function POST(request: NextRequest) {
       }
       let bc: string;
       try {
-        bc = await generateCode128DataUrl(a.assetCode);
+        bc = await generateCode128DataUrl(barcodeValue);
       } catch (error) {
         console.error('列印財產條碼失敗:', { assetCode: a.assetCode, error });
         return `<div class="card invalid">
@@ -78,7 +84,7 @@ export async function POST(request: NextRequest) {
         </div>`;
       }
       return `<div class="card">
-        <img src="${bc}" alt="${esc(a.assetCode)}" />
+        <img src="${bc}" alt="${esc(barcodeValue)}" />
         <div class="name">${esc(a.name)}</div>
         <div class="loc">${esc(a.location ?? '')}</div>
       </div>`;

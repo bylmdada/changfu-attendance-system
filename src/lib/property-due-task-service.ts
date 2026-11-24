@@ -3,6 +3,7 @@ import { prisma } from '@/lib/database';
 import {
   addDays,
   buildRecordId,
+  generatedRecordIds,
   startOfDay,
 } from '@/lib/property-maintenance-utils';
 
@@ -68,6 +69,16 @@ export async function ensureImmediateMaintenanceTasks({
       continue;
     }
 
+    // 同一資產、同一到期日已產生過（含舊格式 ID）→ 視為已有任務，不重複建立
+    const alreadyGenerated = await prisma.maintenanceRecord.findFirst({
+      where: { assetId: asset.id, recordId: { in: generatedRecordIds(asset, dueDate) } },
+      select: { id: true },
+    });
+    if (alreadyGenerated) {
+      skipped++;
+      continue;
+    }
+
     try {
       // One nested write keeps the date advance and task creation atomic without
       // holding an interactive SQLite transaction open across JS callbacks.
@@ -82,7 +93,7 @@ export async function ensureImmediateMaintenanceTasks({
           nextMaintenanceDate: addDays(dueDate, asset.frequencyDays),
           records: {
             create: {
-              recordId: buildRecordId(asset.assetCode, dueDate),
+              recordId: buildRecordId(asset.assetCode, dueDate, asset.id),
               siteId: asset.siteId,
               assetCode: asset.assetCode,
               maintenanceCycle: asset.maintenanceFrequency,

@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/database';
 import { guard, ok, fail } from '@/lib/property-api';
+import { canSuperviseSite } from '@/lib/property-access';
 
 // GET：列出可存取據點
 export async function GET(request: NextRequest) {
@@ -32,7 +33,8 @@ export async function GET(request: NextRequest) {
       _count: { select: { assets: true } },
     },
   });
-  return ok(sites);
+  // canSupervise：目前使用者在該據點是否為主管／稽核（維護報表的匯出需要此權限）
+  return ok(sites.map((site) => ({ ...site, canSupervise: canSuperviseSite(access, site.id) })));
 }
 
 // POST：新增據點（全域 ADMIN/HR）

@@ -14,7 +14,7 @@ interface IncomeTaxManagementSettings {
 
 const defaultSettings: IncomeTaxManagementSettings = {
   withholdingEnabled: true,
-  description: '控制新薪資試算與薪資生成是否計入所得稅，並同步決定報表管理與薪資管理中的薪資條是否顯示所得稅扣除項目',
+  description: '控制之後新的薪資試算與薪資生成是否計入所得稅；已產生的薪資條一律顯示當時實際扣除的金額，不受此設定影響',
 };
 
 export default function IncomeTaxManagementPage() {
@@ -132,7 +132,7 @@ export default function IncomeTaxManagementPage() {
             所得稅管理
           </h1>
           <p className="text-gray-600 mt-2">
-            設定新薪資試算與薪資生成是否計入所得稅，並同步控制報表管理與薪資管理中的薪資條是否顯示所得稅扣除項目。
+            設定之後新的薪資試算與薪資生成是否計入所得稅。已產生的薪資條一律顯示當時實際扣除的金額，不會因為這個設定而改變。
           </p>
         </div>
 
@@ -162,9 +162,9 @@ export default function IncomeTaxManagementPage() {
                 className="mt-1 rounded border-gray-300 text-blue-600 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200 focus:ring-opacity-50"
               />
               <div>
-                <span className="text-sm font-medium text-gray-900">新薪資計算與薪資條顯示所得稅扣除</span>
+                <span className="text-sm font-medium text-gray-900">新的薪資計算計入所得稅扣除</span>
                 <p className="mt-1 text-sm text-gray-600">
-                  關閉後，之後執行的薪資試算與薪資生成將不再計入所得稅；同時，報表管理與薪資管理中的薪資條也不再顯示所得稅扣除項目。
+                  關閉後，之後執行的薪資試算與薪資生成將不再計入所得稅。已經產生的薪資記錄與薪資條不受影響，仍顯示當時實際扣除的金額。
                 </p>
               </div>
             </label>
@@ -176,8 +176,9 @@ export default function IncomeTaxManagementPage() {
               套用說明
             </h2>
             <ul className="space-y-2 text-sm text-amber-900">
-              <li>• 這項設定只影響之後的新薪資試算、薪資生成，以及報表管理 / 薪資管理中的薪資條顯示。</li>
-              <li>• 已經產生的舊薪資記錄若也要同步取消或恢復所得稅，請重新執行該月份薪資試算或重新生成薪資。</li>
+              <li>• 這項設定只影響之後的新薪資試算與薪資生成。</li>
+              <li>• 薪資條（報表管理、薪資管理、列印與下載）一律顯示薪資記錄當時實際扣除的金額，與銀行薪轉金額一致。</li>
+              <li>• 已經產生的舊薪資記錄若要取消或恢復所得稅，請重新執行該月份薪資試算或重新生成薪資，薪資條會照重新產生後的記錄顯示。</li>
             </ul>
           </section>
         </div>

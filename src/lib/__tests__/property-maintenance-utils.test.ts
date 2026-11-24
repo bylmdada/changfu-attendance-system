@@ -1,7 +1,10 @@
 import {
   addDays,
+  buildLegacyRecordId,
+  buildRecordId,
   deriveDisplayStatus,
   excelSerialToDate,
+  generatedRecordIds,
   getNextMaintenanceDate,
   isSameDay,
   monthRange,
@@ -53,5 +56,23 @@ describe('property-maintenance-utils date handling', () => {
     expect(ymd(getNextMaintenanceDate(new Date('2026-11-04T10:00:00+08:00'), '每週一次', 7))).toBe('2026-11-11');
     expect(getNextMaintenanceDate(new Date('2026-11-04T10:00:00+08:00'), '每月一次', 28).toISOString())
       .toBe('2026-12-03T16:00:00.000Z');
+  });
+
+  it('builds record ids that stay distinct for same-code assets of different sites', () => {
+    const due = new Date('2026-11-23T16:00:00.000Z'); // 台北 2026-11-24
+
+    expect(buildLegacyRecordId('A001', due)).toBe('M-2026-11-24-A001');
+    // 兩個據點的 A001 同日到期：紀錄ID 不可相同
+    expect(buildRecordId('A001', due, 7)).toBe('M-2026-11-24-A001~7');
+    expect(buildRecordId('A001', due, 8)).toBe('M-2026-11-24-A001~8');
+    // 同一資產同一天永遠產生同一個 ID，才能用唯一鍵去重
+    expect(buildRecordId('A001', due, 7)).toBe(buildRecordId('A001', due, 7));
+  });
+
+  it('lists both the legacy and the current id used to detect an already generated task', () => {
+    expect(generatedRecordIds({ id: 7, assetCode: 'A001' }, new Date('2026-11-23T16:00:00.000Z'))).toEqual([
+      'M-2026-11-24-A001',
+      'M-2026-11-24-A001~7',
+    ]);
   });
 });

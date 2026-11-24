@@ -260,7 +260,58 @@ describe('payslip pdf template settings integration', () => {
     expect(payload.htmlContent).not.toContain('<img src=x onerror=alert(1)>');
   });
 
-  it('omits income tax row from pdf html when withholding is disabled', async () => {
+  it('lists labor pension self-contribution in pdf html only when the record has one', async () => {
+    const baseRecord = {
+      id: 1,
+      employeeId: 10,
+      payYear: 2026,
+      payMonth: 4,
+      regularHours: 160,
+      overtimeHours: 0,
+      basePay: 50000,
+      overtimePay: 0,
+      grossPay: 50000,
+      laborInsurance: 600,
+      healthInsurance: 400,
+      supplementaryInsurance: 0,
+      incomeTax: 1000,
+      adjustments: [],
+      employee: {
+        id: 10,
+        employeeId: 'E001',
+        name: '王小明',
+        department: '製造部',
+        position: '照服員',
+        baseSalary: 50000,
+      },
+    };
+
+    mockPrisma.payrollRecord.findUnique.mockResolvedValue({
+      ...baseRecord,
+      laborPensionSelf: 1800,
+      totalDeductions: 3800,
+      netPay: 46200,
+    } as never);
+    const request = new NextRequest('http://localhost:3000/api/payroll/payslip-pdf?payrollId=1');
+    const withSelf = await (await GET(request)).json();
+
+    expect(withSelf.htmlContent).toContain('<td>勞退自提</td>');
+    expect(withSelf.htmlContent).toContain('NT$ 1,800');
+    expect(withSelf.htmlContent).toContain('NT$ 3,800');
+    expect(withSelf.htmlContent).toContain('NT$ 46,200');
+
+    mockPrisma.payrollRecord.findUnique.mockResolvedValue({
+      ...baseRecord,
+      laborPensionSelf: 0,
+      totalDeductions: 2000,
+      netPay: 48000,
+    } as never);
+    const withoutSelf = await (await GET(request)).json();
+
+    expect(withoutSelf.htmlContent).not.toContain('<td>勞退自提</td>');
+  });
+
+  it('still shows the stored income tax row and amounts after withholding is switched off', async () => {
     mockPrisma.systemSettings.findUnique.mockImplementation(async ({ where }) => {
       if (where.key === 'payslip_templates') {
         return {
@@ -284,8 +335,11 @@ describe('payslip pdf template settings integration', () => {
     const payload = await response.json();
 
     expect(response.status).toBe(200);
-    expect(payload.htmlContent).not.toContain('<td>所得稅</td>');
-    expect(payload.htmlContent).toContain('NT$ 1,100');
-    expect(payload.htmlContent).toContain('NT$ 32,900');
+    // 設定只管之後新產生的薪資；這筆薪資當時已扣 200 元所得稅，扣除合計 1,300、實領 32,700，列印版必須照實顯示
+    expect(payload.htmlContent).toContain('<td>所得稅</td>');
+    expect(payload.htmlContent).toContain('NT$ 200');
+    expect(payload.htmlContent).toContain('NT$ 1,300');
+    expect(payload.htmlContent).toContain('NT$ 32,700');
+    expect(payload.htmlContent).not.toContain('NT$ 32,900');
   });
 });

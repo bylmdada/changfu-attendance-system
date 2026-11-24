@@ -37,6 +37,25 @@ function toCsv(aoa: unknown[][]): string {
   return aoa.map((row) => row.map(csvEscape).join(',')).join('\r\n');
 }
 
+/**
+ * 維護狀態文字。掃碼提交的紀錄有結構化的狀態評量，以評量結果（無異常／有異常）為準；
+ * 其他（歷史匯入、舊版表單）沿用當時存的原文，再退回系統狀態。
+ * 退回補正而回到待執行的紀錄不套用評量結果，避免把「重做中」顯示成上一次的結果。
+ */
+function maintenanceStatusText(r: {
+  status: string;
+  rawStatus: string | null;
+  conditionAssessmentStatus: string | null;
+}): string {
+  if (
+    r.status !== 'PENDING'
+    && (r.conditionAssessmentStatus === 'NO_ABNORMALITY' || r.conditionAssessmentStatus === 'ABNORMAL')
+  ) {
+    return conditionAssessmentLabel(r.conditionAssessmentStatus);
+  }
+  return r.rawStatus || STATUS_LABEL[r.status as MaintenanceStatus] || r.status;
+}
+
 function normalizeInventoryResultLabel(value: string | null | undefined) {
   return value?.replace(/帳物/g, '財產') ?? '';
 }
@@ -80,7 +99,7 @@ export async function buildMonthlyReport(siteId: number, year: number, month: nu
       r.assetCode,
       r.maintenanceCycle ?? '',
       d(r.dueDate),
-      r.rawStatus || STATUS_LABEL[r.status as MaintenanceStatus] || r.status,
+      maintenanceStatusText(r),
       r.maintainerRaw ?? '',
       d(r.completedDate),
       r.inventoryResult ?? '',
@@ -125,6 +144,7 @@ function evidenceSheetAoa(
     completedDate: Date | null;
     status: string;
     rawStatus: string | null;
+    conditionAssessmentStatus: string | null;
     inventoryResult: string | null;
     maintenanceItem: string | null;
     assetCondition: string | null;
@@ -148,7 +168,7 @@ function evidenceSheetAoa(
       r.recordId,
       d(r.dueDate),
       d(r.completedDate),
-      r.rawStatus || STATUS_LABEL[r.status as MaintenanceStatus] || r.status,
+      maintenanceStatusText(r),
       r.inventoryResult ?? '',
       r.maintenanceItem ?? '',
       r.assetCondition ?? '',
@@ -323,7 +343,7 @@ export async function buildMaintenanceHistoryReport(options: MaintenanceHistoryR
       r.recordId,
       d(r.dueDate),
       d(r.completedDate),
-      r.rawStatus || STATUS_LABEL[r.status as MaintenanceStatus] || r.status,
+      maintenanceStatusText(r),
       normalizeInventoryResultLabel(r.inventoryResult),
       r.assetCondition ?? '',
       r.maintenanceItem ?? '',
@@ -373,18 +393,26 @@ export async function buildSummary(siteId: number, year: number, month: number) 
   const { start, end } = monthRange(year, month);
   const now = new Date();
 
-  const assets = await prisma.propertyAsset.findMany({
-    where: { siteId, isActive: true },
-    orderBy: { assetCode: 'asc' },
-  });
   const records = await prisma.maintenanceRecord.findMany({
     where: { siteId, dueDate: { gte: start, lt: end } },
     select: { assetId: true, status: true, dueDate: true },
+  });
+  // 清冊只列啟用中的資產，但停用資產的舊紀錄仍在月報裡。總表要能和月報逐筆對上，
+  // 所以除了啟用中的資產（含本月零任務者），也列出「本月有紀錄的停用資產」。
+  const recordedAssetIds = [...new Set(records.map((r) => r.assetId))];
+  const assets = await prisma.propertyAsset.findMany({
+    where: {
+      siteId,
+      OR: [{ isActive: true }, ...(recordedAssetIds.length ? [{ id: { in: recordedAssetIds } }] : [])],
+    },
+    orderBy: { assetCode: 'asc' },
   });
   const byAsset = new Map<number, { total: number; done: number; pending: number; overdue: number }>();
   for (const r of records) {
     const m = byAsset.get(r.assetId) ?? { total: 0, done: 0, pending: 0, overdue: 0 };
     m.total++;
+    // 完成率只算狀態為已完成（DONE）的任務；已提交但有異常（ABNORMAL）的算「未完成」（業務確認 2026-11-24），
+    // 與維護統計頁（stats API）同一口徑。
     if (r.status === 'DONE') m.done++;
     else {
       m.pending++;
@@ -398,27 +426,29 @@ export async function buildSummary(siteId: number, year: number, month: number) 
     '財產編號', '財產名稱', '放置地點', '應維護頻率',
     '應維護任務數', '已完成', '未完成', '逾期', '完成率', '逾期率',
   ];
+  // 明細與合計都從這一組列計算，兩者才一定對得上
+  const rows = assets.map((a) => ({
+    asset: a,
+    m: byAsset.get(a.id) ?? { total: 0, done: 0, pending: 0, overdue: 0 },
+  }));
   const aoa: unknown[][] = [
     [`${site.institutionTitle}　${year}年${month}月　評鑑總表`],
     header,
-    ...assets.map((a) => {
-      const m = byAsset.get(a.id) ?? { total: 0, done: 0, pending: 0, overdue: 0 };
-      return [
-        a.assetCode,
-        a.name,
-        a.location ?? '',
-        a.maintenanceFrequency ?? '',
-        m.total,
-        m.done,
-        m.pending,
-        m.overdue,
-        pct(m.done, m.total),
-        pct(m.overdue, m.total),
-      ];
-    }),
+    ...rows.map(({ asset: a, m }) => [
+      a.assetCode,
+      a.isActive ? a.name : `${a.name}（目前已停用）`,
+      a.location ?? '',
+      a.maintenanceFrequency ?? '',
+      m.total,
+      m.done,
+      m.pending,
+      m.overdue,
+      pct(m.done, m.total),
+      pct(m.overdue, m.total),
+    ]),
   ];
   // 合計列
-  const tot = [...byAsset.values()].reduce(
+  const tot = rows.map(({ m }) => m).reduce(
     (s, m) => ({
       total: s.total + m.total,
       done: s.done + m.done,

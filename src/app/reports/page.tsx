@@ -313,16 +313,9 @@ export default function ReportsPage() {
       });
 
       if (!response.ok) {
-        if (isTransferReport) {
-          const errorData = await response.json().catch(() => null);
-          setTransferRecords([]);
-          setTransferValidationErrors(errorData?.details || []);
-          if (errorData?.error) {
-            showToast('error', errorData.error);
-          }
-        } else {
-          setTransferValidationErrors([]);
-        }
+        const errorData = await response.json().catch(() => null);
+        setTransferValidationErrors(isTransferReport ? errorData?.details || [] : []);
+        showToast('error', errorData?.error || '報表載入失敗，請稍後再試');
         setPayrollRecords([]);
         setInsuranceRecords([]);
         setTaxRecords([]);
@@ -405,6 +398,7 @@ export default function ReportsPage() {
       }
     } catch (error) {
       console.error('獲取報表數據失敗:', error);
+      showToast('error', '報表載入失敗，請稍後再試');
       setPayrollRecords([]);
       setInsuranceRecords([]);
       setTaxRecords([]);
@@ -417,8 +411,10 @@ export default function ReportsPage() {
         totalOvertimeHours: 0,
         avgSalary: 0,
       });
+    } finally {
+      // 失敗分支會提前 return，載入狀態必須在這裡解除，否則查詢按鈕會一直停用
+      setLoading(false);
     }
-    setLoading(false);
   }, [effectiveMonth, isTransferReport, reportType, selectedMonth, selectedYear, transferApiType]);
 
   const generatePayslip = async (payrollId: number) => {
@@ -1114,7 +1110,8 @@ export default function ReportsPage() {
 
   const displayStats = useMemo(() => {
     if (reportType === 'salary') {
-      const totalEmployees = filteredRecords.length;
+      // 查全年（或多月）時同一員工會有多筆薪資，員工數要以人去重；平均薪資仍是每筆薪資的平均
+      const totalEmployees = new Set(filteredRecords.map((record) => record.employee.id)).size;
       const totalGrossPay = filteredRecords.reduce((sum, record) => sum + record.grossPay, 0);
       const totalNetPay = filteredRecords.reduce((sum, record) => sum + record.netPay, 0);
       const totalOvertimeHours = filteredRecords.reduce((sum, record) => sum + record.overtimeHours, 0);
@@ -1124,7 +1121,7 @@ export default function ReportsPage() {
         totalGrossPay,
         totalNetPay,
         totalOvertimeHours,
-        avgSalary: totalEmployees > 0 ? totalGrossPay / totalEmployees : 0,
+        avgSalary: filteredRecords.length > 0 ? totalGrossPay / filteredRecords.length : 0,
       };
     }
 
@@ -1226,6 +1223,9 @@ export default function ReportsPage() {
           month: effectiveMonth.toString(),
           type: transferApiType,
         });
+        // 預覽與 CSV 是在畫面上依部門／員工篩選，Excel 由伺服器重新取數，必須帶同樣的條件
+        if (selectedDepartment) params.set('department', selectedDepartment);
+        if (searchQuery) params.set('search', searchQuery);
         const response = await fetch(`/api/reports/yuanta-transfer?${params.toString()}`, {
           credentials: 'include',
         });

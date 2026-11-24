@@ -405,7 +405,11 @@ export default function PropertyMgmtSettingsPage() {
         setImportResult(
           `${r.message}\n未解析維護人員：${r.unresolvedMaintainers
             .map((u: { value: string; count: number }) => `${u.value}(${u.count})`)
-            .join('、') || '無'}`
+            .join('、') || '無'}${
+            Array.isArray(r.errors) && r.errors.length > 0
+              ? `\n注意事項（共 ${r.errors.length} 項，列出前 5 項）：\n${r.errors.slice(0, 5).join('\n')}`
+              : ''
+          }`
         );
         showToast('success', '匯入完成');
         loadSites();

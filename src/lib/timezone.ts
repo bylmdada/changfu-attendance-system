@@ -5,13 +5,17 @@
 
 const TAIWAN_TIMEZONE = 'Asia/Taipei';
 const TAIWAN_UTC_OFFSET_MS = 8 * 60 * 60 * 1000;
-const taiwanDateFormatter = new Intl.DateTimeFormat('en-CA', {
+
+// Intl.DateTimeFormat 的建立成本很高，而考勤計算會對每筆紀錄呼叫上百次台北日期／時間換算
+// （2,400 筆的列表光這一項就約 3 秒）。格式器是無狀態的，整個模組共用一份即可。
+const TAIWAN_DATE_FORMATTER = new Intl.DateTimeFormat('en-CA', {
   timeZone: TAIWAN_TIMEZONE,
   year: 'numeric',
   month: '2-digit',
   day: '2-digit',
 });
-const taiwanTimeFormatter = new Intl.DateTimeFormat('en-GB', {
+
+const TAIWAN_TIME_FORMATTER = new Intl.DateTimeFormat('en-GB', {
   timeZone: TAIWAN_TIMEZONE,
   hour: '2-digit',
   minute: '2-digit',
@@ -41,7 +45,7 @@ export function toTaiwanDate(d: Date): Date {
 
 /** 取得任意 Date 在台灣時區的年月日欄位 */
 export function getTaiwanDateParts(d: Date): TaiwanDateParts {
-  const parts = taiwanDateFormatter.formatToParts(d);
+  const parts = TAIWAN_DATE_FORMATTER.formatToParts(d);
   const year = Number(parts.find(part => part.type === 'year')?.value);
   const month = Number(parts.find(part => part.type === 'month')?.value);
   const day = Number(parts.find(part => part.type === 'day')?.value);
@@ -55,7 +59,7 @@ export function getTaiwanDateParts(d: Date): TaiwanDateParts {
 
 /** 取得任意 Date 在台灣時區的小時與分鐘欄位 */
 export function getTaiwanTimeParts(d: Date): TaiwanTimeParts {
-  const parts = taiwanTimeFormatter.formatToParts(d);
+  const parts = TAIWAN_TIME_FORMATTER.formatToParts(d);
   const hour = Number(parts.find(part => part.type === 'hour')?.value);
   const minute = Number(parts.find(part => part.type === 'minute')?.value);
 

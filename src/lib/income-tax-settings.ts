@@ -6,17 +6,11 @@ export interface IncomeTaxManagementSettings {
   description: string;
 }
 
-export interface PayrollIncomeTaxDisplayAmounts {
-  incomeTax: number;
-  totalDeductions: number;
-  netPay: number;
-}
-
 export const INCOME_TAX_MANAGEMENT_SETTINGS_KEY = 'income_tax_management_settings';
 
 export const DEFAULT_INCOME_TAX_MANAGEMENT_SETTINGS: IncomeTaxManagementSettings = {
   withholdingEnabled: true,
-  description: '控制新薪資試算與薪資生成是否計入所得稅，並同步決定報表管理與薪資管理中的薪資條是否顯示所得稅扣除項目',
+  description: '控制之後新的薪資試算與薪資生成是否計入所得稅；已產生的薪資條一律顯示當時實際扣除的金額，不受此設定影響',
 };
 
 export function normalizeIncomeTaxManagementSettings(
@@ -62,19 +56,4 @@ export async function getStoredIncomeTaxManagementSettings(): Promise<IncomeTaxM
       INCOME_TAX_MANAGEMENT_SETTINGS_KEY
     )
   );
-}
-
-export function resolvePayrollIncomeTaxDisplayAmounts(
-  amounts: PayrollIncomeTaxDisplayAmounts,
-  settings: Pick<IncomeTaxManagementSettings, 'withholdingEnabled'>
-): PayrollIncomeTaxDisplayAmounts {
-  if (settings.withholdingEnabled) {
-    return amounts;
-  }
-
-  return {
-    incomeTax: 0,
-    totalDeductions: Math.max(0, amounts.totalDeductions - amounts.incomeTax),
-    netPay: amounts.netPay + amounts.incomeTax,
-  };
 }

@@ -83,6 +83,38 @@ describe('property maintenance dashboard route', () => {
     expect(data.pagination).toEqual({ total: 60, page: 3, pageSize: 25, pages: 3 });
   });
 
+  it('任務帶出「據點代碼:財產編號」，兩個據點的同號資產才不會在開始維護時開錯或查不到', async () => {
+    record.findMany.mockResolvedValue([
+      {
+        recordId: 'M-2026-11-14-A001~7',
+        assetCode: 'A001',
+        asset: { name: '輪椅', location: '1F' },
+        site: { name: '溪北', code: 'XIBEI' },
+        dueDate: TODAY,
+        maintainerRaw: null,
+        status: 'PENDING',
+      },
+      {
+        recordId: 'M-2026-11-14-A001~8',
+        assetCode: 'A001',
+        asset: { name: '電動床', location: '2F' },
+        site: { name: '西區', code: 'WEST' },
+        dueDate: TODAY,
+        maintainerRaw: null,
+        status: 'PENDING',
+      },
+    ]);
+
+    const { data } = await (await get()).json();
+
+    expect(data.tasks.map((task: { scanCode: string }) => task.scanCode).sort()).toEqual(['WEST:A001', 'XIBEI:A001']);
+    expect(record.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        include: expect.objectContaining({ site: { select: { name: true, code: true } } }),
+      })
+    );
+  });
+
   it('摘要數字不受篩選影響', async () => {
     record.count.mockImplementation(({ where }: { where: { status: string; dueDate?: { lt?: Date; gte?: Date } } }) => {
       if (where.status === 'DONE') return Promise.resolve(23);

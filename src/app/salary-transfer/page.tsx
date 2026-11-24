@@ -337,6 +337,10 @@ export default function SalaryTransferPage() {
           <p className="text-sm text-gray-500 mt-3">
             ⚡ 匯出的 Excel 檔案已依部門分頁，可直接上傳至元大銀行薪轉系統
           </p>
+          <p className="text-sm font-medium text-amber-800 mt-1" data-testid="transfer-export-scope">
+            匯出範圍為全機構（{year} 年 {month} 月薪資共 {employees.length} 人／NT$ {overallTotal.toLocaleString()}），
+            不受上方「部門篩選」影響；年終獎金依該月的年終獎金紀錄匯出全機構。
+          </p>
         </div>
 
         {/* 部門摘要 */}

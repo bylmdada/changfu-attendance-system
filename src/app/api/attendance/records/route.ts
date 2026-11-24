@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import type { Prisma } from '@prisma/client';
 import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { prisma } from '@/lib/database';
@@ -184,10 +185,6 @@ function addAndWhere(where: Record<string, unknown>, condition: Record<string, u
       : [condition];
 }
 
-function getTaiwanDuplicateKey(record: { employeeId: number; workDate: Date }) {
-  return `${record.employeeId}-${toTaiwanDateStr(record.workDate)}`;
-}
-
 async function persistDisplayStatusUpdates(
   updates: Map<string, number[]>
 ) {
@@ -284,6 +281,347 @@ function resolveDisplayAttendanceStatus(params: {
   return '正常';
 }
 
+const MIN_WORK_HOURS = 8;
+
+// 列表（本頁明細）一筆紀錄
+type AttendanceListRecord = Prisma.AttendanceRecordGetPayload<{
+  include: {
+    employee: {
+      select: { id: true; employeeId: true; name: true; department: true; position: true };
+    };
+  };
+}>;
+
+// 摘要只需要這些欄位
+type AttendanceSummaryRecord = Pick<
+  AttendanceListRecord,
+  | 'id'
+  | 'employeeId'
+  | 'workDate'
+  | 'clockInTime'
+  | 'clockOutTime'
+  | 'regularHours'
+  | 'overtimeHours'
+  | 'clockInOvertimeId'
+  | 'clockOutOvertimeId'
+  | 'displayStatus'
+>;
+
+const SUMMARY_SOURCE_SELECT = {
+  id: true,
+  employeeId: true,
+  workDate: true,
+  clockInTime: true,
+  clockOutTime: true,
+  regularHours: true,
+  overtimeHours: true,
+  clockInOvertimeId: true,
+  clockOutOvertimeId: true,
+  displayStatus: true,
+} as const;
+
+type ScheduleSnapshot = {
+  workDate: string;
+  shiftType: string;
+  startTime: string;
+  endTime: string;
+  breakTime: number;
+  workHours: number;
+};
+
+/**
+ * 載入一批紀錄所需的班表、核准加班與請假（只取這批紀錄涵蓋的員工與日期）。
+ * 列表只傳本頁的紀錄，摘要傳全部符合的紀錄，所以翻頁不必重讀整段歷史。
+ */
+async function loadAttendanceContext(records: Array<{ employeeId: number; workDate: Date }>) {
+  const workDates = [...new Set(records.map(r => toTaiwanDateStr(r.workDate)))].sort();
+  const employeeIds = [...new Set(records.map(r => r.employeeId))];
+  const overtimeSettings = await getStoredOvertimeCalculationSettings();
+
+  const [schedules, approvedOvertimeRequests, attendanceLeaves] = await Promise.all([
+    prisma.schedule.findMany({
+      where: {
+        employeeId: { in: employeeIds },
+        workDate: { in: workDates }
+      }
+    }),
+    employeeIds.length === 0 || workDates.length === 0
+      ? Promise.resolve([])
+      : prisma.overtimeRequest.findMany({
+          where: {
+            employeeId: { in: employeeIds },
+            status: 'APPROVED',
+            overtimeDate: {
+             gte: getTaiwanDayStart(
+               Number(workDates[0].slice(0, 4)),
+               Number(workDates[0].slice(5, 7)),
+               Number(workDates[0].slice(8, 10))
+             ),
+             lte: getTaiwanDayEnd(
+               Number(workDates[workDates.length - 1].slice(0, 4)),
+               Number(workDates[workDates.length - 1].slice(5, 7)),
+               Number(workDates[workDates.length - 1].slice(8, 10))
+             ),
+            }
+          },
+          select: {
+            id: true,
+            employeeId: true,
+            overtimeDate: true,
+            totalHours: true,
+            compensationType: true,
+          }
+        }),
+    employeeIds.length === 0 || workDates.length === 0
+      ? Promise.resolve([])
+      : prisma.leaveRequest.findMany({
+          where: {
+            employeeId: { in: employeeIds },
+            voidedAt: null,
+            OR: [
+              { status: 'APPROVED' },
+              { status: 'PENDING_ADMIN', managerOpinion: 'AGREE' },
+            ],
+            startDate: {
+              lte: getTaiwanDayEnd(
+                Number(workDates[workDates.length - 1].slice(0, 4)),
+                Number(workDates[workDates.length - 1].slice(5, 7)),
+                Number(workDates[workDates.length - 1].slice(8, 10))
+              ),
+            },
+            endDate: {
+              gte: getTaiwanDayStart(
+                Number(workDates[0].slice(0, 4)),
+                Number(workDates[0].slice(5, 7)),
+                Number(workDates[0].slice(8, 10))
+              ),
+            },
+          },
+          select: {
+            employeeId: true,
+            startDate: true,
+            endDate: true,
+            status: true,
+            managerOpinion: true,
+            voidedAt: true,
+          },
+        })
+  ]);
+
+  const approvedOvertimeIndex = indexApprovedOvertimeRequests(approvedOvertimeRequests);
+  const leavesByEmployee = new Map<number, Array<(typeof attendanceLeaves)[number]>>();
+  for (const leave of attendanceLeaves) {
+    const employeeLeaves = leavesByEmployee.get(leave.employeeId);
+    if (employeeLeaves) employeeLeaves.push(leave);
+    else leavesByEmployee.set(leave.employeeId, [leave]);
+  }
+  // 同一位員工的請假區間對每筆紀錄都一樣，算一次就好
+  const exclusionsByEmployee = new Map<number, ReturnType<typeof getAttendanceRegularTimeExclusions>>();
+  const getRegularTimeExclusions = (employeeId: number) => {
+    let exclusions = exclusionsByEmployee.get(employeeId);
+    if (!exclusions) {
+      exclusions = getAttendanceRegularTimeExclusions(leavesByEmployee.get(employeeId) || []);
+      exclusionsByEmployee.set(employeeId, exclusions);
+    }
+    return exclusions;
+  };
+
+  // 建立班表查詢 Map
+  const scheduleMap = new Map<string, ScheduleSnapshot>();
+  schedules.forEach(s => {
+    const key = `${s.employeeId}-${toWorkDateKey(s.workDate)}`;
+    scheduleMap.set(key, {
+      workDate: toWorkDateKey(s.workDate),
+      shiftType: s.shiftType,
+      startTime: s.startTime,
+      endTime: s.endTime,
+      breakTime: s.breakTime,
+      workHours: s.workHours,
+    });
+  });
+
+  return { overtimeSettings, scheduleMap, approvedOvertimeIndex, getRegularTimeExclusions };
+}
+
+type AttendanceContext = Awaited<ReturnType<typeof loadAttendanceContext>>;
+
+/** 一筆紀錄只算一次：工時、有效加班、顯示狀態（列表與摘要共用，不再各走訪一遍）。 */
+function evaluateAttendanceRecord(record: AttendanceSummaryRecord, context: AttendanceContext) {
+  const workDateStr = toTaiwanDateStr(record.workDate);
+  const schedule = context.scheduleMap.get(`${record.employeeId}-${workDateStr}`);
+
+  const hours = getStoredOrCalculatedAttendanceHours({
+    ...record,
+    breakTime: schedule?.breakTime || 0,
+    scheduledWorkHours: schedule?.workHours,
+    scheduledStart: schedule?.startTime,
+    scheduledEnd: schedule?.endTime,
+    regularTimeExclusions: context.getRegularTimeExclusions(record.employeeId),
+  });
+  const validOvertime = resolveApprovedAttendanceOvertime(
+    {
+      employeeId: record.employeeId,
+      workDate: record.workDate,
+      regularHours: hours.regularHours,
+      actualWorkHours: hours.totalHours,
+      overtimeHours: hours.overtimeHours,
+      clockInOvertimeId: record.clockInOvertimeId,
+      clockOutOvertimeId: record.clockOutOvertimeId,
+      overtimeType: resolveAttendanceOvertimeType({
+        shiftType: schedule?.shiftType,
+        workDate: record.workDate,
+      }),
+    },
+    context.approvedOvertimeIndex,
+    context.overtimeSettings.overtimeMinUnit
+  );
+  const displayStatus = resolveDisplayAttendanceStatus({
+    clockInTime: record.clockInTime,
+    clockOutTime: record.clockOutTime,
+    totalHours: hours.totalHours,
+    schedule,
+    minimumWorkHoursFallback: MIN_WORK_HOURS,
+  });
+
+  return { workDateStr, schedule, hours, validOvertime, displayStatus };
+}
+
+function createDisplayStatusQueue() {
+  const updates = new Map<string, number[]>();
+  const queue = (record: { id: number; displayStatus?: string | null }, displayStatus: string) => {
+    if (record.displayStatus === displayStatus) return;
+    const ids = updates.get(displayStatus);
+    if (ids) ids.push(record.id);
+    else updates.set(displayStatus, [record.id]);
+  };
+  return { updates, queue };
+}
+
+/** 同一位員工在同一個台北工作日有多筆紀錄 → 標記為重複打卡。 */
+function countDuplicateRecords(records: Array<{ employeeId: number; workDate: Date }>) {
+  const counts = new Map<string, number>();
+  for (const record of records) {
+    const key = `${record.employeeId}-${toTaiwanDateStr(record.workDate)}`;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  return counts;
+}
+
+/**
+ * 只取本頁時，重複打卡仍要看「本頁員工在同一台北工作日」的其他紀錄（同樣受查詢範圍限制），
+ * 不能只在這 10 筆之內比對。
+ */
+async function loadSameDayRecords(where: Record<string, unknown>, pageRecords: AttendanceListRecord[]) {
+  if (pageRecords.length === 0) return [];
+
+  const days = pageRecords.map(record => toTaiwanDateStr(record.workDate)).sort();
+  const [firstYear, firstMonth, firstDay] = days[0].split('-').map(Number);
+  const [lastYear, lastMonth, lastDay] = days[days.length - 1].split('-').map(Number);
+
+  return prisma.attendanceRecord.findMany({
+    where: {
+      AND: [
+        where,
+        {
+          employeeId: { in: [...new Set(pageRecords.map(record => record.employeeId))] },
+          workDate: {
+            gte: getTaiwanDayStart(firstYear, firstMonth, firstDay),
+            lte: getTaiwanDayEnd(lastYear, lastMonth, lastDay),
+          },
+        },
+      ],
+    },
+    select: { employeeId: true, workDate: true },
+  });
+}
+
+function formatAttendanceRecord(
+  record: AttendanceListRecord,
+  context: AttendanceContext,
+  duplicateCounts: Map<string, number>,
+  isAdmin: boolean,
+  queueDisplayStatusUpdate: ReturnType<typeof createDisplayStatusQueue>['queue']
+) {
+  const { workDateStr, schedule, hours, validOvertime, displayStatus } = evaluateAttendanceRecord(record, context);
+  queueDisplayStatusUpdate(record, displayStatus);
+
+  return {
+    id: record.id,
+    employeeId: record.employeeId,
+    workDate: record.workDate.toISOString(),
+    clockInTime: record.clockInTime?.toISOString() || null,
+    clockOutTime: record.clockOutTime?.toISOString() || null,
+    totalHours: hours.totalHours,
+    regularHours: validOvertime.regularHours,
+    overtimeHours: validOvertime.effectiveHours,
+    status: displayStatus,
+    duplicated: (duplicateCounts.get(`${record.employeeId}-${workDateStr}`) || 0) > 1,
+    createdAt: record.createdAt.toISOString(),
+    employee: record.employee,
+    clockInHasFever: record.clockInHasFever,
+    clockInTemperature: record.clockInTemperature,
+    clockInHasAcuteCough: record.clockInHasAcuteCough,
+    clockOutHasFever: record.clockOutHasFever,
+    clockOutTemperature: record.clockOutTemperature,
+    clockOutHasAcuteCough: record.clockOutHasAcuteCough,
+    // 新增：班表資訊
+    shiftType: schedule?.shiftType || null,
+    scheduledStart: schedule?.startTime || null,
+    scheduledEnd: schedule?.endTime || null,
+    // 新增：GPS 資訊（僅管理員/HR 可查看）
+    ...(isAdmin ? {
+      clockInReason: formatAttendanceClockReason(record.clockInReason),
+      clockOutReason: formatAttendanceClockReason(record.clockOutReason),
+      clockInLatitude: record.clockInLatitude,
+      clockInLongitude: record.clockInLongitude,
+      clockInAccuracy: record.clockInAccuracy,
+      clockInAddress: record.clockInAddress,
+      clockOutLatitude: record.clockOutLatitude,
+      clockOutLongitude: record.clockOutLongitude,
+      clockOutAccuracy: record.clockOutAccuracy,
+      clockOutAddress: record.clockOutAddress
+    } : {})
+  };
+}
+
+type FormattedAttendanceRecord = ReturnType<typeof formatAttendanceRecord>;
+
+/** 摘要（未格式化的原始紀錄）：一次走訪同時累計正常工時、有效加班與狀態分布。 */
+function summarizeAttendanceRecords(
+  records: AttendanceSummaryRecord[],
+  context: AttendanceContext,
+  queueDisplayStatusUpdate: ReturnType<typeof createDisplayStatusQueue>['queue']
+) {
+  let totalRegularHours = 0;
+  let totalOvertimeHours = 0;
+  const statusBreakdown: Record<string, number> = {};
+
+  for (const record of records) {
+    const { validOvertime, displayStatus } = evaluateAttendanceRecord(record, context);
+    queueDisplayStatusUpdate(record, displayStatus);
+    totalRegularHours += validOvertime.regularHours;
+    totalOvertimeHours += validOvertime.effectiveHours;
+    statusBreakdown[displayStatus] = (statusBreakdown[displayStatus] || 0) + 1;
+  }
+
+  return { totalRegularHours, totalOvertimeHours, statusBreakdown };
+}
+
+/** 摘要（已格式化、已套用狀態／加班篩選的紀錄）。 */
+function summarizeFormattedRecords(records: FormattedAttendanceRecord[]) {
+  let totalRegularHours = 0;
+  let totalOvertimeHours = 0;
+  const statusBreakdown: Record<string, number> = {};
+
+  for (const record of records) {
+    totalRegularHours += record.regularHours;
+    totalOvertimeHours += record.overtimeHours;
+    statusBreakdown[record.status] = (statusBreakdown[record.status] || 0) + 1;
+  }
+
+  return { totalRegularHours, totalOvertimeHours, statusBreakdown };
+}
+
 // 獲取考勤記錄
 export async function GET(request: NextRequest) {
   try {
@@ -344,6 +682,12 @@ export async function GET(request: NextRequest) {
     const allowedStatuses = new Set(['正常', '異常', '遲到', '早退', '缺勤', '遲到+早退', '無班表出勤']);
     if (status && !allowedStatuses.has(status)) {
       return NextResponse.json({ error: 'status 參數格式無效' }, { status: 400 });
+    }
+
+    // view：list＝只回本頁明細（翻頁、匯出用）、summary＝只回全範圍摘要；未指定＝兩者都回（舊行為）
+    const view = searchParams.get('view');
+    if (view !== null && view !== 'list' && view !== 'summary') {
+      return NextResponse.json({ error: 'view 參數格式無效' }, { status: 400 });
     }
 
     console.log('📋 獲取考勤記錄請求:', { 
@@ -479,278 +823,70 @@ export async function GET(request: NextRequest) {
           }
         }
       },
+      // 同一天的紀錄要有固定次序（id 作第二排序鍵），翻頁與分批匯出才不會因並列而漏筆或重複
       orderBy: [{ workDate: 'desc' as const }, { id: 'asc' as const }]
     };
+    const pageWindow = { skip: (page - 1) * pageSize, take: pageSize };
+
+    // 管理員/HR 可查看 GPS 與打卡原因
+    const isAdmin = hasFullAttendanceAccess;
+    const { updates: displayStatusUpdates, queue: queueDisplayStatusUpdate } = createDisplayStatusQueue();
 
     let total = 0;
-    let records;
+    let finalRecords: FormattedAttendanceRecord[] = [];
+    let summaryTotals: ReturnType<typeof summarizeFormattedRecords> | null = null;
 
     if (shouldFilterInMemory) {
-      records = await prisma.attendanceRecord.findMany(recordQuery);
-    } else {
-      total = await prisma.attendanceRecord.count({ where });
-      records = await prisma.attendanceRecord.findMany({
-        ...recordQuery,
-        skip: (page - 1) * pageSize,
-        take: pageSize
-      });
-    }
-
-    const summarySourceRecords = shouldFilterInMemory
-      ? records
-      : await prisma.attendanceRecord.findMany({
-          where,
-          select: {
-            id: true,
-            employeeId: true,
-            workDate: true,
-            clockInTime: true,
-            clockOutTime: true,
-            regularHours: true,
-            overtimeHours: true,
-            clockInOvertimeId: true,
-            clockOutOvertimeId: true,
-            displayStatus: true,
-          }
-        });
-
-    const allRelevantRecords = shouldFilterInMemory ? records : [...records, ...summarySourceRecords];
-    const workDates = [...new Set(allRelevantRecords.map(r => toTaiwanDateStr(r.workDate)))].sort();
-    const employeeIds = [...new Set(allRelevantRecords.map(r => r.employeeId))];
-    const overtimeSettings = await getStoredOvertimeCalculationSettings();
-
-    const [schedules, approvedOvertimeRequests, attendanceLeaves] = await Promise.all([
-      prisma.schedule.findMany({
-        where: {
-          employeeId: { in: employeeIds },
-          workDate: { in: workDates }
-        }
-      }),
-      employeeIds.length === 0 || workDates.length === 0
-        ? Promise.resolve([])
-        : prisma.overtimeRequest.findMany({
-            where: {
-              employeeId: { in: employeeIds },
-              status: 'APPROVED',
-              overtimeDate: {
-               gte: getTaiwanDayStart(
-                 Number(workDates[0].slice(0, 4)),
-                 Number(workDates[0].slice(5, 7)),
-                 Number(workDates[0].slice(8, 10))
-               ),
-               lte: getTaiwanDayEnd(
-                 Number(workDates[workDates.length - 1].slice(0, 4)),
-                 Number(workDates[workDates.length - 1].slice(5, 7)),
-                 Number(workDates[workDates.length - 1].slice(8, 10))
-               ),
-              }
-            },
-            select: {
-              id: true,
-              employeeId: true,
-              overtimeDate: true,
-              totalHours: true,
-              compensationType: true,
-            }
-          }),
-      employeeIds.length === 0 || workDates.length === 0
-        ? Promise.resolve([])
-        : prisma.leaveRequest.findMany({
-            where: {
-              employeeId: { in: employeeIds },
-              voidedAt: null,
-              OR: [
-                { status: 'APPROVED' },
-                { status: 'PENDING_ADMIN', managerOpinion: 'AGREE' },
-              ],
-              startDate: {
-                lte: getTaiwanDayEnd(
-                  Number(workDates[workDates.length - 1].slice(0, 4)),
-                  Number(workDates[workDates.length - 1].slice(5, 7)),
-                  Number(workDates[workDates.length - 1].slice(8, 10))
-                ),
-              },
-              endDate: {
-                gte: getTaiwanDayStart(
-                  Number(workDates[0].slice(0, 4)),
-                  Number(workDates[0].slice(5, 7)),
-                  Number(workDates[0].slice(8, 10))
-                ),
-              },
-            },
-            select: {
-              employeeId: true,
-              startDate: true,
-              endDate: true,
-              status: true,
-              managerOpinion: true,
-              voidedAt: true,
-            },
-          })
-    ]);
-    const approvedOvertimeIndex = indexApprovedOvertimeRequests(approvedOvertimeRequests);
-    const attendanceLeavesByEmployee = new Map<number, typeof attendanceLeaves>();
-    for (const leave of attendanceLeaves) {
-      attendanceLeavesByEmployee.set(leave.employeeId, [
-        ...(attendanceLeavesByEmployee.get(leave.employeeId) || []),
-        leave,
-      ]);
-    }
-    const getRegularTimeExclusions = (employeeId: number) => (
-      getAttendanceRegularTimeExclusions(attendanceLeavesByEmployee.get(employeeId) || [])
-    );
-
-    // 建立班表查詢 Map
-    const scheduleMap = new Map<string, { workDate: string; shiftType: string; startTime: string; endTime: string; breakTime: number; workHours: number }>();
-    schedules.forEach(s => {
-      const key = `${s.employeeId}-${toWorkDateKey(s.workDate)}`;
-      scheduleMap.set(key, {
-        workDate: toWorkDateKey(s.workDate),
-        shiftType: s.shiftType,
-        startTime: s.startTime,
-        endTime: s.endTime,
-        breakTime: s.breakTime,
-        workHours: s.workHours,
-      });
-    });
-
-    const MIN_WORK_HOURS = 8;
-    const duplicateCounts = new Map<string, number>();
-    const duplicateSourceRecords = shouldFilterInMemory ? records : summarySourceRecords;
-    for (const record of duplicateSourceRecords) {
-      const key = getTaiwanDuplicateKey(record);
-      duplicateCounts.set(key, (duplicateCounts.get(key) || 0) + 1);
-    }
-    const displayStatusUpdates = new Map<string, number[]>();
-    const queueDisplayStatusUpdate = (
-      record: { id: number; displayStatus?: string | null },
-      displayStatus: string
-    ) => {
-      if (record.displayStatus === displayStatus) return;
-      const ids = displayStatusUpdates.get(displayStatus);
-      if (ids) ids.push(record.id);
-      else displayStatusUpdates.set(displayStatus, [record.id]);
-    };
-
-    const getMetrics = (record: (typeof summarySourceRecords)[number]) => {
-      const workDateStr = toTaiwanDateStr(record.workDate);
-      const scheduleKey = `${record.employeeId}-${workDateStr}`;
-      const schedule = scheduleMap.get(scheduleKey);
-      
-      const hours = getStoredOrCalculatedAttendanceHours({
-        ...record,
-        breakTime: schedule?.breakTime || 0,
-        scheduledWorkHours: schedule?.workHours,
-        scheduledStart: schedule?.startTime,
-        scheduledEnd: schedule?.endTime,
-        regularTimeExclusions: getRegularTimeExclusions(record.employeeId),
-      });
-      const totalHours = hours.totalHours;
-      const validOvertime = resolveApprovedAttendanceOvertime(
-        {
-          employeeId: record.employeeId,
-          workDate: record.workDate,
-          regularHours: hours.regularHours,
-          actualWorkHours: hours.totalHours,
-          overtimeHours: hours.overtimeHours,
-          clockInOvertimeId: record.clockInOvertimeId,
-          clockOutOvertimeId: record.clockOutOvertimeId,
-          overtimeType: resolveAttendanceOvertimeType({
-            shiftType: schedule?.shiftType,
-            workDate: record.workDate,
-          }),
-        },
-        approvedOvertimeIndex,
-        overtimeSettings.overtimeMinUnit
+      // 狀態與加班是逐筆算出來的衍生值，必須全部算完才能篩選與分頁；這條路徑本來就是整批處理，
+      // 摘要是順帶的，所以不論 view 為何都一次算完。
+      const candidates = await prisma.attendanceRecord.findMany(recordQuery);
+      const context = await loadAttendanceContext(candidates);
+      const duplicateCounts = countDuplicateRecords(candidates);
+      const formattedCandidates = candidates.map(record =>
+        formatAttendanceRecord(record, context, duplicateCounts, isAdmin, queueDisplayStatusUpdate)
       );
-      const displayStatus = resolveDisplayAttendanceStatus({
-        clockInTime: record.clockInTime,
-        clockOutTime: record.clockOutTime,
-        totalHours,
-        schedule,
-        minimumWorkHoursFallback: MIN_WORK_HOURS,
+      const matched = formattedCandidates.filter(record =>
+        (!status || matchesRequestedStatus(record.status, status)) &&
+        matchesRequestedOvertimeHours(record.overtimeHours, overtimeHours)
+      );
+      total = matched.length;
+      finalRecords = matched.slice((page - 1) * pageSize, page * pageSize);
+      summaryTotals = summarizeFormattedRecords(matched);
+    } else if (view === 'summary') {
+      // 只要摘要：讀全範圍的最少欄位，不格式化任何明細
+      total = await prisma.attendanceRecord.count({ where });
+      const summarySourceRecords = await prisma.attendanceRecord.findMany({
+        where,
+        select: SUMMARY_SOURCE_SELECT,
       });
-      queueDisplayStatusUpdate(record, displayStatus);
-      return {
-        totalHours,
-        regularHours: validOvertime.regularHours,
-        overtimeHours: validOvertime.effectiveHours,
-        status: displayStatus,
-        schedule,
-      };
-    };
-
-    type Metrics = ReturnType<typeof getMetrics>;
-    const formatRecord = (record: (typeof records)[number], metrics: Metrics) => {
-      const { schedule, totalHours, regularHours, overtimeHours, status } = metrics;
-      return {
-        id: record.id,
-        employeeId: record.employeeId,
-        workDate: record.workDate.toISOString(),
-        clockInTime: record.clockInTime?.toISOString() || null,
-        clockOutTime: record.clockOutTime?.toISOString() || null,
-        totalHours,
-        regularHours,
-        overtimeHours,
-        status,
-        duplicated: (duplicateCounts.get(getTaiwanDuplicateKey(record)) || 0) > 1,
-        createdAt: record.createdAt.toISOString(),
-        employee: record.employee,
-        clockInHasFever: record.clockInHasFever,
-        clockInTemperature: record.clockInTemperature,
-        clockInHasAcuteCough: record.clockInHasAcuteCough,
-        clockOutHasFever: record.clockOutHasFever,
-        clockOutTemperature: record.clockOutTemperature,
-        clockOutHasAcuteCough: record.clockOutHasAcuteCough,
-        // 新增：班表資訊
-        shiftType: schedule?.shiftType || null,
-        scheduledStart: schedule?.startTime || null,
-        scheduledEnd: schedule?.endTime || null,
-        // 新增：GPS 資訊（僅管理員/HR 可查看）
-        ...(hasFullAttendanceAccess ? {
-          clockInReason: formatAttendanceClockReason(record.clockInReason),
-          clockOutReason: formatAttendanceClockReason(record.clockOutReason),
-          clockInLatitude: record.clockInLatitude,
-          clockInLongitude: record.clockInLongitude,
-          clockInAccuracy: record.clockInAccuracy,
-          clockInAddress: record.clockInAddress,
-          clockOutLatitude: record.clockOutLatitude,
-          clockOutLongitude: record.clockOutLongitude,
-          clockOutAccuracy: record.clockOutAccuracy,
-          clockOutAddress: record.clockOutAddress
-        } : {})
-      };
-    };
-
-    let totalRegularHours = 0;
-    let totalOvertimeHours = 0;
-    const statusBreakdown: Record<string, number> = {};
-    const addToSummary = (metrics: Metrics) => {
-      totalRegularHours += metrics.regularHours;
-      totalOvertimeHours += metrics.overtimeHours;
-      statusBreakdown[metrics.status] = (statusBreakdown[metrics.status] || 0) + 1;
-    };
-
-    const finalRecords: ReturnType<typeof formatRecord>[] = [];
-    if (shouldFilterInMemory) {
-      const offset = (page - 1) * pageSize;
-      for (const record of records) {
-        const metrics = getMetrics(record);
-        if ((status && !matchesRequestedStatus(metrics.status, status)) ||
-            !matchesRequestedOvertimeHours(metrics.overtimeHours, overtimeHours)) continue;
-        if (total >= offset && finalRecords.length < pageSize) {
-          finalRecords.push(formatRecord(record, metrics));
-        }
-        total++;
-        addToSummary(metrics);
-      }
+      const context = await loadAttendanceContext(summarySourceRecords);
+      summaryTotals = summarizeAttendanceRecords(summarySourceRecords, context, queueDisplayStatusUpdate);
+    } else if (view === 'list') {
+      // 只要本頁明細：班表、核准加班、請假與重複打卡都只查本頁涉及的員工與日期，成本與歷史資料量無關
+      total = await prisma.attendanceRecord.count({ where });
+      const pageRecords = await prisma.attendanceRecord.findMany({ ...recordQuery, ...pageWindow });
+      const [sameDayRecords, context] = await Promise.all([
+        loadSameDayRecords(where, pageRecords),
+        loadAttendanceContext(pageRecords),
+      ]);
+      const duplicateCounts = countDuplicateRecords(sameDayRecords);
+      finalRecords = pageRecords.map(record =>
+        formatAttendanceRecord(record, context, duplicateCounts, isAdmin, queueDisplayStatusUpdate)
+      );
     } else {
-      for (const record of records) {
-        finalRecords.push(formatRecord(record, getMetrics(record)));
-      }
-      for (const record of summarySourceRecords) {
-        addToSummary(getMetrics(record));
-      }
+      // 預設（舊行為）：本頁明細與全範圍摘要一起回傳
+      total = await prisma.attendanceRecord.count({ where });
+      const pageRecords = await prisma.attendanceRecord.findMany({ ...recordQuery, ...pageWindow });
+      const summarySourceRecords = await prisma.attendanceRecord.findMany({
+        where,
+        select: SUMMARY_SOURCE_SELECT,
+      });
+      const context = await loadAttendanceContext([...pageRecords, ...summarySourceRecords]);
+      const duplicateCounts = countDuplicateRecords(summarySourceRecords);
+      finalRecords = pageRecords.map(record =>
+        formatAttendanceRecord(record, context, duplicateCounts, isAdmin, queueDisplayStatusUpdate)
+      );
+      summaryTotals = summarizeAttendanceRecords(summarySourceRecords, context, queueDisplayStatusUpdate);
     }
 
     console.log(`✅ 返回考勤記錄: ${finalRecords.length} 筆 (總共 ${total} 筆)`);
@@ -758,19 +894,23 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      records: finalRecords,
-      pagination: {
-        current: page,
-        pageSize,
-        total,
-        totalPages: Math.ceil(total / pageSize)
-      },
-      summary: {
-        totalRecords: total,
-        totalRegularHours: Math.round(totalRegularHours * 100) / 100,
-        totalOvertimeHours: Math.round(totalOvertimeHours * 100) / 100,
-        statusBreakdown
-      },
+      ...(view === 'summary' ? {} : {
+        records: finalRecords,
+        pagination: {
+          current: page,
+          pageSize,
+          total,
+          totalPages: Math.ceil(total / pageSize)
+        },
+      }),
+      ...(view === 'list' || !summaryTotals ? {} : {
+        summary: {
+          totalRecords: total,
+          totalRegularHours: Math.round(summaryTotals.totalRegularHours * 100) / 100,
+          totalOvertimeHours: Math.round(summaryTotals.totalOvertimeHours * 100) / 100,
+          statusBreakdown: summaryTotals.statusBreakdown
+        },
+      }),
       scope: {
         canViewDepartmentRecords,
         managedDepartments,

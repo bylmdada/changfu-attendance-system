@@ -383,6 +383,10 @@ export default function AssetsPage() {
       result.unresolvedMaintainers
         .map((item: { value: string; count: number }) => `${item.value}(${item.count})`)
         .join('、') || '無'
+    }${
+      result.errors.length > 0
+        ? `\n注意事項（共 ${result.errors.length} 項，列出前 5 項）：\n${result.errors.slice(0, 5).join('\n')}`
+        : ''
     }`;
 
   const previewImportWorkbook = async (file: File) => {

@@ -83,6 +83,7 @@ export default function PayrollStatisticsPage() {
   const { year, month, department } = filters;
   const [activeTab, setActiveTab] = useState<'overview' | 'analysis' | 'trends'>('overview');
   const [exporting, setExporting] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     const loadStatistics = async () => {
@@ -122,16 +123,20 @@ export default function PayrollStatisticsPage() {
         if (response.ok) {
           const data = await response.json();
           setStatistics(data.statistics);
+        } else {
+          // 失敗時不保留上一個條件的數字，否則舊統計會掛在新的篩選標題下
+          setStatistics(null);
         }
       } catch (error) {
         console.error('獲取統計數據失敗:', error);
+        setStatistics(null);
       } finally {
         setLoading(false);
       }
     };
 
     loadStatistics();
-  }, [year, month, department]);
+  }, [year, month, department, reloadKey]);
 
   // 匯出報表功能
   const handleExportReport = async (format: 'excel' | 'pdf') => {
@@ -167,6 +172,17 @@ export default function PayrollStatisticsPage() {
     }
   };
 
+  // 薪轉檔：發薪月份必須明確選定（不可用「全年統計」默默落到當月），並沿用畫面上的部門篩選
+  const openYuantaTransfer = (type: 'salary' | 'bonus') => {
+    if (!month) {
+      showToast('error', '薪轉檔需指定發薪月份，請先將「全年統計」改選單一月份');
+      return;
+    }
+    const params = new URLSearchParams({ year, month, type });
+    if (department) params.append('department', department);
+    window.open(`/api/reports/yuanta-transfer?${params}`, '_blank');
+  };
+
   // 部門名稱列表
   const departmentNames = departments.map(d => d.name);
 
@@ -182,6 +198,8 @@ export default function PayrollStatisticsPage() {
     return `${hours.toFixed(1)}h`;
   };
 
+  // 薪資級距是按薪資記錄統計；查全年時同一人每月一筆，單位要標「人次」
+  const distributionUnit = month ? '人' : '人次';
   const activePayrollMonthCount = statistics ? countMonthsWithPayroll(statistics.monthlyTrends) : 0;
   const averageMonthlyGrossPay = statistics
     ? calculateAverageMonthlyGrossPay(statistics.overall.totalGrossPay, statistics.monthlyTrends)
@@ -191,16 +209,6 @@ export default function PayrollStatisticsPage() {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-      </div>
-    );
-  }
-
-  if (!statistics) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-center">
-          <p className="text-gray-500">無法載入統計數據</p>
-        </div>
       </div>
     );
   }
@@ -283,28 +291,16 @@ export default function PayrollStatisticsPage() {
               </button>
               {/* 元大薪轉匯出 */}
               <button
-                onClick={() => {
-                  const params = new URLSearchParams();
-                  params.append('year', filters.year);
-                  if (filters.month) params.append('month', filters.month);
-                  params.append('type', 'salary');
-                  window.open(`/api/reports/yuanta-transfer?${params}`, '_blank');
-                }}
+                onClick={() => openYuantaTransfer('salary')}
                 className="flex items-center justify-center gap-1 px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm"
-                title="匯出元大銀行薪轉格式（依部門分頁）"
+                title="匯出元大銀行薪轉格式（依部門分頁，套用上方的月份與部門）"
               >
                 元大薪轉
               </button>
               <button
-                onClick={() => {
-                  const params = new URLSearchParams();
-                  params.append('year', filters.year);
-                  if (filters.month) params.append('month', filters.month);
-                  params.append('type', 'bonus');
-                  window.open(`/api/reports/yuanta-transfer?${params}`, '_blank');
-                }}
+                onClick={() => openYuantaTransfer('bonus')}
                 className="flex items-center justify-center gap-1 px-3 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors text-sm"
-                title="匯出年終獎金元大薪轉格式（依部門分頁）"
+                title="匯出年終獎金元大薪轉格式（依部門分頁，套用上方的月份與部門）"
               >
                 年終薪轉
               </button>
@@ -312,6 +308,19 @@ export default function PayrollStatisticsPage() {
           </div>
         </div>
 
+        {!statistics ? (
+          // 保留篩選列，讓使用者可直接重試或改條件
+          <div role="alert" className="bg-white rounded-lg shadow-sm p-8 text-center">
+            <p className="text-gray-700 mb-4">無法載入統計數據</p>
+            <button
+              onClick={() => setReloadKey((key) => key + 1)}
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm"
+            >
+              重新載入
+            </button>
+          </div>
+        ) : (
+        <>
         {/* 標籤導航 */}
         <div className="bg-white rounded-lg shadow-sm mb-6">
           <div className="border-b border-gray-200">
@@ -475,8 +484,8 @@ export default function PayrollStatisticsPage() {
                         ></div>
                       </div>
                     </div>
-                    <div className="w-16 text-sm text-gray-900 text-right">
-                      {range.count} 人 ({percentage}%)
+                    <div className="w-20 text-sm text-gray-900 text-right">
+                      {range.count} {distributionUnit} ({percentage}%)
                     </div>
                   </div>
                 );
@@ -663,7 +672,7 @@ export default function PayrollStatisticsPage() {
                   return (
                     <div key={index} className="bg-gray-50 rounded-lg p-4">
                       <div className="text-sm font-medium text-gray-700 mb-2">{range.label}</div>
-                      <div className="text-2xl font-bold text-gray-900">{range.count} 人</div>
+                      <div className="text-2xl font-bold text-gray-900">{range.count} {distributionUnit}</div>
                       <div className="text-sm text-gray-500">{percentage.toFixed(1)}%</div>
                       <div className="mt-2 w-full bg-gray-200 rounded-full h-2">
                         <div className="bg-blue-600 h-2 rounded-full" style={{ width: `${percentage}%` }}></div>
@@ -804,6 +813,8 @@ export default function PayrollStatisticsPage() {
               </div>
             </div>
           </div>
+        )}
+        </>
         )}
 
         </div>
