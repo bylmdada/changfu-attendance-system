@@ -5,6 +5,18 @@
 
 const TAIWAN_TIMEZONE = 'Asia/Taipei';
 const TAIWAN_UTC_OFFSET_MS = 8 * 60 * 60 * 1000;
+const taiwanDateFormatter = new Intl.DateTimeFormat('en-CA', {
+  timeZone: TAIWAN_TIMEZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+const taiwanTimeFormatter = new Intl.DateTimeFormat('en-GB', {
+  timeZone: TAIWAN_TIMEZONE,
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+});
 
 type TaiwanDateParts = {
   year: number;
@@ -29,13 +41,7 @@ export function toTaiwanDate(d: Date): Date {
 
 /** 取得任意 Date 在台灣時區的年月日欄位 */
 export function getTaiwanDateParts(d: Date): TaiwanDateParts {
-  const formatter = new Intl.DateTimeFormat('en-CA', {
-    timeZone: TAIWAN_TIMEZONE,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  });
-  const parts = formatter.formatToParts(d);
+  const parts = taiwanDateFormatter.formatToParts(d);
   const year = Number(parts.find(part => part.type === 'year')?.value);
   const month = Number(parts.find(part => part.type === 'month')?.value);
   const day = Number(parts.find(part => part.type === 'day')?.value);
@@ -49,13 +55,7 @@ export function getTaiwanDateParts(d: Date): TaiwanDateParts {
 
 /** 取得任意 Date 在台灣時區的小時與分鐘欄位 */
 export function getTaiwanTimeParts(d: Date): TaiwanTimeParts {
-  const formatter = new Intl.DateTimeFormat('en-GB', {
-    timeZone: TAIWAN_TIMEZONE,
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23',
-  });
-  const parts = formatter.formatToParts(d);
+  const parts = taiwanTimeFormatter.formatToParts(d);
   const hour = Number(parts.find(part => part.type === 'hour')?.value);
   const minute = Number(parts.find(part => part.type === 'minute')?.value);
 

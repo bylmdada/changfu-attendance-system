@@ -33,6 +33,7 @@ import { GET } from '../route';
 import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { prisma } from '@/lib/database';
+import * as workHours from '@/lib/work-hours';
 
 const mockGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
 const mockCheckRateLimit = checkRateLimit as jest.MockedFunction<typeof checkRateLimit>;
@@ -756,6 +757,36 @@ describe('attendance records route guards', () => {
     expect(payload.records[0].overtimeHours).toBe(0);
     expect(payload.summary.totalRegularHours).toBe(4);
     expect(payload.summary.totalOvertimeHours).toBe(0);
+  });
+
+  it('calculates each summary row once even when requesting a page past the end', async () => {
+    const source = Array.from({ length: 20 }, (_, i) => ({
+      id: i + 1,
+      employeeId: i + 1,
+      workDate: new Date('2026-11-23T00:00:00Z'),
+      clockInTime: null,
+      clockOutTime: null,
+      regularHours: 4,
+      overtimeHours: 0,
+      displayStatus: null,
+    }));
+    mockPrisma.attendanceRecord.count.mockResolvedValue(source.length as never);
+    mockPrisma.attendanceRecord.findMany
+      .mockResolvedValueOnce([] as never)
+      .mockResolvedValueOnce(source as never);
+
+    const calculate = jest.spyOn(workHours, 'getStoredOrCalculatedAttendanceHours');
+    try {
+      const response = await GET(new NextRequest('http://localhost/api/attendance/records?page=3'));
+      const payload = await response.json();
+      expect(response.status).toBe(200);
+      expect(payload.records).toEqual([]);
+      expect(payload.summary.totalRegularHours).toBe(80);
+      expect(payload.summary.totalRecords).toBe(20);
+      expect(calculate).toHaveBeenCalledTimes(20);
+    } finally {
+      calculate.mockRestore();
+    }
   });
 
   it('returns status breakdown counts in the summary payload', async () => {
