@@ -136,6 +136,44 @@ describe('leave request list guards', () => {
     );
   });
 
+  describe('查詢期間＝與假單重疊（台北日期）', () => {
+    const list = (query: string) => GET(new NextRequest(`http://localhost:3000/api/leave-requests${query}`));
+    const lastWhere = () => {
+      const calls = mockPrisma.leaveRequest.findMany.mock.calls;
+      return (calls[calls.length - 1][0] as { where: Record<string, unknown> }).where;
+    };
+
+    it('matches leaves that overlap the period instead of only checking the start date', async () => {
+      const response = await list('?startDate=2026-12-01&endDate=2026-12-31');
+
+      expect(response.status).toBe(200);
+      // 假單結束 ≥ 12/01 00:00（台北），假單開始 ≤ 12/31 23:59:59.999（台北）
+      expect(lastWhere()).toEqual({
+        endDate: { gte: new Date('2026-11-30T16:00:00.000Z') },
+        startDate: { lte: new Date('2026-12-31T15:59:59.999Z') },
+      });
+    });
+
+    it('accepts a start date on its own', async () => {
+      await list('?startDate=2026-12-01');
+
+      expect(lastWhere()).toEqual({ endDate: { gte: new Date('2026-11-30T16:00:00.000Z') } });
+    });
+
+    it('accepts an end date on its own', async () => {
+      await list('?endDate=2026-12-31');
+
+      expect(lastWhere()).toEqual({ startDate: { lte: new Date('2026-12-31T15:59:59.999Z') } });
+    });
+
+    it('rejects malformed dates before querying Prisma', async () => {
+      const response = await list('?startDate=2026-13-01');
+
+      expect(response.status).toBe(400);
+      expect(mockPrisma.leaveRequest.findMany).not.toHaveBeenCalled();
+    });
+  });
+
   it('adds annual leave balance metadata to annual leave list items', async () => {
     mockPrisma.leaveRequest.findMany.mockResolvedValue([
       {

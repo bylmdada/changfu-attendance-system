@@ -1108,7 +1108,11 @@ export default function ScheduleManagementPage() {
     sunday: { shiftType: 'RD', startTime: '', endTime: '', breakTime: 0, workHours: 0, specialLeaveHours: 0, compLeaveHours: 0, overtimeHours: 0 }
   });
 
+  const monthRequestSeqRef = useRef(0);
+
   const fetchMonthlySchedulesForDate = useCallback(async (targetDate: Date) => {
+    // 連續切月時，較早送出的回應可能較晚回來；只採用最後一次請求的結果，避免月曆顯示成別的月份
+    const requestSeq = ++monthRequestSeqRef.current;
     try {
       const year = targetDate.getFullYear();
       const month = targetDate.getMonth() + 1;
@@ -1117,6 +1121,7 @@ export default function ScheduleManagementPage() {
       });
       if (response.ok) {
         const data = await response.json();
+        if (requestSeq !== monthRequestSeqRef.current) return;
         const normalizedSchedules: Schedule[] = (data.schedules || [])
           .map((schedule: ScheduleResponse) => normalizeSchedule(schedule))
           .filter((schedule: Schedule | null): schedule is Schedule => schedule !== null);
@@ -1132,6 +1137,9 @@ export default function ScheduleManagementPage() {
       }
     } catch {
       console.error('獲取月份班表失敗');
+    } finally {
+      // 頁面的載入提示只等目前顯示的月份，不再等全期班表
+      setLoading(false);
     }
   }, [normalizeSchedule]);
 
@@ -1167,7 +1175,6 @@ export default function ScheduleManagementPage() {
     fetchEmployees();
     fetchDepartments();
     fetchShiftDefinitions();
-    fetchSchedules();
     fetchWeeklyTemplates();
   }, []);
 
@@ -1348,23 +1355,6 @@ export default function ScheduleManagementPage() {
     }
   };
 
-  const fetchSchedules = async () => {
-    try {
-      const response = await fetch('/api/schedules', {
-        credentials: 'include'
-      });
-      if (response.ok) {
-        const data = await response.json();
-        // 處理班表資料但不需要保存到狀態
-        console.log('班表載入成功:', data.schedules?.length || 0);
-      }
-    } catch {
-      console.error('獲取班表失敗');
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const fetchWeeklyTemplates = async () => {
     try {
       const response = await fetch('/api/schedules/templates', {
@@ -1506,7 +1496,6 @@ export default function ScheduleManagementPage() {
       setCurrentDate(resolvedTargetDate);
     }
 
-    await fetchSchedules();
     await fetchMonthlySchedulesForDate(resolvedTargetDate);
 
     if (hasSearchContext) {

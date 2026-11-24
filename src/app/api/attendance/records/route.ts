@@ -824,7 +824,7 @@ export async function GET(request: NextRequest) {
         }
       },
       // 同一天的紀錄要有固定次序（id 作第二排序鍵），翻頁與分批匯出才不會因並列而漏筆或重複
-      orderBy: [{ workDate: 'desc' as const }, { id: 'desc' as const }]
+      orderBy: [{ workDate: 'desc' as const }, { id: 'asc' as const }]
     };
     const pageWindow = { skip: (page - 1) * pageSize, take: pageSize };
 
