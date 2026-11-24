@@ -4,6 +4,7 @@ import { getUserFromRequest } from '@/lib/auth';
 import { checkAttendanceFreeze } from '@/lib/attendance-freeze';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { toTaiwanDateStr } from '@/lib/timezone';
+import { parseTaiwanDayRange } from '@/lib/date-range-query';
 import { validateCSRF } from '@/lib/csrf';
 import { createApprovalForRequest } from '@/lib/approval-helper';
 import { parseIntegerQueryParam } from '@/lib/query-params';
@@ -118,17 +119,27 @@ export async function GET(request: NextRequest) {
     const startDate = searchParams.get('startDate');
     const endDate = searchParams.get('endDate');
     const status = searchParams.get('status');
+    // 個人畫面（我的班表等）只要本人的加班，不受管理範圍影響
+    const mineOnly = searchParams.get('mine') === '1';
+
+    const startRange = startDate ? parseTaiwanDayRange(startDate) : null;
+    const endRange = endDate ? parseTaiwanDayRange(endDate) : null;
+    if ((startDate && !startRange) || (endDate && !endRange)) {
+      return NextResponse.json({ error: '日期格式錯誤，請使用 YYYY-MM-DD' }, { status: 400 });
+    }
 
     const whereClause: {
       employeeId?: number;
-      overtimeDate?: { gte: Date; lte: Date };
+      overtimeDate?: { gte?: Date; lte?: Date };
       status?: string;
       employee?: {
         department?: { in: string[] };
       };
     } = {};
 
-    if (user.role === 'ADMIN' || user.role === 'HR') {
+    if (mineOnly) {
+      whereClause.employeeId = user.employeeId;
+    } else if (user.role === 'ADMIN' || user.role === 'HR') {
       // 管理員與 HR 可以查看全部資料
       if (employeeId) {
         const employeeIdResult = parseIntegerQueryParam(employeeId, { min: 1, max: 99999999 });
@@ -161,10 +172,11 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    if (startDate && endDate) {
+    // 起日、迄日各自生效；兩個都填取交集。以台北日期含首尾兩天。
+    if (startRange || endRange) {
       whereClause.overtimeDate = {
-        gte: new Date(startDate),
-        lte: new Date(endDate)
+        ...(startRange ? { gte: startRange.start } : {}),
+        ...(endRange ? { lte: endRange.end } : {}),
       };
     }
 

@@ -35,6 +35,7 @@ jest.mock('@/lib/attendance-freeze', () => ({
 }));
 
 jest.mock('@/lib/timezone', () => ({
+  ...jest.requireActual('@/lib/timezone'),
   toTaiwanDateStr: jest.fn((date: Date) => new Date(date.getTime() + 8 * 3600000).toISOString().slice(0, 10))
 }));
 
@@ -612,5 +613,68 @@ describe('overtime-requests quick auth account status', () => {
     expect(await submit('WEEKDAY', '09:00', '13:00')).toEqual({ status: 400, error: '平日加班開始時間必須在17:00之後（正常工作8小時後）' });
     expect(await submit('WEEKDAY', '17:00', '21:30')).toEqual({ status: 400, error: '單日加班時數不能超過4小時' });
     expect(mockPrisma.overtimeRequest.create).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('overtime-requests list scope and date filters', () => {
+  const list = (query = '') => GET(new NextRequest(`http://localhost/api/overtime-requests${query}`));
+  const lastWhere = () => {
+    const calls = mockPrisma.overtimeRequest.findMany.mock.calls;
+    return (calls[calls.length - 1][0] as { where: Record<string, unknown> }).where;
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockCheckRateLimit.mockResolvedValue({ allowed: true, remainingRequests: 10, resetTime: Date.now() });
+    mockGetUserFromRequest.mockResolvedValue({ role: 'HR', employeeId: 7 } as never);
+    mockPrisma.overtimeRequest.findMany.mockResolvedValue([] as never);
+    mockPrisma.employee.findMany.mockResolvedValue([] as never);
+    mockPrisma.schedule.findMany.mockResolvedValue([] as never);
+    mockPrisma.approvalInstance.findMany.mockResolvedValue([] as never);
+  });
+
+  it('limits the personal view to the logged-in employee even for HR', async () => {
+    const response = await list('?mine=1&status=APPROVED&startDate=2026-11-01&endDate=2026-11-30');
+
+    expect(response.status).toBe(200);
+    expect(lastWhere()).toEqual({
+      employeeId: 7,
+      status: 'APPROVED',
+      overtimeDate: {
+        gte: new Date('2026-10-31T16:00:00.000Z'),
+        lte: new Date('2026-11-30T15:59:59.999Z'),
+      },
+    });
+  });
+
+  it('ignores employeeId and department scope for the personal view', async () => {
+    await list('?mine=1&employeeId=99');
+
+    expect(lastWhere()).toEqual({ employeeId: 7 });
+  });
+
+  it('keeps the management total (all employees) when mine is not requested', async () => {
+    await list('?status=APPROVED');
+
+    expect(lastWhere()).toEqual({ status: 'APPROVED' });
+  });
+
+  it('applies a start date on its own', async () => {
+    await list('?startDate=2026-11-15');
+
+    expect(lastWhere()).toEqual({ overtimeDate: { gte: new Date('2026-11-14T16:00:00.000Z') } });
+  });
+
+  it('applies an end date on its own and includes the selected day', async () => {
+    await list('?endDate=2026-11-15');
+
+    expect(lastWhere()).toEqual({ overtimeDate: { lte: new Date('2026-11-15T15:59:59.999Z') } });
+  });
+
+  it('rejects malformed dates before querying', async () => {
+    const response = await list('?startDate=2026-02-31');
+
+    expect(response.status).toBe(400);
+    expect(mockPrisma.overtimeRequest.findMany).not.toHaveBeenCalled();
   });
 });

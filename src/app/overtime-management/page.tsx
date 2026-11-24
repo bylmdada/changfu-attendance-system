@@ -9,6 +9,7 @@ import EmployeeListSelect, { useActiveEmployeeDepartments } from '@/components/E
 import ApprovalProgress, { ApprovalReviewRecord } from '@/components/ApprovalProgress';
 import PromptDialog from '@/components/PromptDialog';
 import { getOvertimeApprovalSteps } from '@/lib/overtime-approval-display';
+import { overlapsTaiwanDateRange } from '@/lib/date-range-query';
 import React from 'react';
 
 interface OvertimeRequest {
@@ -302,11 +303,11 @@ export default function OvertimeManagementPage() {
       filtered = filtered.filter(req => req.employee.department === filters.department);
     }
 
-    if (filters.startDate && filters.endDate) {
-      filtered = filtered.filter(req => {
-        const reqDate = new Date(req.overtimeDate);
-        return reqDate >= new Date(filters.startDate) && reqDate <= new Date(filters.endDate);
-      });
+    // 起日、迄日各自生效，兩個都填取交集；以台北日期含首尾兩天
+    if (filters.startDate || filters.endDate) {
+      filtered = filtered.filter(req =>
+        overlapsTaiwanDateRange(req.overtimeDate, req.overtimeDate, filters.startDate, filters.endDate)
+      );
     }
 
     setFilteredRequests(filtered);
