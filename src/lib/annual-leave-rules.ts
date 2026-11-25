@@ -46,7 +46,8 @@ export function calculateAnnualLeaveDaysByTotalMonths(totalMonths: number): numb
   if (completedYears < 5) return 14;
   if (completedYears < 10) return 15;
 
-  return Math.min(30, 15 + (completedYears - 10));
+  // 勞基法第 38 條：滿 10 年起每多一年加給 1 日，上限 30 日（勞動部對照表：10 年 16 日、24 年 30 日）
+  return Math.min(30, 15 + (completedYears - 9));
 }
 
 export function calculateAnnualLeaveDaysFromYearsOfService(yearsOfService: number) {
@@ -69,6 +70,20 @@ export function calculateAnnualLeaveEntitlement(
   return {
     ...serviceDuration,
     days: calculateAnnualLeaveDaysByTotalMonths(serviceDuration.totalMonths),
+  };
+}
+
+/**
+ * 重算特休額度的共同算法：總額依年資更新，已休天數保留，剩餘＝總額－已休（不低於 0）。
+ * 全員重算、指定員工重算與管理頁批次設定都要用它，否則重算會把已休的天數加回餘額。
+ */
+export function recalculateAnnualLeaveBalance(existingUsedDays: number | null | undefined, totalDays: number) {
+  const usedDays = existingUsedDays ?? 0;
+
+  return {
+    totalDays,
+    usedDays,
+    remainingDays: Math.max(0, Math.round((totalDays - usedDays) * 10000) / 10000),
   };
 }
 

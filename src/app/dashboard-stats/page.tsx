@@ -14,6 +14,8 @@ interface DashboardStats {
   summary: {
     totalEmployees: number;
     attendanceRate: number;
+    expectedShifts: number;
+    attendedShifts: number;
     totalOvertimeHours: number;
     avgOvertimePerEmployee: number;
     pendingApprovals: number;
@@ -26,12 +28,14 @@ interface DashboardStats {
   };
   overtime: {
     totalHours: number;
+    approvedHours: number;
     requestCount: number;
     avgPerEmployee: number;
   };
   leave: {
     totalRequests: number;
     byType: Record<string, number>;
+    hoursByType: Record<string, number>;
     pending: number;
   };
   trends: {
@@ -166,7 +170,7 @@ export default function DashboardPage() {
                   <TrendingUp className="w-10 h-10 text-blue-200" />
                 </div>
                 <p className="text-xs text-gray-400 mt-2">
-                  {stats.period.month} 月
+                  {stats.period.month} 月 · 上班打卡 {stats.summary.attendedShifts} / 應到班次 {stats.summary.expectedShifts}
                 </p>
               </div>
 
@@ -178,7 +182,7 @@ export default function DashboardPage() {
                   </div>
                   <XCircle className="w-10 h-10 text-purple-200" />
                 </div>
-                <p className="text-xs text-gray-400 mt-2">請假 + 加班</p>
+                <p className="text-xs text-gray-400 mt-2">請假 + 加班（含待管理員複核）</p>
               </div>
             </div>
 
@@ -190,18 +194,22 @@ export default function DashboardPage() {
                   <Clock className="w-5 h-5 text-orange-600" />
                   加班統計
                 </h2>
-                <div className="grid grid-cols-3 gap-4">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
                   <div className="text-center p-4 bg-orange-50 rounded-lg">
                     <p className="text-2xl font-bold text-orange-600">{stats.overtime.totalHours}</p>
+                    <p className="text-sm text-gray-500">打卡認列加班時數</p>
+                  </div>
+                  <div className="text-center p-4 bg-orange-50 rounded-lg">
+                    <p className="text-2xl font-bold text-orange-600">{stats.overtime.approvedHours}</p>
                     <p className="text-sm text-gray-500">核准申請時數</p>
                   </div>
                   <div className="text-center p-4 bg-orange-50 rounded-lg">
                     <p className="text-2xl font-bold text-orange-600">{stats.overtime.requestCount}</p>
-                    <p className="text-sm text-gray-500">申請數</p>
+                    <p className="text-sm text-gray-500">核准申請數</p>
                   </div>
                   <div className="text-center p-4 bg-orange-50 rounded-lg">
                     <p className="text-2xl font-bold text-orange-600">{stats.overtime.avgPerEmployee}</p>
-                    <p className="text-sm text-gray-500">人均申請時數</p>
+                    <p className="text-sm text-gray-500">人均認列時數</p>
                   </div>
                 </div>
               </div>
@@ -219,7 +227,9 @@ export default function DashboardPage() {
                         <span className="text-sm text-gray-700">
                           {getLeaveTypeLabel(type)}
                         </span>
-                        <span className="font-semibold text-gray-900">{count} 件</span>
+                        <span className="font-semibold text-gray-900">
+                          {count} 件 · {stats.leave.hoursByType?.[type] ?? 0} 小時
+                        </span>
                       </div>
                     ))
                   ) : (

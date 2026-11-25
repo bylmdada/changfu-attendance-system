@@ -11,6 +11,7 @@ import {
   calculateAnnualLeaveDaysByTotalMonths,
   calculateAnnualLeaveExpiryDate,
   calculateServiceDuration,
+  recalculateAnnualLeaveBalance,
 } from '@/lib/annual-leave-rules';
 
 function parsePositiveIntegerBodyValue(value: unknown, defaultValue?: number) {
@@ -190,7 +191,7 @@ export async function GET(request: NextRequest) {
           { range: '2年以上未滿3年', days: 10 },
           { range: '3年以上未滿5年', days: 14 },
           { range: '5年以上未滿10年', days: 15 },
-          { range: '10年以上', days: '15 + 每年加1天，最高30天' }
+          { range: '10年以上', days: '滿10年16天，之後每年加1天，最高30天' }
         ]
       }
     });
@@ -315,7 +316,7 @@ export async function POST(request: NextRequest) {
             usedDays: true,
           }
         });
-        const remainingDays = Math.max(0, totalDays - (existingAnnualLeave?.usedDays ?? 0));
+        const { remainingDays } = recalculateAnnualLeaveBalance(existingAnnualLeave?.usedDays, totalDays);
         
         // 計算到期日（周年制：下一年的周年日前一天）
         const expiryDate = calculateAnnualLeaveExpiryDate(hireDate, yearValue);

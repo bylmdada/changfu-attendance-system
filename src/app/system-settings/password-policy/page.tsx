@@ -8,6 +8,7 @@ import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import SystemNavbar from '@/components/SystemNavbar';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import { SimpleToast, useLocalToast } from '@/components/Toast';
+import { loadAllEmployees } from '@/lib/load-all-employees';
 
 interface PasswordPolicy {
   // 密碼長度
@@ -176,11 +177,13 @@ export default function PasswordPolicySettings() {
         }
 
         // 載入員工列表
-        const employeesRequest = buildCookieSessionRequest(window.location.origin, '/api/employees');
-        const employeesResponse = await fetch(employeesRequest.url, employeesRequest.options);
-        if (employeesResponse.ok) {
-          const employeesData = await employeesResponse.json();
-          setEmployees(employeesData.employees || []);
+        // 逐頁取完，不設人數上限；失敗只影響選人清單，不能走外層的「導去登入頁」
+        try {
+          const loaded = await loadAllEmployees<{ id: number; employeeId: string; name: string }>();
+          // 頁面用字串 id 與 code（員編）；API 回的是數字 id 與 employeeId，要轉成頁面要的形狀
+          setEmployees(loaded.map((employee) => ({ id: String(employee.id), name: employee.name, code: employee.employeeId })));
+        } catch (employeesError) {
+          console.error('載入員工列表失敗:', employeesError);
         }
 
         // 載入密碼例外

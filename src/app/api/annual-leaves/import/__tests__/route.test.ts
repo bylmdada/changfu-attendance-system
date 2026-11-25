@@ -278,3 +278,55 @@ describe('annual leave import csrf guards', () => {
     expect(mockedPrisma.annualLeave.upsert).not.toHaveBeenCalled();
   });
 });
+
+describe('annual leave import whole-day total', () => {
+  beforeEach(() => {
+    mockedPrisma.annualLeave.upsert.mockClear();
+    mockedValidateCSRF.mockResolvedValue({ valid: true } as never);
+  });
+
+  it('rejects a row whose used + remaining is not a whole number of days (used 2 + remaining 5.5)', async () => {
+    mockedSheetToJson.mockReturnValue([
+      ['員工編號', '年度', '已使用天數', '剩餘天數'],
+      ['A001', 2024, 2, 5.5],
+    ]);
+
+    const response = await POST(createImportRequest());
+    const data = await response.json();
+
+    expect(data.results.failed).toBe(1);
+    expect(data.results.errors[0]).toContain('第 2 行');
+    expect(data.results.errors[0]).toContain('特休總天數必須是整數');
+    expect(data.results.errors[0]).toContain('7.5');
+    expect(mockedPrisma.annualLeave.upsert).not.toHaveBeenCalled();
+  });
+
+  it('accepts half days that add up to a whole total (used 2.5 + remaining 4.5 = 7)', async () => {
+    mockedSheetToJson.mockReturnValue([
+      ['員工編號', '年度', '已使用天數', '剩餘天數'],
+      ['A001', 2024, 2.5, 4.5],
+    ]);
+
+    const response = await POST(createImportRequest());
+    const data = await response.json();
+
+    expect(data.results.success).toBe(1);
+    expect(mockedPrisma.annualLeave.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ totalDays: 7, usedDays: 2.5, remainingDays: 4.5 }),
+      })
+    );
+  });
+
+  it('rejects a fractional total given explicitly in the file', async () => {
+    mockedSheetToJson.mockReturnValue([
+      ['員工編號', '年度', '特休假總天數', '已使用天數'],
+      ['A001', 2024, 7.5, 2],
+    ]);
+
+    const data = await (await POST(createImportRequest())).json();
+
+    expect(data.results.failed).toBe(1);
+    expect(mockedPrisma.annualLeave.upsert).not.toHaveBeenCalled();
+  });
+});

@@ -285,32 +285,46 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: '沒有有效的假日資料，請確認日期格式正確' }, { status: 400 });
     }
 
-    const created = await prisma.$transaction(async (tx) => {
-      await tx.holiday.deleteMany({
-        where: { year: parsedYear }
+    // 依日期合併：新日期新增、已有的日期更新名稱，沒在匯入清單裡的假日（含自訂假日與已產生的補休紀錄）原封不動。
+    // 不能先刪整年再新增：假日一刪，連動的補休紀錄（HolidayCompensation）也會一起被刪掉。
+    const { created, updated } = await prisma.$transaction(async (tx) => {
+      const existing = await tx.holiday.findMany({
+        where: { date: { in: validHolidays.map((holiday) => holiday.date) } },
+        select: { date: true },
       });
+      const existingDates = new Set(existing.map((holiday) => holiday.date.toISOString().slice(0, 10)));
 
-      return tx.holiday.createMany({
-        data: validHolidays
-      });
+      for (const holiday of validHolidays) {
+        await tx.holiday.upsert({
+          where: { date: holiday.date },
+          create: holiday,
+          update: {
+            year: holiday.year,
+            name: holiday.name,
+            description: holiday.description,
+            isActive: true,
+          },
+        });
+      }
+
+      const updatedCount = validHolidays.filter((holiday) => existingDates.has(holiday.date.toISOString().slice(0, 10))).length;
+      return { created: validHolidays.length - updatedCount, updated: updatedCount };
     });
-
-    if (created.count === 0) {
-      return NextResponse.json({ error: '假日匯入失敗，未新增任何資料' }, { status: 400 });
-    }
 
     await logSystemSettingsChange({
       request,
       user,
       settingKey: 'holidays',
-      description: '年度國定假日批量匯入',
+      description: '年度國定假日批量匯入（依日期合併）',
       oldValue: { year: parsedYear },
-      newValue: { year: parsedYear, holidays: validHolidays, count: created.count },
+      newValue: { year: parsedYear, holidays: validHolidays, created, updated },
     });
 
-    return NextResponse.json({ 
-      message: `已新增 ${created.count} 筆假日`,
-      count: created.count
+    return NextResponse.json({
+      message: `已匯入 ${created + updated} 筆假日（新增 ${created}、更新 ${updated}）`,
+      count: created + updated,
+      created,
+      updated,
     });
   } catch (error) {
     console.error('批量新增假日失敗:', error);

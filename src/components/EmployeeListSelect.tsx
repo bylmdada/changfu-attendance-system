@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { loadAllEmployees } from '@/lib/load-all-employees';
 
 export interface EmployeeListOption {
   id: number;
@@ -27,12 +28,8 @@ interface EmployeeListSelectProps {
 }
 
 export async function loadEmployeeOptions(includeInactive = false) {
-  const params = new URLSearchParams({ limit: '1000' });
-  if (!includeInactive) params.set('status', 'active');
-  const response = await fetch(`/api/employees?${params}`, { credentials: 'include', cache: 'no-store' });
-  if (!response.ok) throw new Error('載入員工清單失敗');
-  const data = await response.json();
-  return (data.employees || []) as EmployeeListOption[];
+  // 逐頁取完，不設人數上限（API 每頁最多 1,000 人）
+  return loadAllEmployees<EmployeeListOption>({ status: includeInactive ? undefined : 'active' });
 }
 
 export function useActiveEmployeeDepartments() {

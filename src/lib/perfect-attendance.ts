@@ -108,7 +108,7 @@ function parseTimeToMinutes(value: string): number | null {
   return hour * 60 + minute;
 }
 
-function isWorkingSchedule(schedule: PerfectAttendanceScheduleForTiming) {
+export function isWorkingSchedule(schedule: PerfectAttendanceScheduleForTiming) {
   return !['OFF', 'RD', 'rd', 'NH', 'FDL', 'TD'].includes(schedule.shiftType) && Boolean(schedule.startTime && schedule.endTime);
 }
 

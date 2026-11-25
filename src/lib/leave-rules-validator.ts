@@ -5,6 +5,7 @@
  */
 
 import { prisma } from '@/lib/database';
+import { getTaiwanTodayDateOnly } from '@/lib/timezone';
 import {
   DEFAULT_LEAVE_RULES_SETTINGS,
   type LeaveRulesSettingsValues,
@@ -20,13 +21,14 @@ export interface LeaveValidationResult {
 }
 
 /**
- * 取得假別規則設定
+ * 取得「asOf 當天適用」的假別規則設定：啟用中、生效日不晚於 asOf 的最新一版。
+ * 預排的未來版本在生效日之前不會被讀到；依請假日期驗證舊假單時請傳入該日期。
  */
-export async function getLeaveRulesConfig(): Promise<LeaveRulesConfig> {
+export async function getLeaveRulesConfig(asOf: Date = getTaiwanTodayDateOnly()): Promise<LeaveRulesConfig> {
   try {
     const config = await prisma.leaveRulesConfig.findFirst({
-      where: { isActive: true },
-      orderBy: { effectiveDate: 'desc' }
+      where: { isActive: true, effectiveDate: { lte: asOf } },
+      orderBy: [{ effectiveDate: 'desc' }, { id: 'desc' }]
     });
 
     if (config) {

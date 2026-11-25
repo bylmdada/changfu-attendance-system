@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
+import { getCompLeaveAvailableHours } from '@/lib/comp-leave-balance';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { checkRateLimit } from '@/lib/rate-limit';
@@ -48,17 +49,27 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // 取得最近交易明細
-    const recentTransactions = await prisma.compLeaveTransaction.findMany({
+    // 取得最近交易明細：日期＋交易 ID 穩定排序（同一時間建立的多筆也不會跳號或重複），
+    // 要看更早的紀錄帶上一頁最後一筆的 cursor。多取一筆只用來判斷還有沒有更早的
+    const cursorResult = parseIntegerQueryParam(searchParams.get('cursor'), { min: 1, max: 2147483647 });
+    if (!cursorResult.isValid) {
+      return NextResponse.json({ error: 'cursor 參數格式無效' }, { status: 400 });
+    }
+    const TRANSACTION_PAGE_SIZE = 20;
+    const fetchedTransactions = await prisma.compLeaveTransaction.findMany({
       where: { employeeId: targetEmployeeId },
-      orderBy: { createdAt: 'desc' },
-      take: 20
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      ...(cursorResult.value !== null ? { cursor: { id: cursorResult.value }, skip: 1 } : {}),
+      take: TRANSACTION_PAGE_SIZE + 1
     });
+    const hasMoreTransactions = fetchedTransactions.length > TRANSACTION_PAGE_SIZE;
+    const recentTransactions = fetchedTransactions.slice(0, TRANSACTION_PAGE_SIZE);
 
     // 計算待確認餘額
     const pendingBalance = balance.pendingEarn - balance.pendingUse;
-    const confirmedBalance = balance.totalEarned - balance.totalUsed;
-    const availableBalance = confirmedBalance + pendingBalance;
+    // 已確認餘額與核准補休時用的是同一個欄位；可用餘額與管理頁、手動扣減共用同一個口徑
+    const confirmedBalance = balance.balance;
+    const availableBalance = getCompLeaveAvailableHours(balance);
 
     return NextResponse.json({
       success: true,
@@ -74,7 +85,9 @@ export async function GET(request: NextRequest) {
         totalUsed: balance.totalUsed,
         updatedAt: balance.updatedAt
       },
-      recentTransactions
+      recentTransactions,
+      hasMoreTransactions,
+      nextCursor: hasMoreTransactions ? recentTransactions[recentTransactions.length - 1].id : null
     });
   } catch (error) {
     console.error('取得補休餘額失敗:', error);

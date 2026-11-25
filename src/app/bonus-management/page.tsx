@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -9,6 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge';
 import { Plus, Edit, Trash2 } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
+import { loadAllEmployees } from '@/lib/load-all-employees';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import { SimpleToast, useLocalToast } from '@/components/Toast';
 
@@ -19,6 +20,7 @@ interface Employee {
   department: string;
   position: string;
   baseSalary: number;
+  isActive?: boolean;
 }
 
 interface BonusRecord {
@@ -123,10 +125,20 @@ export default function BonusManagementPage() {
     adjustmentReason: ''
   });
 
+  // 完整名單（含離職員工：歷史獎金紀錄要能依員工篩選）；逐頁取完，不能只拿 API 預設的前 10 人
+  const fetchEmployees = useCallback(async () => {
+    try {
+      setEmployees(await loadAllEmployees<Employee>());
+    } catch (error) {
+      console.error('載入員工列表失敗:', error);
+      showToast('error', '員工清單載入失敗，請重新整理頁面');
+    }
+  }, [showToast]);
+
   // 載入員工列表
   useEffect(() => {
     fetchEmployees();
-  }, []);
+  }, [fetchEmployees]);
 
   // 載入獎金記錄
   useEffect(() => {
@@ -134,19 +146,6 @@ export default function BonusManagementPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters]);
 
-  const fetchEmployees = async () => {
-    try {
-      const response = await fetch('/api/employees', {
-        credentials: 'include'
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setEmployees(data.employees || []);
-      }
-    } catch (error) {
-      console.error('載入員工列表失敗:', error);
-    }
-  };
 
   const fetchBonusRecords = async () => {
     try {
@@ -346,7 +345,7 @@ export default function BonusManagementPage() {
                 <SelectItem value="">全部員工</SelectItem>
                 {employees.map(emp => (
                   <SelectItem key={emp.id} value={emp.id.toString()}>
-                    {emp.name} ({emp.employeeId})
+                    {emp.name} ({emp.employeeId}){emp.isActive === false ? '（已離職）' : ''}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -507,7 +506,7 @@ export default function BonusManagementPage() {
                     <SelectContent>
                       {employees.map(emp => (
                         <SelectItem key={emp.id} value={emp.id.toString()}>
-                          {emp.name} ({emp.employeeId})
+                          {emp.name} ({emp.employeeId}){emp.isActive === false ? '（已離職）' : ''}
                         </SelectItem>
                       ))}
                     </SelectContent>

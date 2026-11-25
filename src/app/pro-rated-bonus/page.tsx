@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -13,6 +13,7 @@ import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import { SimpleToast, useLocalToast } from '@/components/Toast';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
+import { loadAllEmployees } from '@/lib/load-all-employees';
 
 interface Employee {
   id: number;
@@ -84,24 +85,21 @@ export default function ProRatedBonusPage() {
     autoCreateRecords: false
   });
 
+  // 只載入在職員工（伺服器的批量計算與建立紀錄都只處理在職員工），並逐頁取完，不能只拿 API 預設的前 10 人
+  const fetchEmployees = useCallback(async () => {
+    try {
+      setEmployees(await loadAllEmployees<Employee>({ status: 'active' }));
+    } catch (error) {
+      console.error('載入員工列表失敗:', error);
+      showToast('error', '員工清單載入失敗，請重新整理頁面');
+    }
+  }, [showToast]);
+
   // 載入員工列表
   useEffect(() => {
     fetchEmployees();
-  }, []);
+  }, [fetchEmployees]);
 
-  const fetchEmployees = async () => {
-    try {
-      const response = await fetch('/api/employees', {
-        credentials: 'include'
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setEmployees(data.employees || []);
-      }
-    } catch (error) {
-      console.error('載入員工列表失敗:', error);
-    }
-  };
 
   // 批量計算按比例獎金
   const handleBatchCalculate = async () => {

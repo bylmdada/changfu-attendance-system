@@ -298,3 +298,50 @@ describe('labor law config route guards', () => {
     expect(mockedPrisma.$transaction).not.toHaveBeenCalled();
   });
 });
+
+describe('labor-law-config version scheduling', () => {
+  const postVersion = async (effectiveDate: string) => {
+    mockedGetUserFromRequest.mockResolvedValueOnce({ id: 1, username: 'admin', role: 'ADMIN', employee: null } as never);
+    return POST(new NextRequest('http://localhost:3000/api/system-settings/labor-law-config', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: 'token=shared-session-token' },
+      body: JSON.stringify({
+        basicWage: 30000,
+        laborInsuranceRate: 0.12,
+        employmentInsuranceRate: 0.01,
+        laborInsuranceMax: 46000,
+        laborEmployeeRate: 0.2,
+        effectiveDate,
+        description: '新法規',
+      }),
+    }));
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockedPrisma.laborLawConfig.findFirst.mockResolvedValue(null);
+    mockedPrisma.laborLawConfig.updateMany.mockResolvedValue({ count: 1 } as never);
+    mockedPrisma.laborLawConfig.create.mockResolvedValue({ id: 9, effectiveDate: new Date('2030-01-01') } as never);
+    mockedPrisma.$transaction.mockImplementation((async (operations: unknown[]) => Promise.all(operations)) as never);
+    mockedValidateCSRF.mockResolvedValue({ valid: true } as never);
+    mockedCheckRateLimit.mockResolvedValue({ allowed: true } as never);
+  });
+
+  it('does not retire the current version when the new one is scheduled for the future', async () => {
+    const response = await postVersion('2099-01-01');
+
+    expect(response.status).toBe(200);
+    expect(mockedPrisma.laborLawConfig.updateMany).not.toHaveBeenCalled();
+    expect(mockedPrisma.laborLawConfig.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('retires only the versions it supersedes when the new one is already in effect', async () => {
+    const response = await postVersion('2025-01-01');
+
+    expect(response.status).toBe(200);
+    expect(mockedPrisma.laborLawConfig.updateMany).toHaveBeenCalledWith({
+      where: { isActive: true, effectiveDate: { lte: new Date('2025-01-01T00:00:00.000Z') } },
+      data: { isActive: false },
+    });
+  });
+});

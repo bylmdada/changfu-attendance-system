@@ -19,6 +19,7 @@ import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import BatchApproveBar from '@/components/BatchApproveBar';
 import { useRowSelection } from '@/hooks/useRowSelection';
+import { loadAllEmployees } from '@/lib/load-all-employees';
 
 interface PendingItem {
   id: number;
@@ -192,11 +193,8 @@ export default function ApprovalDashboardPage() {
   // 載入員工列表
   const loadEmployees = useCallback(async () => {
     try {
-      const response = await fetch('/api/employees?isActive=true', { credentials: 'include' });
-      if (response.ok) {
-        const data = await response.json();
-        setEmployees(data.employees || []);
-      }
+      // 只列在職員工，逐頁取完
+      setEmployees(await loadAllEmployees<{ id: number; name: string; department: string }>({ status: 'active' }));
     } catch (error) {
       console.error('載入員工列表失敗:', error);
     }
@@ -889,7 +887,7 @@ export default function ApprovalDashboardPage() {
                           {employees
                             .filter(e => 
                               e.name.includes(employeeSearch) || 
-                              e.department.includes(employeeSearch)
+                              (e.department || '').includes(employeeSearch)
                             )
                             .slice(0, 5)
                             .map(emp => (

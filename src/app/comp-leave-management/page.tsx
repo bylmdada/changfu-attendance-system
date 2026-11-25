@@ -7,6 +7,7 @@ import fetchWithCSRF, { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import EmployeeListSelect, { useActiveEmployeeDepartments } from '@/components/EmployeeListSelect';
 import { SimpleToast, useLocalToast } from '@/components/Toast';
+import { getCompLeaveAvailableHours } from '@/lib/comp-leave-balance';
 
 interface User {
   id: number;
@@ -219,7 +220,7 @@ export default function CompLeaveManagementPage() {
   // 統計
   const stats = {
     totalEmployees: filteredBalances.length,
-    totalBalance: filteredBalances.reduce((sum, b) => sum + b.balance, 0),
+    totalBalance: filteredBalances.reduce((sum, b) => sum + getCompLeaveAvailableHours(b), 0),
     totalPending: filteredBalances.reduce((sum, b) => sum + (b.pendingEarn - b.pendingUse), 0)
   };
 
@@ -282,7 +283,7 @@ export default function CompLeaveManagementPage() {
               <div className="flex items-center">
                 <Clock className="h-8 w-8 text-green-600" />
                 <div className="ml-4">
-                  <div className="text-sm font-medium text-gray-500">總餘額（小時）</div>
+                  <div className="text-sm font-medium text-gray-500">可用餘額合計（小時）</div>
                   <div className="text-2xl font-bold text-gray-900">{stats.totalBalance.toFixed(1)}</div>
                 </div>
               </div>
@@ -359,10 +360,13 @@ export default function CompLeaveManagementPage() {
                       已使用（小時）
                     </th>
                     <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      可用餘額（小時）
+                      已確認餘額（小時）
                     </th>
                     <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
                       待確認（小時）
+                    </th>
+                    <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      可用餘額（小時）
                     </th>
                     {isAdmin && (
                       <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -387,16 +391,19 @@ export default function CompLeaveManagementPage() {
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-right text-gray-900">
                         {balance.totalUsed.toFixed(1)}
                       </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-right">
-                        <span className={`text-sm font-medium ${
-                          balance.balance > 8 ? 'text-green-600' :
-                          balance.balance > 0 ? 'text-yellow-600' : 'text-gray-500'
-                        }`}>
-                          {balance.balance.toFixed(1)}
-                        </span>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-right text-gray-900">
+                        {balance.balance.toFixed(1)}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-right text-gray-500">
                         {(balance.pendingEarn - balance.pendingUse).toFixed(1)}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-right">
+                        <span className={`text-sm font-medium ${
+                          getCompLeaveAvailableHours(balance) > 8 ? 'text-green-600' :
+                          getCompLeaveAvailableHours(balance) > 0 ? 'text-yellow-600' : 'text-gray-500'
+                        }`}>
+                          {getCompLeaveAvailableHours(balance).toFixed(1)}
+                        </span>
                       </td>
                       {isAdmin && (
                         <td className="px-6 py-4 whitespace-nowrap text-center">
@@ -546,7 +553,13 @@ export default function CompLeaveManagementPage() {
 
               <div className="mb-4 p-4 bg-gray-50 rounded-lg">
                 <div className="text-sm text-gray-600">員工：{selectedEmployee.employee.name}</div>
-                <div className="text-sm text-gray-600">目前餘額：{selectedEmployee.balance.toFixed(1)} 小時</div>
+                <div className="text-sm text-gray-600">已確認餘額：{selectedEmployee.balance.toFixed(1)} 小時</div>
+                <div className="text-sm text-gray-600">
+                  待確認：{(selectedEmployee.pendingEarn - selectedEmployee.pendingUse).toFixed(1)} 小時（已核准、尚未扣除的補休會佔用額度）
+                </div>
+                <div className="text-sm font-medium text-gray-900">
+                  可用餘額：{getCompLeaveAvailableHours(selectedEmployee).toFixed(1)} 小時（扣減不能超過可用餘額）
+                </div>
               </div>
 
               <div className="space-y-4">

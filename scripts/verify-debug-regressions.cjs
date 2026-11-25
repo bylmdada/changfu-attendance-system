@@ -59,21 +59,41 @@ async function main() {
     await activation;
     assert.deepEqual(removed, ['changfu-attendance-v2']);
 
+    // 員工下拉的共用載入函式：每次都要重新請求（cache: 'no-store'），且要逐頁取完、不能只拿第一頁
     const ts = require('typescript');
-    const code = ts.transpileModule(fs.readFileSync(path.join(__dirname, '../src/components/EmployeeListSelect.tsx'), 'utf8'), {
-      compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX},
-    }).outputText;
-    const exports = {};
+    const sourceFile = (relative) => ['.ts', '.tsx'].map((ext) => path.join(__dirname, '..', `${relative}${ext}`)).find(fs.existsSync);
+    const loadSource = (file, globals) => {
+      const code = ts.transpileModule(fs.readFileSync(file, 'utf8'), {
+        compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX},
+      }).outputText;
+      const moduleExports = {};
+      vm.runInNewContext(code, {
+        ...globals,
+        exports: moduleExports,
+        require: (id) => id.startsWith('@/') ? loadSource(sourceFile(`src/${id.slice(2)}`), globals) : require(id),
+      });
+      return moduleExports;
+    };
     let name = 'before';
     let requests = 0;
-    vm.runInNewContext(code, {exports,require,URLSearchParams,fetch:async(_url, options)=>{
-      assert.equal(options.cache, 'no-store'); requests++;
-      return {ok:true,json:async()=>({employees:[{id:1,name}]})};
-    }});
+    let pages = 1;
+    const exports = loadSource(path.join(__dirname, '../src/components/EmployeeListSelect.tsx'), {
+      URLSearchParams,
+      fetch: async (url, options) => {
+        assert.equal(options.cache, 'no-store'); requests++;
+        const page = Number(new URLSearchParams(url.split('?')[1]).get('page'));
+        return {ok:true,json:async()=>pages === 1
+          ? ({employees:[{id:1,name}]})
+          : ({employees:[{id:page,name:`page ${page}`}],pagination:{page,pages}})};
+      },
+    });
     assert.equal((await exports.loadEmployeeOptions())[0].name, 'before');
     name = 'after';
     assert.equal((await exports.loadEmployeeOptions())[0].name, 'after');
     assert.equal(requests, 2);
+    pages = 3;
+    assert.equal((await exports.loadEmployeeOptions()).map((employee) => employee.name).join(','), 'page 1,page 2,page 3');
+    assert.equal(requests, 5);
     console.log('PASS: environment, private file migration, service worker, employee refresh');
   } finally {
     if (priorDatabase === undefined) delete process.env.DATABASE_URL;

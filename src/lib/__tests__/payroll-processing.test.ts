@@ -126,6 +126,58 @@ describe('payroll processing bonus eligibility', () => {
     expect(result.totalBonus).toBe(30000);
   });
 
+  describe('new-hire proration setting for automatic year-end bonus', () => {
+    const yearEndConfig = {
+      bonusType: 'YEAR_END',
+      bonusTypeName: '年終獎金',
+      defaultAmount: 12000,
+      eligibilityRules: { minimumServiceMonths: 1 },
+      paymentSchedule: { yearEndMonth: 2 },
+      isActive: true,
+    };
+    // 2025-08-01 到職，2026 年 2 月發薪時服務 6 個月
+    const newHire = { id: 1, baseSalary: 30000, hireDate: new Date('2025-08-01T00:00:00.000Z'), department: '行政部' };
+
+    const storeProrateSetting = (prorateForNewHires: boolean | null) => {
+      mockPrisma.systemSettings.findUnique.mockImplementation((async ({ where }: { where: { key: string } }) =>
+        where.key === 'prorated_bonus_settings' && prorateForNewHires !== null
+          ? { value: JSON.stringify({ prorateForNewHires }) }
+          : null) as never);
+    };
+
+    beforeEach(() => {
+      mockPrisma.bonusConfiguration.findMany.mockResolvedValue([yearEndConfig] as never);
+    });
+
+    it('pays the prorated amount (6 of 12 months) when new-hire proration is on', async () => {
+      storeProrateSetting(true);
+      const result = await calculateBonusForPayrollMonth(newHire, 2026, 2);
+      expect(result.yearEndBonus).toBe(6000);
+    });
+
+    it('pays the full amount to the same eligible employee when new-hire proration is off', async () => {
+      storeProrateSetting(false);
+      const result = await calculateBonusForPayrollMonth(newHire, 2026, 2);
+      expect(result.yearEndBonus).toBe(12000);
+    });
+
+    it('keeps prorating when the setting was never saved', async () => {
+      storeProrateSetting(null);
+      const result = await calculateBonusForPayrollMonth(newHire, 2026, 2);
+      expect(result.yearEndBonus).toBe(6000);
+    });
+
+    it('does not pay anyone below the minimum service months, whatever the setting says', async () => {
+      storeProrateSetting(false);
+      const result = await calculateBonusForPayrollMonth(
+        { ...newHire, hireDate: new Date('2026-02-01T00:00:00.000Z') },
+        2026,
+        2
+      );
+      expect(result.yearEndBonus).toBe(0);
+    });
+  });
+
   it('prefers stored bonus records over configured department bonus formulas', async () => {
     mockPrisma.bonusConfiguration.findMany.mockResolvedValue([
       {

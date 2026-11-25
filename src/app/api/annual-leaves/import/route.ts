@@ -277,7 +277,18 @@ export async function POST(request: NextRequest) {
         // 計算年資
         const hireDate = new Date(employee.hireDate);
         const yearsOfService = year - hireDate.getFullYear();
-        const totalDays = totalDaysFromFile ?? usedDays + remainingDays;
+        const rawTotalDays = totalDaysFromFile ?? usedDays + remainingDays;
+
+        // 特休總額欄位只能存整數天（半天只會出現在已休或剩餘）；已休 2 ＋ 剩餘 5.5 ＝ 7.5 存進去會被截成 7，
+        // 總額與明細就對不起來，所以寫入前退回該列
+        if (Math.abs(rawTotalDays - Math.round(rawTotalDays)) > 0.001) {
+          results.errors.push(
+            `第 ${rowNum} 行：已使用 ${usedDays} ＋ 剩餘 ${remainingDays} ＝ ${Number(rawTotalDays.toFixed(3))} 天，特休總天數必須是整數（半天只能出現在已使用或剩餘，兩者相加要是整天）`
+          );
+          results.failed++;
+          continue;
+        }
+        const totalDays = Math.round(rawTotalDays);
 
         // 建立或更新特休假記錄
         await prisma.annualLeave.upsert({

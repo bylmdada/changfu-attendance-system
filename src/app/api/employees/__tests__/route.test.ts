@@ -120,6 +120,49 @@ describe('employees route guards', () => {
     }));
   });
 
+  it('lists only employees with a login account when hasAccount=true for full admins', async () => {
+    await GET(new NextRequest('http://localhost/api/employees?hasAccount=true&search=E1001&limit=10&page=1'));
+
+    expect(mockPrisma.employee.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        user: { isNot: null },
+        OR: [{ name: { contains: 'E1001' } }, { employeeId: { contains: 'E1001' } }],
+      }),
+      skip: 0,
+      take: 10,
+    }));
+    expect(mockPrisma.employee.count).toHaveBeenCalledWith({
+      where: expect.objectContaining({ user: { isNot: null } }),
+    });
+  });
+
+  it('does not let non-admin readers filter or sort by account information', async () => {
+    mockGetUserFromRequest.mockResolvedValue({ userId: 2, employeeId: 20, role: 'EMPLOYEE' } as never);
+
+    await GET(new NextRequest('http://localhost/api/employees?hasAccount=true&sortBy=status'));
+
+    const args = mockPrisma.employee.findMany.mock.calls[0][0] as { where: Record<string, unknown>; orderBy: unknown };
+    expect(args.where).toEqual({ department: '行政部' });
+    expect(args.orderBy).toEqual({ createdAt: 'desc' });
+  });
+
+  it('sorts by a whitelisted field with a stable id tie-break and falls back to the default order otherwise', async () => {
+    await GET(new NextRequest('http://localhost/api/employees?sortBy=department&sortOrder=desc'));
+    expect(mockPrisma.employee.findMany).toHaveBeenLastCalledWith(expect.objectContaining({
+      orderBy: [{ department: 'desc' }, { name: 'asc' }, { id: 'asc' }],
+    }));
+
+    await GET(new NextRequest('http://localhost/api/employees?sortBy=status'));
+    expect(mockPrisma.employee.findMany).toHaveBeenLastCalledWith(expect.objectContaining({
+      orderBy: [{ user: { isActive: 'asc' } }, { name: 'asc' }, { id: 'asc' }],
+    }));
+
+    await GET(new NextRequest('http://localhost/api/employees?sortBy=passwordHash'));
+    expect(mockPrisma.employee.findMany).toHaveBeenLastCalledWith(expect.objectContaining({
+      orderBy: { createdAt: 'desc' },
+    }));
+  });
+
   it('rejects malformed JSON bodies before creating an employee', async () => {
     const response = await POST(new NextRequest('http://localhost/api/employees', {
       method: 'POST',

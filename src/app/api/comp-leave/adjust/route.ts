@@ -2,6 +2,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
+import { getCompLeaveAvailableHours } from '@/lib/comp-leave-balance';
 import { getUserFromRequest } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
@@ -105,6 +106,19 @@ export async function POST(request: NextRequest) {
 
       if (newBalance < 0) {
         throw new Error('調整後餘額不可為負數');
+      }
+
+      // 已核准、還沒扣掉的補休（待確認使用）也要算進去：已確認餘額夠扣，可用餘額卻會變成負數
+      const availableAfter = getCompLeaveAvailableHours({
+        balance: newBalance,
+        pendingEarn: balance.pendingEarn,
+        pendingUse: balance.pendingUse,
+      });
+      if (type === 'subtract' && availableAfter < 0) {
+        const availableBefore = getCompLeaveAvailableHours(balance);
+        throw new Error(
+          `扣減後可用餘額會變成負數（已確認 ${balance.balance} 小時、待扣 ${balance.pendingUse} 小時，目前可用 ${availableBefore} 小時）`
+        );
       }
 
       // 更新餘額

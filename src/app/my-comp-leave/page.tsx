@@ -47,6 +47,8 @@ export default function MyCompLeavePage() {
   const [user, setUser] = useState<User | null>(null);
   const [balance, setBalance] = useState<CompLeaveBalance | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [nextCursor, setNextCursor] = useState<number | null>(null);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const [loading, setLoading] = useState(true);
   const [selectedDepartment, setSelectedDepartment] = useState('');
   const [selectedEmployeeId, setSelectedEmployeeId] = useState('');
@@ -80,6 +82,7 @@ export default function MyCompLeavePage() {
         if (data.success) {
           setBalance(data.balance);
           setTransactions(data.recentTransactions || []);
+          setNextCursor(data.hasMoreTransactions ? data.nextCursor : null);
         }
       }
     } catch (error) {
@@ -88,6 +91,33 @@ export default function MyCompLeavePage() {
       setLoading(false);
     }
   }, [isAdmin, selectedEmployeeId]);
+
+  // 載入更早的異動紀錄：用上一頁最後一筆的 ID 當 cursor，接在現有清單後面
+  const loadOlderTransactions = async () => {
+    if (nextCursor === null || loadingOlder) return;
+    setLoadingOlder(true);
+    try {
+      const params = new URLSearchParams({ cursor: String(nextCursor) });
+      if (isAdmin && selectedEmployeeId) {
+        params.set('employeeId', selectedEmployeeId);
+      }
+      const response = await fetch(`/api/comp-leave/balance?${params.toString()}`, { credentials: 'include' });
+      if (response.ok) {
+        const data = await response.json();
+        if (data.success) {
+          setTransactions((current) => {
+            const known = new Set(current.map((tx) => tx.id));
+            return [...current, ...(data.recentTransactions || []).filter((tx: Transaction) => !known.has(tx.id))];
+          });
+          setNextCursor(data.hasMoreTransactions ? data.nextCursor : null);
+        }
+      }
+    } catch (error) {
+      console.error('載入較早補休紀錄失敗:', error);
+    } finally {
+      setLoadingOlder(false);
+    }
+  };
 
   useEffect(() => {
     document.title = '補休查詢 - 長福會考勤系統';
@@ -315,6 +345,18 @@ export default function MyCompLeavePage() {
                 ))
               )}
             </div>
+            {nextCursor !== null && (
+              <div className="px-5 py-3 border-t border-gray-100 text-center">
+                <button
+                  type="button"
+                  onClick={loadOlderTransactions}
+                  disabled={loadingOlder}
+                  className="text-sm font-medium text-blue-600 hover:text-blue-800 disabled:opacity-50"
+                >
+                  {loadingOlder ? '載入中...' : '載入較早紀錄'}
+                </button>
+              </div>
+            )}
           </div>
 
           {/* 說明 */}

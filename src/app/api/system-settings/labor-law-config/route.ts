@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/database';
+import { getTaiwanTodayDateOnly } from '@/lib/timezone';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
 import { checkRateLimit } from '@/lib/rate-limit';
@@ -74,10 +75,10 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: '未授權訪問' }, { status: 401 });
     }
 
-    // 取得目前生效的設定（最新且 isActive = true）
+    // 取得目前生效的設定（啟用中、生效日已到的最新一版；預排的未來版本要等生效日才會成為目前設定）
     const config = await prisma.laborLawConfig.findFirst({
-      where: { isActive: true },
-      orderBy: { effectiveDate: 'desc' }
+      where: { isActive: true, effectiveDate: { lte: getTaiwanTodayDateOnly() } },
+      orderBy: [{ effectiveDate: 'desc' }, { id: 'desc' }]
     });
 
     // 如果沒有設定，返回預設值
@@ -220,16 +221,22 @@ export async function POST(request: NextRequest) {
       orderBy: { effectiveDate: 'desc' }
     });
 
+    // 新版本已生效（生效日不晚於今天）才讓生效日不晚於它的舊版失效；預排的未來版本不動舊版，
+    // 否則生效日前就找不到適用版本。讀取端只會取生效日已到的最新一版。
     // 使用交易避免舊設定先失效、但新設定建立失敗時留下空白狀態。
-    const [, config] = await prisma.$transaction([
-      prisma.laborLawConfig.updateMany({
-        where: { isActive: true },
-        data: { isActive: false }
-      }),
-      prisma.laborLawConfig.create({
-        data: newConfigData
-      })
-    ]);
+    const createConfig = prisma.laborLawConfig.create({
+      data: newConfigData
+    });
+    const results = parsedEffectiveDate.getTime() <= getTaiwanTodayDateOnly().getTime()
+      ? await prisma.$transaction([
+          prisma.laborLawConfig.updateMany({
+            where: { isActive: true, effectiveDate: { lte: parsedEffectiveDate } },
+            data: { isActive: false }
+          }),
+          createConfig
+        ])
+      : await prisma.$transaction([createConfig]);
+    const config = results[results.length - 1] as Awaited<typeof createConfig>;
 
     await logSystemSettingsChange({
       request,

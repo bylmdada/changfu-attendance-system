@@ -7,6 +7,8 @@ import { safeParseJSON } from '@/lib/validation';
 import { DEPARTMENT_OPTIONS, DEPARTMENT_POSITIONS } from '@/constants/departments';
 import { logSystemSettingsChange } from '@/lib/system-settings-audit';
 
+class DepartmentRenameConflictError extends Error {}
+
 function parsePositiveInteger(value: unknown) {
   if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
     return value;
@@ -395,22 +397,48 @@ export async function PUT(request: NextRequest) {
       if (parsedSortOrder.value !== undefined) updateData.sortOrder = parsedSortOrder.value;
       if (parsedIsActive.value !== undefined) updateData.isActive = parsedIsActive.value;
 
-      const updated = await prisma.$transaction(async (tx) => {
-        const updatedDepartment = await tx.department.update({
-          where: { id: parsedId },
-          data: updateData,
-          include: { positions: { orderBy: { sortOrder: 'asc' } } }
-        });
-
-        if (parsedName.value !== undefined && parsedName.value !== existingDepartment.name) {
-          await tx.employee.updateMany({
-            where: { department: existingDepartment.name },
-            data: { department: parsedName.value }
+      let updated;
+      try {
+        updated = await prisma.$transaction(async (tx) => {
+          const updatedDepartment = await tx.department.update({
+            where: { id: parsedId },
+            data: updateData,
+            include: { positions: { orderBy: { sortOrder: 'asc' } } }
           });
-        }
 
-        return updatedDepartment;
-      });
+          if (parsedName.value !== undefined && parsedName.value !== existingDepartment.name) {
+            const oldName = existingDepartment.name;
+            const newName = parsedName.value;
+
+            await tx.employee.updateMany({
+              where: { department: oldName },
+              data: { department: newName }
+            });
+
+            // 以部門名稱當鍵的設定要一起改名，否則專屬審核流程、部門主管範圍與 GPS 部門設定會因名稱對不上而失效，
+            // 新申請就會落回預設流程。新名稱若已有殘留的同名設定，直接改名會撞唯一鍵，所以先擋下並說明。
+            const leftovers =
+              await tx.approvalWorkflow.count({ where: { department: newName } }) +
+              await tx.departmentManager.count({ where: { department: newName } });
+            if (leftovers > 0) {
+              throw new DepartmentRenameConflictError(
+                `新名稱「${newName}」在審核流程或部門主管設定中已有殘留資料，請先清理後再改名`
+              );
+            }
+
+            await tx.approvalWorkflow.updateMany({ where: { department: oldName }, data: { department: newName } });
+            await tx.departmentManager.updateMany({ where: { department: oldName }, data: { department: newName } });
+            await tx.gPSAttendancePermission.updateMany({ where: { department: oldName }, data: { department: newName } });
+          }
+
+          return updatedDepartment;
+        });
+      } catch (error) {
+        if (error instanceof DepartmentRenameConflictError) {
+          return NextResponse.json({ error: error.message }, { status: 409 });
+        }
+        throw error;
+      }
 
       await logSystemSettingsChange({
         request,

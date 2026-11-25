@@ -94,3 +94,65 @@ describe('comp leave adjust body guards', () => {
     expect(mockPrisma.$transaction).not.toHaveBeenCalled();
   });
 });
+
+describe('comp leave manual deduction uses the same available hours as approval', () => {
+  // 已確認 8 小時、已核准待扣 6 小時 → 可用只剩 2 小時
+  const balanceRow = { id: 1, employeeId: 10, totalEarned: 8, totalUsed: 0, balance: 8, pendingEarn: 0, pendingUse: 6 };
+  const makeTx = () => ({
+    compLeaveBalance: {
+      findUnique: jest.fn().mockResolvedValue(balanceRow),
+      create: jest.fn(),
+      update: jest.fn().mockImplementation(async ({ data }: { data: Record<string, number> }) => ({ ...balanceRow, ...data })),
+    },
+    compLeaveTransaction: { create: jest.fn() },
+  });
+  const adjust = (type: 'add' | 'subtract', hours: number) =>
+    POST(new NextRequest('http://localhost:3000/api/comp-leave/adjust', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-csrf-token': 'csrf-token' },
+      body: JSON.stringify({ employeeId: 10, type, hours, reason: '更正' }),
+    }));
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockCheckRateLimit.mockResolvedValue({ allowed: true } as never);
+    mockValidateCSRF.mockResolvedValue({ valid: true } as never);
+    mockGetUserFromRequest.mockResolvedValue({ role: 'HR', userId: 1, employeeId: 1 } as never);
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('refuses to deduct 4 hours when only 2 are available, without writing anything', async () => {
+    const tx = makeTx();
+    (mockPrisma.$transaction as jest.Mock).mockImplementation(async (callback: (t: unknown) => unknown) => callback(tx));
+
+    const response = await adjust('subtract', 4);
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload.error).toContain('可用餘額');
+    expect(payload.error).toContain('目前可用 2 小時');
+    expect(tx.compLeaveBalance.update).not.toHaveBeenCalled();
+    expect(tx.compLeaveTransaction.create).not.toHaveBeenCalled();
+  });
+
+  it('allows deducting exactly the 2 available hours, which leaves 0 available', async () => {
+    const tx = makeTx();
+    (mockPrisma.$transaction as jest.Mock).mockImplementation(async (callback: (t: unknown) => unknown) => callback(tx));
+
+    const response = await adjust('subtract', 2);
+
+    expect(response.status).toBe(200);
+    expect(tx.compLeaveBalance.update).toHaveBeenCalledWith({
+      where: { employeeId: 10 },
+      data: { totalEarned: 8, totalUsed: 2, balance: 6 },
+    });
+    expect(tx.compLeaveTransaction.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('adding hours is never blocked by pending use', async () => {
+    const tx = makeTx();
+    (mockPrisma.$transaction as jest.Mock).mockImplementation(async (callback: (t: unknown) => unknown) => callback(tx));
+
+    expect((await adjust('add', 4)).status).toBe(200);
+  });
+});

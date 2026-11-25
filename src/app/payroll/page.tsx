@@ -9,6 +9,7 @@ import PageSkeleton from '@/components/PageSkeleton';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import { escapeHtml } from '@/lib/html';
 import { LOGO_BASE64 } from '@/lib/logoBase64';
+import { loadAllEmployees } from '@/lib/load-all-employees';
 
 interface Employee {
   id: number;
@@ -173,14 +174,10 @@ export default function PayrollManagementPage() {
         // 只有 ADMIN/HR 才載入員工列表和部門列表（用於批量生成薪資）
         if (currentUser && (currentUser.role === 'ADMIN' || currentUser.role === 'HR')) {
           try {
-            const employeesResponse = await fetch('/api/employees?status=active&limit=1000', {
-              credentials: 'include'
-            });
-            if (employeesResponse.ok) {
-              const employeesData = await employeesResponse.json();
-              console.log('✅ 活躍員工數據載入成功:', employeesData.employees?.length || 0, '名員工');
-              setEmployees(employeesData.employees || []);
-            }
+            // 在職員工逐頁取完，不設人數上限
+            const activeEmployees = await loadAllEmployees<Employee>({ status: 'active' });
+            console.log('✅ 活躍員工數據載入成功:', activeEmployees.length, '名員工');
+            setEmployees(activeEmployees);
           } catch (empError) {
             console.error('獲取活躍員工列表失敗:', empError);
           }

@@ -7,6 +7,8 @@ import {
   calculateServiceDuration,
   formatYearsOfServiceInput,
 } from '@/lib/annual-leave-rules';
+import { getCarryOverStatus, getUsableCarryOverDays } from '@/lib/annual-leave-carry-over';
+import { getLeaveRulesConfig } from '@/lib/leave-rules-validator';
 
 function formatServiceYears(totalMonths: number): number {
   return Number(formatYearsOfServiceInput(totalMonths));
@@ -33,6 +35,9 @@ export async function GET(request: NextRequest) {
     const lastYear = currentYear - 1;
     const today = new Date();
     const isAdmin = user.role === 'ADMIN' || user.role === 'HR';
+    // 去年度剩餘能不能延休，以系統設定為準（與核准請假扣帳用的是同一份判斷）
+    const rulesConfig = await getLeaveRulesConfig();
+    const carryOverPolicy = { enabled: rulesConfig.annualLeaveRollover, maxDays: rulesConfig.annualLeaveRolloverMax };
 
     // 管理員查看全部員工模式
     if (isAdmin && viewMode === 'all') {
@@ -84,14 +89,19 @@ export async function GET(request: NextRequest) {
         }
       });
 
+      // 先按員工 ID 建索引，避免每位員工都在兩份陣列裡逐筆搜尋（員工數 × 年度紀錄數）
+      const currentLeaveByEmployee = new Map(currentYearLeaves.map(l => [l.employeeId, l]));
+      const lastLeaveByEmployee = new Map(lastYearLeaves.map(l => [l.employeeId, l]));
+
       // 組合資料
       const employeesWithLeave = employees.map(emp => {
         const hireDate = new Date(emp.hireDate);
         const serviceDuration = calculateServiceDuration(hireDate, today);
         const yearsOfService = formatServiceYears(serviceDuration.totalMonths);
         
-        const currentLeave = currentYearLeaves.find(l => l.employeeId === emp.id);
-        const lastLeave = lastYearLeaves.find(l => l.employeeId === emp.id);
+        const currentLeave = currentLeaveByEmployee.get(emp.id);
+        const lastLeave = lastLeaveByEmployee.get(emp.id);
+        const lastYearStatus = getCarryOverStatus(lastLeave, carryOverPolicy, today);
 
         const daysToExpiry = currentLeave?.expiryDate
           ? Math.ceil((new Date(currentLeave.expiryDate).getTime() - today.getTime()) / (24 * 60 * 60 * 1000))
@@ -109,9 +119,12 @@ export async function GET(request: NextRequest) {
             expiryDate: currentLeave.expiryDate,
             daysToExpiry
           } : null,
-          lastYear: lastLeave && lastLeave.remainingDays > 0 ? {
+          lastYear: lastLeave && lastYearStatus ? {
             remainingDays: lastLeave.remainingDays,
-            expiryDate: lastLeave.expiryDate
+            expiryDate: lastLeave.expiryDate,
+            // USABLE 才是可延休；EXPIRED／NOT_ENABLED 只是歷史餘額，核准請假不能扣
+            status: lastYearStatus,
+            usableDays: getUsableCarryOverDays(lastLeave, carryOverPolicy, today)
           } : null
         };
       });
@@ -193,7 +206,8 @@ export async function GET(request: NextRequest) {
       where: {
         employeeId: targetEmpId,
         leaveType: { in: ['ANNUAL', 'ANNUAL_LEAVE'] },
-        status: { in: ['PENDING', 'APPROVED'] }
+        // 待主管審、待管理員審、已核准都要列（只列前兩段會讓同一張單在轉態的瞬間從清單消失）
+        status: { in: ['PENDING', 'PENDING_ADMIN', 'APPROVED'] }
       },
       orderBy: { createdAt: 'desc' },
       take: 10,
@@ -214,6 +228,7 @@ export async function GET(request: NextRequest) {
       ? Math.ceil((new Date(currentYearLeave.expiryDate).getTime() - today.getTime()) / (24 * 60 * 60 * 1000))
       : null;
 
+    const lastYearStatus = getCarryOverStatus(lastYearLeave, carryOverPolicy, today);
     const lastYearDaysToExpiry = lastYearLeave?.expiryDate
       ? Math.ceil((new Date(lastYearLeave.expiryDate).getTime() - today.getTime()) / (24 * 60 * 60 * 1000))
       : null;
@@ -239,13 +254,15 @@ export async function GET(request: NextRequest) {
       },
       lastYear: {
         year: lastYear,
-        data: lastYearLeave && lastYearLeave.remainingDays > 0 ? {
+        data: lastYearLeave && lastYearStatus ? {
           totalDays: lastYearLeave.totalDays,
           usedDays: lastYearLeave.usedDays,
           remainingDays: lastYearLeave.remainingDays,
           expiryDate: lastYearLeave.expiryDate,
           daysToExpiry: lastYearDaysToExpiry,
-          isExpired: lastYearDaysToExpiry !== null && lastYearDaysToExpiry < 0
+          isExpired: lastYearStatus === 'EXPIRED',
+          status: lastYearStatus,
+          usableDays: getUsableCarryOverDays(lastYearLeave, carryOverPolicy, today)
         } : null
       },
       recentLeaveRequests,
@@ -255,7 +272,7 @@ export async function GET(request: NextRequest) {
         { years: '2年以上未滿3年', days: 10 },
         { years: '3年以上未滿5年', days: 14 },
         { years: '5年以上未滿10年', days: 15 },
-        { years: '10年以上', days: '每年+1天，最多30天' }
+        { years: '10年以上', days: '滿10年16天，每年+1天，最多30天' }
       ]
     });
   } catch (error) {

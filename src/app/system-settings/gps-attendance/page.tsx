@@ -7,6 +7,7 @@ import { DEPARTMENT_OPTIONS } from '@/constants/departments';
 import { buildAuthMeRequest, buildCookieSessionRequest } from '@/lib/admin-session-client';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import SystemNavbar from '@/components/SystemNavbar';
+import { loadAllEmployees } from '@/lib/load-all-employees';
 
 interface GPSSettings {
   enabled: boolean;
@@ -222,14 +223,18 @@ export default function GPSAttendanceSettings() {
         }
 
         // 載入員工列表
-        const employeesRequest = buildCookieSessionRequest(window.location.origin, '/api/employees');
-        const employeesResponse = await fetch(employeesRequest.url, employeesRequest.options);
-        if (employeesResponse.ok) {
-          const employeesData = await employeesResponse.json();
-          console.log('Employees response:', employeesData);
-          setEmployees(employeesData.employees || []);
-        } else {
-          console.error('Failed to load employees:', employeesResponse.status);
+        // 逐頁取完，不設人數上限；失敗只影響選人清單（外層 catch 會導去登入頁，不能讓它觸發）
+        try {
+          const loaded = await loadAllEmployees<{ id: number; employeeId: string; name: string; department?: string | null }>();
+          // 頁面用字串 id 與 code（員編）；API 回的是數字 id 與 employeeId，要轉成頁面要的形狀
+          setEmployees(loaded.map((employee) => ({
+            id: String(employee.id),
+            name: employee.name,
+            code: employee.employeeId,
+            department: employee.department ?? undefined,
+          })));
+        } catch (employeesError) {
+          console.error('Failed to load employees:', employeesError);
           setEmployees([]);
         }
 

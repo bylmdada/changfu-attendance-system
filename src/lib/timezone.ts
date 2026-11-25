@@ -110,6 +110,15 @@ export function getTaiwanTodayEnd(now?: Date): Date {
   return new Date(getTaiwanTodayStart(now).getTime() + 24 * 60 * 60 * 1000);
 }
 
+/**
+ * 台北「今天」的純日期值（該日期的 UTC 午夜）。
+ * 生效日這類純日期欄位以 UTC 午夜儲存，拿它跟「現在」比，台北凌晨 00:00–08:00 的當天生效日會被當成還沒到；
+ * 改跟這個值比，生效當天整天都算已生效。
+ */
+export function getTaiwanTodayDateOnly(now?: Date): Date {
+  return new Date(`${toTaiwanDateStr(now || new Date())}T00:00:00.000Z`);
+}
+
 /** 取得台灣時區的年份 */
 export function getTaiwanYear(d?: Date): number {
   return getTaiwanDateParts(d || new Date()).year;

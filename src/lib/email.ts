@@ -574,7 +574,7 @@ export async function notifyAnnualLeaveExpiryWithStage(params: {
   expiryDate: string;
   daysUntilExpiry: number;
   stageLabel: string;
-}): Promise<void> {
+}) {
   const { employeeId, employeeName, employeeEmail, remainingDays, expiryDate, daysUntilExpiry, stageLabel } = params;
   
   let urgencyText = '';
@@ -587,7 +587,7 @@ export async function notifyAnnualLeaveExpiryWithStage(params: {
   const title = `${urgencyText}年假即將到期提醒`;
   const message = `${employeeName} 您好，\n\n您尚有 ${remainingDays} 天年假將於 ${expiryDate} 到期（剩餘 ${daysUntilExpiry} 天），請儘早安排休假。\n\n提醒類型：${stageLabel}`;
 
-  await sendNotification({
+  return sendNotification({
     type: 'ANNUAL_LEAVE_EXPIRY',
     recipientEmployeeId: employeeId,
     recipientEmail: employeeEmail,
@@ -690,7 +690,7 @@ export async function sendAnnualLeaveExpiryReminders(): Promise<{
       }
 
       try {
-        await notifyAnnualLeaveExpiryWithStage({
+        const outcome = await notifyAnnualLeaveExpiryWithStage({
           employeeId: leave.employee.id,
           employeeName: leave.employee.name,
           employeeEmail: leave.employee.email || undefined,
@@ -700,21 +700,46 @@ export async function sendAnnualLeaveExpiryReminders(): Promise<{
           stageLabel: currentStage.label,
         });
 
-        // 記錄發送
+        // 以各管道實際送出的結果為準：沒有任何管道送出就不記錄（下次執行才會再試，不會被間隔擋住）
+        if (!outcome.emailSent && !outcome.inAppSent) {
+          if (outcome.errors.length > 0) {
+            results.failed++;
+            results.details.push({
+              employeeName: leave.employee.name,
+              stage: currentStage.label,
+              status: '發送失敗',
+            });
+            results.errors.push(`${leave.employee.name}: ${outcome.errors.join('；')}`);
+          } else {
+            results.skipped++;
+            results.details.push({
+              employeeName: leave.employee.name,
+              stage: currentStage.label,
+              status: '未發送（通知管道已關閉或沒有收件信箱）',
+            });
+          }
+          continue;
+        }
+
+        // 只記錄真的送出的管道
         await logReminderSent(
           leave.employee.id,
           leave.id,
           leave.year,
           currentStage.stage,
-          settings.emailEnabled && settings.inAppEnabled ? 'BOTH' : 
-            settings.emailEnabled ? 'EMAIL' : 'IN_APP'
+          outcome.emailSent && outcome.inAppSent ? 'BOTH' : outcome.emailSent ? 'EMAIL' : 'IN_APP'
         );
+
+        // 其中一個管道失敗時，成功的算已發送，失敗的原因保留在錯誤清單
+        if (outcome.errors.length > 0) {
+          results.errors.push(`${leave.employee.name}: ${outcome.errors.join('；')}`);
+        }
 
         results.sent++;
         results.details.push({
           employeeName: leave.employee.name,
           stage: currentStage.label,
-          status: '已發送',
+          status: outcome.errors.length > 0 ? '部分管道已發送' : '已發送',
         });
       } catch (error) {
         results.failed++;

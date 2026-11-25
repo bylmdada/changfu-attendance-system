@@ -13,6 +13,7 @@ import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import EmployeeListSelect, { useActiveEmployeeDepartments } from '@/components/EmployeeListSelect';
 import { SimpleToast, useLocalToast } from '@/components/Toast';
+import { loadAllEmployees } from '@/lib/load-all-employees';
 
 interface Employee {
   id: number;
@@ -117,11 +118,14 @@ export default function AnnualLeaveManagementPage() {
         const annualLeavesUrl = new URL('/api/annual-leaves', window.location.origin);
         if (filters.year) annualLeavesUrl.searchParams.set('year', filters.year);
         const annualLeavesRequest = buildSessionRequest(`${annualLeavesUrl.pathname}${annualLeavesUrl.search}`);
-        const employeesRequest = buildSessionRequest('/api/employees?limit=1000&status=active');
-        
-        const [annualLeavesResponse, employeesResponse] = await Promise.all([
+
+        const [annualLeavesResponse, activeEmployees] = await Promise.all([
           fetch(annualLeavesRequest.url, annualLeavesRequest.options),
-          fetch(employeesRequest.url, employeesRequest.options)
+          // 在職員工逐頁取完，不設人數上限；載入失敗不影響年度紀錄
+          loadAllEmployees<Employee>({ status: 'active' }).catch((error) => {
+            console.error('載入員工列表失敗:', error);
+            return null;
+          })
         ]);
 
         if (annualLeavesResponse.ok) {
@@ -129,9 +133,8 @@ export default function AnnualLeaveManagementPage() {
           setAnnualLeaves(annualLeavesData.annualLeaves);
         }
 
-        if (employeesResponse.ok) {
-          const employeesData = await employeesResponse.json();
-          setEmployees(employeesData.employees);
+        if (activeEmployees) {
+          setEmployees(activeEmployees);
         }
       } catch (error) {
         console.error('獲取數據失敗:', error);
@@ -1043,7 +1046,7 @@ export default function AnnualLeaveManagementPage() {
               <div className="text-sm text-blue-800">
                 <strong>📖 勞基法特休假規則：</strong>
                 <span className="ml-2">
-                  6個月→3天 | 1年→7天 | 2年→10天 | 3年→14天 | 5年→15天 | 10年以上→每年加1天(最高30天)
+                  6個月→3天 | 1年→7天 | 2年→10天 | 3年→14天 | 5年→15天 | 滿10年→16天，之後每年加1天(24年起30天上限)
                 </span>
               </div>
             </div>
