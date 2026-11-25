@@ -12,6 +12,7 @@ import { createApprovalForRequest } from '@/lib/approval-helper';
 import {
   canUserAccessAnnouncement,
   parseAnnouncementDate,
+  validateScheduledPublishBeforeExpiry,
   validateAnnouncementTargetDepartments,
 } from '@/lib/announcement-utils';
 
@@ -258,6 +259,11 @@ export async function POST(request: NextRequest) {
 
     const expiryDate = expiryDateResult.value;
     const scheduledPublishAt = scheduledPublishAtResult.value;
+
+    const scheduleError = validateScheduledPublishBeforeExpiry(scheduledPublishAt, expiryDate);
+    if (scheduleError) {
+      return NextResponse.json({ success: false, error: scheduleError }, { status: 400 });
+    }
 
     // If Prisma client isn't generated with Announcement yet, short-circuit in demo mode
     const anyPrisma = prisma as unknown as { announcement?: { create?: (args: unknown) => Promise<unknown> } };

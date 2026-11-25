@@ -3,6 +3,61 @@ import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
 import { isReviewerFor } from '@/lib/approval-service';
 import { getApprovalWorkflow } from '@/lib/approval-workflow';
+import { buildResignationHistoryFromRecord } from '@/lib/resignation-approval-history';
+
+/**
+ * 改版前核准／駁回的離職單沒有流程實例，歷程用離職單自己保存的決定、審核人與時間還原。
+ * 回傳 null 代表沒有可還原的決定（單不存在或仍待審），由呼叫端走原本的「待審」回應。
+ */
+async function getResignationHistoryFromRecord(
+  user: { role: string; employeeId: number },
+  recordId: number,
+  department: string | null
+) {
+  if (!Number.isInteger(recordId) || recordId <= 0) return null;
+
+  const record = await prisma.resignationRecord.findUnique({
+    where: { id: recordId },
+    select: {
+      employeeId: true,
+      status: true,
+      approvedById: true,
+      approvedAt: true,
+      rejectionReason: true,
+      notes: true,
+      employee: { select: { department: true } }
+    }
+  });
+  if (!record?.approvedAt) return null;
+
+  // 有實際決定內容時，只有人資／管理員與申請人本人看得到
+  const isPrivilegedRole = user.role === 'ADMIN' || user.role === 'HR';
+  if (!isPrivilegedRole && record.employeeId !== user.employeeId) {
+    return NextResponse.json({ error: '無權查看此審核歷程' }, { status: 403 });
+  }
+
+  // approvedById 存的是審核者的帳號（User）ID
+  const reviewerAccount = record.approvedById
+    ? await prisma.user.findUnique({
+        where: { id: record.approvedById },
+        select: { username: true, role: true, employee: { select: { name: true } } }
+      })
+    : null;
+  const workflow = await getApprovalWorkflow('RESIGNATION', {
+    department: record.employee?.department ?? department
+  });
+
+  const history = buildResignationHistoryFromRecord(
+    record,
+    {
+      name: reviewerAccount?.employee?.name || reviewerAccount?.username || '管理員',
+      role: reviewerAccount?.role || 'ADMIN'
+    },
+    workflow?.approvalLevel ?? 2
+  );
+
+  return history ? NextResponse.json({ success: true, ...history }) : null;
+}
 
 /**
  * 取得特定申請單的審核歷程 API
@@ -38,6 +93,11 @@ export async function GET(request: NextRequest) {
     });
 
     if (!instance) {
+      if (requestType === 'RESIGNATION') {
+        const fromRecord = await getResignationHistoryFromRecord(user, parseInt(requestId), department);
+        if (fromRecord) return fromRecord;
+      }
+
       const workflow = await getApprovalWorkflow(requestType, { department });
 
       return NextResponse.json({

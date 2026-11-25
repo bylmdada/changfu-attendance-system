@@ -323,14 +323,14 @@ export async function POST(request: NextRequest) {
       remarks: normalizedRemarks || null
     };
 
-    let savedDependent;
     let auditOldDependent: unknown = null;
     const changedBy = user.username;
     const employeeIdsToSync = new Set<number>([parsedEmployeeId]);
 
+    // 修改既有眷屬：先讀舊資料（也用來記錄變更與同步原員工的人數）
+    let oldDependent: Awaited<ReturnType<typeof prisma.healthInsuranceDependent.findUnique>> = null;
     if (parsedId) {
-      // 取得舊資料用於記錄變更
-      const oldDependent = await prisma.healthInsuranceDependent.findUnique({
+      oldDependent = await prisma.healthInsuranceDependent.findUnique({
         where: { id: parsedId },
         include: { employee: { select: { name: true } } }
       });
@@ -342,18 +342,25 @@ export async function POST(request: NextRequest) {
         );
       }
       auditOldDependent = oldDependent;
-
       employeeIdsToSync.add(oldDependent.employeeId);
-      
-      // 更新現有眷屬
-      savedDependent = await prisma.healthInsuranceDependent.update({
-        where: { id: parsedId },
-        data: dependentData,
-        include: { employee: { select: { name: true } } }
-      });
+    } else if (shouldReactivateExistingDependent && existingDependent) {
+      auditOldDependent = existingDependent;
+    }
 
-      // 記錄更新歷史
-      if (oldDependent) {
+    // 主檔、異動歷程與員工投保人數放在同一個交易：任何一步失敗都整筆回滾，
+    // 不會留下「主檔已存在、人數還沒同步」的半筆資料，重送也只會建立一筆
+    const { savedDependent, syncedDependentsCounts } = await prisma.$transaction(async (tx) => {
+      let saved;
+
+      if (parsedId && oldDependent) {
+        // 更新現有眷屬
+        saved = await tx.healthInsuranceDependent.update({
+          where: { id: parsedId },
+          data: dependentData,
+          include: { employee: { select: { name: true } } }
+        });
+
+        // 記錄更新歷史
         const changes: { field: string; oldVal: string; newVal: string }[] = [];
         if (oldDependent.dependentName !== dependentData.dependentName) {
           changes.push({ field: 'dependentName', oldVal: oldDependent.dependentName, newVal: dependentData.dependentName });
@@ -364,13 +371,13 @@ export async function POST(request: NextRequest) {
         if (oldDependent.isActive !== dependentData.isActive) {
           changes.push({ field: 'isActive', oldVal: String(oldDependent.isActive), newVal: String(dependentData.isActive) });
         }
-        
+
         for (const change of changes) {
-          await prisma.dependentHistoryLog.create({
+          await tx.dependentHistoryLog.create({
             data: {
               dependentId: parsedId,
               dependentName: dependentData.dependentName,
-              employeeName: savedDependent.employee.name,
+              employeeName: saved.employee.name,
               action: 'UPDATE',
               fieldName: change.field,
               oldValue: change.oldVal,
@@ -379,11 +386,9 @@ export async function POST(request: NextRequest) {
             }
           });
         }
-      }
-    } else {
-      if (shouldReactivateExistingDependent && existingDependent) {
-        auditOldDependent = existingDependent;
-        savedDependent = await prisma.healthInsuranceDependent.update({
+      } else if (shouldReactivateExistingDependent && existingDependent) {
+        // 重新加保
+        saved = await tx.healthInsuranceDependent.update({
           where: { id: existingDependent.id },
           data: {
             ...dependentData,
@@ -392,11 +397,11 @@ export async function POST(request: NextRequest) {
           include: { employee: { select: { name: true } } }
         });
 
-        await prisma.dependentHistoryLog.create({
+        await tx.dependentHistoryLog.create({
           data: {
-            dependentId: savedDependent.id,
+            dependentId: saved.id,
             dependentName: dependentData.dependentName,
-            employeeName: savedDependent.employee.name,
+            employeeName: saved.employee.name,
             action: 'UPDATE',
             fieldName: 'isActive',
             oldValue: 'false',
@@ -406,31 +411,30 @@ export async function POST(request: NextRequest) {
         });
       } else {
         // 新增眷屬
-        savedDependent = await prisma.healthInsuranceDependent.create({
+        saved = await tx.healthInsuranceDependent.create({
           data: dependentData,
           include: { employee: { select: { name: true } } }
         });
 
         // 記錄新增歷史
-        await prisma.dependentHistoryLog.create({
+        await tx.dependentHistoryLog.create({
           data: {
-            dependentId: savedDependent.id,
+            dependentId: saved.id,
             dependentName: dependentData.dependentName,
-            employeeName: savedDependent.employee.name,
+            employeeName: saved.employee.name,
             action: 'CREATE',
             changedBy
           }
         });
       }
-    }
 
-    const syncedDependentsCounts: Record<number, number> = {};
-    for (const employeeIdToSync of employeeIdsToSync) {
-      syncedDependentsCounts[employeeIdToSync] = await syncEmployeeDependentsCount(
-        prisma,
-        employeeIdToSync
-      );
-    }
+      const counts: Record<number, number> = {};
+      for (const employeeIdToSync of employeeIdsToSync) {
+        counts[employeeIdToSync] = await syncEmployeeDependentsCount(tx, employeeIdToSync);
+      }
+
+      return { savedDependent: saved, syncedDependentsCounts: counts };
+    });
 
     await logSystemSettingsChange({
       request,

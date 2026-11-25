@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import ConfirmDialog from '@/components/ConfirmDialog';
+import { loadEmployeeOptions } from '@/components/EmployeeListSelect';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 
 interface DisasterDayOff {
@@ -144,19 +145,19 @@ export default function DisasterDayOffPage() {
 
   const fetchDepartmentsAndEmployees = useCallback(async () => {
     try {
-      const response = await fetch('/api/employees?minimal=true', { credentials: 'include' });
-      if (response.ok) {
-        const data = await response.json();
-        const employeeList = (data.employees || []).map((e: { id: number; name: string; employeeId: string; department?: string }) => ({
-          id: e.id,
-          name: e.name,
-          employeeId: e.employeeId,
-          department: e.department || ''
-        }));
-        setEmployees(employeeList);
-        const depts = [...new Set(employeeList.map((e: { department: string }) => e.department).filter(Boolean))];
-        setDepartments(depts as string[]);
-      }
+      // /api/employees 預設每頁只回 10 人；這裡要完整的在職名單，才與後端套用範圍（isActive）一致，
+      // 部門選單與「預估影響人數」也才不會漏人或多算離職員工
+      const options = await loadEmployeeOptions(false);
+      const employeeList = options.map((e) => ({
+        id: e.id,
+        name: e.name,
+        employeeId: e.employeeId,
+        department: e.department || ''
+      }));
+      setEmployees(employeeList);
+      setDepartments(
+        [...new Set(employeeList.map((e) => e.department).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh-TW'))
+      );
     } catch (error) {
       console.error('載入部門和員工失敗:', error);
     }

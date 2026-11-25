@@ -259,6 +259,61 @@ describe('announcement delete guards', () => {
     );
   });
 
+  describe('修改到期日不能讓排程公告永遠發布不了', () => {
+    const scheduledAnnouncement = {
+      id: 5,
+      title: 'scheduled',
+      content: 'content',
+      priority: 'NORMAL',
+      category: 'GENERAL',
+      publisherId: 1,
+      isPublished: false,
+      publishedAt: null,
+      expiryDate: '2099-12-31T00:00:00.000Z',
+      scheduledPublishAt: '2099-12-02T00:00:00.000Z',
+      isGlobalAnnouncement: true,
+      targetDepartments: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const put = (body: Record<string, unknown>) =>
+      PUT(
+        new NextRequest('http://localhost:3000/api/announcements/5', {
+          method: 'PUT',
+          body: JSON.stringify(body),
+          headers: { 'content-type': 'application/json' },
+        }),
+        { params: Promise.resolve({ id: '5' }) }
+      );
+
+    beforeEach(() => {
+      mockedPrisma.announcement.findUnique.mockResolvedValue(scheduledAnnouncement as never);
+      mockedPrisma.announcement.update.mockResolvedValue(scheduledAnnouncement as never);
+    });
+
+    it('rejects moving the expiry to or before the scheduled publish time', async () => {
+      const response = await put({ expiryDate: '2099-12-01T00:00:00.000Z' });
+      const payload = await response.json();
+
+      expect(response.status).toBe(400);
+      expect(payload.error).toContain('定時發布時間必須早於到期日');
+      expect(mockedPrisma.announcement.update).not.toHaveBeenCalled();
+    });
+
+    it('accepts an expiry after the scheduled publish time, or clearing the expiry', async () => {
+      expect((await put({ expiryDate: '2099-12-20T00:00:00.000Z' })).status).toBe(200);
+      expect((await put({ expiryDate: null })).status).toBe(200);
+      expect(mockedPrisma.announcement.update).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not block publishing now together with an earlier expiry (the schedule is cleared)', async () => {
+      const response = await put({ isPublished: true, expiryDate: '2099-12-01T00:00:00.000Z' });
+
+      expect(response.status).toBe(200);
+      expect(mockedPrisma.announcement.update).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('approves pending announcement flows when publishing from the management page', async () => {
     mockedPrisma.announcement.update.mockResolvedValue({
       id: 5,

@@ -76,3 +76,27 @@ export function parseAnnouncementDate(
 
   return { value };
 }
+
+/**
+ * 定時發布的公告要到排定時間才會被排程選中，而選取條件要求「尚未到期」。
+ * 所以發布時間必須早於到期時間，否則這筆公告會顯示排程成功、卻永遠不會發布。
+ * 回傳錯誤訊息；沒問題（或其中一個沒設）回傳 null。
+ */
+export function validateScheduledPublishBeforeExpiry(
+  scheduledPublishAt: Date | string | null | undefined,
+  expiryDate: Date | string | null | undefined
+): string | null {
+  if (!scheduledPublishAt || !expiryDate) {
+    return null;
+  }
+
+  const publishTime = new Date(scheduledPublishAt).getTime();
+  const expiryTime = new Date(expiryDate).getTime();
+  if (Number.isNaN(publishTime) || Number.isNaN(expiryTime)) {
+    return null;
+  }
+
+  return publishTime < expiryTime
+    ? null
+    : '定時發布時間必須早於到期日，否則公告到點時已經過期，不會發布';
+}

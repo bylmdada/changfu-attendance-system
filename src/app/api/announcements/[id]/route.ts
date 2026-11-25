@@ -8,6 +8,7 @@ import { join } from 'path';
 import {
   canUserAccessAnnouncement,
   parseAnnouncementDate,
+  validateScheduledPublishBeforeExpiry,
   validateAnnouncementTargetDepartments,
 } from '@/lib/announcement-utils';
 import { parseIntegerQueryParam } from '@/lib/query-params';
@@ -26,6 +27,7 @@ interface AnnouncementLite {
   isPublished: boolean;
   publishedAt: string | null;
   expiryDate: string | null;
+  scheduledPublishAt?: string | null;
   targetDepartments?: string | null;
   isGlobalAnnouncement?: boolean;
   createdAt: string;
@@ -219,6 +221,18 @@ export async function PUT(
     });
     if (!existingAnnouncement) {
       return NextResponse.json({ error: '找不到公告' }, { status: 404 });
+    }
+
+    // 還在等排程發布的公告，改到期日不能早於排定的發布時間（到點時已過期，排程永遠選不到它）。
+    // 這次若同時改成立即發布，排程會被清掉，就沒有這個問題
+    if (expiryDate !== undefined && isPublished !== true && !existingAnnouncement.isPublished) {
+      const scheduleError = validateScheduledPublishBeforeExpiry(
+        existingAnnouncement.scheduledPublishAt,
+        expiryDateResult.value
+      );
+      if (scheduleError) {
+        return NextResponse.json({ error: scheduleError }, { status: 400 });
+      }
     }
 
     // 決定 publishedAt 變化

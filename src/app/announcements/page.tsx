@@ -182,6 +182,9 @@ export default function AnnouncementsPage() {
 
   // 刪除確認對話框狀態
   const [deleteConfirm, setDeleteConfirm] = useState<{ id: number; title: string } | null>(null);
+  // 編輯公告時移除單一附件（確認時顯示檔名）
+  const [attachmentToRemove, setAttachmentToRemove] = useState<{ id: number; originalName: string } | null>(null);
+  const [removingAttachment, setRemovingAttachment] = useState(false);
   const [batchDeleteConfirmOpen, setBatchDeleteConfirmOpen] = useState(false);
   const [batchDeleting, setBatchDeleting] = useState(false);
 
@@ -489,6 +492,36 @@ export default function AnnouncementsPage() {
       showToast('error', '刪除失敗，請稍後再試');
     } finally {
       setDeleteConfirm(null);
+    }
+  };
+
+  // 移除公告的單一附件：只刪這個檔案，不動公告本文與發布狀態
+  const handleRemoveAttachment = async () => {
+    if (!attachmentToRemove || removingAttachment) return;
+
+    const { id: removedId } = attachmentToRemove;
+    setRemovingAttachment(true);
+    try {
+      const response = await fetchJSONWithCSRF(`/api/announcements/attachments/${removedId}`, {
+        method: 'DELETE'
+      });
+
+      if (response.ok) {
+        // 只更新編輯視窗裡的附件清單，已輸入但尚未儲存的標題／內容不受影響
+        setEditingAnnouncement(current =>
+          current ? { ...current, attachments: current.attachments?.filter(a => a.id !== removedId) } : current
+        );
+        showToast('success', '附件已移除');
+        fetchAnnouncements();
+      } else {
+        const error = await response.json().catch(() => ({}));
+        showToast('error', error.error || '移除附件失敗');
+      }
+    } catch {
+      showToast('error', '移除附件失敗，請稍後再試');
+    } finally {
+      setRemovingAttachment(false);
+      setAttachmentToRemove(null);
     }
   };
 
@@ -1699,6 +1732,33 @@ export default function AnnouncementsPage() {
                   </label>
                 </div>
 
+                {editingAnnouncement.attachments && editingAnnouncement.attachments.length > 0 && (
+                  <div className="border-t pt-4">
+                    <h4 className="text-sm font-medium text-gray-700 mb-2">
+                      現有附件（{editingAnnouncement.attachments.length}）
+                    </h4>
+                    <ul className="space-y-2">
+                      {editingAnnouncement.attachments.map((attachment) => (
+                        <li key={attachment.id} className="flex items-center justify-between bg-gray-50 p-2 rounded-lg">
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm text-gray-900 truncate">{attachment.originalName}</p>
+                            <p className="text-xs text-gray-500">{formatFileSize(attachment.fileSize)}</p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setAttachmentToRemove({ id: attachment.id, originalName: attachment.originalName })}
+                            className="ml-3 p-1 text-red-600 hover:text-red-800 hover:bg-red-50 rounded"
+                            title="移除附件"
+                            aria-label={`移除附件 ${attachment.originalName}`}
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
                 <div className="flex space-x-3 pt-4">
                   <button
                     type="button"
@@ -1735,6 +1795,19 @@ export default function AnnouncementsPage() {
           {toast.message}
         </div>
       )}
+
+      <ConfirmDialog
+        open={!!attachmentToRemove}
+        title="確認移除附件"
+        message={`確定要移除附件「${attachmentToRemove?.originalName ?? ''}」嗎？\n\n檔案會一併刪除，此操作無法復原。`}
+        tone="danger"
+        confirmLabel="移除附件"
+        loading={removingAttachment}
+        onCancel={() => {
+          if (!removingAttachment) setAttachmentToRemove(null);
+        }}
+        onConfirm={handleRemoveAttachment}
+      />
 
       <ConfirmDialog
         open={batchDeleteConfirmOpen}
