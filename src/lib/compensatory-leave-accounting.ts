@@ -2,6 +2,7 @@ import type { Prisma } from '@prisma/client';
 import { deriveLeaveHours } from '@/lib/leave-management-helpers';
 import { isCompensatoryLeaveType } from '@/lib/leave-types';
 import { getTaiwanYearMonth } from '@/lib/timezone';
+import { getCompLeaveAvailableHours } from '@/lib/comp-leave-balance';
 
 type CompLeaveAccountingClient = Pick<Prisma.TransactionClient, 'compLeaveBalance' | 'compLeaveTransaction'>;
 
@@ -18,10 +19,6 @@ function getLeaveHours(leave: LeaveForCompAccounting) {
   return deriveLeaveHours(Number(leave.totalDays ?? 0));
 }
 
-function getAvailableHours(balance: { balance: number; pendingEarn: number; pendingUse: number } | null) {
-  return balance ? balance.balance + balance.pendingEarn - balance.pendingUse : 0;
-}
-
 export async function applyCompensatoryLeaveUse(
   tx: CompLeaveAccountingClient,
   leave: LeaveForCompAccounting
@@ -34,7 +31,7 @@ export async function applyCompensatoryLeaveUse(
   const balance = await tx.compLeaveBalance.findUnique({
     where: { employeeId: leave.employeeId },
   });
-  if (getAvailableHours(balance) < hours) {
+  if (getCompLeaveAvailableHours(balance) < hours) {
     throw new Error('補休餘額不足，無法核准補休假');
   }
 

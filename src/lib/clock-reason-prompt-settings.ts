@@ -1,3 +1,5 @@
+import { getTaiwanDateParts } from '@/lib/timezone';
+
 export interface ClockReasonPromptSettings {
   enabled: boolean;
   earlyClockInThreshold: number;
@@ -132,18 +134,37 @@ export function shouldSkipClockReasonPrompt({
   return false;
 }
 
+/**
+ * 打卡時間相對於班次所屬日（YYYY-MM-DD，台北日期）過了幾天：同一天 0、隔天 1、前一天 -1。
+ * 班次日期格式不對時回 0（維持只比較時間的舊算法）。
+ */
+export function getClockDayOffset(workDate: string | null | undefined, actualAt: Date): number {
+  const match = typeof workDate === 'string' ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(workDate) : null;
+  if (!match) return 0;
+
+  const actual = getTaiwanDateParts(actualAt);
+  const workDay = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  return Math.round((Date.UTC(actual.year, actual.month - 1, actual.day) - workDay) / 86400000);
+}
+
 export function buildClockReasonPromptData({
   settings,
   type,
   scheduledTime,
   actualTime,
   recordId,
+  scheduledDayOffset = 0,
+  actualDayOffset = 0,
 }: {
   settings: ClockReasonPromptSettings;
   type: 'EARLY_IN' | 'LATE_OUT';
   scheduledTime: string;
   actualTime: string;
   recordId: number;
+  /** 排定時間落在班次所屬日之後幾天（跨午夜班次的下班時間為 1） */
+  scheduledDayOffset?: number;
+  /** 實際打卡落在班次所屬日之後幾天（隔日凌晨打卡為 1；用 getClockDayOffset 取得） */
+  actualDayOffset?: number;
 }): ClockReasonPromptData | null {
   if (!settings.enabled || !Number.isInteger(recordId)) {
     return null;
@@ -156,9 +177,12 @@ export function buildClockReasonPromptData({
     return null;
   }
 
+  // 時間都換算成「班次所屬日 00:00 起的分鐘數」，跨過午夜的差距才不會被當成負數
+  const scheduledAbsolute = scheduledMinutes + scheduledDayOffset * 24 * 60;
+  const actualAbsolute = actualMinutes + actualDayOffset * 24 * 60;
   const minutesDiff = type === 'EARLY_IN'
-    ? scheduledMinutes - actualMinutes
-    : actualMinutes - scheduledMinutes;
+    ? scheduledAbsolute - actualAbsolute
+    : actualAbsolute - scheduledAbsolute;
   const threshold = type === 'EARLY_IN'
     ? settings.earlyClockInThreshold
     : settings.lateClockOutThreshold;

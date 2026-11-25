@@ -9,6 +9,26 @@ import { validateCSRF } from '@/lib/csrf';
 import { getTaiwanYearMonth } from '@/lib/timezone';
 
 // POST - 批量匯入補休餘額
+/**
+ * 匯入的餘額格式必須是明確的非負數字。空白不能當 0（會把原餘額清掉），
+ * 「3hrs」這類夾雜文字也不能被讀成 3；要歸零請明確填 0。
+ */
+function parseImportedHours(cell: unknown): { value: number } | { error: 'BLANK' | 'INVALID' } {
+  if (cell === undefined || cell === null || (typeof cell === 'string' && cell.trim() === '')) {
+    return { error: 'BLANK' };
+  }
+
+  if (typeof cell === 'number') {
+    return Number.isFinite(cell) && cell >= 0 ? { value: cell } : { error: 'INVALID' };
+  }
+
+  if (typeof cell === 'string' && /^\d+(\.\d+)?$/.test(cell.trim())) {
+    return { value: Number(cell.trim()) };
+  }
+
+  return { error: 'INVALID' };
+}
+
 export async function POST(request: NextRequest) {
   try {
     // Rate limiting
@@ -107,7 +127,7 @@ export async function POST(request: NextRequest) {
 
       try {
         const employeeIdStr = String(row[headerIndexes.employeeId] || '').trim();
-        const balance = parseFloat(String(row[headerIndexes.balance] || '0'));
+        const parsedBalance = parseImportedHours(row[headerIndexes.balance]);
         const description = headerIndexes.description !== undefined 
           ? String(row[headerIndexes.description] || '舊系統轉移').trim()
           : '舊系統轉移';
@@ -125,11 +145,21 @@ export async function POST(request: NextRequest) {
           continue;
         }
 
-        if (isNaN(balance) || balance < 0) {
-          results.errors.push(`第 ${rowNum} 行：餘額格式不正確`);
+        if ('error' in parsedBalance) {
+          // 整列不寫入：原餘額與異動紀錄都維持不變，訊息帶上列號與目前的餘額方便核對
+          const current = await prisma.compLeaveBalance.findUnique({
+            where: { employeeId: employee.id },
+            select: { balance: true }
+          });
+          const currentText = current ? `現有餘額 ${current.balance} 小時維持不變` : '目前沒有補休餘額紀錄，未建立';
+          const reason = parsedBalance.error === 'BLANK'
+            ? '餘額欄是空白，要歸零請明確填 0'
+            : `餘額格式不正確（${String(row[headerIndexes.balance])}），請只填數字`;
+          results.errors.push(`第 ${rowNum} 行：員工 ${employeeIdStr} ${reason}（${currentText}）`);
           results.failed++;
           continue;
         }
+        const balance = parsedBalance.value;
 
         // 使用交易確保資料一致性
         await prisma.$transaction(async (tx) => {

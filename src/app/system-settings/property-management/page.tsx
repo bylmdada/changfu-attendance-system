@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Save, Trash2, Upload, Plus, Loader2, Filter } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import fetchWithCSRF from '@/lib/fetchWithCSRF';
@@ -109,7 +109,12 @@ export default function PropertyMgmtSettingsPage() {
   const [showAssignedCandidates, setShowAssignedCandidates] = useState(false);
   const [loadingSites, setLoadingSites] = useState(true);
   const [loadingSiteData, setLoadingSiteData] = useState(false);
+  // 目前據點的設定確實載入成功才開放編輯與儲存，避免把別的據點（或沒載到）的值存到這個據點
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [loadingCandidates, setLoadingCandidates] = useState(false);
+  // 切換據點時，較慢的舊回應不能蓋掉新據點的畫面，只採用最後一次請求的結果
+  const siteDataRequestId = useRef(0);
+  const candidatesRequestId = useRef(0);
   const [savingSettings, setSavingSettings] = useState(false);
   const [savingAssignment, setSavingAssignment] = useState(false);
   const [savingRoleUserId, setSavingRoleUserId] = useState<number | null>(null);
@@ -146,6 +151,8 @@ export default function PropertyMgmtSettingsPage() {
   }, [showToast]);
 
   const loadSiteData = useCallback(async (sid: number) => {
+    const requestId = ++siteDataRequestId.current;
+    const isStale = () => requestId !== siteDataRequestId.current;
     setLoadingSiteData(true);
     try {
       const [sRes, aRes] = await Promise.all([
@@ -156,6 +163,7 @@ export default function PropertyMgmtSettingsPage() {
         sRes.json().catch(() => ({})),
         aRes.json().catch(() => ({})),
       ]);
+      if (isStale()) return;
       if (sRes.ok) {
         const r = settingsJson.data.resolved;
         setSettings({
@@ -165,7 +173,9 @@ export default function PropertyMgmtSettingsPage() {
           reviewWeekday: r.reviewWeekday,
           supervisorEmail: (r.supervisorEmail || []).join(', '),
         });
+        setSettingsLoaded(true);
       } else {
+        setSettingsLoaded(false);
         showToast('error', settingsJson.error || '載入設定失敗');
       }
       if (aRes.ok) {
@@ -180,10 +190,12 @@ export default function PropertyMgmtSettingsPage() {
         showToast('error', assignmentsJson.error || '載入人員指派失敗');
       }
     } catch {
+      if (isStale()) return;
+      setSettingsLoaded(false);
       setAssignments([]);
       showToast('error', '載入據點資料失敗');
     } finally {
-      setLoadingSiteData(false);
+      if (!isStale()) setLoadingSiteData(false);
     }
   }, [showToast]);
 
@@ -191,6 +203,8 @@ export default function PropertyMgmtSettingsPage() {
     sid: number,
     filters: { q: string; department: string; position: string }
   ) => {
+    const requestId = ++candidatesRequestId.current;
+    const isStale = () => requestId !== candidatesRequestId.current;
     setLoadingCandidates(true);
     try {
       const params = new URLSearchParams({ candidates: '1' });
@@ -201,6 +215,7 @@ export default function PropertyMgmtSettingsPage() {
         credentials: 'include',
       });
       const json = await res.json().catch(() => ({}));
+      if (isStale()) return;
       if (res.ok) {
         setEmployeeCandidates(json.data.employees || []);
         setEmployeeFilterOptions({
@@ -212,10 +227,11 @@ export default function PropertyMgmtSettingsPage() {
         showToast('error', json.error || '載入員工清單失敗');
       }
     } catch {
+      if (isStale()) return;
       setEmployeeCandidates([]);
       showToast('error', '載入員工清單失敗');
     } finally {
-      setLoadingCandidates(false);
+      if (!isStale()) setLoadingCandidates(false);
     }
   }, [showToast]);
 
@@ -236,7 +252,12 @@ export default function PropertyMgmtSettingsPage() {
     loadSites();
   }, [loadSites, showToast]);
   useEffect(() => {
-    if (siteId !== null) loadSiteData(siteId);
+    if (siteId === null) return;
+    // 換據點：先清掉前一個據點的設定、人員與候選名單，載入成功後才開放編輯
+    setSettingsLoaded(false);
+    setAssignments([]);
+    setEmployeeCandidates([]);
+    loadSiteData(siteId);
   }, [siteId, loadSiteData]);
   useEffect(() => {
     if (siteId !== null) loadEmployeeCandidates(siteId, employeeFilters);
@@ -248,7 +269,7 @@ export default function PropertyMgmtSettingsPage() {
   }, [assignments]);
 
   const saveSettings = async () => {
-    if (siteId === null) return;
+    if (siteId === null || !settingsLoaded) return;
     setSavingSettings(true);
     const payload = {
       siteId,
@@ -457,8 +478,12 @@ export default function PropertyMgmtSettingsPage() {
                 載入據點設定中…
               </div>
             )}
-          <div className="bg-white rounded-xl border border-gray-200 p-4 mb-4 space-y-4">
+          <div className="bg-white rounded-xl border border-gray-200 p-4 mb-4">
+          <fieldset disabled={!settingsLoaded || loadingSiteData} className="space-y-4 min-w-0">
             <h2 className="font-semibold text-gray-900">通知與排程設定</h2>
+            {!loadingSiteData && !settingsLoaded && (
+              <p role="alert" className="text-sm text-red-600">此據點的設定沒有載入成功，暫時無法編輯與儲存。請重新選擇據點或重新整理頁面。</p>
+            )}
              <label className="flex items-center gap-2 text-sm text-gray-900">
               <input
                 type="checkbox"
@@ -538,6 +563,7 @@ export default function PropertyMgmtSettingsPage() {
               {savingSettings ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
               儲存設定
             </button>
+          </fieldset>
           </div>
 
           <div className="bg-white rounded-xl border border-gray-200 p-4 mb-4">

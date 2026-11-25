@@ -29,6 +29,17 @@ jest.mock('@/lib/database', () => ({
       count: jest.fn(),
       updateMany: jest.fn(),
     },
+    approvalWorkflow: {
+      count: jest.fn(),
+      updateMany: jest.fn(),
+    },
+    departmentManager: {
+      count: jest.fn(),
+      updateMany: jest.fn(),
+    },
+    gPSAttendancePermission: {
+      updateMany: jest.fn(),
+    },
     $transaction: jest.fn(),
   },
 }));
@@ -91,12 +102,20 @@ describe('department positions route guards', () => {
     mockedPrisma.position.deleteMany.mockResolvedValue({ count: 1 } as never);
     mockedPrisma.employee.count.mockResolvedValue(0 as never);
     mockedPrisma.employee.updateMany.mockResolvedValue({ count: 1 } as never);
+    mockedPrisma.approvalWorkflow.count.mockResolvedValue(0 as never);
+    mockedPrisma.approvalWorkflow.updateMany.mockResolvedValue({ count: 0 } as never);
+    mockedPrisma.departmentManager.count.mockResolvedValue(0 as never);
+    mockedPrisma.departmentManager.updateMany.mockResolvedValue({ count: 0 } as never);
+    mockedPrisma.gPSAttendancePermission.updateMany.mockResolvedValue({ count: 0 } as never);
     mockedPrisma.$transaction.mockImplementation(async (arg: unknown) => {
       if (typeof arg === 'function') {
         return arg({
           department: mockedPrisma.department,
           position: mockedPrisma.position,
           employee: mockedPrisma.employee,
+          approvalWorkflow: mockedPrisma.approvalWorkflow,
+          departmentManager: mockedPrisma.departmentManager,
+          gPSAttendancePermission: mockedPrisma.gPSAttendancePermission,
         } as never);
       }
 
@@ -340,6 +359,62 @@ describe('department positions route guards', () => {
       where: { department: '人資部' },
       data: { department: '行政部' }
     });
+  });
+
+  it('renames the department-keyed settings with the department so dedicated workflows and manager scope keep working', async () => {
+    mockedGetUserFromRequest.mockResolvedValueOnce({ id: 1, username: 'admin', role: 'ADMIN', employee: null } as never);
+    mockedPrisma.department.findUnique
+      .mockResolvedValueOnce({ id: 1, name: '人資部' } as never)
+      .mockResolvedValueOnce(null as never);
+    mockedPrisma.department.update.mockResolvedValue({ id: 1, name: '行政部', sortOrder: 1, isActive: true, positions: [] } as never);
+
+    const response = await PUT(new NextRequest('http://localhost:3000/api/system-settings/department-positions', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'updateDepartment', id: 1, name: '行政部' }),
+    }));
+
+    expect(response.status).toBe(200);
+    const rename = { where: { department: '人資部' }, data: { department: '行政部' } };
+    expect(mockedPrisma.approvalWorkflow.updateMany).toHaveBeenCalledWith(rename);
+    expect(mockedPrisma.departmentManager.updateMany).toHaveBeenCalledWith(rename);
+    expect(mockedPrisma.gPSAttendancePermission.updateMany).toHaveBeenCalledWith(rename);
+  });
+
+  it('does not touch those settings when the department is not renamed', async () => {
+    mockedGetUserFromRequest.mockResolvedValueOnce({ id: 1, username: 'admin', role: 'ADMIN', employee: null } as never);
+    mockedPrisma.department.findUnique.mockResolvedValueOnce({ id: 1, name: '人資部' } as never);
+    mockedPrisma.department.update.mockResolvedValue({ id: 1, name: '人資部', sortOrder: 2, isActive: true, positions: [] } as never);
+
+    const response = await PUT(new NextRequest('http://localhost:3000/api/system-settings/department-positions', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'updateDepartment', id: 1, sortOrder: 2 }),
+    }));
+
+    expect(response.status).toBe(200);
+    expect(mockedPrisma.approvalWorkflow.updateMany).not.toHaveBeenCalled();
+    expect(mockedPrisma.departmentManager.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('refuses the rename with 409 when the new name already has leftover workflow settings', async () => {
+    mockedGetUserFromRequest.mockResolvedValueOnce({ id: 1, username: 'admin', role: 'ADMIN', employee: null } as never);
+    mockedPrisma.department.findUnique
+      .mockResolvedValueOnce({ id: 1, name: '人資部' } as never)
+      .mockResolvedValueOnce(null as never);
+    mockedPrisma.department.update.mockResolvedValue({ id: 1, name: '行政部', sortOrder: 1, isActive: true, positions: [] } as never);
+    mockedPrisma.approvalWorkflow.count.mockResolvedValue(2 as never);
+
+    const response = await PUT(new NextRequest('http://localhost:3000/api/system-settings/department-positions', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'updateDepartment', id: 1, name: '行政部' }),
+    }));
+    const data = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(data.error).toContain('殘留');
+    expect(mockedPrisma.approvalWorkflow.updateMany).not.toHaveBeenCalled();
   });
 
   it('rejects renaming a department to an existing department name', async () => {

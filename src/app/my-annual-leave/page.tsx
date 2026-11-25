@@ -37,6 +37,9 @@ interface LeaveData {
   expiryDate: string;
   daysToExpiry: number | null;
   isExpired?: boolean;
+  /** 去年度剩餘的狀態：可延休／已到期／系統未啟用遞延（後兩者只是歷史餘額，核准請假不能扣） */
+  status?: 'USABLE' | 'EXPIRED' | 'NOT_ENABLED';
+  usableDays?: number;
 }
 
 interface LeaveRequest {
@@ -65,6 +68,8 @@ interface EmployeeWithLeave extends Employee {
   lastYear: {
     remainingDays: number;
     expiryDate: string;
+    status?: 'USABLE' | 'EXPIRED' | 'NOT_ENABLED';
+    usableDays?: number;
   } | null;
 }
 
@@ -370,7 +375,16 @@ export default function MyAnnualLeavePage() {
                         </td>
                         <td className="px-4 py-3 text-center">
                           {emp.lastYear ? (
-                            <span className="font-medium text-orange-600">{emp.lastYear.remainingDays} 天</span>
+                            emp.lastYear.status && emp.lastYear.status !== 'USABLE' ? (
+                              <span className="text-gray-500">
+                                {emp.lastYear.remainingDays} 天
+                                <span className="block text-xs">
+                                  {emp.lastYear.status === 'EXPIRED' ? '已到期' : '未啟用遞延'}（歷史餘額，不可使用）
+                                </span>
+                              </span>
+                            ) : (
+                              <span className="font-medium text-orange-600">{emp.lastYear.remainingDays} 天</span>
+                            )
                           ) : (
                             <span className="text-gray-400">-</span>
                           )}
@@ -490,10 +504,21 @@ export default function MyAnnualLeavePage() {
                 </div>
                 <div className="p-6">
                   {personalData.lastYear.data ? (
-                    personalData.lastYear.data.isExpired ? (
+                    personalData.lastYear.data.status === 'NOT_ENABLED' ? (
+                      <div className="text-center py-8">
+                        <CheckCircle className="w-12 h-12 mx-auto mb-3 text-gray-300" />
+                        <p className="text-gray-500">系統未啟用特休遞延</p>
+                        <p className="mt-1 text-sm text-gray-400">
+                          {personalData.lastYear.year}年度剩餘 {personalData.lastYear.data.remainingDays} 天為歷史餘額，不可用來請假
+                        </p>
+                      </div>
+                    ) : personalData.lastYear.data.isExpired ? (
                       <div className="text-center py-8">
                         <CheckCircle className="w-12 h-12 mx-auto mb-3 text-gray-300" />
                         <p className="text-gray-500">延休已過期</p>
+                        <p className="mt-1 text-sm text-gray-400">
+                          歷史餘額 {personalData.lastYear.data.remainingDays} 天，不可用來請假
+                        </p>
                       </div>
                     ) : (
                       <>
@@ -502,6 +527,10 @@ export default function MyAnnualLeavePage() {
                             <span className="text-3xl font-bold text-orange-600">{personalData.lastYear.data.remainingDays}</span>
                           </div>
                           <p className="mt-2 text-gray-600">延休剩餘天數</p>
+                          {personalData.lastYear.data.usableDays !== undefined
+                            && personalData.lastYear.data.usableDays < personalData.lastYear.data.remainingDays && (
+                            <p className="text-sm text-gray-500">依遞延上限，可使用 {personalData.lastYear.data.usableDays} 天</p>
+                          )}
                         </div>
                         <div className="space-y-3">
                           <div className="flex justify-between"><span className="text-gray-600">原始應給</span><span>{personalData.lastYear.data.totalDays} 天</span></div>
@@ -551,9 +580,12 @@ export default function MyAnnualLeavePage() {
                           <td className="px-6 py-4">
                             <span className={`inline-flex px-2 py-1 text-xs font-medium rounded-full ${
                               req.status === 'APPROVED' ? 'bg-green-100 text-green-800' : 
-                              req.status === 'PENDING' ? 'bg-yellow-100 text-yellow-800' : 'bg-gray-100 text-gray-800'
+                              req.status === 'PENDING' || req.status === 'PENDING_ADMIN' ? 'bg-yellow-100 text-yellow-800' : 'bg-gray-100 text-gray-800'
                             }`}>
-                              {req.status === 'APPROVED' ? '已核准' : req.status === 'PENDING' ? '待審核' : req.status}
+                              {req.status === 'APPROVED' ? '已核准'
+                                : req.status === 'PENDING' ? '待審核'
+                                : req.status === 'PENDING_ADMIN' ? '待管理員審核'
+                                : req.status}
                             </span>
                           </td>
                         </tr>

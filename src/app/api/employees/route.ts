@@ -115,6 +115,20 @@ export async function GET(request: NextRequest) {
       where.isActive = status === 'active';
     }
 
+    // 只列有登入帳號的員工（密碼管理等帳號類頁面用；帳號資訊僅完整權限看得到，其他角色不套用）
+    if (isFullAdmin && searchParams.get('hasAccount') === 'true') {
+      where.user = { isNot: null };
+    }
+
+    // 排序（白名單）：沒指定維持建立時間新到舊。同欄位的值相同時用 id 固定順序，翻頁才不會重複或漏掉
+    const sortDirection = searchParams.get('sortOrder') === 'desc' ? 'desc' : 'asc';
+    const sortBy = searchParams.get('sortBy');
+    const orderBy: Prisma.EmployeeOrderByWithRelationInput | Prisma.EmployeeOrderByWithRelationInput[] =
+      sortBy === 'name' ? [{ name: sortDirection }, { id: 'asc' }]
+        : sortBy === 'department' ? [{ department: sortDirection }, { name: 'asc' }, { id: 'asc' }]
+          : sortBy === 'status' && isFullAdmin ? [{ user: { isActive: sortDirection } }, { name: 'asc' }, { id: 'asc' }]
+            : { createdAt: 'desc' };
+
     const [employees, total] = await Promise.all([
       prisma.employee.findMany<Prisma.EmployeeFindManyArgs>({
         where,
@@ -144,7 +158,7 @@ export async function GET(request: NextRequest) {
           position: true,
           isActive: true,
         } }),
-        orderBy: { createdAt: 'desc' },
+        orderBy,
         skip,
         take: limit
       }),

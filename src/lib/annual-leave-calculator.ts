@@ -4,10 +4,12 @@
  * 使用週年制（以到職日為基準）
  */
 
+import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/database';
 import {
   calculateAnnualLeaveEntitlement,
   calculateServiceDuration as calculateSharedServiceDuration,
+  recalculateAnnualLeaveBalance,
 } from '@/lib/annual-leave-rules';
 
 /**
@@ -20,7 +22,7 @@ import {
  * | 2年 ~ 3年 | 10天 |
  * | 3年 ~ 5年 | 14天 |
  * | 5年 ~ 10年 | 15天 |
- * | 10年以上 | 每年加1天，最多30天 |
+ * | 10年以上 | 滿10年16天，每年加1天，24年起30天上限 |
  */
 
 export interface AnnualLeaveCalculation {
@@ -115,6 +117,61 @@ export async function getEmployeeAnnualLeave(employeeId: number): Promise<Annual
   };
 }
 
+type AnnualLeaveWriter = Pick<Prisma.TransactionClient, 'annualLeave' | 'leaveBalanceHistory'>;
+
+/**
+ * 依年資更新（或建立）某員工某年度的特休：總額更新、已休保留、剩餘＝總額－已休，
+ * 主檔與餘額歷程在同一個交易寫入（呼叫端要傳交易用戶端），歷程記的是真實的已休與剩餘。
+ */
+export async function saveAnnualLeaveEntitlement(
+  tx: AnnualLeaveWriter,
+  params: {
+    employeeId: number;
+    year: number;
+    yearsOfService: number;
+    totalDays: number;
+    expiryDate: Date;
+    note: string;
+  }
+) {
+  const where = { employeeId_year: { employeeId: params.employeeId, year: params.year } };
+  const existing = await tx.annualLeave.findUnique({ where, select: { usedDays: true } });
+  const balance = recalculateAnnualLeaveBalance(existing?.usedDays, params.totalDays);
+
+  await tx.annualLeave.upsert({
+    where,
+    create: {
+      employeeId: params.employeeId,
+      year: params.year,
+      yearsOfService: params.yearsOfService,
+      totalDays: params.totalDays,
+      usedDays: 0,
+      remainingDays: params.totalDays,
+      expiryDate: params.expiryDate,
+    },
+    update: {
+      yearsOfService: params.yearsOfService,
+      totalDays: params.totalDays,
+      remainingDays: balance.remainingDays,
+    },
+  });
+
+  await tx.leaveBalanceHistory.create({
+    data: {
+      employeeId: params.employeeId,
+      year: params.year,
+      leaveType: 'ANNUAL',
+      entitled: params.totalDays,
+      used: balance.usedDays,
+      remaining: balance.remainingDays,
+      source: 'SYSTEM_CALC',
+      note: params.note,
+    },
+  });
+
+  return balance;
+}
+
 /**
  * 批量計算所有員工的年假並更新資料庫
  */
@@ -148,44 +205,18 @@ export async function calculateAllEmployeesAnnualLeave(year: number): Promise<{
       const expiryDate = new Date(hireDateThisYear);
       expiryDate.setFullYear(expiryDate.getFullYear() + 1);
       
-      // 更新或建立年假記錄
-      await prisma.annualLeave.upsert({
-        where: {
-          employeeId_year: {
-            employeeId: employee.id,
-            year: year
-          }
-        },
-        create: {
+      // 更新或建立年假記錄與歷史（同一個交易；已休天數保留，不會被重算加回餘額）
+      await prisma.$transaction((tx) =>
+        saveAnnualLeaveEntitlement(tx, {
           employeeId: employee.id,
-          year: year,
-          yearsOfService: yearsOfService,
+          year,
+          yearsOfService,
           totalDays: days,
-          usedDays: 0,
-          remainingDays: days,
-          expiryDate: expiryDate
-        },
-        update: {
-          yearsOfService: yearsOfService,
-          totalDays: days,
-          remainingDays: days, // 注意：這會重置剩餘天數，實際使用時需考慮已使用天數
-        }
-      });
-      
-      // 記錄歷史
-      await prisma.leaveBalanceHistory.create({
-        data: {
-          employeeId: employee.id,
-          year: year,
-          leaveType: 'ANNUAL',
-          entitled: days,
-          used: 0,
-          remaining: days,
-          source: 'SYSTEM_CALC',
-          note: description
-        }
-      });
-      
+          expiryDate,
+          note: description,
+        })
+      );
+
       results.push({
         employeeId: employee.id,
         employeeName: employee.name,

@@ -38,6 +38,7 @@ import {
   type AttendanceSalaryDeductionSettings,
 } from '@/lib/attendance-salary-deduction-settings';
 import { getScheduledAttendanceTiming, getStoredOrCalculatedAttendanceHours } from '@/lib/work-hours';
+import { safeParseSystemSettingsValue } from '@/lib/system-settings-json';
 import {
   getTaiwanMonthEnd,
   getTaiwanMonthStart,
@@ -197,11 +198,28 @@ function getNumberValue(value: unknown, fallback = 0) {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
 
+// 獎金設定頁「新進員工按比例」存在 prorated_bonus_settings；沒設定過就維持按比例（與設定頁預設相同）
+const PRORATED_BONUS_SETTINGS_KEY = 'prorated_bonus_settings';
+
+async function getProrateForNewHires(): Promise<boolean> {
+  const settingModel = (prisma as typeof prisma & {
+    systemSettings?: { findUnique: (args: { where: { key: string } }) => Promise<{ value: string } | null> };
+  }).systemSettings;
+  if (!settingModel?.findUnique) return true;
+
+  const stored = await settingModel.findUnique({ where: { key: PRORATED_BONUS_SETTINGS_KEY } });
+  if (!stored?.value) return true;
+
+  const parsed = safeParseSystemSettingsValue<{ prorateForNewHires?: unknown }>(stored.value, {}, PRORATED_BONUS_SETTINGS_KEY);
+  return typeof parsed.prorateForNewHires === 'boolean' ? parsed.prorateForNewHires : true;
+}
+
 function getConfiguredBonusDetails(
   employee: Pick<PayrollProcessingEmployee, 'baseSalary' | 'hireDate'>,
   config: ReturnType<typeof resolveEffectiveBonusConfig>,
   year: number,
-  month: number
+  month: number,
+  prorateForNewHires = true
 ): PayrollBonusDetail[] {
   if (!config.isActive) {
     return [];
@@ -214,7 +232,8 @@ function getConfiguredBonusDetails(
     return [];
   }
 
-  const proRateRatio = Math.min(serviceMonths / 12, 1);
+  // 「新進員工按比例」關閉時，符合發放條件的人領全額；開啟時依服務月數 ÷ 12（滿 12 個月為止）
+  const proRateRatio = prorateForNewHires ? Math.min(serviceMonths / 12, 1) : 1;
 
   if (config.bonusType === 'YEAR_END') {
     const paymentMonth = getNumberValue(
@@ -516,7 +535,7 @@ export async function calculateBonusForPayrollMonth(
   month: number
 ): Promise<PayrollBonusBreakdown> {
   try {
-    const [configs, bonusRecords, departmentConfigs] = await Promise.all([
+    const [configs, bonusRecords, departmentConfigs, prorateForNewHires] = await Promise.all([
       prisma.bonusConfiguration.findMany({
         where: { isActive: true },
       }) as Promise<BonusConfigurationRecord[]>,
@@ -532,6 +551,7 @@ export async function calculateBonusForPayrollMonth(
         ],
       }),
       getStoredDepartmentBonusConfigs(),
+      getProrateForNewHires(),
     ]);
 
     const configuredBonusDetails: PayrollBonusDetail[] = [];
@@ -560,7 +580,7 @@ export async function calculateBonusForPayrollMonth(
       });
 
       configuredBonusDetails.push(
-        ...getConfiguredBonusDetails(employee, effectiveConfig, year, month)
+        ...getConfiguredBonusDetails(employee, effectiveConfig, year, month, prorateForNewHires)
       );
     }
 

@@ -5,6 +5,7 @@
 
 import { prisma } from '@/lib/database';
 import { calculateMonthlySalaryHourlyRate } from '@/lib/hourly-rate';
+import { toTaiwanDateStr } from '@/lib/timezone';
 
 // 加班類型
 export type OvertimeType = 'WEEKDAY' | 'REST_DAY' | 'HOLIDAY' | 'MANDATORY_REST';
@@ -212,7 +213,11 @@ function getOvertimeCalculationDetail(
 }
 
 /**
- * 調薪並更新員工當前薪資
+ * 調薪（或補登歷史調薪）並在需要時更新員工當前薪資。
+ * 歷程與主檔在同一個交易寫入；前一筆薪資依「生效日順序」取，不是拿主檔現薪當基準：
+ * - 前薪＝生效日不晚於本筆的最後一筆歷程（同日取較晚建立的）；完全沒有歷程才用主檔現薪
+ * - 補登舊日期時，緊接在後的那一筆歷程要改成以本筆為前薪、重算調幅
+ * - 主檔現薪只在本筆生效日已到、且沒有更晚且已生效的歷程時才更新（補登舊日期不會蓋掉現在的薪資）
  */
 export async function adjustSalary(params: {
   employeeId: number;
@@ -224,61 +229,80 @@ export async function adjustSalary(params: {
   approvedById: number;
 }) {
   const { employeeId, effectiveDate, newBaseSalary, adjustmentType, reason, notes, approvedById } = params;
-
-  // 取得員工當前薪資
-  const employee = await prisma.employee.findUnique({
-    where: { id: employeeId },
-    select: { baseSalary: true }
-  });
-
-  if (!employee) {
-    return { success: false, error: '找不到員工' };
-  }
-
-  const previousSalary = employee.baseSalary;
-  const adjustmentAmount = newBaseSalary - previousSalary;
   const newHourlyRate = calculateHourlyRate(newBaseSalary);
+  const todayText = toTaiwanDateStr(new Date());
+  const isEffectiveByToday = (date: Date) => toTaiwanDateStr(date) <= todayText;
 
-  // 建立薪資歷史記錄
-  const salaryHistory = await prisma.salaryHistory.create({
-    data: {
-      employeeId,
-      effectiveDate,
-      baseSalary: newBaseSalary,
-      hourlyRate: newHourlyRate,
-      previousSalary,
-      adjustmentAmount,
-      adjustmentType,
-      reason,
-      notes,
-      approvedById
-    }
-  });
-
-  // 如果生效日期是今天或之前，更新員工當前薪資
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const effDate = new Date(effectiveDate);
-  effDate.setHours(0, 0, 0, 0);
-
-  if (effDate <= today) {
-    await prisma.employee.update({
+  return prisma.$transaction(async (tx) => {
+    const employee = await tx.employee.findUnique({
       where: { id: employeeId },
+      select: { baseSalary: true }
+    });
+
+    if (!employee) {
+      return { success: false as const, error: '找不到員工' };
+    }
+
+    const earlier = await tx.salaryHistory.findFirst({
+      where: { employeeId, effectiveDate: { lte: effectiveDate } },
+      orderBy: [{ effectiveDate: 'desc' }, { createdAt: 'desc' }, { id: 'desc' }],
+      select: { baseSalary: true },
+    });
+    const later = await tx.salaryHistory.findFirst({
+      where: { employeeId, effectiveDate: { gt: effectiveDate } },
+      orderBy: [{ effectiveDate: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
+      select: { id: true, effectiveDate: true, baseSalary: true },
+    });
+
+    // 沒有更早的歷程：若完全沒有歷程就以主檔現薪為前薪；有更晚的歷程卻沒有更早的（補登比第一筆還早），前薪不明
+    const previousSalary = earlier ? earlier.baseSalary : later ? null : employee.baseSalary;
+    const adjustmentAmount = previousSalary === null ? null : newBaseSalary - previousSalary;
+
+    const salaryHistory = await tx.salaryHistory.create({
       data: {
+        employeeId,
+        effectiveDate,
         baseSalary: newBaseSalary,
-        hourlyRate: newHourlyRate
+        hourlyRate: newHourlyRate,
+        previousSalary,
+        adjustmentAmount,
+        adjustmentType,
+        reason,
+        notes,
+        approvedById
       }
     });
-  }
 
-  return {
-    success: true,
-    salaryHistory,
-    previousSalary,
-    newBaseSalary,
-    adjustmentAmount,
-    newHourlyRate
-  };
+    if (later) {
+      // 補登在中間：後面那筆的前薪與調幅跟著改成以本筆為基準
+      await tx.salaryHistory.update({
+        where: { id: later.id },
+        data: { previousSalary: newBaseSalary, adjustmentAmount: later.baseSalary - newBaseSalary },
+      });
+    }
+
+    const supersededByLaterEffective = Boolean(later && isEffectiveByToday(later.effectiveDate));
+    const currentSalaryUpdated = isEffectiveByToday(effectiveDate) && !supersededByLaterEffective;
+    if (currentSalaryUpdated) {
+      await tx.employee.update({
+        where: { id: employeeId },
+        data: {
+          baseSalary: newBaseSalary,
+          hourlyRate: newHourlyRate
+        }
+      });
+    }
+
+    return {
+      success: true as const,
+      salaryHistory,
+      previousSalary,
+      newBaseSalary,
+      adjustmentAmount,
+      newHourlyRate,
+      currentSalaryUpdated,
+    };
+  });
 }
 
 /**

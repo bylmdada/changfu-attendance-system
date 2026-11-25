@@ -12,6 +12,8 @@ import { checkRateLimit } from '@/lib/rate-limit';
 import { validateCSRF } from '@/lib/csrf';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { safeParseJSON } from '@/lib/validation';
+import { getApprovalWorkflow } from '@/lib/approval-workflow';
+import { recordResignationDecision, type ResignationDecision } from '@/lib/resignation-approval-history';
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -77,6 +79,68 @@ function getInvalidStatusMessage(action: keyof typeof ADMIN_ACTION_STATUS_MAP, s
     default:
       return '目前狀態不可執行此操作';
   }
+}
+
+class ResignationAlreadyDecidedError extends Error {}
+
+/**
+ * 管理員／HR 核准或駁回離職單：離職單狀態與審核歷程在同一個交易寫入，
+ * 且只有「仍待審」的單能被改（兩人同時處理時，後到的人得到「已被處理」）。
+ */
+async function decideResignation(params: {
+  recordId: number;
+  employeeId: number;
+  user: { userId: number; employeeId: number; role: string; username: string };
+  action: ResignationDecision;
+  data: { status: 'APPROVED' | 'REJECTED'; approvedById: number; approvedAt: Date; notes?: string; rejectionReason?: string };
+  comment: string | null;
+}) {
+  // 申請人、審核人姓名與流程設定在交易前讀好：交易內只做寫入（SQLite 單一連線，
+  // 交易進行中再用全域 client 查詢會等不到連線）
+  const [applicant, reviewerEmployee] = await Promise.all([
+    prisma.employee.findUnique({
+      where: { id: params.employeeId },
+      select: { id: true, name: true, department: true }
+    }),
+    prisma.employee.findUnique({
+      where: { id: params.user.employeeId },
+      select: { name: true }
+    })
+  ]);
+  const workflow = await getApprovalWorkflow('RESIGNATION', { department: applicant?.department });
+
+  return prisma.$transaction(async (tx) => {
+    const updated = await tx.resignationRecord.updateMany({
+      where: { id: params.recordId, status: 'PENDING' },
+      data: params.data
+    });
+    if (updated.count !== 1) {
+      throw new ResignationAlreadyDecidedError();
+    }
+
+    if (applicant) {
+      await recordResignationDecision(tx, {
+        recordId: params.recordId,
+        applicant,
+        reviewer: {
+          employeeId: params.user.employeeId,
+          name: reviewerEmployee?.name || params.user.username,
+          role: params.user.role
+        },
+        action: params.action,
+        comment: params.comment,
+        workflow: {
+          approvalLevel: workflow?.approvalLevel ?? 2,
+          requireManager: workflow?.requireManager ?? true
+        }
+      });
+    }
+
+    return tx.resignationRecord.findUniqueOrThrow({
+      where: { id: params.recordId },
+      include: { employee: true }
+    });
+  });
 }
 
 export async function GET(request: NextRequest, { params }: RouteParams) {
@@ -194,15 +258,18 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
 
       if (action === 'approve') {
         // 核准
-        const updated = await prisma.resignationRecord.update({
-          where: { id: recordId },
+        const updated = await decideResignation({
+          recordId,
+          employeeId: record.employeeId,
+          user,
+          action: 'APPROVE',
           data: {
             status: 'APPROVED',
             approvedById: user.userId,
             approvedAt: new Date(),
             notes
           },
-          include: { employee: true }
+          comment: notes ?? null
         });
 
         return NextResponse.json({
@@ -217,15 +284,18 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
           return NextResponse.json({ error: '請填寫拒絕原因' }, { status: 400 });
         }
 
-        const updated = await prisma.resignationRecord.update({
-          where: { id: recordId },
+        const updated = await decideResignation({
+          recordId,
+          employeeId: record.employeeId,
+          user,
+          action: 'REJECT',
           data: {
             status: 'REJECTED',
             approvedById: user.userId,
             approvedAt: new Date(),
             rejectionReason
           },
-          include: { employee: true }
+          comment: rejectionReason
         });
 
         return NextResponse.json({
@@ -340,6 +410,9 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     return NextResponse.json({ error: '無權限操作' }, { status: 403 });
 
   } catch (error) {
+    if (error instanceof ResignationAlreadyDecidedError) {
+      return NextResponse.json({ error: '此離職申請已被處理，請重新整理後再試' }, { status: 409 });
+    }
     console.error('更新離職申請失敗:', error);
     return NextResponse.json({ error: '系統錯誤' }, { status: 500 });
   }

@@ -2,6 +2,12 @@ jest.mock('@/lib/database', () => ({
   prisma: {
     approvalInstance: {
       findFirst: jest.fn()
+    },
+    resignationRecord: {
+      findUnique: jest.fn()
+    },
+    user: {
+      findUnique: jest.fn()
     }
   }
 }));
@@ -145,5 +151,98 @@ describe('approval reviews route authorization', () => {
     expect(response.status).toBe(200);
     expect(payload.success).toBe(true);
     expect(mockIsReviewerFor).toHaveBeenCalledWith(18, 'Operations', 'LEAVE');
+  });
+  describe('離職單沒有流程實例時（改版前的核准／駁回）', () => {
+    const getHistory = () =>
+      GET(new NextRequest('http://localhost/api/approval-reviews?requestType=RESIGNATION&requestId=5'));
+    const record = (overrides: Record<string, unknown> = {}) => ({
+      employeeId: 10,
+      status: 'APPROVED',
+      approvedById: 3,
+      approvedAt: new Date('2026-11-10T02:30:00.000Z'),
+      rejectionReason: null,
+      notes: '請完成交接',
+      employee: { department: '照護部' },
+      ...overrides,
+    });
+
+    beforeEach(() => {
+      mockGetUserFromRequest.mockResolvedValue({ role: 'HR', employeeId: 2 } as never);
+      mockPrisma.approvalInstance.findFirst.mockResolvedValue(null as never);
+      mockPrisma.user.findUnique.mockResolvedValue({
+        username: 'hr01',
+        role: 'HR',
+        employee: { name: '人資甲' },
+      } as never);
+      mockGetApprovalWorkflow.mockResolvedValue({ approvalLevel: 2, requireManager: true } as never);
+    });
+
+    it('shows the stored decision, reviewer and time instead of an empty pending history', async () => {
+      mockPrisma.resignationRecord.findUnique.mockResolvedValue(record() as never);
+
+      const response = await getHistory();
+      const payload = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(payload).toEqual({
+        success: true,
+        currentLevel: 2,
+        maxLevel: 2,
+        status: 'APPROVED',
+        reviews: [
+          {
+            level: 2,
+            reviewerName: '人資甲',
+            reviewerRole: 'HR',
+            status: 'APPROVED',
+            comment: '請完成交接',
+            reviewedAt: '2026-11-10T02:30:00.000Z',
+          },
+        ],
+      });
+      expect(mockPrisma.user.findUnique).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 3 } }));
+    });
+
+    it('shows a rejection with its reason', async () => {
+      mockPrisma.resignationRecord.findUnique.mockResolvedValue(
+        record({ status: 'REJECTED', rejectionReason: '交接期不足', notes: null }) as never
+      );
+
+      const payload = await (await getHistory()).json();
+
+      expect(payload.status).toBe('REJECTED');
+      expect(payload.reviews[0]).toEqual(expect.objectContaining({ status: 'REJECTED', comment: '交接期不足' }));
+    });
+
+    it('keeps showing the original approval once the resignation is in handover', async () => {
+      mockPrisma.resignationRecord.findUnique.mockResolvedValue(record({ status: 'IN_HANDOVER' }) as never);
+
+      const payload = await (await getHistory()).json();
+
+      expect(payload.status).toBe('APPROVED');
+      expect(payload.reviews).toHaveLength(1);
+    });
+
+    it('still answers pending with no reviews while the resignation has no decision yet', async () => {
+      mockPrisma.resignationRecord.findUnique.mockResolvedValue(
+        record({ status: 'PENDING', approvedById: null, approvedAt: null, notes: null }) as never
+      );
+
+      const payload = await (await getHistory()).json();
+
+      expect(payload).toEqual({ success: true, currentLevel: 1, maxLevel: 2, status: 'PENDING', reviews: [] });
+    });
+
+    it('lets the applicant see their own decision but not other employees', async () => {
+      mockPrisma.resignationRecord.findUnique.mockResolvedValue(record() as never);
+
+      mockGetUserFromRequest.mockResolvedValue({ role: 'EMPLOYEE', employeeId: 10 } as never);
+      expect((await getHistory()).status).toBe(200);
+
+      mockGetUserFromRequest.mockResolvedValue({ role: 'EMPLOYEE', employeeId: 99 } as never);
+      const denied = await getHistory();
+      expect(denied.status).toBe(403);
+      expect((await denied.json()).error).toBe('無權查看此審核歷程');
+    });
   });
 });

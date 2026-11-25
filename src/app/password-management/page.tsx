@@ -1,11 +1,10 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Key, Eye, EyeOff, Shield, Users, Lock, X } from 'lucide-react';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import ConfirmDialog from '@/components/ConfirmDialog';
-import EmployeeListSelect from '@/components/EmployeeListSelect';
 import {
   type PasswordPolicy,
   type PasswordStrengthResult,
@@ -13,6 +12,13 @@ import {
   getDefaultPasswordPolicy,
   generatePasswordForPolicy,
 } from '@/lib/password-policy';
+import {
+  type BatchResetItem,
+  getPasswordErrorReasons,
+  getRetryItems,
+  runBatchReset,
+  summarizeBatchReset,
+} from '@/lib/password-reset-results';
 
 interface User {
   id: number;
@@ -63,9 +69,37 @@ interface EmployeeApiResponse {
   };
 }
 
+// 伺服器拒絕新密碼時的具體原因（例如近期已使用過），顯示在新密碼欄位旁
+function PasswordReasons({ reasons }: { reasons: string[] }) {
+  if (reasons.length === 0) return null;
+  return (
+    <div role="alert" className="mt-2 text-xs text-red-600">
+      <span className="font-medium">伺服器拒絕這組密碼的原因：</span>
+      <ul className="list-disc list-inside ml-2">
+        {reasons.map((reason, index) => (
+          <li key={index}>{reason}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+const BATCH_STATUS_LABEL: Record<BatchResetItem['status'], { text: string; className: string }> = {
+  pending: { text: '尚未送出', className: 'bg-gray-100 text-gray-700' },
+  sending: { text: '處理中', className: 'bg-blue-100 text-blue-700' },
+  done: { text: '已完成', className: 'bg-green-100 text-green-800' },
+  failed: { text: '失敗', className: 'bg-red-100 text-red-800' },
+  unknown: { text: '待確認', className: 'bg-yellow-100 text-yellow-800' },
+};
+
 export default function PasswordManagement() {
-  const [users, setUsers] = useState<User[]>([]);
+  const [users, setUsers] = useState<User[]>([]); // 目前這一頁（伺服器分頁）
+  const [totalUsers, setTotalUsers] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+  const [listLoading, setListLoading] = useState(false);
+  const [listError, setListError] = useState('');
   const [loading, setLoading] = useState(true);
+  const listRequestId = useRef(0);
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
@@ -74,6 +108,7 @@ export default function PasswordManagement() {
   const [departments, setDepartments] = useState<{ id: number; name: string }[]>([]);
   
   // 搜尋和篩選狀態
+  const [searchInput, setSearchInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedDepartment, setSelectedDepartment] = useState('');
   
@@ -84,8 +119,8 @@ export default function PasswordManagement() {
   // 排序狀態
   const [sortConfig, setSortConfig] = useState<{ field: 'name' | 'department' | 'status'; direction: 'asc' | 'desc' }>({ field: 'name', direction: 'asc' });
   
-  // 批量選擇狀態
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  // 批量選擇狀態（跨頁保留，所以存整個帳號資料）
+  const [selectedUsers, setSelectedUsers] = useState<Map<number, User>>(new Map());
   
   // 分頁狀態
   const [currentPage, setCurrentPage] = useState(1);
@@ -105,6 +140,7 @@ export default function PasswordManagement() {
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [changePasswordLoading, setChangePasswordLoading] = useState(false);
+  const [changePasswordReasons, setChangePasswordReasons] = useState<string[]>([]);
 
   // 重置密碼的狀態
   const [resetPasswordForm, setResetPasswordForm] = useState({
@@ -114,12 +150,13 @@ export default function PasswordManagement() {
   });
   const [showResetPassword, setShowResetPassword] = useState(false);
   const [resetPasswordLoading, setResetPasswordLoading] = useState(false);
+  const [resetPasswordReasons, setResetPasswordReasons] = useState<string[]>([]);
   const [showResetModal, setShowResetModal] = useState(false);
   
   // 批量重置狀態
   const [showBatchResetModal, setShowBatchResetModal] = useState(false);
-  const [batchResetPassword, setBatchResetPassword] = useState('');
-  const [batchResetLoading, setBatchResetLoading] = useState(false);
+  const [batchItems, setBatchItems] = useState<BatchResetItem[]>([]);
+  const [batchRunning, setBatchRunning] = useState(false);
 
   // Toast 顯示函數
   const showToast = (type: 'success' | 'error', message: string) => {
@@ -147,6 +184,7 @@ export default function PasswordManagement() {
 
   // 排序函數
   const handleSort = (field: 'name' | 'department' | 'status') => {
+    setCurrentPage(1);
     setSortConfig(prev => ({
       field,
       direction: prev.field === field && prev.direction === 'asc' ? 'desc' : 'asc'
@@ -154,86 +192,108 @@ export default function PasswordManagement() {
   };
 
   // 選擇記錄
-  const toggleSelectRecord = (id: number) => {
-    const newSelected = new Set(selectedIds);
-    if (newSelected.has(id)) {
-      newSelected.delete(id);
+  const toggleSelectRecord = (user: User) => {
+    const next = new Map(selectedUsers);
+    if (next.has(user.id)) {
+      next.delete(user.id);
     } else {
-      newSelected.add(id);
+      next.set(user.id, user);
     }
-    setSelectedIds(newSelected);
+    setSelectedUsers(next);
   };
 
   // 全選/取消全選（當前頁）
   const toggleSelectAll = () => {
-    const currentPageUsers = paginatedUsers;
-    if (currentPageUsers.every(u => selectedIds.has(u.id))) {
-      const newSelected = new Set(selectedIds);
-      currentPageUsers.forEach(u => newSelected.delete(u.id));
-      setSelectedIds(newSelected);
+    const next = new Map(selectedUsers);
+    if (users.every(u => next.has(u.id))) {
+      users.forEach(u => next.delete(u.id));
     } else {
-      const newSelected = new Set(selectedIds);
-      currentPageUsers.forEach(u => newSelected.add(u.id));
-      setSelectedIds(newSelected);
+      users.forEach(u => next.set(u.id, u));
+    }
+    setSelectedUsers(next);
+  };
+
+  // 批量重置密碼：每個帳號各產生一組新密碼，逐筆保留結果
+  const runBatch = async (items: BatchResetItem[]) => {
+    setBatchRunning(true);
+    try {
+      const finalItems = await runBatchReset(items, {
+        generatePassword: generateSecurePassword,
+        onChange: setBatchItems,
+        send: async (userId, password) => {
+          const response = await fetchJSONWithCSRF('/api/password', {
+            method: 'POST',
+            body: { userId: userId.toString(), newPassword: password }
+          });
+          const data = await response.json().catch(() => null);
+          return {
+            ok: response.ok,
+            status: response.status,
+            error: data?.error,
+            reasons: getPasswordErrorReasons(data),
+          };
+        },
+      });
+      const summary = summarizeBatchReset(finalItems);
+      if (summary.done === finalItems.length) {
+        showToast('success', `已重置 ${summary.done} 個帳號的密碼，請立即複製新密碼`);
+      } else {
+        showToast('error', `完成 ${summary.done}、待確認 ${summary.unknown}、失敗 ${summary.failed}、未送出 ${summary.pending}`);
+      }
+    } catch (error) {
+      console.error('批量重置失敗:', error);
+      showToast('error', '批量重置中斷，請查看每個帳號的結果');
+    } finally {
+      setBatchRunning(false);
     }
   };
 
-  // 批量重置密碼
-  const handleBatchReset = async () => {
-    if (!batchResetPassword) {
-      showToast('error', '請輸入要設定的新密碼');
-      return;
-    }
+  const openBatchReset = () => {
+    const items: BatchResetItem[] = [...selectedUsers.values()].map(user => ({
+      userId: user.id,
+      name: user.employee.name,
+      employeeId: user.employee.employeeId,
+      username: user.username,
+      status: 'pending',
+    }));
+    setBatchItems(items);
+    setShowBatchResetModal(true);
+  };
 
-    const batchPasswordError = validatePasswordInput(batchResetPassword);
-    if (batchPasswordError) {
-      showToast('error', batchPasswordError);
-      return;
-    }
-    
-    setBatchResetLoading(true);
-    let successCount = 0;
-    const failedIds: number[] = [];
-    
+  const closeBatchReset = () => {
+    // 已完成的帳號不用再選；沒完成的留著選取，方便稍後重試
+    const unfinished = new Set(getRetryItems(batchItems).map(item => item.userId));
+    setSelectedUsers(prev => new Map([...prev].filter(([id]) => unfinished.has(id))));
+    setShowBatchResetModal(false);
+    setBatchItems([]);
+  };
+
+  const copyBatchResults = async () => {
+    const lines = batchItems
+      .filter(item => item.status === 'done')
+      .map(item => `${item.name}\t${item.employeeId}\t${item.username}\t${item.password}`);
     try {
-      for (const userId of selectedIds) {
-        const response = await fetchJSONWithCSRF('/api/password', {
-          method: 'POST',
-          body: { userId: userId.toString(), newPassword: batchResetPassword }
-        });
-        if (response.ok) {
-          successCount++;
-        } else {
-          failedIds.push(userId);
-        }
-      }
-
-      if (successCount === 0) {
-        showToast('error', '批量重置失敗，請檢查後再試');
-        return;
-      }
-
-      showToast('success', `已成功重置 ${successCount} 個用戶的密碼`);
-      if (failedIds.length > 0) {
-        showToast('error', `另有 ${failedIds.length} 個用戶重置失敗`);
-      }
-      setSelectedIds(new Set(failedIds));
-      setShowBatchResetModal(false);
-      setBatchResetPassword('');
-    } catch (error) {
-      console.error('批量重置失敗:', error);
-      showToast('error', '部分重置失敗');
-    } finally {
-      setBatchResetLoading(false);
+      await navigator.clipboard.writeText(['姓名\t員編\t帳號\t新密碼', ...lines].join('\n'));
+      showToast('success', `已複製 ${lines.length} 個帳號的新密碼`);
+    } catch {
+      showToast('error', '無法複製，請直接從清單抄寫');
     }
   };
 
   useEffect(() => {
     fetchCurrentUser();
-    fetchUsers();
     fetchPasswordPolicy();
     fetchDepartments();
   }, []);
+
+  // 搜尋打字停一下才送出查詢，並回到第 1 頁
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setSearchQuery(searchInput.trim());
+      setCurrentPage(1);
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [searchInput]);
 
   // 獲取部門列表
   const fetchDepartments = async () => {
@@ -281,84 +341,75 @@ export default function PasswordManagement() {
       }
     } catch (error) {
       console.error('獲取當前用戶失敗:', error);
-    }
-  };
-
-  const fetchUsers = async () => {
-    try {
-      // 請求所有員工（設定較大的 limit）
-      const response = await fetch('/api/employees?limit=1000', {
-        credentials: 'include'
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        // 轉換數據結構：從 employees 轉換為 users
-        const usersData = data.employees
-          .filter((emp: EmployeeApiResponse) => emp.user) // 只獲取有用戶帳號的員工
-          .map((emp: EmployeeApiResponse) => ({
-            id: emp.user!.id,
-            username: emp.user!.username,
-            role: emp.user!.role,
-            isActive: emp.user!.isActive,
-            employee: {
-              id: emp.id,
-              employeeId: emp.employeeId,
-              name: emp.name,
-              department: emp.department,
-              position: emp.position
-            }
-          }));
-        setUsers(usersData);
-      }
-    } catch (err) {
-      console.error('獲取用戶列表失敗:', err);
     } finally {
       setLoading(false);
     }
   };
 
+  const canManageUsers = currentUser?.role === 'ADMIN' || currentUser?.role === 'HR';
+
+  // 員工清單由伺服器搜尋、排序、分頁，不再先抓前 1,000 人到瀏覽器篩選
+  const fetchUsers = useCallback(async () => {
+    const requestId = ++listRequestId.current;
+    setListLoading(true);
+    setListError('');
+
+    try {
+      const params = new URLSearchParams({
+        hasAccount: 'true',
+        page: String(currentPage),
+        limit: String(itemsPerPage),
+        sortBy: sortConfig.field,
+        // 「狀態」排序是啟用的排前面，和資料庫的 false→true 相反
+        sortOrder: sortConfig.field === 'status'
+          ? (sortConfig.direction === 'asc' ? 'desc' : 'asc')
+          : sortConfig.direction,
+      });
+      if (searchQuery) params.set('search', searchQuery);
+      if (selectedDepartment) params.set('department', selectedDepartment);
+
+      const response = await fetch(`/api/employees?${params}`, { credentials: 'include' });
+      if (requestId !== listRequestId.current) return;
+      if (!response.ok) {
+        setListError('員工清單載入失敗，請稍後再試');
+        return;
+      }
+
+      const data = await response.json();
+      if (requestId !== listRequestId.current) return;
+
+      const usersData: User[] = (data.employees as EmployeeApiResponse[])
+        .filter(emp => emp.user)
+        .map(emp => ({
+          id: emp.user!.id,
+          username: emp.user!.username,
+          role: emp.user!.role,
+          isActive: emp.user!.isActive,
+          employee: {
+            id: emp.id,
+            employeeId: emp.employeeId,
+            name: emp.name,
+            department: emp.department,
+            position: emp.position
+          }
+        }));
+      setUsers(usersData);
+      setTotalUsers(data.pagination?.total ?? usersData.length);
+      setTotalPages(Math.max(1, data.pagination?.pages ?? 1));
+    } catch (err) {
+      console.error('獲取用戶列表失敗:', err);
+      if (requestId === listRequestId.current) setListError('員工清單載入失敗，請稍後再試');
+    } finally {
+      if (requestId === listRequestId.current) setListLoading(false);
+    }
+  }, [currentPage, searchQuery, selectedDepartment, sortConfig]);
+
+  useEffect(() => {
+    if (canManageUsers) void fetchUsers();
+  }, [canManageUsers, fetchUsers]);
+
   // 部門名稱列表
   const departmentNames = departments.map(d => d.name);
-
-  // 篩選用戶
-  const filteredUsers = users.filter(user => {
-    // 部門篩選
-    if (selectedDepartment && user.employee.department !== selectedDepartment) {
-      return false;
-    }
-    // 員工篩選
-    if (searchQuery) {
-      const query = searchQuery.toLowerCase();
-      return (
-        user.employee.name.toLowerCase().includes(query) ||
-        user.employee.employeeId.toLowerCase().includes(query)
-      );
-    }
-    return true;
-  });
-
-  // 排序用戶
-  const sortedUsers = [...filteredUsers].sort((a, b) => {
-    const direction = sortConfig.direction === 'asc' ? 1 : -1;
-    switch (sortConfig.field) {
-      case 'name':
-        return a.employee.name.localeCompare(b.employee.name) * direction;
-      case 'department':
-        return (a.employee.department || '').localeCompare(b.employee.department || '') * direction;
-      case 'status':
-        return (a.isActive === b.isActive ? 0 : a.isActive ? -1 : 1) * direction;
-      default:
-        return 0;
-    }
-  });
-
-  // 分頁
-  const totalPages = Math.ceil(sortedUsers.length / itemsPerPage);
-  const paginatedUsers = sortedUsers.slice(
-    (currentPage - 1) * itemsPerPage,
-    currentPage * itemsPerPage
-  );
 
   const handleChangePassword = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -387,6 +438,7 @@ export default function PasswordManagement() {
     }
 
     setChangePasswordLoading(true);
+    setChangePasswordReasons([]);
 
     try {
       const response = await fetchJSONWithCSRF('/api/password', {
@@ -413,6 +465,7 @@ export default function PasswordManagement() {
           }, 1000);
         }
       } else {
+        setChangePasswordReasons(getPasswordErrorReasons(data));
         showToast('error', data.error || '密碼修改失敗');
       }
     } catch (err) {
@@ -438,6 +491,7 @@ export default function PasswordManagement() {
     }
 
     setResetPasswordLoading(true);
+    setResetPasswordReasons([]);
 
     try {
       const response = await fetchJSONWithCSRF('/api/password', {
@@ -459,6 +513,7 @@ export default function PasswordManagement() {
         });
         setShowResetModal(false);
       } else {
+        setResetPasswordReasons(getPasswordErrorReasons(data));
         showToast('error', data.error || '密碼重置失敗');
       }
     } catch (err) {
@@ -470,6 +525,7 @@ export default function PasswordManagement() {
   };
 
   const openResetModal = (userId: number) => {
+    setResetPasswordReasons([]);
     setResetPasswordForm({
       userId: userId.toString(),
       newPassword: '',
@@ -671,6 +727,7 @@ export default function PasswordManagement() {
                     value={changePasswordForm.newPassword}
                     onChange={(e) => {
                       const newPassword = e.target.value;
+                      setChangePasswordReasons([]);
                       setChangePasswordForm({
                         ...changePasswordForm,
                         newPassword
@@ -697,6 +754,8 @@ export default function PasswordManagement() {
                   </button>
                 </div>
                 
+                <PasswordReasons reasons={changePasswordReasons} />
+
                 {/* 密碼強度指示器 */}
                 {passwordStrength && changePasswordForm.newPassword && (
                   <div className="mt-2">
@@ -795,27 +854,29 @@ export default function PasswordManagement() {
               <div className="flex items-center justify-between mb-6">
                 <div className="flex items-center">
                   <Users className="w-6 h-6 text-red-600 mr-2" />
-                  <h2 className="text-xl font-semibold text-gray-900">重置員工密碼 ({sortedUsers.length})</h2>
+                  <h2 className="text-xl font-semibold text-gray-900">重置員工密碼 ({totalUsers})</h2>
                 </div>
               </div>
 
               {/* 搜尋和篩選區域 */}
               <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
                 <div>
-                  <EmployeeListSelect
-                    value={searchQuery}
-                    onChange={(value) => {
-                      setSearchQuery(value);
-                      setCurrentPage(1);
-                    }}
-                    emptyLabel="全部員工"
-                    selectClassName="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 disabled:bg-gray-100"
+                  <input
+                    type="search"
+                    value={searchInput}
+                    onChange={(e) => setSearchInput(e.target.value)}
+                    placeholder="搜尋姓名或員編"
+                    aria-label="搜尋姓名或員編"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900"
                   />
                 </div>
                 <div>
                   <select
                     value={selectedDepartment}
-                    onChange={(e) => setSelectedDepartment(e.target.value)}
+                    onChange={(e) => {
+                      setSelectedDepartment(e.target.value);
+                      setCurrentPage(1);
+                    }}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900"
                   >
                     <option value="">全部部門</option>
@@ -844,12 +905,12 @@ export default function PasswordManagement() {
                     狀態 {sortConfig.field === 'status' && (sortConfig.direction === 'desc' ? '↓' : '↑')}
                   </button>
                 </div>
-                {selectedIds.size > 0 && (
+                {selectedUsers.size > 0 && (
                   <button
-                    onClick={() => setShowBatchResetModal(true)}
+                    onClick={openBatchReset}
                     className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700"
                   >
-                    批量重置 ({selectedIds.size})
+                    批量重置 ({selectedUsers.size})
                   </button>
                 )}
               </div>
@@ -858,21 +919,34 @@ export default function PasswordManagement() {
               <div className="mb-3 flex items-center gap-2">
                 <input
                   type="checkbox"
-                  checked={paginatedUsers.length > 0 && paginatedUsers.every(u => selectedIds.has(u.id))}
+                  checked={users.length > 0 && users.every(u => selectedUsers.has(u.id))}
                   onChange={toggleSelectAll}
                   className="w-4 h-4 rounded border-gray-300 text-blue-600"
                 />
                 <span className="text-sm text-gray-600">全選本頁</span>
               </div>
 
-              <div className="space-y-3">
-                {paginatedUsers.map(user => (
-                  <div key={user.id} className={`flex items-center justify-between p-4 border rounded-lg ${selectedIds.has(user.id) ? 'border-blue-300 bg-blue-50' : 'border-gray-200'}`}>
+              {listError && (
+                <div role="alert" className="mb-3 p-3 bg-red-50 text-red-700 text-sm rounded-lg border border-red-200 flex items-center justify-between gap-3">
+                  <span>{listError}</span>
+                  <button onClick={() => void fetchUsers()} className="px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700">重試</button>
+                </div>
+              )}
+              {listLoading && users.length === 0 && !listError && (
+                <p className="text-sm text-gray-500 py-4 text-center">載入員工清單中...</p>
+              )}
+              {!listLoading && !listError && users.length === 0 && (
+                <p className="text-sm text-gray-500 py-4 text-center">找不到符合條件、已有登入帳號的員工</p>
+              )}
+
+              <div className={`space-y-3 ${listLoading && users.length > 0 ? 'opacity-60' : ''}`}>
+                {users.map(user => (
+                  <div key={user.id} className={`flex items-center justify-between p-4 border rounded-lg ${selectedUsers.has(user.id) ? 'border-blue-300 bg-blue-50' : 'border-gray-200'}`}>
                     <div className="flex items-center gap-3">
                       <input
                         type="checkbox"
-                        checked={selectedIds.has(user.id)}
-                        onChange={() => toggleSelectRecord(user.id)}
+                        checked={selectedUsers.has(user.id)}
+                        onChange={() => toggleSelectRecord(user)}
                         className="w-4 h-4 rounded border-gray-300 text-blue-600"
                       />
                       <div className="flex-1">
@@ -970,10 +1044,13 @@ export default function PasswordManagement() {
                       type={showResetPassword ? 'text' : 'password'}
                       required
                       value={resetPasswordForm.newPassword}
-                      onChange={(e) => setResetPasswordForm({
-                        ...resetPasswordForm,
-                        newPassword: e.target.value
-                      })}
+                      onChange={(e) => {
+                        setResetPasswordReasons([]);
+                        setResetPasswordForm({
+                          ...resetPasswordForm,
+                          newPassword: e.target.value
+                        });
+                      }}
                       className="w-full pl-10 pr-10 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
                       placeholder="請輸入新密碼（至少8位）"
                     />
@@ -988,6 +1065,7 @@ export default function PasswordManagement() {
                       }
                     </button>
                   </div>
+                  <PasswordReasons reasons={resetPasswordReasons} />
                 </div>
 
                 <div>
@@ -1045,73 +1123,99 @@ export default function PasswordManagement() {
           </div>
         )}
 
-        {/* 批量重置密碼彈窗 */}
-        {showBatchResetModal && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-            <div className="bg-white rounded-lg shadow-lg max-w-md w-full p-6">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-semibold text-gray-900">批量重置密碼 ({selectedIds.size} 人)</h3>
-                <button
-                  onClick={() => {
-                    setShowBatchResetModal(false);
-                    setBatchResetPassword('');
-                  }}
-                  className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
-                >
-                  <X className="w-6 h-6" />
-                </button>
-              </div>
-              
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    新密碼 *
-                  </label>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={batchResetPassword}
-                      onChange={(e) => setBatchResetPassword(e.target.value)}
-                      className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black"
-                      placeholder="請輸入新密碼（至少8位）"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setBatchResetPassword(generateSecurePassword())}
-                      className="px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-                    >
-                      產生
-                    </button>
-                  </div>
+        {/* 批量重置密碼彈窗：每個帳號各一組新密碼，逐筆顯示結果 */}
+        {showBatchResetModal && (() => {
+          const summary = summarizeBatchReset(batchItems);
+          const started = batchItems.some(item => item.status !== 'pending');
+          const retryCount = getRetryItems(batchItems).length;
+          return (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+              <div className="bg-white rounded-lg shadow-lg max-w-2xl w-full p-6 max-h-[90vh] flex flex-col">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-semibold text-gray-900">批量重置密碼 ({batchItems.length} 人)</h3>
+                  <button
+                    onClick={closeBatchReset}
+                    disabled={batchRunning}
+                    aria-label="關閉"
+                    className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-50"
+                  >
+                    <X className="w-6 h-6" />
+                  </button>
                 </div>
 
-                <div className="text-sm text-gray-500">
-                  將為以下 {selectedIds.size} 位用戶統一設置新密碼
+                <p className="text-sm text-gray-600 mb-3">
+                  系統會為每個帳號各產生一組不同的新密碼，重置成功後只會在這裡顯示一次，請立即複製並交給本人。
+                </p>
+
+                {started && (
+                  <div className="mb-3 flex flex-wrap gap-2 text-sm" data-testid="batch-summary">
+                    <span className="px-2 py-1 rounded bg-green-100 text-green-800">完成 {summary.done}</span>
+                    <span className="px-2 py-1 rounded bg-yellow-100 text-yellow-800">待確認 {summary.unknown}</span>
+                    <span className="px-2 py-1 rounded bg-red-100 text-red-800">失敗 {summary.failed}</span>
+                    <span className="px-2 py-1 rounded bg-gray-100 text-gray-700">未送出 {summary.pending}</span>
+                  </div>
+                )}
+
+                <div className="overflow-y-auto space-y-2 mb-4 flex-1">
+                  {batchItems.map(item => (
+                    <div key={item.userId} className="p-3 border border-gray-200 rounded-lg text-sm">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-gray-900">
+                          <span className="font-medium">{item.name}</span>
+                          <span className="text-gray-500 ml-2">{item.employeeId} • {item.username}</span>
+                        </div>
+                        <span className={`px-2 py-0.5 rounded-full text-xs whitespace-nowrap ${BATCH_STATUS_LABEL[item.status].className}`}>
+                          {BATCH_STATUS_LABEL[item.status].text}
+                        </span>
+                      </div>
+                      {item.status === 'done' && item.password && (
+                        <div className="mt-2 font-mono text-gray-900 bg-gray-50 rounded px-2 py-1 select-all">{item.password}</div>
+                      )}
+                      {item.message && (item.status === 'failed' || item.status === 'unknown') && (
+                        <div className={`mt-2 text-xs ${item.status === 'failed' ? 'text-red-600' : 'text-yellow-700'}`}>{item.message}</div>
+                      )}
+                    </div>
+                  ))}
                 </div>
+
+                {summary.unknown > 0 && (
+                  <p className="mb-3 text-xs text-yellow-700">
+                    「待確認」是連線中斷或伺服器沒有正常回應，不確定是否已重置。重試時會為該帳號產生新密碼並覆蓋，請以重試後顯示的密碼為準。
+                  </p>
+                )}
 
                 <div className="flex space-x-3">
+                  {summary.done > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => void copyBatchResults()}
+                      className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+                    >
+                      複製已完成的新密碼
+                    </button>
+                  )}
                   <button
                     type="button"
-                    onClick={() => {
-                      setShowBatchResetModal(false);
-                      setBatchResetPassword('');
-                    }}
-                    className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+                    onClick={closeBatchReset}
+                    disabled={batchRunning}
+                    className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50"
                   >
-                    取消
+                    {started ? '關閉' : '取消'}
                   </button>
-                  <button
-                    onClick={handleBatchReset}
-                    disabled={batchResetLoading || !batchResetPassword}
-                    className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors disabled:opacity-50"
-                  >
-                    {batchResetLoading ? '重置中...' : '確認批量重置'}
-                  </button>
+                  {retryCount > 0 && (
+                    <button
+                      onClick={() => void runBatch(batchItems)}
+                      disabled={batchRunning}
+                      className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors disabled:opacity-50"
+                    >
+                      {batchRunning ? '重置中...' : started ? `重試未完成的 ${retryCount} 個帳號` : '確認批量重置'}
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
       </div>
 
       {/* Toast 訊息 */}

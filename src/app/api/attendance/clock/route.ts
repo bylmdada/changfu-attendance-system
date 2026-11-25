@@ -12,6 +12,7 @@ import { calculateAttendanceHours } from '@/lib/work-hours';
 import {
   buildClockReasonPromptData,
   formatMinutesAsTime,
+  getClockDayOffset,
   parseClockReasonPromptSettings,
   shouldSkipClockReasonPrompt,
 } from '@/lib/clock-reason-prompt-settings';
@@ -494,6 +495,9 @@ export async function POST(request: NextRequest) {
             scheduledTime: clockOutSchedule.endTime,
             actualTime: currentTaiwanTime,
             recordId: attendance.id,
+            // 帶入班次所屬日：跨午夜班次的下班時間在隔天，隔日凌晨打卡也要算進差距
+            scheduledDayOffset: isCrossMidnightSchedule(clockOutSchedule) ? 1 : 0,
+            actualDayOffset: getClockDayOffset(clockOutSchedule.workDate, now),
           });
 
       return NextResponse.json({ 

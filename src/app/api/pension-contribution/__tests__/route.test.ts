@@ -128,4 +128,37 @@ describe('pension contribution root route guards', () => {
       error: '您有待處理的申請，請等待審核完成後再提出新申請',
     });
   });
+  it('records the rate in effect today as the current rate, not the stale employee master rate', async () => {
+    // 主檔 2%；已生效的核准單 4%；另有一張還沒到生效日的核准單 6%
+    const approved = [
+      { requestedRate: 4, effectiveDate: new Date('2026-10-31T16:00:00.000Z') },
+      { requestedRate: 6, effectiveDate: new Date('2099-01-01T00:00:00.000Z') },
+    ];
+    mockPrisma.employee.findUnique.mockResolvedValue({ id: 10, laborPensionSelfRate: 2 } as never);
+    mockPrisma.pensionContributionApplication.findFirst.mockImplementation((async (args: {
+      where: { status?: unknown; effectiveDate?: { lt: Date } };
+    }) => {
+      if (args.where.status === 'APPROVED') {
+        const lt = args.where.effectiveDate!.lt;
+        return approved
+          .filter((application) => application.effectiveDate < lt)
+          .sort((a, b) => b.effectiveDate.getTime() - a.effectiveDate.getTime())[0] ?? null;
+      }
+      return null; // 沒有待處理的申請
+    }) as never);
+    mockPrisma.pensionContributionApplication.create.mockResolvedValue({ id: 100, status: 'PENDING_HR' } as never);
+
+    const response = await POST(new NextRequest('http://localhost:3000/api/pension-contribution', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ requestedRate: 5 }),
+    }));
+    const payload = await response.json();
+
+    expect(response.status).toBe(201);
+    expect(payload.application.currentRate).toBe(4);
+    expect(mockPrisma.pensionContributionApplication.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ employeeId: 10, currentRate: 4, requestedRate: 5 }),
+    });
+  });
 });

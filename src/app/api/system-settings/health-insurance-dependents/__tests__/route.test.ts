@@ -174,6 +174,9 @@ describe('health insurance dependents route guards', () => {
       employee: { name: '王小明' },
     } as never);
     mockPrisma.dependentHistoryLog.create.mockResolvedValue({ id: 1 } as never);
+    mockPrisma.$transaction.mockImplementation(async (arg: unknown) =>
+      typeof arg === 'function' ? (arg as (tx: unknown) => unknown)(mockPrisma) : arg
+    );
 
     const request = new NextRequest('http://localhost/api/system-settings/health-insurance-dependents', {
       method: 'POST',
@@ -200,6 +203,113 @@ describe('health insurance dependents route guards', () => {
     expect(response.status).toBe(200);
     expect(payload.success).toBe(true);
     expect(payload.dependent.dependentName).toBe('王小華');
+  });
+
+  describe('主檔、歷程與投保人數在同一個交易', () => {
+    const body = {
+      employeeId: 1,
+      dependentName: '王小華',
+      relationship: 'CHILD',
+      idNumber: 'A123456789',
+      birthDate: '2015-01-01',
+      isActive: true,
+      startDate: '2024-01-01',
+      endDate: null,
+      remarks: '',
+    };
+    const post = (payload: Record<string, unknown> = body) =>
+      POST(new NextRequest('http://localhost/api/system-settings/health-insurance-dependents', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      }));
+    const created = {
+      id: 10, employeeId: 1, dependentName: '王小華', relationship: 'CHILD', idNumber: 'A123456789',
+      birthDate: new Date('2015-01-01T00:00:00.000Z'), isActive: true, startDate: new Date('2024-01-01T00:00:00.000Z'),
+      endDate: null, remarks: null, employee: { name: '王小明' },
+    };
+    // 交易用戶端與全域 prisma 分開，才能證明所有寫入都走交易
+    const makeTx = () => ({
+      healthInsuranceDependent: { create: jest.fn(), update: jest.fn(), count: jest.fn().mockResolvedValue(2) },
+      dependentHistoryLog: { create: jest.fn().mockResolvedValue({ id: 1 }) },
+      employee: { update: jest.fn().mockResolvedValue({ id: 1 }) },
+    });
+
+    beforeEach(() => {
+      mockPrisma.employee.findUnique.mockResolvedValue({ id: 1, name: '王小明' } as never);
+      mockPrisma.healthInsuranceDependent.findFirst.mockResolvedValue(null as never);
+    });
+
+    it('writes the dependent, its history and the head count through the transaction client only', async () => {
+      const tx = makeTx();
+      tx.healthInsuranceDependent.create.mockResolvedValue(created);
+      mockPrisma.$transaction.mockImplementation(async (arg: unknown) => (arg as (t: unknown) => unknown)(tx));
+
+      const response = await post();
+      const payload = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(payload.syncedDependentsCounts).toEqual({ 1: 2 });
+      expect(tx.healthInsuranceDependent.create).toHaveBeenCalledTimes(1);
+      expect(tx.dependentHistoryLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ dependentId: 10, action: 'CREATE' }),
+      });
+      expect(tx.employee.update).toHaveBeenCalledWith({ where: { id: 1 }, data: { dependents: 2 } });
+      // 沒有任何一筆寫入繞過交易
+      expect(mockPrisma.healthInsuranceDependent.create).not.toHaveBeenCalled();
+      expect(mockPrisma.dependentHistoryLog.create).not.toHaveBeenCalled();
+      expect(mockPrisma.employee.update).not.toHaveBeenCalled();
+    });
+
+    it('fails the request and never syncs the head count when the history write fails', async () => {
+      const tx = makeTx();
+      tx.healthInsuranceDependent.create.mockResolvedValue(created);
+      tx.dependentHistoryLog.create.mockRejectedValue(new Error('history write failed'));
+      mockPrisma.$transaction.mockImplementation(async (arg: unknown) => (arg as (t: unknown) => unknown)(tx));
+      jest.spyOn(console, 'error').mockImplementation(() => {});
+
+      const response = await post();
+
+      expect(response.status).toBe(500);
+      expect(tx.employee.update).not.toHaveBeenCalled();
+      expect(mockPrisma.healthInsuranceDependent.create).not.toHaveBeenCalled();
+    });
+
+    it('updates an existing dependent and logs each changed field inside the transaction', async () => {
+      const tx = makeTx();
+      const existing = { ...created, dependentName: '王小花', employee: { name: '王小明' } };
+      mockPrisma.healthInsuranceDependent.findUnique.mockResolvedValue(existing as never);
+      tx.healthInsuranceDependent.update.mockResolvedValue({ ...created, id: 10 });
+      mockPrisma.$transaction.mockImplementation(async (arg: unknown) => (arg as (t: unknown) => unknown)(tx));
+
+      const response = await post({ ...body, id: 10 });
+
+      expect(response.status).toBe(200);
+      expect(tx.healthInsuranceDependent.update).toHaveBeenCalledTimes(1);
+      expect(tx.dependentHistoryLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ action: 'UPDATE', fieldName: 'dependentName', oldValue: '王小花', newValue: '王小華' }),
+      });
+      expect(mockPrisma.healthInsuranceDependent.update).not.toHaveBeenCalled();
+      expect(mockPrisma.dependentHistoryLog.create).not.toHaveBeenCalled();
+    });
+
+    it('reactivates a withdrawn dependent through the transaction too', async () => {
+      const tx = makeTx();
+      mockPrisma.healthInsuranceDependent.findFirst.mockResolvedValue({ ...created, isActive: false, employeeId: 1 } as never);
+      tx.healthInsuranceDependent.update.mockResolvedValue(created);
+      mockPrisma.$transaction.mockImplementation(async (arg: unknown) => (arg as (t: unknown) => unknown)(tx));
+
+      const response = await post();
+
+      expect(response.status).toBe(200);
+      expect(tx.healthInsuranceDependent.update).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 10 }, data: expect.objectContaining({ endDate: null }) })
+      );
+      expect(tx.dependentHistoryLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ fieldName: 'isActive', oldValue: 'false', newValue: 'true' }),
+      });
+      expect(mockPrisma.healthInsuranceDependent.update).not.toHaveBeenCalled();
+    });
   });
 
   it('rejects invalid employee ids on POST before querying employees', async () => {

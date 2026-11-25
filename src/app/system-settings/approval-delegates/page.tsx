@@ -6,6 +6,7 @@ import { UserCheck, Plus, Trash2, Calendar, Users, Clock, AlertCircle, X } from 
 import SystemNavbar from '@/components/SystemNavbar';
 import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import ConfirmDialog from '@/components/ConfirmDialog';
+import { loadAllEmployees } from '@/lib/load-all-employees';
 
 interface User {
   id: number;
@@ -104,10 +105,11 @@ export default function ApprovalDelegatesPage() {
         }
 
         // 載入員工列表
-        const empRes = await fetch('/api/employees', { credentials: 'include' });
-        if (empRes.ok) {
-          const empData = await empRes.json();
-          setEmployees(empData.employees || []);
+        // 逐頁取完，不設人數上限；失敗只影響選人清單，代理設定仍要載入
+        try {
+          setEmployees(await loadAllEmployees<Employee>());
+        } catch (employeesError) {
+          console.error('載入員工列表失敗:', employeesError);
         }
 
         // 載入代理設定

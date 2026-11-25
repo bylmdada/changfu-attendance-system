@@ -5,6 +5,7 @@ import { createApprovalForRequest } from '@/lib/approval-helper';
 import { validateCSRF } from '@/lib/csrf';
 import { parseIntegerQueryParam } from '@/lib/query-params';
 import { getTaiwanNow } from '@/lib/timezone';
+import { formatPurchaseRequestNumber, getNextPurchaseRequestSequence } from '@/lib/purchase-request-number';
 import { safeParseJSON } from '@/lib/validation';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -87,6 +88,8 @@ function isDuplicatePurchaseRequestError(error: unknown) {
   return code === 'P2002' || message.includes('UNIQUE constraint failed');
 }
 
+class PurchaseRequestAlreadyProcessedError extends Error {}
+
 // 生成請購單號
 async function generateRequestNumber(): Promise<string> {
   const now = getTaiwanNow();
@@ -94,25 +97,21 @@ async function generateRequestNumber(): Promise<string> {
   const month = String(now.getMonth() + 1).padStart(2, '0');
   const prefix = `PR-${year}${month}`;
   
-  // 查詢當月最大序號
-  const lastRequest = await prisma.purchaseRequest.findFirst({
+  // 當月既有單號：用數值找最大序號。文字倒序會把 999 排在 1000 後面，
+  // 當月超過 999 張時會一直重取 1000
+  const existingNumbers = await prisma.purchaseRequest.findMany({
     where: {
       requestNumber: {
         startsWith: prefix
       }
     },
-    orderBy: {
-      requestNumber: 'desc'
-    }
+    select: { requestNumber: true }
   });
 
-  let sequence = 1;
-  if (lastRequest) {
-    const lastNumber = parseInt(lastRequest.requestNumber.slice(-3));
-    sequence = lastNumber + 1;
-  }
-
-  return `${prefix}-${String(sequence).padStart(3, '0')}`;
+  return formatPurchaseRequestNumber(
+    prefix,
+    getNextPurchaseRequestSequence(existingNumbers.map((item) => item.requestNumber), prefix)
+  );
 }
 
 // GET - 取得請購單列表
@@ -416,45 +415,65 @@ export async function PUT(request: NextRequest) {
     }
 
     const approvedAt = new Date();
-    const [purchaseRequest] = await prisma.$transaction([
-      prisma.purchaseRequest.update({
-        where: { id },
-        data: {
-          status,
-          approvedBy: user.employee.id,
-          approvedAt,
-          rejectReason: status === 'REJECTED' ? rejectReason : null
-        },
-        include: {
-          employee: {
-            select: {
-              id: true,
-              employeeId: true,
-              name: true,
-              department: true
+    const reviewer = user.employee;
+    let purchaseRequest;
+    try {
+      purchaseRequest = await prisma.$transaction(async (tx) => {
+        // 只有「仍待審」的單能被改。兩位審核者同時處理同一張單時，後到的人在這裡落空，
+        // 不會蓋掉先前的結果，也不會多寫一筆審核紀錄
+        const updated = await tx.purchaseRequest.updateMany({
+          where: { id, status: 'PENDING' },
+          data: {
+            status,
+            approvedBy: reviewer.id,
+            approvedAt,
+            rejectReason: status === 'REJECTED' ? rejectReason : null
+          }
+        });
+        if (updated.count !== 1) {
+          throw new PurchaseRequestAlreadyProcessedError();
+        }
+
+        await tx.approvalReview.create({
+          data: {
+            instanceId: approvalInstance.id,
+            level: approvalInstance.currentLevel,
+            reviewerId: reviewer.id,
+            reviewerName: reviewer.name,
+            reviewerRole: user.role === 'ADMIN' ? '管理員' : user.role === 'HR' ? '人資' : '審核者',
+            action: status === 'APPROVED' ? 'APPROVE' : 'REJECT',
+            comment: status === 'REJECTED' ? rejectReason : null
+          }
+        });
+
+        await tx.approvalInstance.update({
+          where: { id: approvalInstance.id },
+          data: {
+            status: status === 'APPROVED' ? 'APPROVED' : 'REJECTED',
+            currentLevel: approvalInstance.maxLevel
+          }
+        });
+
+        return tx.purchaseRequest.findUniqueOrThrow({
+          where: { id },
+          include: {
+            employee: {
+              select: {
+                id: true,
+                employeeId: true,
+                name: true,
+                department: true
+              }
             }
           }
-        }
-      }),
-      prisma.approvalReview.create({
-        data: {
-          instanceId: approvalInstance.id,
-          level: approvalInstance.currentLevel,
-          reviewerId: user.employee.id,
-          reviewerName: user.employee.name,
-          reviewerRole: user.role === 'ADMIN' ? '管理員' : user.role === 'HR' ? '人資' : '審核者',
-          action: status === 'APPROVED' ? 'APPROVE' : 'REJECT',
-          comment: status === 'REJECTED' ? rejectReason : null
-        }
-      }),
-      prisma.approvalInstance.update({
-        where: { id: approvalInstance.id },
-        data: {
-          status: status === 'APPROVED' ? 'APPROVED' : 'REJECTED',
-          currentLevel: approvalInstance.maxLevel
-        }
-      })
-    ]);
+        });
+      });
+    } catch (error) {
+      if (error instanceof PurchaseRequestAlreadyProcessedError) {
+        return NextResponse.json({ error: '此請購單已處理' }, { status: 400 });
+      }
+      throw error;
+    }
 
     return NextResponse.json({ 
       message: status === 'APPROVED' ? '已核准' : '已駁回',

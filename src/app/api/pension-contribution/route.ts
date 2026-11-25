@@ -221,7 +221,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '找不到員工資料' }, { status: 404 });
     }
 
-    const currentRate = employee.laborPensionSelfRate || 0;
+    // 與「我的自提」頁相同的算法：已生效的核准單優先，沒有才用員工主檔。
+    // 主檔只在核准時生效日已到才會更新，所以直接抄主檔會把「目前比例」記錯
+    // （主檔 2%、已生效 4%、新申請 5%，審核頁應顯示 4% → 5%，而不是 2% → 5%）
+    const currentRate = await getEffectivePensionContributionRate(
+      prisma.pensionContributionApplication,
+      employee.id,
+      employee.laborPensionSelfRate || 0,
+      getTaiwanTodayEnd()
+    );
 
     // 檢查是否有待處理的申請
     const pendingApp = await prisma.pensionContributionApplication.findFirst({

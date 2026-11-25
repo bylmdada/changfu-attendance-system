@@ -28,6 +28,8 @@ export default function PushNotificationsPage() {
   const [permissionState, setPermissionState] = useState<NotificationPermission>('default');
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [isDevelopment, setIsDevelopment] = useState(false);
+  // 此裝置已取消訂閱，但伺服器那邊還沒同步取消（取消請求失敗時）
+  const [syncPending, setSyncPending] = useState(false);
 
   const showToast = (type: 'success' | 'error', message: string) => {
     setToast({ type, message });
@@ -124,17 +126,19 @@ export default function PushNotificationsPage() {
       // 發送訂閱到伺服器
       const response = await fetchJSONWithCSRF('/api/push-subscription', {
         method: 'POST',
-        body: JSON.stringify({
+        body: {
           subscription: subscription.toJSON(),
           sendTest: true
-        })
-      }) as { success?: boolean; error?: string };
+        }
+      });
+      const result = await response.json().catch(() => null) as { success?: boolean; error?: string } | null;
 
-      if (response.success) {
+      if (response.ok && result?.success) {
         setIsSubscribed(true);
+        setSyncPending(false);
         showToast('success', '推播通知已啟用！您應該會收到一則測試通知');
       } else {
-        throw new Error(response.error || '訂閱失敗');
+        throw new Error(result?.error || '訂閱失敗');
       }
     } catch (error) {
       console.error('訂閱推播失敗:', error);
@@ -144,43 +148,82 @@ export default function PushNotificationsPage() {
     }
   };
 
+  // 通知伺服器取消訂閱；回傳實際結果，不能假設成功
+  const requestServerUnsubscribe = async (): Promise<{ ok: true } | { ok: false; error: string }> => {
+    try {
+      const response = await fetchJSONWithCSRF('/api/push-subscription', { method: 'DELETE' });
+      if (response.ok) return { ok: true };
+      const data = await response.json().catch(() => null) as { error?: string } | null;
+      return { ok: false, error: data?.error || `伺服器回應 ${response.status}` };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : '連線失敗' };
+    }
+  };
+
   const handleUnsubscribe = async () => {
     setSubscribing(true);
     try {
       const registration = await navigator.serviceWorker.ready;
       const subscription = await registration.pushManager.getSubscription();
-      
+
       if (subscription) {
         await subscription.unsubscribe();
       }
-
-      // 通知伺服器取消訂閱
-      await fetchJSONWithCSRF('/api/push-subscription', {
-        method: 'DELETE'
-      });
-
-      setIsSubscribed(false);
-      showToast('success', '已取消推播通知');
     } catch (error) {
-      console.error('取消訂閱失敗:', error);
-      showToast('error', '取消訂閱失敗');
-    } finally {
+      console.error('取消裝置訂閱失敗:', error);
+      showToast('error', '取消訂閱失敗：此裝置沒有取消成功');
       setSubscribing(false);
+      return;
     }
+
+    // 裝置已取消；伺服器要分開確認，失敗就標成待同步並提供重試
+    const result = await requestServerUnsubscribe();
+    setIsSubscribed(false);
+    if (result.ok) {
+      setSyncPending(false);
+      showToast('success', '已取消推播通知');
+    } else {
+      setSyncPending(true);
+      showToast('error', `此裝置已取消推播，但伺服器還沒同步（${result.error}），請按「重新同步」`);
+    }
+    setSubscribing(false);
+  };
+
+  const handleRetrySync = async () => {
+    setSubscribing(true);
+    const result = await requestServerUnsubscribe();
+    if (result.ok) {
+      setSyncPending(false);
+      showToast('success', '已同步取消推播通知');
+    } else {
+      showToast('error', `同步失敗（${result.error}），請稍後再試`);
+    }
+    setSubscribing(false);
   };
 
   const handleSendTestNotification = async () => {
     try {
+      // 伺服器要有效的訂閱資料才會發測試通知，所以帶這個裝置目前的訂閱
+      const registration = await navigator.serviceWorker.ready;
+      const subscription = await registration.pushManager.getSubscription();
+      if (!subscription) {
+        showToast('error', '此裝置沒有有效的推播訂閱，請重新啟用推播');
+        return;
+      }
+
       const response = await fetchJSONWithCSRF('/api/push-subscription', {
         method: 'POST',
-        body: JSON.stringify({
-          subscription: null, // 不需要重新訂閱
+        body: {
+          subscription: subscription.toJSON(),
           sendTest: true
-        })
-      }) as { success?: boolean };
-      
-      if (response.success) {
+        }
+      });
+      const result = await response.json().catch(() => null) as { success?: boolean; error?: string } | null;
+
+      if (response.ok && result?.success) {
         showToast('success', '測試通知已發送');
+      } else {
+        showToast('error', result?.error || '發送測試通知失敗');
       }
     } catch {
       showToast('error', '發送測試通知失敗');
@@ -301,6 +344,19 @@ export default function PushNotificationsPage() {
               )}
             </button>
           </div>
+
+          {syncPending && (
+            <div role="alert" className="mt-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg flex items-center justify-between gap-3 text-sm text-yellow-800">
+              <span>此裝置已取消推播，但伺服器還沒同步取消，期間仍可能收到推播通知。</span>
+              <button
+                onClick={handleRetrySync}
+                disabled={subscribing}
+                className="px-3 py-1 bg-yellow-600 text-white rounded hover:bg-yellow-700 disabled:opacity-50 whitespace-nowrap"
+              >
+                重新同步
+              </button>
+            </div>
+          )}
 
           {/* 權限狀態 */}
           {pushSupported && (

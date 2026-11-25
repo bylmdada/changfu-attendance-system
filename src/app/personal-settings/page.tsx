@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { User, Fingerprint, Smartphone, Trash2, Plus, Shield, Clock, Eye, EyeOff } from 'lucide-react';
 import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import ConfirmDialog from '@/components/ConfirmDialog';
@@ -27,10 +27,14 @@ interface UserInfo {
   };
 }
 
+// 帳號資訊與設備清單各自載入，各自有載入中／成功／失敗，不能因為其中一個失敗就當成「沒有資料」
+type LoadState = 'loading' | 'success' | 'error';
+
 export default function PersonalSettingsPage() {
   const [user, setUser] = useState<UserInfo | null>(null);
   const [credentials, setCredentials] = useState<WebAuthnCredential[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [accountState, setAccountState] = useState<LoadState>('loading');
+  const [credentialsState, setCredentialsState] = useState<LoadState>('loading');
   const [actionLoading, setActionLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [showRegisterForm, setShowRegisterForm] = useState(false);
@@ -39,11 +43,40 @@ export default function PersonalSettingsPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [deleteConfirmCredential, setDeleteConfirmCredential] = useState<WebAuthnCredential | null>(null);
 
+  const loadUserData = useCallback(async () => {
+    setAccountState((previous) => (previous === 'success' ? previous : 'loading'));
+    try {
+      const response = await fetch('/api/auth/me', { credentials: 'include' });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      if (!data.user) throw new Error('回應沒有帳號資料');
+      setUser(data.user);
+      setAccountState('success');
+    } catch (error) {
+      console.error('載入用戶資料失敗:', error);
+      setAccountState('error');
+    }
+  }, []);
+
+  const loadCredentials = useCallback(async () => {
+    setCredentialsState((previous) => (previous === 'success' ? previous : 'loading'));
+    try {
+      const response = await fetch('/api/user/webauthn-credentials', { credentials: 'include' });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      setCredentials(data.credentials || []);
+      setCredentialsState('success');
+    } catch (error) {
+      console.error('載入憑證失敗:', error);
+      setCredentialsState('error');
+    }
+  }, []);
+
   useEffect(() => {
     checkBiometricSupport();
-    loadUserData();
-    loadCredentials();
-  }, []);
+    void loadUserData();
+    void loadCredentials();
+  }, [loadUserData, loadCredentials]);
 
   const checkBiometricSupport = async () => {
     if (window.PublicKeyCredential && 
@@ -54,32 +87,6 @@ export default function PersonalSettingsPage() {
       } catch {
         setBiometricSupported(false);
       }
-    }
-  };
-
-  const loadUserData = async () => {
-    try {
-      const response = await fetch('/api/auth/me', { credentials: 'include' });
-      if (response.ok) {
-        const data = await response.json();
-        setUser(data.user);
-      }
-    } catch (error) {
-      console.error('載入用戶資料失敗:', error);
-    }
-  };
-
-  const loadCredentials = async () => {
-    try {
-      const response = await fetch('/api/user/webauthn-credentials', { credentials: 'include' });
-      if (response.ok) {
-        const data = await response.json();
-        setCredentials(data.credentials || []);
-      }
-    } catch (error) {
-      console.error('載入憑證失敗:', error);
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -119,7 +126,10 @@ export default function PersonalSettingsPage() {
       return;
     }
 
-    if (!user) return;
+    if (!user) {
+      setMessage({ type: 'error', text: '帳號資料尚未載入，無法設定，請先重新載入帳號資訊' });
+      return;
+    }
 
       setActionLoading(true);
       try {
@@ -234,16 +244,6 @@ export default function PersonalSettingsPage() {
     }
   };
 
-  if (loading) {
-    return (
-      <AuthenticatedLayout>
-        <div className="flex items-center justify-center h-64">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-        </div>
-      </AuthenticatedLayout>
-    );
-  }
-
   return (
     <AuthenticatedLayout>
       <div className="max-w-4xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
@@ -277,6 +277,21 @@ export default function PersonalSettingsPage() {
             帳號資訊
           </h2>
           
+          {accountState === 'loading' && (
+            <p className="text-gray-500 py-4">載入帳號資訊中...</p>
+          )}
+          {accountState === 'error' && (
+            <div role="alert" className="flex items-center justify-between gap-3 bg-red-50 text-red-700 border border-red-200 rounded-lg p-4">
+              <span>帳號資訊載入失敗，請稍後再試。</span>
+              <button
+                onClick={() => void loadUserData()}
+                className="px-3 py-1 bg-red-600 text-white rounded-lg hover:bg-red-700 whitespace-nowrap"
+              >
+                重新載入
+              </button>
+            </div>
+          )}
+          {accountState === 'success' && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="bg-gray-50 rounded-lg p-4">
               <div className="text-sm text-gray-500">帳號</div>
@@ -307,6 +322,7 @@ export default function PersonalSettingsPage() {
               </>
             )}
           </div>
+          )}
         </div>
 
         {/* Face ID / 指紋設定 */}
@@ -319,14 +335,22 @@ export default function PersonalSettingsPage() {
             {biometricSupported && (
               <button
                 onClick={() => setShowRegisterForm(!showRegisterForm)}
-                className="flex items-center px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
-                disabled={actionLoading}
+                className="flex items-center px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={actionLoading || accountState !== 'success'}
               >
                 <Plus className="w-4 h-4 mr-1" />
                 新增設備
               </button>
             )}
           </div>
+
+          {biometricSupported && accountState !== 'success' && (
+            <p className="mb-4 text-sm text-red-600">
+              {accountState === 'loading'
+                ? '帳號資訊載入中，載入完成後才能新增設備。'
+                : '帳號資訊載入失敗，無法新增設備。請先在上方「帳號資訊」按「重新載入」。'}
+            </p>
+          )}
 
           {!biometricSupported && (
             <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-4">
@@ -377,7 +401,7 @@ export default function PersonalSettingsPage() {
                 <div className="flex gap-2">
                   <button
                     onClick={registerNewDevice}
-                    disabled={actionLoading}
+                    disabled={actionLoading || accountState !== 'success'}
                     className="flex-1 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50"
                   >
                     {actionLoading ? '設定中...' : '開始設定'}
@@ -397,7 +421,21 @@ export default function PersonalSettingsPage() {
           )}
 
           {/* 已註冊的設備列表 */}
-          {credentials.length > 0 ? (
+          {credentialsState === 'loading' && (
+            <p className="text-center py-8 text-gray-500">載入設備清單中...</p>
+          )}
+          {credentialsState === 'error' && (
+            <div role="alert" className="flex items-center justify-between gap-3 bg-red-50 text-red-700 border border-red-200 rounded-lg p-4">
+              <span>設備清單載入失敗，目前無法確認是否已設定設備。</span>
+              <button
+                onClick={() => void loadCredentials()}
+                className="px-3 py-1 bg-red-600 text-white rounded-lg hover:bg-red-700 whitespace-nowrap"
+              >
+                重新載入
+              </button>
+            </div>
+          )}
+          {credentialsState === 'success' && (credentials.length > 0 ? (
             <div className="space-y-3">
               {credentials.map((credential) => (
                 <div 
@@ -434,11 +472,11 @@ export default function PersonalSettingsPage() {
             <div className="text-center py-8 text-gray-500">
               <Fingerprint className="w-12 h-12 mx-auto mb-3 text-gray-300" />
               <p>尚未設定任何 Face ID / 指紋設備</p>
-              {biometricSupported && (
+              {biometricSupported && accountState === 'success' && (
                 <p className="text-sm mt-1">點擊「新增設備」開始設定</p>
               )}
             </div>
-          )}
+          ))}
 
           <div className="mt-4 text-sm text-gray-500 bg-gray-50 rounded-lg p-3">
             <p><strong>提示：</strong>設定 Face ID / 指紋後，您可以在快速打卡頁面直接使用生物識別進行上下班打卡，無需輸入密碼。</p>

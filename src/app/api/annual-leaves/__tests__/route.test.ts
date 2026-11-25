@@ -99,7 +99,7 @@ describe('annual leave route', () => {
     );
   });
 
-  it('keeps ten years of service at fifteen days and uses anniversary expiry', async () => {
+  it('grants sixteen days at ten years of service and uses anniversary expiry', async () => {
     const request = new NextRequest('http://localhost:3000/api/annual-leaves', {
       method: 'POST',
       headers: {
@@ -116,7 +116,7 @@ describe('annual leave route', () => {
       expect.objectContaining({
         update: expect.objectContaining({
           yearsOfService: 10,
-          totalDays: 15,
+          totalDays: 16,
           expiryDate: new Date(2027, 5, 14),
         }),
       }),

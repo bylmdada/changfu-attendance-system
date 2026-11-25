@@ -10,6 +10,7 @@ jest.mock('@/lib/annual-leave-calculator', () => ({
   calculateAnnualLeaveDays: jest.fn(),
   calculateAllEmployeesAnnualLeave: jest.fn(),
   getEmployeeAnnualLeave: jest.fn(),
+  saveAnnualLeaveEntitlement: jest.fn(),
 }));
 
 jest.mock('@/lib/database', () => ({
@@ -24,6 +25,7 @@ jest.mock('@/lib/database', () => ({
     leaveBalanceHistory: {
       findMany: jest.fn(),
     },
+    $transaction: jest.fn(),
   },
 }));
 
@@ -31,13 +33,14 @@ import { NextRequest } from 'next/server';
 import { GET, POST } from '@/app/api/annual-leave/calculate/route';
 import { getUserFromRequest } from '@/lib/auth';
 import { validateCSRF } from '@/lib/csrf';
-import { calculateAnnualLeaveDays, getEmployeeAnnualLeave } from '@/lib/annual-leave-calculator';
+import { calculateAnnualLeaveDays, getEmployeeAnnualLeave, saveAnnualLeaveEntitlement } from '@/lib/annual-leave-calculator';
 import { prisma } from '@/lib/database';
 
 const mockGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
 const mockValidateCSRF = validateCSRF as jest.MockedFunction<typeof validateCSRF>;
 const mockCalculateAnnualLeaveDays = calculateAnnualLeaveDays as jest.MockedFunction<typeof calculateAnnualLeaveDays>;
 const mockGetEmployeeAnnualLeave = getEmployeeAnnualLeave as jest.MockedFunction<typeof getEmployeeAnnualLeave>;
+const mockSaveAnnualLeaveEntitlement = saveAnnualLeaveEntitlement as jest.MockedFunction<typeof saveAnnualLeaveEntitlement>;
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 
 describe('annual-leave calculate GET authorization', () => {
@@ -203,6 +206,45 @@ describe('annual-leave calculate GET authorization', () => {
     expect(response.status).toBe(400);
     expect(payload).toEqual({ error: '請提供有效的年假計算資料' });
     expect(mockGetEmployeeAnnualLeave).not.toHaveBeenCalled();
+    expect(mockPrisma.annualLeave.upsert).not.toHaveBeenCalled();
+  });
+});
+
+describe('annual-leave calculate POST for selected employees', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockValidateCSRF.mockResolvedValue({ valid: true } as never);
+    mockGetUserFromRequest.mockResolvedValue({ role: 'HR', employeeId: 1, userId: 2 } as never);
+  });
+
+  it('saves through the shared writer (used days kept, history written) inside one transaction', async () => {
+    const tx = { marker: 'tx' };
+    mockPrisma.$transaction.mockImplementation((async (callback: (t: unknown) => unknown) => callback(tx)) as never);
+    mockGetEmployeeAnnualLeave.mockResolvedValue({
+      employeeId: 7,
+      employeeName: '王小明',
+      hireDate: new Date(2024, 2, 1),
+      referenceDate: new Date(2026, 11, 31),
+      yearsOfService: 2,
+      monthsOfService: 33,
+      entitledDays: 10,
+      calculation: '年資 2 年 9 個月',
+    });
+
+    const response = await POST(new NextRequest('http://localhost/api/annual-leave/calculate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ year: 2026, employeeIds: [7] }),
+    }));
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.success).toBe(true);
+    expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(mockSaveAnnualLeaveEntitlement).toHaveBeenCalledWith(tx, expect.objectContaining({
+      employeeId: 7, year: 2026, yearsOfService: 2, totalDays: 10, note: '年資 2 年 9 個月',
+    }));
+    // 不再自己 upsert（舊版只改總額、不動剩餘）
     expect(mockPrisma.annualLeave.upsert).not.toHaveBeenCalled();
   });
 });

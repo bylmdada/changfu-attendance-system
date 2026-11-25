@@ -28,8 +28,8 @@ import { DELETE, GET, POST, PUT } from '../route';
 const mockPrisma = prisma as unknown as DeepMocked<typeof prisma>;
 const mockGetUserFromRequest = getUserFromRequest as jest.MockedFunction<typeof getUserFromRequest>;
 const mockValidateCSRF = validateCSRF as jest.MockedFunction<typeof validateCSRF>;
-let mockTxDeleteMany: jest.Mock;
-let mockTxCreateMany: jest.Mock;
+let mockTxFindMany: jest.Mock;
+let mockTxUpsert: jest.Mock;
 
 describe('holidays route validation', () => {
   beforeEach(() => {
@@ -47,12 +47,12 @@ describe('holidays route validation', () => {
     mockPrisma.holiday.delete.mockResolvedValue({ id: 1 } as never);
     mockPrisma.holiday.deleteMany.mockResolvedValue({ count: 0 } as never);
     mockPrisma.holiday.createMany.mockResolvedValue({ count: 1 } as never);
-    mockTxDeleteMany = jest.fn().mockResolvedValue({ count: 0 });
-    mockTxCreateMany = jest.fn().mockResolvedValue({ count: 1 });
+    mockTxFindMany = jest.fn().mockResolvedValue([]);
+    mockTxUpsert = jest.fn().mockResolvedValue({ id: 1 });
     mockPrisma.$transaction.mockImplementation(async (callback) => callback({
       holiday: {
-        deleteMany: mockTxDeleteMany,
-        createMany: mockTxCreateMany,
+        findMany: mockTxFindMany,
+        upsert: mockTxUpsert,
       },
     } as never) as never);
   });
@@ -252,25 +252,43 @@ describe('holidays route validation', () => {
     expect(mockPrisma.holiday.delete).not.toHaveBeenCalled();
   });
 
-  it('returns 400 when batch import creates zero holidays', async () => {
-    mockTxCreateMany.mockResolvedValueOnce({ count: 0 });
-
-    const request = new NextRequest('http://localhost/api/system-settings/holidays', {
+  const putImport = (holidays: Array<{ date: string; name: string }>) =>
+    PUT(new NextRequest('http://localhost/api/system-settings/holidays', {
       method: 'PUT',
-      headers: {
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        year: 2026,
-        holidays: [{ date: '2026-01-01', name: '元旦' }],
-      }),
-    });
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ year: 2026, holidays }),
+    }));
 
-    const response = await PUT(request);
+  it('merges the import by date instead of deleting the whole year first', async () => {
+    // 原有兩天（春節自訂假日），這次只匯入一個新日期
+    mockTxFindMany.mockResolvedValueOnce([]);
+
+    const response = await putImport([{ date: '2026-10-10', name: '國慶日' }]);
     const payload = await response.json();
 
-    expect(response.status).toBe(400);
-    expect(payload.error).toBe('假日匯入失敗，未新增任何資料');
+    expect(response.status).toBe(200);
+    expect(payload).toMatchObject({ count: 1, created: 1, updated: 0 });
+    expect(mockPrisma.holiday.deleteMany).not.toHaveBeenCalled();
+    expect(mockTxUpsert).toHaveBeenCalledTimes(1);
+    expect(mockTxUpsert).toHaveBeenCalledWith({
+      where: { date: new Date('2026-10-10T00:00:00.000Z') },
+      create: expect.objectContaining({ year: 2026, name: '國慶日' }),
+      update: expect.objectContaining({ name: '國慶日', isActive: true }),
+    });
+  });
+
+  it('updates a date that already exists and reports it as updated, so re-importing stays idempotent', async () => {
+    mockTxFindMany.mockResolvedValueOnce([{ date: new Date('2026-10-10T00:00:00.000Z') }]);
+
+    const response = await putImport([
+      { date: '2026-10-10', name: '國慶日（更新）' },
+      { date: '2026-10-11', name: '補假' },
+    ]);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload).toMatchObject({ count: 2, created: 1, updated: 1 });
+    expect(mockTxUpsert).toHaveBeenCalledTimes(2);
   });
 
   it('rejects impossible government-format dates on PUT instead of normalizing them', async () => {

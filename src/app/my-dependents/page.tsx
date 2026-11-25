@@ -75,6 +75,9 @@ export default function MyDependentsPage() {
   const [submitting, setSubmitting] = useState(false);
   
   const [formData, setFormData] = useState(createDefaultFormData);
+  // 「先儲存申請」已經送審；這是當時送出的內容，之後有改動才需要更新那筆待審申請
+  const [savedFormData, setSavedFormData] = useState<ReturnType<typeof createDefaultFormData> | null>(null);
+  const addFormChanged = !!savedFormData && JSON.stringify(savedFormData) !== JSON.stringify(formData);
 
   // 附件相關狀態
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -109,6 +112,7 @@ export default function MyDependentsPage() {
     setFormData(createDefaultFormData());
     setAttachments([]);
     setCurrentApplicationId(null);
+    setSavedFormData(null);
     setPendingFileType('');
   };
 
@@ -136,7 +140,29 @@ export default function MyDependentsPage() {
     e.preventDefault();
 
     if (currentApplicationId) {
-      showToast('success', '加保申請已完成');
+      // 先儲存時申請就已送審；之後若更正了欄位，要把修改寫回那筆待審申請，成功才關閉
+      if (addFormChanged) {
+        setSubmitting(true);
+        try {
+          const response = await fetchJSONWithCSRF(`/api/my-dependents/${currentApplicationId}`, {
+            method: 'PUT',
+            body: formData
+          });
+          if (!response.ok) {
+            const error = await response.json().catch(() => ({}));
+            showToast('error', error.error || '更新失敗，請稍後再試');
+            return;
+          }
+        } catch (error) {
+          console.error('更新申請失敗:', error);
+          showToast('error', '更新失敗，請稍後再試');
+          return;
+        } finally {
+          setSubmitting(false);
+        }
+      }
+
+      showToast('success', addFormChanged ? '加保申請已更新' : '加保申請已完成');
       closeAddForm();
       await loadData();
       return;
@@ -621,6 +647,11 @@ export default function MyDependentsPage() {
               </div>
               
               <form onSubmit={handleSubmitAdd} className="space-y-4">
+                {currentApplicationId && (
+                  <div className="rounded-lg bg-blue-50 p-3 text-sm text-blue-800">
+                    申請已送出審核。可繼續上傳附件；若要更正下方欄位，修改後按「更新並完成」即可（審核通過或退回後就無法再修改）。
+                  </div>
+                )}
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">眷屬姓名 *</label>
@@ -734,7 +765,7 @@ export default function MyDependentsPage() {
                   {/* 無申請 ID 提示 */}
                   {!currentApplicationId && (
                     <div className="text-center py-3 text-sm text-amber-600 bg-amber-50 rounded-lg">
-                      請先點擊「先儲存申請」後再上傳附件
+                      請先點擊「先儲存申請」後再上傳附件（儲存後申請即送出審核，審核前仍可修改）
                     </div>
                   )}
 
@@ -819,7 +850,8 @@ export default function MyDependentsPage() {
                             }
 
                             setCurrentApplicationId(applicationId);
-                            showToast('success', '申請已儲存，請上傳附件');
+                            setSavedFormData({ ...formData });
+                            showToast('success', '申請已儲存並送出審核，請上傳附件');
                           } else {
                             const error = await response.json();
                             showToast('error', error.error || '儲存失敗');
@@ -842,7 +874,7 @@ export default function MyDependentsPage() {
                     className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
                   >
                     <Send className="h-4 w-4" />
-                    {submitting ? '提交中...' : currentApplicationId ? '完成' : '直接提交'}
+                    {submitting ? '提交中...' : currentApplicationId ? (addFormChanged ? '更新並完成' : '完成') : '直接提交'}
                   </button>
                 </div>
               </form>

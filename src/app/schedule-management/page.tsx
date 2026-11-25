@@ -44,6 +44,7 @@ import {
   SCHEDULE_CONFIRM_STATUS_OPTIONS,
   type ScheduleConfirmStatus,
 } from '@/lib/schedule-confirmation-status';
+import { loadAllEmployees } from '@/lib/load-all-employees';
 
 interface Schedule {
   id: number;
@@ -1312,14 +1313,8 @@ export default function ScheduleManagementPage() {
 
   const fetchEmployees = async () => {
     try {
-      // 獲取所有員工（排班需要完整員工列表，不使用分頁）
-      const response = await fetch('/api/employees?limit=1000', {
-        credentials: 'include'
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setEmployees(data.employees || []);
-      }
+      // 獲取所有員工（排班需要完整員工列表）：逐頁取完，不設人數上限
+      setEmployees(await loadAllEmployees<Employee>());
     } catch (error) {
       console.error('獲取員工列表失敗:', error);
     }

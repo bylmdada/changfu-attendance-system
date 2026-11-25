@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { 
   calculateAnnualLeaveDays, 
   calculateAllEmployeesAnnualLeave,
-  getEmployeeAnnualLeave 
+  getEmployeeAnnualLeave,
+  saveAnnualLeaveEntitlement
 } from '@/lib/annual-leave-calculator';
 import { prisma } from '@/lib/database';
 import { getUserFromRequest } from '@/lib/auth';
@@ -268,27 +269,17 @@ export async function POST(request: NextRequest) {
           const expiryDate = new Date(hireDateThisYear);
           expiryDate.setFullYear(expiryDate.getFullYear() + 1);
 
-          await prisma.annualLeave.upsert({
-            where: {
-              employeeId_year: {
-                employeeId: empId,
-                year: targetYear
-              }
-            },
-            create: {
+          // 與全員重算共用同一個寫入：已休天數保留、剩餘＝總額－已休，並一起寫入歷史
+          await prisma.$transaction((tx) =>
+            saveAnnualLeaveEntitlement(tx, {
               employeeId: empId,
               year: targetYear,
               yearsOfService: calculation.yearsOfService,
               totalDays: calculation.entitledDays,
-              usedDays: 0,
-              remainingDays: calculation.entitledDays,
-              expiryDate
-            },
-            update: {
-              yearsOfService: calculation.yearsOfService,
-              totalDays: calculation.entitledDays
-            }
-          });
+              expiryDate,
+              note: calculation.calculation,
+            })
+          );
 
           results.push(calculation);
         }

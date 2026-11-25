@@ -165,6 +165,57 @@ describe('announcements route guards', () => {
     expect(mockedPrisma.announcement.create).not.toHaveBeenCalled();
   });
 
+  describe('排程發布時間必須早於到期日', () => {
+    const adminUser = { userId: 1, employeeId: 10, username: 'admin', role: 'ADMIN', sessionId: 'session-1' };
+    const submit = (fields: Record<string, string>) => {
+      const formData = new FormData();
+      formData.append('title', 'Scheduled announcement');
+      formData.append('content', 'content');
+      formData.append('isGlobalAnnouncement', 'true');
+      for (const [key, value] of Object.entries(fields)) formData.append(key, value);
+      return POST(new NextRequest('http://localhost:3000/api/announcements', { method: 'POST', body: formData }));
+    };
+
+    beforeEach(() => {
+      mockedGetUserFromRequest.mockResolvedValue(adminUser as never);
+    });
+
+    it('rejects a schedule that is later than the expiry before saving anything', async () => {
+      // 12/1 到期、12/2 才發布：到點時已過期，排程永遠選不到
+      const response = await submit({
+        expiryDate: '2099-12-01T00:00:00.000Z',
+        scheduledPublishAt: '2099-12-02T00:00:00.000Z',
+      });
+      const payload = await response.json();
+
+      expect(response.status).toBe(400);
+      expect(payload.error).toContain('定時發布時間必須早於到期日');
+      expect(mockedPrisma.announcement.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects a schedule at exactly the expiry moment', async () => {
+      const response = await submit({
+        expiryDate: '2099-12-02T00:00:00.000Z',
+        scheduledPublishAt: '2099-12-02T00:00:00.000Z',
+      });
+
+      expect(response.status).toBe(400);
+      expect(mockedPrisma.announcement.create).not.toHaveBeenCalled();
+    });
+
+    it('accepts a schedule that fires before the expiry', async () => {
+      mockedPrisma.announcement.create.mockResolvedValue({ id: 12, isPublished: false } as never);
+
+      const response = await submit({
+        expiryDate: '2099-12-03T00:00:00.000Z',
+        scheduledPublishAt: '2099-12-02T00:00:00.000Z',
+      });
+
+      expect(response.status).toBe(201);
+      expect(mockedPrisma.announcement.create).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('validates attachments before creating the announcement', async () => {
     mockedGetUserFromRequest.mockResolvedValue({
       userId: 1,

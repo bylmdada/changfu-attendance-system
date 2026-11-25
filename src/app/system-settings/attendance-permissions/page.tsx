@@ -8,6 +8,7 @@ import { fetchJSONWithCSRF } from '@/lib/fetchWithCSRF';
 import SystemNavbar from '@/components/SystemNavbar';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import { SimpleToast, useLocalToast } from '@/components/Toast';
+import { loadAllEmployees } from '@/lib/load-all-employees';
 
 interface Employee {
   id: number;
@@ -119,12 +120,11 @@ export default function AttendancePermissionsPage() {
         }
 
         // 載入員工列表
-        const employeesRequest = buildCookieSessionRequest(window.location.origin, '/api/employees?limit=1000');
-        const employeesRes = await fetch(employeesRequest.url, employeesRequest.options);
-        if (employeesRes.ok) {
-          const employeesData = await employeesRes.json();
-          const employeeList = Array.isArray(employeesData) ? employeesData : employeesData.employees || [];
-          setEmployees(employeeList);
+        // 逐頁取完，不設人數上限；失敗只影響選人清單
+        try {
+          setEmployees(await loadAllEmployees<Employee>());
+        } catch (employeesError) {
+          console.error('載入員工列表失敗:', employeesError);
         }
 
         const departmentsRequest = buildCookieSessionRequest(window.location.origin, '/api/departments');

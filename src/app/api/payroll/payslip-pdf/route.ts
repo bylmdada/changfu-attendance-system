@@ -237,10 +237,30 @@ export async function GET(request: NextRequest) {
 
     const hourSummary = await buildPayslipHourSummary(payrollRecord);
 
+    // 適用範本（預設範本）：公司抬頭與安全設定都取自同一份，輸出才會和範本預覽一致
+    let activeTemplate: { securityConfig?: PDFSecurityConfig; headerConfig?: { companyName?: unknown } } | null = null;
+    try {
+      const templatesSetting = await prisma.systemSettings.findUnique({
+        where: { key: 'payslip_templates' }
+      });
+
+      if (templatesSetting?.value) {
+        const templates = JSON.parse(templatesSetting.value);
+        activeTemplate = Array.isArray(templates)
+          ? templates.find((template) => template?.isDefault) || templates[0] || null
+          : null;
+      }
+    } catch (templateError) {
+      console.warn('查詢薪資條範本失敗:', templateError);
+    }
+    const templateCompanyName = typeof activeTemplate?.headerConfig?.companyName === 'string'
+      ? activeTemplate.headerConfig.companyName.trim()
+      : '';
+
     // 生成薪資條數據
     const payslipData = {
       companyInfo: {
-        name: '長福會'
+        name: templateCompanyName || '長福會'
       },
       employee: {
         employeeId: payrollRecord.employee.employeeId,
@@ -304,20 +324,8 @@ export async function GET(request: NextRequest) {
     let passwordInfo: { hasPassword: boolean; password?: string; hint?: string } = { hasPassword: false };
 
     try {
-      // 查詢範本設定
-      const templatesSetting = await prisma.systemSettings.findUnique({
-        where: { key: 'payslip_templates' }
-      });
-
-      if (templatesSetting?.value) {
-        const templates = JSON.parse(templatesSetting.value);
-        const activeTemplate = Array.isArray(templates)
-          ? templates.find((template) => template?.isDefault) || templates[0]
-          : null;
-
-        if (activeTemplate?.securityConfig) {
-          securityConfig = activeTemplate.securityConfig;
-        }
+      if (activeTemplate?.securityConfig) {
+        securityConfig = activeTemplate.securityConfig;
       }
 
       // 取得密碼

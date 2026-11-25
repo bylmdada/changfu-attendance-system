@@ -124,6 +124,41 @@ describe('payslip pdf template settings integration', () => {
     });
   });
 
+  it('prints the company name from the default template on the payslip, same as the template preview', async () => {
+    mockPrisma.systemSettings.findUnique.mockImplementation(async ({ where }) => {
+      if (where.key === 'payslip_templates') {
+        return {
+          key: 'payslip_templates',
+          value: JSON.stringify([
+            { id: 1, isDefault: false, headerConfig: { companyName: '舊範本公司' } },
+            { id: 2, isDefault: true, headerConfig: { companyName: '測試股份有限公司' }, securityConfig: { passwordProtected: false, passwordType: 'none' } },
+          ]),
+        } as never;
+      }
+      return null as never;
+    });
+
+    const response = await GET(new NextRequest('http://localhost:3000/api/payroll/payslip-pdf?payrollId=1'));
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.payslipData.companyInfo.name).toBe('測試股份有限公司');
+    expect(payload.htmlContent).toContain('測試股份有限公司');
+    expect(payload.htmlContent).not.toContain('舊範本公司');
+    expect(payload.payslipData.salary.basePay).toBe(32000); // 薪資金額不受範本影響
+  });
+
+  it('falls back to the default company name when the template has none', async () => {
+    mockPrisma.systemSettings.findUnique.mockImplementation(async ({ where }) =>
+      where.key === 'payslip_templates'
+        ? ({ key: 'payslip_templates', value: JSON.stringify([{ id: 1, isDefault: true, headerConfig: { companyName: '  ' } }]) } as never)
+        : (null as never));
+
+    const payload = await (await GET(new NextRequest('http://localhost:3000/api/payroll/payslip-pdf?payrollId=1'))).json();
+
+    expect(payload.payslipData.companyInfo.name).toBe('長福會');
+  });
+
   it('rejects mixed payroll ids before querying the database', async () => {
     const request = new NextRequest('http://localhost:3000/api/payroll/payslip-pdf?payrollId=12abc');
 
